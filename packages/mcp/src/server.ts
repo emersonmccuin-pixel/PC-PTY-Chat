@@ -26,7 +26,6 @@ const DATA = resolve(ROOT, 'data');
 const WORKSPACE = resolve(ROOT, 'workspace');
 const LOG = resolve(DATA, 'mcp-log.jsonl');
 const STATUS = resolve(DATA, 'mcp-status.json');
-const WORKTREES_JSON = resolve(DATA, 'worktrees.json');
 
 // Workflow card tools (pc_move_card, pc_update_card) shim through to the
 // apps/server HTTP API so dispatch logic stays in one place. SERVER_PORT
@@ -223,19 +222,6 @@ async function postServer(
   });
 }
 
-async function persistWorktreeRegistry(): Promise<void> {
-  try {
-    const entries = await listWorktrees(WORKSPACE);
-    mkdirSync(dirname(WORKTREES_JSON), { recursive: true });
-    writeFileSync(
-      WORKTREES_JSON,
-      JSON.stringify({ updatedAt: new Date().toISOString(), worktrees: entries }, null, 2),
-    );
-  } catch {
-    /* best-effort — UI poll will retry */
-  }
-}
-
 function writeStatus() {
   try {
     mkdirSync(DATA, { recursive: true });
@@ -313,7 +299,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         const entry = await createWorktree(WORKSPACE, name);
-        await persistWorktreeRegistry();
         return {
           content: [
             { type: 'text', text: `created worktree ${entry.path} on branch ${entry.branch}` },
@@ -330,7 +315,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'pc_list_worktrees': {
       try {
         const entries = await listWorktrees(WORKSPACE);
-        await persistWorktreeRegistry();
         return { content: [{ type: 'text', text: JSON.stringify(entries, null, 2) }] };
       } catch (err) {
         return {
@@ -508,7 +492,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         await destroyWorktree(WORKSPACE, target, { force });
-        await persistWorktreeRegistry();
         return { content: [{ type: 'text', text: `destroyed worktree ${target}` }] };
       } catch (err) {
         return {
