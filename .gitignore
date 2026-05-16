@@ -17,6 +17,9 @@ worktrees/
 # Default project templates will land under templates/ when the chassis work needs them.
 workspace/
 
+# Debug artifacts (pw-debug screenshots, etc.)
+scripts/*.png
+
 # OS / editor noise
 .DS_Store
 .vscode/
