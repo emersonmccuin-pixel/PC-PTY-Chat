@@ -1,0 +1,15 @@
+{
+  "name": "pc-pty-chat",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Standalone PTY-driven chat UI for claude.exe. Learning rig for PC v2 Phase 9-B.",
+  "scripts": {
+    "dev": "pnpm --filter @pc/server dev",
+    "start": "pnpm --filter @pc/server start",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["node-pty"]
+  }
+}

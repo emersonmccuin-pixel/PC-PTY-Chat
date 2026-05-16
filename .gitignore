@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Runtime state (transient)
+data/*
+!data/.gitkeep
+
+# Worktrees managed by the runtime (regenerated)
+worktrees/
+
+# Dev fixture: workspace/ has its own embedded git repo (per-project shape).
+# Default project templates will land under templates/ when the chassis work needs them.
+workspace/
+
+# OS / editor noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
