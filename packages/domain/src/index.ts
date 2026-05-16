@@ -1,3 +1,4 @@
+export type { ULID } from './ulid.ts';
 export type { WorkItem, WorkItemHistoryEntry, WorkItemStatus } from './work-item.ts';
 export type { Project, Stage } from './project.ts';
 export type {
@@ -22,3 +23,12 @@ export type {
   WorkflowRunStatus,
   WorkflowRunsFile,
 } from './workflow-run.ts';
+export type {
+  OrchestratorSession,
+  ProviderId,
+  SessionEndedReason,
+  SessionStatus,
+} from './orchestrator.ts';
+export type { GlobalSettings } from './settings.ts';
+export { defaultGlobalSettings } from './settings.ts';
+export type { Worktree, WorktreeStatus } from './worktree.ts';
