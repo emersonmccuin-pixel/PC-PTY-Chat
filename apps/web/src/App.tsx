@@ -1,8 +1,8 @@
 export default function App() {
   return (
-    <div style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Project Companion</h1>
-      <p>React scaffold up. Tailwind + shadcn + panels next.</p>
+    <div className="p-6 font-sans">
+      <h1 className="text-2xl font-semibold text-slate-900">Project Companion</h1>
+      <p className="mt-2 text-slate-600">Tailwind v4 wired. shadcn + panels next.</p>
     </div>
   );
 }
