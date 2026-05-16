@@ -409,7 +409,7 @@ Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern
 
 - [x] N1. `apps/web` becomes a Vite + React 19 package: `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
 - [x] N2. Tailwind v4 wired (`@tailwindcss/vite`, `src/index.css` with `@import 'tailwindcss'`)
-- [ ] N3. shadcn canary init; add Button, Card, Badge
+- [x] N3. shadcn canary init; add Button, Card, Badge
 - [x] N4. Vite `server.proxy`: `/api/*` → `:4040`, `/ws` → `ws://127.0.0.1:4040`
 - [ ] N5. `WorkItemsList` panel: GET `/api/work-items` + `/api/project`, group by stage, create + stage-move actions hitting existing endpoints
 - [ ] N6. `apps/server/src/index.ts`: drop hardcoded `/`, `/app.js`, `/styles.css`; serve `apps/web/dist/` with SPA fallback; add root `pnpm build`
