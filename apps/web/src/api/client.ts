@@ -48,7 +48,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   project: () => getJson<Project>('/api/project'),
-  workItems: () => getJson<WorkItem[]>('/api/work-items'),
+  workItems: () => getJson<{ workItems: WorkItem[] }>('/api/work-items').then((r) => r.workItems),
   createWorkItem: (title: string, stageId: string, body?: string) =>
     postJson<{ ok: true; workItem: WorkItem }>('/api/work-items/create', {
       title,
