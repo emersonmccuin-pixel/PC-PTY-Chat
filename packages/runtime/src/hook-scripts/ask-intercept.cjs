@@ -45,7 +45,11 @@ const req = request(
       } catch {
         /* keep default */
       }
-      emitDeny(`User answered (${toolName}): ${answer}`);
+      if (answer === '__cancelled__') {
+        emitDeny(`User declined to answer (${toolName}). Choose a different approach or ask differently.`);
+      } else {
+        emitDeny(`User answered (${toolName}): ${answer}`);
+      }
     });
   },
 );

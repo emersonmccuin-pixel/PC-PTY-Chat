@@ -427,12 +427,20 @@ function renderAsk(msg) {
       const row = document.createElement('div');
       row.className = 'ask-options';
       (q.options || []).forEach((opt) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'ask-option';
         const btn = makeOptionButton(opt.label, () => {
           replyAsk(toolUseId, opt.label);
           disableCard(card, opt.label);
         });
-        if (opt.description) btn.title = opt.description;
-        row.appendChild(btn);
+        wrap.appendChild(btn);
+        if (opt.description) {
+          const desc = document.createElement('div');
+          desc.className = 'ask-option-desc';
+          desc.textContent = opt.description;
+          wrap.appendChild(desc);
+        }
+        row.appendChild(wrap);
       });
       card.appendChild(row);
 
@@ -444,6 +452,22 @@ function renderAsk(msg) {
       }
     }
   }
+
+  // Cancel row — applies to both ExitPlanMode and AskUserQuestion. Sends a
+  // sentinel string the hook surfaces back to the model as the deny reason.
+  const cancelRow = document.createElement('div');
+  cancelRow.className = 'ask-cancel-row';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'ask-cancel';
+  cancel.textContent = 'Cancel';
+  cancel.title = 'Decline to answer — orchestrator gets a deny reason and can proceed differently.';
+  cancel.addEventListener('click', () => {
+    replyAsk(toolUseId, '__cancelled__');
+    disableCard(card, 'Cancel');
+  });
+  cancelRow.appendChild(cancel);
+  card.appendChild(cancelRow);
 
   chatAppend(card);
 }

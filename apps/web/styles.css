@@ -679,8 +679,25 @@ main {
 }
 .ask-options {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
+}
+.ask-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #0e0f12;
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+}
+.ask-option:hover {
+  border-color: var(--accent);
+}
+.ask-option-desc {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .ask-btn {
   background: #1a1c20;
@@ -691,6 +708,7 @@ main {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  align-self: flex-start;
 }
 .ask-btn:hover:not(:disabled) {
   border-color: var(--accent);
@@ -705,6 +723,29 @@ main {
   border-color: var(--accent);
   background: var(--accent);
   color: white;
+}
+.ask-cancel-row {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+.ask-cancel {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid #2a2a30;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ask-cancel:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: #4a4a55;
+}
+.ask-cancel:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .ask-note {
   margin-top: 8px;
