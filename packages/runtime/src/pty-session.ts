@@ -80,6 +80,13 @@ export class PtySession extends EventEmitter {
       claudeExe,
       [
         '--dangerously-skip-permissions',
+        // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
+        // --strict-mcp-config the orchestrator merges global user-level MCPs
+        // (e.g. WCP, archon) and tries to use them — confusing and leaks
+        // unrelated capabilities into the rig.
+        '--mcp-config',
+        '.mcp.json',
+        '--strict-mcp-config',
         // Load the webhook channel registered in workspace/.mcp.json. CC will
         // prompt once on boot to confirm dev-channel usage; we auto-press
         // Enter below.
