@@ -22,7 +22,6 @@ export type {
   WorkflowRun,
   WorkflowRunStatus,
   WorkflowRunTrigger,
-  WorkflowRunsFile,
 } from './workflow-run.ts';
 export type {
   OrchestratorSession,

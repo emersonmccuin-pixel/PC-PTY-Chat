@@ -1,19 +1,33 @@
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 /**
  * Resolve the PC data directory.
  *
  * Override via `PC_DATA_DIR` (launch-only; restart required if changed mid-run).
- * Rig-phase default: `<cwd>/data` — when the user runs `pnpm dev` from the repo
- * root, this lands at `<repo-root>/data`, matching what the JSON-file readers
- * used. When chassis work moves to shipped form, switch the default to
+ * Rig-phase default: walk up from cwd to find `pnpm-workspace.yaml` and use
+ * `<workspace-root>/data`. This makes the path robust to `pnpm --filter` cwd
+ * changes (which point process.cwd() at the filtered package's dir, not the
+ * workspace root). Falls back to `<cwd>/data` if no workspace root is found.
+ * When chassis work moves to shipped form, switch the default to
  * `~/.project-companion/` per the locked stack.
  */
 export function getDataDir(): string {
   const env = process.env.PC_DATA_DIR;
   if (env && env !== 'undefined') return expandTilde(env);
-  return join(process.cwd(), 'data');
+  const root = findWorkspaceRoot(process.cwd());
+  return join(root, 'data');
+}
+
+function findWorkspaceRoot(start: string): string {
+  let dir = resolve(start);
+  while (true) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
 }
 
 function expandTilde(p: string): string {

@@ -64,7 +64,3 @@ export interface WorkflowRun {
   /** Last reason associated with `failed` / `cancelled` / `paused`. */
   lastReason?: string;
 }
-
-export interface WorkflowRunsFile {
-  runs: WorkflowRun[];
-}

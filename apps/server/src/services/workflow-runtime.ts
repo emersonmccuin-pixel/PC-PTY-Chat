@@ -48,7 +48,6 @@ import type {
 import {
   applyRunOutcome,
   createRun as dbCreateRun,
-  createWorkItem as dbCreateWorkItem,
   getProjectById,
   getRun as dbGetRun,
   getWorkItem,
@@ -247,11 +246,6 @@ export class WorkflowRuntime {
     const updated = dbUpdateWorkItemFields(id as ULID, fields);
     if (!updated) throw new Error(`unknown work item: ${id}`);
     return updated;
-  }
-
-  /** Apps/server bootstrap helper — create a seed work item on first boot. */
-  createSeedWorkItem(title: string, stageId: string): WorkItem {
-    return dbCreateWorkItem({ projectId: this.projectId, title, stageId });
   }
 
   // ── Workflow runs ────────────────────────────────────────────────────────
