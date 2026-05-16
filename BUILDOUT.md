@@ -407,10 +407,10 @@ Spec: `DESIGN-WORKFLOWS-V2.md` (top-to-bottom; supersedes `DESIGN-WORKFLOWS-AND-
 
 Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern. Remaining panels (chat, xterm terminal, worktrees, workflows, approvals) port in a follow-up session against the proven scaffold.
 
-- [ ] N1. `apps/web` becomes a Vite + React 19 package: `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
+- [x] N1. `apps/web` becomes a Vite + React 19 package: `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
 - [ ] N2. Tailwind v4 wired (`@tailwindcss/vite`, `src/index.css` with `@import 'tailwindcss'`)
 - [ ] N3. shadcn canary init; add Button, Card, Badge
-- [ ] N4. Vite `server.proxy`: `/api/*` → `:4040`, `/ws` → `ws://127.0.0.1:4040`
+- [x] N4. Vite `server.proxy`: `/api/*` → `:4040`, `/ws` → `ws://127.0.0.1:4040`
 - [ ] N5. `WorkItemsList` panel: GET `/api/work-items` + `/api/project`, group by stage, create + stage-move actions hitting existing endpoints
 - [ ] N6. `apps/server/src/index.ts`: drop hardcoded `/`, `/app.js`, `/styles.css`; serve `apps/web/dist/` with SPA fallback; add root `pnpm build`
 - [ ] N7. `pnpm -r typecheck` green across all packages + apps/web + apps/server
