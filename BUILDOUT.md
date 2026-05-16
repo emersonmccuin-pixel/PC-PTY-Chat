@@ -412,8 +412,8 @@ Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern
 - [x] N3. shadcn canary init; add Button, Card, Badge
 - [x] N4. Vite `server.proxy`: `/api/*` → `:4040`, `/ws` → `ws://127.0.0.1:4040`
 - [x] N5. `WorkItemsList` panel: GET `/api/work-items` + `/api/project`, group by stage, create + stage-move actions hitting existing endpoints
-- [ ] N6. `apps/server/src/index.ts`: drop hardcoded `/`, `/app.js`, `/styles.css`; serve `apps/web/dist/` with SPA fallback; add root `pnpm build`
-- [ ] N7. `pnpm -r typecheck` green across all packages + apps/web + apps/server
+- [x] N6. `apps/server/src/index.ts`: drop hardcoded `/`, `/app.js`, `/styles.css`; serve `apps/web/dist/` with SPA fallback; add root `pnpm build`
+- [x] N7. `pnpm -r typecheck` green across all packages + apps/web + apps/server
 
 > **User test.** Two runs.
 > 1. **Dev mode.** `pnpm dev` (server on 4040) + `pnpm --filter @pc/web dev` (Vite on 5173). Open `http://127.0.0.1:5173/`. WorkItemsList renders, can create a new work item, can move it between stages. Network tab shows requests on `:5173` proxied to `:4040`.

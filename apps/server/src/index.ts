@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,7 @@ import { evaluateBoolean, substituteOutputs } from './services/output-substituti
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → rig root is three levels up.
 const ROOT = resolve(__dirname, '..', '..', '..');
-const PUBLIC = resolve(ROOT, 'apps', 'web');
+const PUBLIC = resolve(ROOT, 'apps', 'web', 'dist');
 const WORKSPACE = resolve(ROOT, 'workspace');
 const DATA = resolve(ROOT, 'data');
 const WORKFLOWS_DIR = resolve(WORKSPACE, '.project-companion', 'workflows');
@@ -67,21 +67,6 @@ const workflow = new WorkflowRuntime({
 });
 
 const app = new Hono();
-
-app.get('/', async (c) => {
-  const html = await readFile(resolve(PUBLIC, 'index.html'), 'utf-8');
-  return c.html(html);
-});
-
-app.get('/app.js', async () => {
-  const js = await readFile(resolve(PUBLIC, 'app.js'), 'utf-8');
-  return new Response(js, { headers: { 'Content-Type': 'text/javascript; charset=utf-8' } });
-});
-
-app.get('/styles.css', async () => {
-  const css = await readFile(resolve(PUBLIC, 'styles.css'), 'utf-8');
-  return new Response(css, { headers: { 'Content-Type': 'text/css; charset=utf-8' } });
-});
 
 // Holds promise resolvers for in-flight AskUserQuestion / ExitPlanMode calls.
 // The hook POSTs /api/ask which blocks here until the user clicks a reply.
@@ -343,6 +328,63 @@ app.post('/api/ask', async (c) => {
   });
 
   return c.json({ answer });
+});
+
+// Catch-all static serve from apps/web/dist/. SPA fallback to index.html when
+// the requested path isn't a real file — lets the React app handle deep links
+// without server-side route knowledge. /api/* and /ws fall through via next().
+const STATIC_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+function staticMime(filePath: string): string {
+  const dot = filePath.lastIndexOf('.');
+  if (dot === -1) return 'application/octet-stream';
+  return STATIC_MIME[filePath.slice(dot).toLowerCase()] ?? 'application/octet-stream';
+}
+
+app.get('*', async (c, next) => {
+  const url = new URL(c.req.url);
+  if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return next();
+
+  const requested = url.pathname === '/' ? '/index.html' : url.pathname;
+  const filePath = resolve(PUBLIC, '.' + requested);
+  if (!filePath.startsWith(PUBLIC)) return c.text('Forbidden', 403);
+
+  try {
+    const s = await stat(filePath);
+    if (s.isFile()) {
+      const content = await readFile(filePath);
+      return new Response(new Uint8Array(content), {
+        headers: { 'Content-Type': staticMime(filePath) },
+      });
+    }
+  } catch {
+    // Fall through to SPA index.
+  }
+
+  try {
+    const html = await readFile(resolve(PUBLIC, 'index.html'), 'utf-8');
+    return c.html(html);
+  } catch {
+    return c.text(
+      'apps/web build not found. Run `pnpm --filter @pc/web build` (or use dev mode on :5173).\n',
+      503,
+    );
+  }
 });
 
 const server = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
