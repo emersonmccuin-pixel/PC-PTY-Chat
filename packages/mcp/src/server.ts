@@ -80,13 +80,30 @@ const TOOLS = [
     },
   },
   {
-    name: 'pc_move_work_item',
+    name: 'pc_create_work_item',
     description:
-      'Move a work item to a different stage. Slice 9 M2: pure stage move only — workflow dispatch comes back as the DAG runtime lands (M7 onward).',
+      'Create a new work item in the given stage. Returns the new WorkItem with its generated ULID id. Use this when the user asks for a fresh card / task / item; do not seed one via pc_update_work_item.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id, e.g. "wi-1"' },
+        title: { type: 'string', description: 'short title for the work item' },
+        stageId: {
+          type: 'string',
+          description: 'destination stage id (slug, e.g. "draft" / "review" / "done")',
+        },
+        body: { type: 'string', description: 'optional free-form body / spec' },
+      },
+      required: ['title', 'stageId'],
+    },
+  },
+  {
+    name: 'pc_move_work_item',
+    description:
+      'Move a work item to a different stage. If a workflow has `triggers.on_enter: { stage_id: <toStage> }`, that workflow fires automatically against the bound wi-<id> worktree.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'work item id (ULID)' },
         toStage: { type: 'string', description: 'destination stage id' },
       },
       required: ['id', 'toStage'],
@@ -318,6 +335,37 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_worktrees failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_work_item': {
+      const title = typeof args.title === 'string' ? args.title : '';
+      const stageId = typeof args.stageId === 'string' ? args.stageId : '';
+      const bodyText = typeof args.body === 'string' ? args.body : undefined;
+      if (!title || !stageId) {
+        return {
+          content: [{ type: 'text', text: 'pc_create_work_item: title and stageId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer('/api/work-items/create', {
+          title,
+          stageId,
+          ...(bodyText ? { body: bodyText } : {}),
+        });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_create_work_item failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_create_work_item failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

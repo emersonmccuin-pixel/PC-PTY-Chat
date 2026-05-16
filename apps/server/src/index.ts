@@ -159,6 +159,21 @@ app.post('/api/work-items/update', async (c) => {
   }
 });
 
+app.post('/api/work-items/create', async (c) => {
+  const body = await c.req.json<{ title?: string; stageId?: string; body?: string }>();
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
+  if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
+  try {
+    const workItem = workflow.createWorkItem(title, stageId, body.body);
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is400 = /^unknown stage:|^title required$/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
 // GET /api/workflows — registry snapshot for the UI's Workflows pane. Reload
 // on every call so live YAML edits surface within the UI's poll interval.
 app.get('/api/workflows', (c) => {

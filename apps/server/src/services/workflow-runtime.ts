@@ -48,6 +48,7 @@ import type {
 import {
   applyRunOutcome,
   createRun as dbCreateRun,
+  createWorkItem as dbCreateWorkItem,
   getProjectById,
   getRun as dbGetRun,
   getWorkItem,
@@ -246,6 +247,21 @@ export class WorkflowRuntime {
     const updated = dbUpdateWorkItemFields(id as ULID, fields);
     if (!updated) throw new Error(`unknown work item: ${id}`);
     return updated;
+  }
+
+  createWorkItem(title: string, stageId: string, body?: string): WorkItem {
+    const project = this.readProject();
+    if (!project.stages.find((s) => s.id === stageId)) {
+      throw new Error(`unknown stage: ${stageId}`);
+    }
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error('title required');
+    return dbCreateWorkItem({
+      projectId: this.projectId,
+      title: trimmed,
+      stageId,
+      ...(body ? { body } : {}),
+    });
   }
 
   // ── Workflow runs ────────────────────────────────────────────────────────
