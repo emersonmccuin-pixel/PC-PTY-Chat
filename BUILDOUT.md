@@ -393,6 +393,36 @@ Spec: `DESIGN-WORKFLOWS-V2.md` (top-to-bottom; supersedes `DESIGN-WORKFLOWS-AND-
 
 **Not in scope here:** per-node retry, pre/post hooks, per-node sandbox, parallel-subagent cap, human-notification UI consolidation, workflow editor UI (Slice 10+). All flagged in `DESIGN-WORKFLOWS-V2.md` "Deferred" section.
 
+## Chassis — React + Tailwind + shadcn UI rewrite
+
+**Goal.** Replace vanilla HTML/JS/CSS in `apps/web/` with Vite + React 19 + Tailwind v4 + shadcn (canary). API surface stays unchanged; this is the locked-stack UI port called out in trunk `CLAUDE.md`.
+
+**Ports to:** N/A — this IS the PC port for the UI layer.
+
+**Stack additions:** vite 5, react 19, react-dom 19, tailwindcss v4 (`@tailwindcss/vite` plugin), shadcn canary, lucide-react (shadcn pulls it).
+
+**Dev shape:** Vite on `5173` proxying `/api/*` + `/ws` → `127.0.0.1:4040`. Prod: Hono on `4040` serves `apps/web/dist/` with SPA index fallback.
+
+### Session N — scaffold + first panel (2026-05-16)
+
+Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern. Remaining panels (chat, xterm terminal, worktrees, workflows, approvals) port in a follow-up session against the proven scaffold.
+
+- [ ] N1. `apps/web` becomes a Vite + React 19 package: `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, `src/main.tsx`, `src/App.tsx`
+- [ ] N2. Tailwind v4 wired (`@tailwindcss/vite`, `src/index.css` with `@import 'tailwindcss'`)
+- [ ] N3. shadcn canary init; add Button, Card, Badge
+- [ ] N4. Vite `server.proxy`: `/api/*` → `:4040`, `/ws` → `ws://127.0.0.1:4040`
+- [ ] N5. `WorkItemsList` panel: GET `/api/work-items` + `/api/project`, group by stage, create + stage-move actions hitting existing endpoints
+- [ ] N6. `apps/server/src/index.ts`: drop hardcoded `/`, `/app.js`, `/styles.css`; serve `apps/web/dist/` with SPA fallback; add root `pnpm build`
+- [ ] N7. `pnpm -r typecheck` green across all packages + apps/web + apps/server
+
+> **User test.** Two runs.
+> 1. **Dev mode.** `pnpm dev` (server on 4040) + `pnpm --filter @pc/web dev` (Vite on 5173). Open `http://127.0.0.1:5173/`. WorkItemsList renders, can create a new work item, can move it between stages. Network tab shows requests on `:5173` proxied to `:4040`.
+> 2. **Prod mode.** `pnpm --filter @pc/web build` then `pnpm dev`. Open `http://127.0.0.1:4040/`. Same panel renders, same actions work, dist/ assets served from Hono.
+
+- [ ] User test passed
+
+**Out of scope for Session N:** chat panel, xterm terminal panel, worktrees panel, workflows panel, approvals panel, WS client, channel-event UI. The old vanilla `app.js` / `styles.css` STAY on disk until the follow-up session ports the remaining panels — they won't be served, but they're the reference for what each panel needs.
+
 ## Session E — Multi-tenancy (optional)
 
 **Slice 7.** Two parallel projects.
