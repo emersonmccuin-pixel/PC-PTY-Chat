@@ -14,6 +14,11 @@ export type WorkflowRunStatus =
   | 'failed'
   | 'cancelled';
 
+/** What kicked off the run. `on_enter` = work-item stage transition; `callable` =
+ *  orchestrator-called via pc_run_workflow; `nested` = spawned by a parent's
+ *  `workflow:` node. */
+export type WorkflowRunTrigger = 'on_enter' | 'callable' | 'nested';
+
 /** Per-node status. `pending` = waiting on deps; `running` = dispatched. */
 export type NodeOutputStatus =
   | 'pending'

@@ -21,6 +21,7 @@ export type {
   NodeOutputStatus,
   WorkflowRun,
   WorkflowRunStatus,
+  WorkflowRunTrigger,
   WorkflowRunsFile,
 } from './workflow-run.ts';
 export type {

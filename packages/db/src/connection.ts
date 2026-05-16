@@ -1,0 +1,30 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { getDataDir } from '@pc/utils';
+import * as schema from './schema.ts';
+
+export type DB = BetterSQLite3Database<typeof schema>;
+
+let _db: DB | null = null;
+let _sqlite: Database.Database | null = null;
+
+/** Lazy singleton. Reads PC_DATA_DIR at first call. */
+export function getDb(): DB {
+  if (_db) return _db;
+  const dir = getDataDir();
+  mkdirSync(dir, { recursive: true });
+  _sqlite = new Database(join(dir, 'pc.sqlite'));
+  _sqlite.pragma('journal_mode = WAL');
+  _sqlite.pragma('foreign_keys = ON');
+  _db = drizzle(_sqlite, { schema });
+  return _db;
+}
+
+/** Test/teardown only. Production keeps the connection for its lifetime. */
+export function closeDb(): void {
+  _sqlite?.close();
+  _sqlite = null;
+  _db = null;
+}
