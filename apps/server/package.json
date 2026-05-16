@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
+    "@pc/db": "workspace:*",
     "@pc/domain": "workspace:*",
     "@pc/runtime": "workspace:*",
+    "@pc/utils": "workspace:*",
     "@pc/workflows": "workspace:*",
     "hono": "^4.6.14",
     "ws": "^8.18.0"

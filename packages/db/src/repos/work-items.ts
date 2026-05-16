@@ -155,3 +155,33 @@ export function updateWorkItemStatus(
   getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
   return toDomain(updated);
 }
+
+/**
+ * Apply a workflow-run outcome atomically: set status + statusReason and append
+ * a history note in one update. The runtime calls this from the unlock hook so
+ * the UI never observes a "new status, stale history" intermediate state.
+ */
+export function applyRunOutcome(
+  id: ULID,
+  status: WorkItemStatus,
+  statusReason: string | null,
+  historyNote: string,
+): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  const entry: WorkItemHistoryEntry = {
+    ts: new Date().toISOString(),
+    kind: 'update',
+    note: historyNote,
+  };
+  const updated: WorkItemRow = {
+    ...row,
+    status,
+    statusReason,
+    history: [...row.history, entry],
+    version: row.version + 1,
+    updatedAt: Date.now(),
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}

@@ -1,13 +1,8 @@
-// Worktree service. Wraps @pc/runtime's git helpers with persistence to
-// data/worktrees.json. The rig UI reads that file via /api/worktrees; the
-// MCP server (separate process) also keeps it fresh after orchestrator-driven
-// operations.
-//
-// In PC this becomes apps/server/src/services/worktree.ts with the JSON
-// persistence swapped for a Drizzle table — same shape.
+// Worktree service. Wraps @pc/runtime's git helpers with an in-memory cache
+// (for UI polls) and DB-side tracking (for forward-compat work-item / run
+// bindings). Replaced the data/worktrees.json shape with sqlite.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import {
   attachWorktree,
@@ -17,6 +12,7 @@ import {
   pruneWorktrees,
   type WorktreeEntry,
 } from '@pc/runtime';
+import { markWorktreeDestroyed, upsertWorktree } from '@pc/db';
 
 export interface WorktreeRegistry {
   updatedAt: string;
@@ -24,34 +20,41 @@ export interface WorktreeRegistry {
 }
 
 export class WorktreeService {
-  constructor(
-    private readonly workspaceDir: string,
-    private readonly registryFile: string,
-  ) {}
+  private cache: WorktreeRegistry = { updatedAt: new Date(0).toISOString(), worktrees: [] };
+
+  constructor(private readonly workspaceDir: string) {}
 
   async list(): Promise<WorktreeEntry[]> {
     const entries = await listWorktrees(this.workspaceDir);
-    this.persist(entries);
+    this.cache = { updatedAt: new Date().toISOString(), worktrees: entries };
+    // Reconcile DB rows with git's view. Main repo (entries[0]) is the
+    // workspace itself; don't track it.
+    for (const entry of entries.slice(1)) {
+      const name = nameFromPath(entry.path);
+      if (name) upsertWorktree({ name, path: entry.path });
+    }
     return entries;
   }
 
   async create(name: string): Promise<WorktreeEntry> {
     const entry = await createWorktree(this.workspaceDir, name);
+    upsertWorktree({ name, path: entry.path });
     await this.refresh();
     return entry;
   }
 
   async destroy(target: string, force = false): Promise<void> {
     await destroyWorktree(this.workspaceDir, target, { force });
+    const name = isAbsolutePath(target) ? nameFromPath(target) : target;
+    if (name) markWorktreeDestroyed(name);
     await this.refresh();
   }
 
   /**
-   * Idempotent "ensure a worktree named `name` exists". 8b orphan-recovery
-   * pattern: prune stale registrations, return the existing entry if the dir
-   * is already attached, else try a fresh create, falling back to
-   * `git worktree add <path> <name>` (no `-b`) if the branch already exists
-   * from a previous failed dispatch.
+   * Idempotent "ensure a worktree named `name` exists". 8b orphan-recovery:
+   * prune stale registrations, return the existing entry if the dir is already
+   * attached, else try a fresh create, falling back to `git worktree add` (no
+   * `-b`) if the branch already exists from a previous failed dispatch.
    */
   async ensureWorktree(name: string): Promise<WorktreeEntry> {
     await pruneWorktrees(this.workspaceDir);
@@ -59,7 +62,8 @@ export class WorktreeService {
     const existing = await listWorktrees(this.workspaceDir);
     const match = existing.find((e) => normalize(e.path) === normalize(wtPath));
     if (match) {
-      this.persist(existing);
+      this.cache = { updatedAt: new Date().toISOString(), worktrees: existing };
+      upsertWorktree({ name, path: match.path });
       return match;
     }
     try {
@@ -70,39 +74,20 @@ export class WorktreeService {
         throw err;
       }
       const entry = await attachWorktree(this.workspaceDir, name);
+      upsertWorktree({ name, path: entry.path });
       await this.refresh();
       return entry;
     }
   }
 
-  /** Cached read — used by polling endpoints. Falls back to live git on miss. */
+  /** Cached read for polling endpoints. Empty until the first list() / mutate(). */
   readCached(): WorktreeRegistry {
-    if (existsSync(this.registryFile)) {
-      try {
-        return JSON.parse(readFileSync(this.registryFile, 'utf-8')) as WorktreeRegistry;
-      } catch {
-        /* fall through */
-      }
-    }
-    return { updatedAt: new Date(0).toISOString(), worktrees: [] };
+    return this.cache;
   }
 
   private async refresh(): Promise<void> {
     try {
-      const entries = await listWorktrees(this.workspaceDir);
-      this.persist(entries);
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  private persist(entries: WorktreeEntry[]): void {
-    try {
-      mkdirSync(dirname(this.registryFile), { recursive: true });
-      writeFileSync(
-        this.registryFile,
-        JSON.stringify({ updatedAt: new Date().toISOString(), worktrees: entries }, null, 2),
-      );
+      await this.list();
     } catch {
       /* best-effort */
     }
@@ -111,4 +96,13 @@ export class WorktreeService {
 
 function normalize(p: string): string {
   return resolve(p).toLowerCase();
+}
+
+function nameFromPath(p: string): string | null {
+  const segments = p.replace(/\\/g, '/').split('/').filter(Boolean);
+  return segments[segments.length - 1] ?? null;
+}
+
+function isAbsolutePath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/');
 }

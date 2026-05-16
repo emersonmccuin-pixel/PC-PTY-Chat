@@ -13,12 +13,18 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.7
         version: 1.19.14(hono@4.12.18)
+      '@pc/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@pc/domain':
         specifier: workspace:*
         version: link:../../packages/domain
       '@pc/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@pc/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
       '@pc/workflows':
         specifier: workspace:*
         version: link:../../packages/workflows

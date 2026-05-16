@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { createProject, getProjectBySlug, runMigrations } from '@pc/db';
 import { PtySession } from '@pc/runtime';
 import { WorkflowRegistry } from '@pc/workflows';
 
@@ -25,6 +26,22 @@ const WORKFLOWS_DIR = resolve(WORKSPACE, '.project-companion', 'workflows');
 const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
+// Bootstrap: open DB, run migrations, ensure the default `rig` project exists.
+// This is the rig-phase single-tenant shape; Slice 7 multi-tenant work replaces
+// the slug lookup with a project picker.
+runMigrations();
+const defaultProject =
+  getProjectBySlug('rig') ??
+  createProject({
+    slug: 'rig',
+    name: 'PC-PTY-Chat Rig',
+    stages: [
+      { id: 'draft', name: 'Draft', order: 0 },
+      { id: 'review', name: 'Review', order: 1 },
+      { id: 'done', name: 'Done', order: 2 },
+    ],
+  });
+
 // WS client set + broadcast — declared before the runtime so the approval
 // dispatcher can push UI events. The set fills as connections arrive later.
 const clients = new Set<WebSocket>();
@@ -35,14 +52,12 @@ function broadcast(msg: unknown) {
   }
 }
 
-const worktrees = new WorktreeService(WORKSPACE, resolve(DATA, 'worktrees.json'));
+const worktrees = new WorktreeService(WORKSPACE);
 const registry = new WorkflowRegistry(WORKFLOWS_DIR);
 registry.reload();
 const workflow = new WorkflowRuntime({
   workspaceDir: WORKSPACE,
-  workItemsFile: resolve(DATA, 'work-items.json'),
-  projectFile: resolve(DATA, 'project.json'),
-  workflowRunsFile: resolve(DATA, 'workflow-runs.json'),
+  projectId: defaultProject.id,
   channelPort: CHANNEL_PORT,
   evaluateBoolean,
   substituteOutputs,

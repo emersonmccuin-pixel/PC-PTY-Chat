@@ -13,6 +13,7 @@ export {
 export type { CreateProjectInput } from './repos/projects.ts';
 
 export {
+  applyRunOutcome,
   createWorkItem,
   getWorkItem,
   listWorkItems,

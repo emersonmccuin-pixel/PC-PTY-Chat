@@ -1,8 +1,8 @@
-// Workflow runtime (Slice 9 M7). Owns work-item + project read/write (carried
-// from M2) plus the DAG scheduler (M5) + subagent dispatch (this milestone).
+// Workflow runtime. Owns work-item + project read/write plus the DAG scheduler
+// + per-node dispatch.
 //
-// The scheduler is stateless against the run JSON: tick loads the run, parses
-// the YAML snapshot, finds ready nodes (deps satisfied per trigger_rule + when
+// Scheduler is stateless against the run row: tick loads the run, parses the
+// YAML snapshot, finds ready nodes (deps satisfied per trigger_rule + when
 // expression evaluates true + not yet started), dispatches each in parallel,
 // updates per-node outputs, recomputes the run-level status, persists. Async
 // nodes (subagent, approval) leave their nodeOutput at 'running' and exit;
@@ -14,17 +14,15 @@
 // Safety net: onTurnEnd() scans every in-progress run and marks any subagent
 // node still in 'running' state as failed. Assumption: workflows are dispatched
 // between orchestrator turns (UI move on an idle orchestrator OR orchestrator-
-// idle channel events). Mid-orchestrator-turn dispatch (e.g. M14's pc_run_workflow
-// called mid-turn) will need to queue past the current Stop or these nodes
-// will be false-failed at the next turn-end. Documented; M14 will handle.
-//
-// M5 dispatchers are stubs for everything except subagent. M8–M13 fill in.
+// idle channel events). Mid-orchestrator-turn dispatch (M14's pc_run_workflow)
+// is dodged via setImmediate in runWorkflow so the channel POST lands in the
+// next turn.
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { writeFileSync, unlinkSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 
@@ -40,19 +38,37 @@ import type {
   Project,
   ScriptNode,
   SubagentNode,
+  ULID,
   WorkItem,
   Workflow,
   WorkflowRun,
   WorkflowRunStatus,
-  WorkflowRunsFile,
+  WorkflowRunTrigger,
 } from '@pc/domain';
+import {
+  applyRunOutcome,
+  createRun as dbCreateRun,
+  createWorkItem as dbCreateWorkItem,
+  getProjectById,
+  getRun as dbGetRun,
+  getWorkItem,
+  listActiveRuns,
+  listRuns as dbListRuns,
+  listWorkItems as dbListWorkItems,
+  moveWorkItemStage,
+  newId,
+  persistRun as dbPersistRun,
+  updateWorkItemFields as dbUpdateWorkItemFields,
+  updateWorkItemStatus,
+} from '@pc/db';
 import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
 
 import type { WorktreeService } from './worktree.ts';
 
 const execFileAsync = promisify(execFile);
 
-export interface WorkItemsFile {
+/** Response shape for /api/work-items — UI expects {workItems: [...]}. */
+export interface WorkItemsResponse {
   workItems: WorkItem[];
 }
 
@@ -66,9 +82,8 @@ const defaultBroadcast: BroadcastFn = () => {};
 
 export interface WorkflowRuntimeOptions {
   workspaceDir: string;
-  workItemsFile: string;
-  projectFile: string;
-  workflowRunsFile: string;
+  /** Default project id — apps/server bootstraps this before constructing the runtime. */
+  projectId: ULID;
   /** Webhook channel port (apps/server's `/api/channel-send` proxies here too). */
   channelPort?: number;
   evaluateBoolean?: EvaluateBoolean;
@@ -77,7 +92,7 @@ export interface WorkflowRuntimeOptions {
   broadcast?: BroadcastFn;
   /** Registry for looking up workflows by id (nested-workflow nodes + M14 triggers). */
   registry?: WorkflowRegistry;
-  /** Worktree provisioning for stage-move + orchestrator-call dispatch (M14). */
+  /** Worktree provisioning for stage-move + orchestrator-call dispatch. */
   worktrees?: WorktreeService;
 }
 
@@ -89,29 +104,6 @@ export interface PendingApproval {
   message: string;
   onRejectPrompt: string | null;
 }
-
-const DEFAULT_PROJECT: Project = {
-  id: 'rig',
-  name: 'PC-PTY-Chat Rig',
-  stages: [
-    { id: 'draft', name: 'Draft', order: 0 },
-    { id: 'review', name: 'Review', order: 1 },
-    { id: 'done', name: 'Done', order: 2 },
-  ],
-};
-
-const DEFAULT_WORK_ITEMS: WorkItemsFile = {
-  workItems: [
-    {
-      id: 'wi-1',
-      title: 'Work Item 1',
-      stageId: 'draft',
-      status: 'pending',
-      fields: {},
-      history: [{ ts: new Date(0).toISOString(), kind: 'move', to: 'draft', note: 'seed' }],
-    },
-  ],
-};
 
 const TERMINAL_NODE_STATUSES: ReadonlySet<NodeOutputStatus> = new Set([
   'complete',
@@ -153,6 +145,7 @@ export class WorkflowRuntime {
   private readonly channelPort: number;
   private readonly registry: WorkflowRegistry | undefined;
   private readonly worktrees: WorktreeService | undefined;
+  private readonly projectId: ULID;
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
 
   constructor(private readonly opts: WorkflowRuntimeOptions) {
@@ -162,6 +155,7 @@ export class WorkflowRuntime {
     this.channelPort = opts.channelPort ?? 8788;
     this.registry = opts.registry;
     this.worktrees = opts.worktrees;
+    this.projectId = opts.projectId;
     this.dispatchers = {
       subagent: (ctx) => this.dispatchSubagent(ctx),
       bash: (ctx) => this.dispatchBash(ctx),
@@ -171,17 +165,18 @@ export class WorkflowRuntime {
       workflow: (ctx) => this.dispatchNestedWorkflow(ctx),
       loop: (ctx) => this.dispatchLoop(ctx),
     };
-    this.ensureSeed();
   }
 
   // ── Project / work items ─────────────────────────────────────────────────
 
   readProject(): Project {
-    return readJson<Project>(this.opts.projectFile, DEFAULT_PROJECT);
+    const project = getProjectById(this.projectId);
+    if (!project) throw new Error(`default project not found: ${this.projectId}`);
+    return project;
   }
 
-  readWorkItems(): WorkItemsFile {
-    return readJson<WorkItemsFile>(this.opts.workItemsFile, DEFAULT_WORK_ITEMS);
+  readWorkItems(): WorkItemsResponse {
+    return { workItems: dbListWorkItems(this.projectId) };
   }
 
   /**
@@ -193,18 +188,16 @@ export class WorkflowRuntime {
    *   many    → throw "ambiguous trigger" (caller maps to HTTP 409)
    *   invalid → throw "no valid workflow" (caller maps to HTTP 409)
    *
-   * Many/invalid throw BEFORE applying the move — the work item stays where
-   * it was so the user can fix the workflow file and retry.
+   * Many/invalid throw BEFORE applying the move. ensureWorktree throws BEFORE
+   * the move + lock so the work item stays put on dispatch failure.
    */
   async moveWorkItem(id: string, toStage: string): Promise<WorkItem> {
     const project = this.readProject();
     const stage = project.stages.find((s) => s.id === toStage);
     if (!stage) throw new Error(`unknown stage: ${toStage}`);
 
-    const file = this.readWorkItems();
-    const idx = file.workItems.findIndex((w) => w.id === id);
-    if (idx < 0) throw new Error(`unknown work item: ${id}`);
-    const workItem = file.workItems[idx]!;
+    const workItem = getWorkItem(id as ULID);
+    if (!workItem) throw new Error(`unknown work item: ${id}`);
 
     if (workItem.status === 'in-progress') {
       throw new Error(`work item ${id} is locked: workflow in progress`);
@@ -218,33 +211,25 @@ export class WorkflowRuntime {
       throw new Error(`no valid workflow for stage_id "${toStage}" (${match.count} invalid file(s))`);
     }
 
-    const from = workItem.stageId;
-    workItem.stageId = toStage;
-    workItem.history.push({ ts: new Date().toISOString(), kind: 'move', from, to: toStage });
-    workItem.status = 'pending';
-    delete workItem.statusReason;
-
     if (match.kind === 'none') {
-      this.writeWorkItems(file);
-      return workItem;
+      const moved = moveWorkItemStage(id as ULID, toStage);
+      if (!moved) throw new Error(`unknown work item: ${id}`);
+      return moved;
     }
 
-    // Fires a workflow: maybe ensure a worktree (per the workflow's
-    // `worktree:` setting), lock the work item, persist, kick a tick.
-    // Worktree errors propagate; the move + lock haven't been written yet,
-    // so the work item stays where it was on failure. Work item id already
-    // carries the `wi-` prefix; using it directly matches 8b's convention
-    // (work item id == worktree dir name).
+    // Fire workflow: ensure worktree first so a failure leaves the work item
+    // where it was. Then commit the move + lock, then create the run + tick.
     let worktreePath: string | null = null;
     if (match.entry.workflow.worktree !== 'none') {
       worktreePath = await this.ensureWorktree(id);
     }
-    workItem.status = 'in-progress';
-    this.writeWorkItems(file);
+    moveWorkItemStage(id as ULID, toStage);
+    updateWorkItemStatus(id as ULID, 'in-progress', null);
 
     const run = this.createRun({
       workflow: match.entry.workflow,
       yamlText: match.entry.yamlText,
+      trigger: 'on_enter',
       workItemId: id,
       stageId: toStage,
       worktreePath,
@@ -252,37 +237,37 @@ export class WorkflowRuntime {
     void this.tick(run.id).catch((err) => {
       console.error('[workflow-runtime] stage-move tick failed:', (err as Error).message);
     });
-    return workItem;
+
+    const final = getWorkItem(id as ULID);
+    if (!final) throw new Error(`work item disappeared mid-move: ${id}`);
+    return final;
   }
 
   updateWorkItem(id: string, fields: Record<string, unknown>): WorkItem {
-    const file = this.readWorkItems();
-    const idx = file.workItems.findIndex((w) => w.id === id);
-    if (idx < 0) throw new Error(`unknown work item: ${id}`);
-    const workItem = file.workItems[idx]!;
-    workItem.fields = { ...workItem.fields, ...fields };
-    workItem.history.push({ ts: new Date().toISOString(), kind: 'update', fields });
-    this.writeWorkItems(file);
-    return workItem;
+    const updated = dbUpdateWorkItemFields(id as ULID, fields);
+    if (!updated) throw new Error(`unknown work item: ${id}`);
+    return updated;
+  }
+
+  /** Apps/server bootstrap helper — create a seed work item on first boot. */
+  createSeedWorkItem(title: string, stageId: string): WorkItem {
+    return dbCreateWorkItem({ projectId: this.projectId, title, stageId });
   }
 
   // ── Workflow runs ────────────────────────────────────────────────────────
 
-  readRuns(): WorkflowRunsFile {
-    return readJson<WorkflowRunsFile>(this.opts.workflowRunsFile, { runs: [] });
-  }
-
   /**
    * Create a fresh WorkflowRun, persist, return. Caller should call tick(run.id)
    * to fire ready nodes. Initializes nodeOutputs with one entry per top-level
-   * node at 'pending'. Loop body nodes are NOT initialized here — the loop
-   * dispatcher (M13) tracks iteration-scoped outputs internally.
+   * node at 'pending'.
    */
   createRun(args: {
-    /** Optional pre-generated id — used by runWorkflow so the worktree dir name (`run-<short>`) can be derived before the run row is persisted. */
+    /** Optional pre-generated id (UUID string) — used by runWorkflow so the
+     *  `run-<short>` worktree dir name can be derived before persistence. */
     id?: string;
     workflow: Workflow;
     yamlText: string;
+    trigger: WorkflowRunTrigger;
     workItemId?: string;
     stageId?: string;
     parentRunId?: string;
@@ -294,39 +279,35 @@ export class WorkflowRuntime {
     for (const node of args.workflow.nodes) {
       nodeOutputs[node.id] = { status: 'pending' };
     }
-    const run: WorkflowRun = {
-      id: args.id ?? randomUUID(),
+    const id = (args.id ?? newId()) as ULID;
+    return dbCreateRun({
+      id,
       workflowId: args.workflow.id,
+      workflowName: args.workflow.id,
+      projectId: this.projectId,
       workflowYamlSnapshot: args.yamlText,
-      status: 'pending',
-      startedAt: new Date().toISOString(),
+      trigger: args.trigger,
+      workItemId: (args.workItemId as ULID | undefined) ?? null,
+      stageId: args.stageId ?? null,
+      parentRunId: (args.parentRunId as ULID | undefined) ?? null,
+      parentNodeId: args.parentNodeId ?? null,
       worktreePath: args.worktreePath,
+      ...(args.inputs ? { inputs: args.inputs } : {}),
       nodeOutputs,
-    };
-    if (args.workItemId) run.workItemId = args.workItemId;
-    if (args.stageId) run.stageId = args.stageId;
-    if (args.parentRunId) run.parentRunId = args.parentRunId;
-    if (args.parentNodeId) run.parentNodeId = args.parentNodeId;
-    if (args.inputs) run.inputs = args.inputs;
+    });
+  }
 
-    const file = this.readRuns();
-    file.runs.push(run);
-    this.writeRuns(file);
-    return run;
+  /** Read all workflow runs — used by the UI's run history pane (when it lands). */
+  readRuns(): WorkflowRun[] {
+    return dbListRuns();
   }
 
   /**
    * Orchestrator-callable entry. Looks up `name` against the registry, applies
    * the four-case rule, checks `triggers.callable: true`, ensures a
    * `run-<short>` worktree, creates the run, and defers the first tick via
-   * `setImmediate`.
-   *
-   * Why setImmediate: this is invoked from inside an orchestrator turn (the
-   * pc_run_workflow MCP tool). The M7 turn-end safety net runs against any
-   * subagent node still 'running' at Stop. Ticking synchronously here would
-   * post the first subagent node's channel event before the current Stop
-   * fires, so onTurnEnd would mark it failed. setImmediate parks the tick
-   * past the current Stop; the channel POST lands in the next turn.
+   * setImmediate (parks past the current orchestrator turn's Stop so the
+   * safety net doesn't false-fail the first subagent node).
    */
   async runWorkflow(name: string, inputs?: Record<string, unknown>): Promise<WorkflowRun> {
     if (!this.registry) {
@@ -351,9 +332,6 @@ export class WorkflowRuntime {
     }
 
     const runId = randomUUID();
-    // Respect the workflow's `worktree:` setting. `auto` (default) creates
-    // a `run-<short>` worktree; `none` skips entirely so subagents have no
-    // path-guard boundary.
     let worktreePath: string | null = null;
     if (entry.workflow.worktree !== 'none') {
       worktreePath = await this.ensureWorktree(`run-${runId.slice(0, 8)}`);
@@ -363,6 +341,7 @@ export class WorkflowRuntime {
       id: runId,
       workflow: entry.workflow,
       yamlText: entry.yamlText,
+      trigger: 'callable',
       worktreePath,
       ...(inputs ? { inputs } : {}),
     });
@@ -390,18 +369,14 @@ export class WorkflowRuntime {
       run.lastReason = `frozen YAML snapshot failed to parse: ${parsed.errors
         .map((e) => `${e.path}: ${e.message}`)
         .join('; ')}`;
-      this.persistRun(run);
+      dbPersistRun(run);
       return run;
     }
     const workflow = parsed.workflow;
 
     if (run.status === 'pending') run.status = 'in-progress';
 
-    // Bounded loop: typical workflows resolve in a few rounds; cap prevents
-    // a misbehaving dispatcher from looping forever.
     for (let safety = 0; safety < 1000; safety++) {
-      // Mark structurally-blocked pending nodes as skipped first so
-      // findReadyNodes doesn't re-evaluate them next iteration.
       let changed = false;
       for (const node of workflow.nodes) {
         const status = run.nodeOutputs[node.id]?.status;
@@ -461,17 +436,12 @@ export class WorkflowRuntime {
     if (TERMINAL_RUN_STATUSES.has(run.status)) {
       run.completedAt = run.completedAt ?? new Date().toISOString();
     }
-    this.persistRun(run);
+    dbPersistRun(run);
 
-    // Unlock the bound work item when this run is the top-level run for it
-    // (nested-workflow children inherit workItemId but the parent owns the
-    // lock — its own terminal tick will unlock).
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.workItemId && !run.parentRunId) {
       this.unlockWorkItem(run);
     }
 
-    // If this run is terminal AND was spawned by a parent workflow's
-    // nested-workflow node, propagate completion up.
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.parentRunId && run.parentNodeId) {
       await this.propagateToParent(run);
     }
@@ -480,36 +450,25 @@ export class WorkflowRuntime {
 
   /**
    * Flip the work item back to pending (success) or blocked (failure /
-   * cancellation) after the bound top-level run terminates. `complete` →
-   * pending + clears statusReason; everything else → blocked with the run's
-   * lastReason on it so the UI shows what stopped the workflow.
+   * cancellation) after the bound top-level run terminates.
    */
   private unlockWorkItem(run: WorkflowRun): void {
     if (!run.workItemId) return;
-    const file = this.readWorkItems();
-    const idx = file.workItems.findIndex((w) => w.id === run.workItemId);
-    if (idx < 0) return;
-    const workItem = file.workItems[idx]!;
-    if (run.status === 'complete') {
-      workItem.status = 'pending';
-      delete workItem.statusReason;
-    } else {
-      workItem.status = 'blocked';
-      workItem.statusReason =
-        run.lastReason ?? `workflow run ${run.id} ${run.status}`;
-    }
-    workItem.history.push({
-      ts: new Date().toISOString(),
-      kind: 'update',
-      note: `workflow ${run.workflowId} ${run.status}`,
-    });
-    this.writeWorkItems(file);
+    const status = run.status === 'complete' ? 'pending' : 'blocked';
+    const reason = run.status === 'complete'
+      ? null
+      : run.lastReason ?? `workflow run ${run.id} ${run.status}`;
+    applyRunOutcome(
+      run.workItemId as ULID,
+      status,
+      reason,
+      `workflow ${run.workflowId} ${run.status}`,
+    );
   }
 
   /**
    * Resolve a paused / terminal child run back into its parent's nested-workflow
-   * node. Called at end-of-tick when a child terminates. Walks up the ancestry
-   * recursively so a deeply-nested termination propagates all the way up.
+   * node. Called at end-of-tick when a child terminates.
    */
   private async propagateToParent(child: WorkflowRun): Promise<void> {
     if (!child.parentRunId || !child.parentNodeId) return;
@@ -533,26 +492,19 @@ export class WorkflowRuntime {
         completedAt: new Date().toISOString(),
       };
     }
-    this.persistRun(parent);
+    dbPersistRun(parent);
     await this.tick(parent.id);
   }
 
-  // ── Async node callbacks (subagent + future approval) ────────────────────
+  // ── Async node callbacks (subagent + approval) ────────────────────────────
 
-  /**
-   * pc_complete_node entry. Records the subagent's output and re-ticks. Returns
-   * `{ ok: false, error }` for unknown run / unknown node / node not in 'running'.
-   */
   async nodeComplete(runId: string, nodeId: string, output: unknown): Promise<NodeUpdateResult> {
     const run = this.tryGetRun(runId);
     if (!run) return { ok: false, error: `unknown workflowRunId: ${runId}` };
     const current = run.nodeOutputs[nodeId];
     if (!current) return { ok: false, error: `unknown nodeId: ${nodeId}` };
     if (current.status !== 'running') {
-      return {
-        ok: false,
-        error: `nodeId "${nodeId}" is "${current.status}", not "running"`,
-      };
+      return { ok: false, error: `nodeId "${nodeId}" is "${current.status}", not "running"` };
     }
     run.nodeOutputs[nodeId] = {
       ...current,
@@ -560,25 +512,18 @@ export class WorkflowRuntime {
       output,
       completedAt: new Date().toISOString(),
     };
-    this.persistRun(run);
+    dbPersistRun(run);
     await this.tick(runId);
     return { ok: true };
   }
 
-  /**
-   * pc_node_failed entry. Records the failure reason and re-ticks. Same
-   * unknown-run / unknown-node / status-mismatch errors as nodeComplete.
-   */
   async nodeFailed(runId: string, nodeId: string, reason: string): Promise<NodeUpdateResult> {
     const run = this.tryGetRun(runId);
     if (!run) return { ok: false, error: `unknown workflowRunId: ${runId}` };
     const current = run.nodeOutputs[nodeId];
     if (!current) return { ok: false, error: `unknown nodeId: ${nodeId}` };
     if (current.status !== 'running') {
-      return {
-        ok: false,
-        error: `nodeId "${nodeId}" is "${current.status}", not "running"`,
-      };
+      return { ok: false, error: `nodeId "${nodeId}" is "${current.status}", not "running"` };
     }
     run.nodeOutputs[nodeId] = {
       ...current,
@@ -586,16 +531,11 @@ export class WorkflowRuntime {
       error: reason,
       completedAt: new Date().toISOString(),
     };
-    this.persistRun(run);
+    dbPersistRun(run);
     await this.tick(runId);
     return { ok: true };
   }
 
-  /**
-   * Respond to a paused approval node. Marks the node complete with output
-   * `{ approved, response }` and re-ticks the run. Rejects unknown run /
-   * unknown node / non-approval node / not-in-'running' status.
-   */
   async respondToApproval(
     runId: string,
     nodeId: string,
@@ -620,20 +560,15 @@ export class WorkflowRuntime {
       output: { approved, response },
       completedAt: new Date().toISOString(),
     };
-    this.persistRun(run);
+    dbPersistRun(run);
     await this.tick(runId);
     return { ok: true };
   }
 
-  /**
-   * Active approvals (run paused + approval node still 'running'). Used by the
-   * UI's Workflows-pane card surface so the user can resolve approvals after
-   * a browser reload too.
-   */
+  /** Active approvals (run paused + approval node still 'running'). */
   listPendingApprovals(): PendingApproval[] {
-    const file = this.readRuns();
     const out: PendingApproval[] = [];
-    for (const run of file.runs) {
+    for (const run of listActiveRuns()) {
       if (run.status !== 'paused') continue;
       const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
       if (!parsed.ok || !parsed.workflow) continue;
@@ -652,16 +587,12 @@ export class WorkflowRuntime {
   }
 
   /**
-   * Turn-end safety net. PtySession emits 'turn-end' on every Stop hook; the
-   * server wires that here. Subagent nodes still in 'running' after the
-   * orchestrator's turn ends are marked failed — the subagent's Task call is
-   * synchronous, so a 'running' status at turn-end means the subagent returned
-   * without calling pc_complete_node / pc_node_failed.
+   * Turn-end safety net. Subagent nodes still 'running' after the orchestrator's
+   * turn ends are marked failed.
    */
   async onTurnEnd(): Promise<void> {
-    const file = this.readRuns();
     const dirtyRunIds: string[] = [];
-    for (const run of file.runs) {
+    for (const run of listActiveRuns()) {
       if (run.status !== 'in-progress') continue;
       const subagentNodeIds = collectSubagentNodeIds(run);
       let runChanged = false;
@@ -676,13 +607,13 @@ export class WorkflowRuntime {
         };
         runChanged = true;
       }
-      if (runChanged) dirtyRunIds.push(run.id);
-    }
-    if (dirtyRunIds.length > 0) {
-      this.writeRuns(file);
-      for (const runId of dirtyRunIds) {
-        await this.tick(runId);
+      if (runChanged) {
+        dbPersistRun(run);
+        dirtyRunIds.push(run.id);
       }
+    }
+    for (const runId of dirtyRunIds) {
+      await this.tick(runId);
     }
   }
 
@@ -761,10 +692,6 @@ export class WorkflowRuntime {
       const bodyOutputs: Record<string, NodeOutput> = {};
       for (const n of node.loop.body) bodyOutputs[n.id] = { status: 'pending' };
 
-      // Inner scheduling loop — same shape as the top-level tick loop but
-      // scoped to this iteration's body. Async dispatch results (subagent +
-      // approval) are not supported here; they fail the body node and so the
-      // iteration / loop overall.
       for (let inner = 0; inner < 1000; inner++) {
         const fakeRun: WorkflowRun = {
           ...ctx.run,
@@ -885,7 +812,6 @@ export class WorkflowRuntime {
       return failedSync(`unknown workflow: "${node.workflow}"`, completedAt());
     }
 
-    // Cycle + depth checks against the run ancestry chain.
     const ancestry = this.collectAncestryWorkflowIds(ctx.run);
     if (ancestry.includes(entry.workflow.id)) {
       return failedSync(
@@ -900,9 +826,6 @@ export class WorkflowRuntime {
       );
     }
 
-    // Resolve `inputs:` mapping. Each value is rendered via substituteOutputs
-    // (string→string). Richer (typed) resolution will land alongside `$inputs`
-    // substitution support; not strictly needed by M12.
     const inputs: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node.inputs ?? {})) {
       inputs[k] = ctx.substituteOutputs(v, ctx.run);
@@ -911,15 +834,14 @@ export class WorkflowRuntime {
     const child = this.createRun({
       workflow: entry.workflow,
       yamlText: entry.yamlText,
+      trigger: 'nested',
       parentRunId: ctx.run.id,
       parentNodeId: node.id,
-      workItemId: ctx.run.workItemId,
+      ...(ctx.run.workItemId ? { workItemId: ctx.run.workItemId } : {}),
       worktreePath: ctx.run.worktreePath,
       inputs,
     });
 
-    // Fire and forget — the child's tick chain will call propagateToParent
-    // when it terminates. Parent's node stays at 'running'.
     void this.tick(child.id).catch((err) => {
       console.error('[workflow-runtime] nested-workflow child tick failed:', (err as Error).message);
     });
@@ -927,11 +849,6 @@ export class WorkflowRuntime {
     return { kind: 'async' };
   }
 
-  /**
-   * Ensure a worktree named `name` exists (orphan-recovery wrapper). Throws
-   * if the runtime wasn't configured with a WorktreeService — that's a setup
-   * bug, not a recoverable runtime error.
-   */
   private async ensureWorktree(name: string): Promise<string> {
     if (!this.worktrees) {
       throw new Error('workflow runtime not configured with a WorktreeService');
@@ -1092,37 +1009,7 @@ export class WorkflowRuntime {
   }
 
   private tryGetRun(runId: string): WorkflowRun | undefined {
-    const file = this.readRuns();
-    return file.runs.find((r) => r.id === runId);
-  }
-
-  private persistRun(updated: WorkflowRun): void {
-    const file = this.readRuns();
-    const idx = file.runs.findIndex((r) => r.id === updated.id);
-    if (idx < 0) file.runs.push(updated);
-    else file.runs[idx] = updated;
-    this.writeRuns(file);
-  }
-
-  private writeRuns(file: WorkflowRunsFile): void {
-    mkdirSync(dirname(this.opts.workflowRunsFile), { recursive: true });
-    writeFileSync(this.opts.workflowRunsFile, JSON.stringify(file, null, 2));
-  }
-
-  private writeWorkItems(file: WorkItemsFile): void {
-    mkdirSync(dirname(this.opts.workItemsFile), { recursive: true });
-    writeFileSync(this.opts.workItemsFile, JSON.stringify(file, null, 2));
-  }
-
-  private ensureSeed(): void {
-    if (!existsSync(this.opts.projectFile)) {
-      mkdirSync(dirname(this.opts.projectFile), { recursive: true });
-      writeFileSync(this.opts.projectFile, JSON.stringify(DEFAULT_PROJECT, null, 2));
-    }
-    if (!existsSync(this.opts.workItemsFile)) {
-      mkdirSync(dirname(this.opts.workItemsFile), { recursive: true });
-      writeFileSync(this.opts.workItemsFile, JSON.stringify(DEFAULT_WORK_ITEMS, null, 2));
-    }
+    return dbGetRun(runId as ULID) ?? undefined;
   }
 }
 
@@ -1200,7 +1087,6 @@ function recomputeRunStatus(workflow: Workflow, run: WorkflowRun): WorkflowRunSt
     status: run.nodeOutputs[n.id]?.status ?? 'pending',
   }));
 
-  // Approval node still 'running' = waiting on a human → paused (not 'in-progress').
   if (triples.some((t) => t.kind === 'approval' && t.status === 'running')) return 'paused';
 
   if (triples.some((t) => t.status === 'running' || t.status === 'pending')) return 'in-progress';
@@ -1244,13 +1130,4 @@ function failedSync(error: string, completedAt: string): DispatchResult {
     kind: 'sync',
     output: { status: 'failed', error, completedAt },
   };
-}
-
-function readJson<T>(file: string, fallback: T): T {
-  if (!existsSync(file)) return fallback;
-  try {
-    return JSON.parse(readFileSync(file, 'utf-8')) as T;
-  } catch {
-    return fallback;
-  }
 }
