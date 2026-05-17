@@ -12,8 +12,10 @@ import { homedir } from 'node:os';
 import type { GlobalSettings, ULID } from '@pc/domain';
 import { withSettingsDefaults } from '@pc/domain';
 import {
+  getActiveOrchestratorSession,
   getGlobalSettings,
   getProjectById,
+  listOrchestratorSessionsForProject,
   listProjects,
   runMigrations,
   setGlobalSettings,
@@ -117,6 +119,35 @@ const pendingAsks = new Map<string, (answer: string) => void>();
 /** Look up the runtime for `projectId`. Returns null if unknown. */
 function resolveProject(projectId: string): ProjectRuntime | null {
   return projectRegistry.ensure(projectId as ULID);
+}
+
+/**
+ * Attach the per-PtySession event forwarders. Idempotent per session instance
+ * via a flag on the session itself — re-binding on every WS reconnect would
+ * leak listeners. Called from both the WS connect path and the new-session
+ * endpoint (which creates a fresh PtySession instance after wiping state).
+ */
+function attachPtyHandlers(
+  projectId: ULID,
+  runtime: ProjectRuntime,
+  session: ReturnType<ProjectRuntime['ensurePty']>,
+): void {
+  const flag = session as unknown as { __pcHandlersAttached?: boolean };
+  if (flag.__pcHandlersAttached) return;
+  session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
+  session.on('state', (state: string) => broadcastTo(projectId, { type: 'state', state }));
+  session.on('turn-end', () => {
+    runtime.workflowRuntime().onTurnEnd().catch((err) => {
+      console.error('[pc] onTurnEnd failed:', (err as Error).message);
+    });
+    broadcastTo(projectId, { type: 'turn-end' });
+  });
+  session.on('event', (event: unknown) => broadcastTo(projectId, { type: 'event', event }));
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'exit', code, signal });
+    console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
+  });
+  flag.__pcHandlersAttached = true;
 }
 
 // ── Global endpoints ──────────────────────────────────────────────────────
@@ -437,6 +468,40 @@ app.get('/api/projects/:projectId', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   return c.json(runtime.workflowRuntime().readProject());
+});
+
+/** Active orchestrator session for the project (the one the chat is bound to).
+ *  Returns null if no session exists yet — first ensurePty mints one. */
+app.get('/api/projects/:projectId/session', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = getActiveOrchestratorSession(id);
+  return c.json({ ok: true, session });
+});
+
+/** Full history of orchestrator sessions for the project (most recent first).
+ *  Feeds the future "previous sessions" rail tab. */
+app.get('/api/projects/:projectId/sessions', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ ok: true, sessions: listOrchestratorSessionsForProject(id) });
+});
+
+/** Start a fresh session: end the active row, wipe per-project chat files,
+ *  kill the PTY, then immediately respawn so the UI sees a live state. */
+app.post('/api/projects/:projectId/sessions/new', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.startNewSession();
+  const pty = runtime.ensurePty();
+  attachPtyHandlers(id, runtime, pty);
+  // Tell every subscriber to clear its local chat state; the next replay will
+  // be empty (we just wiped events.jsonl) so the panel starts blank.
+  broadcastTo(id, { type: 'session-changed', session });
+  return c.json({ ok: true, session });
 });
 
 app.get('/api/projects/:projectId/work-items', (c) => {
@@ -791,23 +856,7 @@ wss.on('connection', (ws, req) => {
 
   // Spawn the PtySession on first subscriber. Bind event forwarders.
   const session = runtime.ensurePty();
-  const handlersAttached = (session as unknown as { __pcHandlersAttached?: boolean }).__pcHandlersAttached;
-  if (!handlersAttached) {
-    session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
-    session.on('state', (state: string) => broadcastTo(projectId, { type: 'state', state }));
-    session.on('turn-end', () => {
-      runtime.workflowRuntime().onTurnEnd().catch((err) => {
-        console.error('[pc] onTurnEnd failed:', (err as Error).message);
-      });
-      broadcastTo(projectId, { type: 'turn-end' });
-    });
-    session.on('event', (event: unknown) => broadcastTo(projectId, { type: 'event', event }));
-    session.on('exit', (code, signal) => {
-      broadcastTo(projectId, { type: 'exit', code, signal });
-      console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
-    });
-    (session as unknown as { __pcHandlersAttached?: boolean }).__pcHandlersAttached = true;
-  }
+  attachPtyHandlers(projectId, runtime, session);
 
   // P14: tag direct-to-client sends with projectId, same as broadcastTo does
   // for fan-out paths. Keeps the envelope contract uniform.
