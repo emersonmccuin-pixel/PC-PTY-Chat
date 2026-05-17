@@ -14,6 +14,7 @@ import { WorkflowRegistry } from '@pc/workflows';
 import { WorktreeService } from './services/worktree.ts';
 import { WorkflowRuntime } from './services/workflow-runtime.ts';
 import { evaluateBoolean, substituteOutputs } from './services/output-substitution.ts';
+import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → rig root is three levels up.
@@ -22,6 +23,7 @@ const PUBLIC = resolve(ROOT, 'apps', 'web', 'dist');
 const WORKSPACE = resolve(ROOT, 'workspace');
 const DATA = resolve(ROOT, 'data');
 const WORKFLOWS_DIR = resolve(WORKSPACE, '.project-companion', 'workflows');
+const TEMPLATES = resolve(ROOT, 'templates');
 
 const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
@@ -30,6 +32,11 @@ const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 // This is the rig-phase single-tenant shape; Slice 7 multi-tenant work replaces
 // the slug lookup with a project picker.
 runMigrations();
+
+// Agent library — first-run seed from templates/.claude/agents/ into
+// ~/.project-companion/agents/. Per-project agent copies clone from here.
+const agentLibrary = new AgentLibrary(defaultLibraryDir(), resolve(TEMPLATES, '.claude', 'agents'));
+agentLibrary.bootstrap();
 const defaultProject =
   getProjectBySlug('rig') ??
   createProject({
