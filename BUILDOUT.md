@@ -2,9 +2,11 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Phase-2 hardening **in progress** — Session Q closed clean; this phase fixes UX + stability before any new features. **First hardening item shipped 2026-05-17:** chat-session continuity. The chat panel now reflects what `claude.exe` actually has in context (the bug that kicked off phase 2). Backed by the `orchestrator_sessions` table (activated; was scaffolded but unwired) and `claude.exe --session-id <uuid>` / `--resume <uuid>`. Right-click on a project → "New session" wipes and respawns. Title auto-derives from first user message. See `### Phase 2 — chat session continuity (2026-05-17)` in the log.
+**Current session:** Phase-2 hardening **in progress** — Session Q closed clean; this phase fixes UX + stability before any new features. **Shipped 2026-05-17:** chat-session continuity (per-session events.jsonl, --resume / --session-id plumbing, "New session" via right-click + chat header, Sessions tab in left rail with read-only view of past chats). **Planned next:** chat-interface buildout — full plan locked in `CHAT-BUILDOUT.md` covering 5 ordered phases (cheap rendering wins → status bar + MCP → slash commands → attachments + memory → subagent live streaming).
 
 > **READ `NEXT-SESSION.md` BEFORE STARTING ANYTHING.** The user has set explicit priorities for the next phase: plan first, harden the existing UX second, features (incl. Session R workflow builder) third. Do not roll into Session R or any other feature work without re-reading `NEXT-SESSION.md` and getting alignment.
+>
+> **For chat-tab work specifically, `CHAT-BUILDOUT.md` is the source of truth.** Locked decisions in that doc are canonical — don't relitigate without explicit re-discussion.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 

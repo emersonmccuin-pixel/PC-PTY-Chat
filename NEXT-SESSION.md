@@ -78,6 +78,7 @@ Each item is something we observed but did not fix. Use this as the starter list
 
 - Never properly tested end-to-end with a wiped DB. `BUILDOUT.md`'s user-test step 1 ("project rail shows 'no projects.'") was skipped because tests refused to wipe the live DB. Worth a deliberate fresh-DB walkthrough as part of phase 2.
 - The "Create a project to get started" center hint is one line; consider a richer onboarding tile.
+- **Project setup wizard.** On new-project create, walk the user through filling in CLAUDE.md (purpose, conventions, stack, etc.). Replaces the "`/init` is skipped" gap from the chat parity audit — `claude /init` doesn't fit our app but a guided setup pop-up does. Pairs with the existing scaffold; lands after the scaffold pass writes the templated CLAUDE.md, prompts the user to flesh it out.
 
 ### Dev ergonomics (not user-facing but bites the team)
 
