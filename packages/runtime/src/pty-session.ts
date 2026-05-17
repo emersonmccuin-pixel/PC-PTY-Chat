@@ -96,6 +96,10 @@ export class PtySession extends EventEmitter {
     const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS === '1';
     const args: string[] = [
       '--dangerously-skip-permissions',
+      // Orchestrator is locked to opus per chat.md locked decision.
+      // Subagents pick their own model via YAML.
+      '--model',
+      'opus',
       // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
       // --strict-mcp-config the orchestrator merges global user-level MCPs
       // (e.g. WCP, archon) and tries to use them — confusing and leaks
