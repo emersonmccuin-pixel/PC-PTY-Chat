@@ -91,6 +91,22 @@ export interface GlobalSettings {
   activityPanel: ActivityPanelSettings;
 }
 
+// ── Orchestrator session ───────────────────────────────────────────────────
+
+export interface OrchestratorSession {
+  id: ULID;
+  projectId: ULID;
+  provider: 'claude';
+  providerSessionId: string | null;
+  model: string | null;
+  title: string | null;
+  status: 'active' | 'ended';
+  endedReason: string | null;
+  startedAt: number;
+  endedAt: number | null;
+  deletedAt: number | null;
+}
+
 export const api = {
   listProjects: () =>
     getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
@@ -192,6 +208,18 @@ export const api = {
       { body },
       'PATCH',
     ).then((r) => r.agent),
+
+  // ── Orchestrator sessions ──────────────────────────────────────────────
+  getActiveSession: (projectId: ULID) =>
+    getJson<{ ok: true; session: OrchestratorSession | null }>(
+      `/api/projects/${projectId}/session`,
+    ).then((r) => r.session),
+
+  startNewSession: (projectId: ULID) =>
+    postJson<{ ok: true; session: OrchestratorSession }>(
+      `/api/projects/${projectId}/sessions/new`,
+      {},
+    ).then((r) => r.session),
 };
 
 export interface AgentEntry {

@@ -190,6 +190,14 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           }
         }
         const final = env;
+        // session-changed marks a hard checkpoint: the server wiped events.jsonl
+        // and minted a fresh Claude session. Drop everything prior so the chat
+        // panel matches what Claude actually has in context.
+        if (final.type === 'session-changed') {
+          seenTs.clear();
+          setEvents([final]);
+          return;
+        }
         setEvents((prev) => {
           const next = [...prev, final];
           return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;

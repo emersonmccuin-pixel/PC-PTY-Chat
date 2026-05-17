@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import type { Project } from '@/api/client';
+import { api, type OrchestratorSession, type Project } from '@/api/client';
 import type {
   ApprovalRequiredEvent,
   AssistantEvent,
@@ -120,11 +120,45 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
   // dismissed cards on replay either.
   const [answeredAsks, setAnsweredAsks] = useState<Record<string, string>>({});
 
+  // Active session. Fetched once per project, then patched live from WS
+  // session-changed events (server emits these on title set + new-session).
+  const [session, setSession] = useState<OrchestratorSession | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getActiveSession(project.id)
+      .then((s) => {
+        if (!cancelled) setSession(s);
+      })
+      .catch((err) => console.error('[pc] getActiveSession', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+  useEffect(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.type === 'session-changed') {
+        setSession((e as WsEnvelope & { session: OrchestratorSession }).session);
+        break;
+      }
+    }
+  }, [events]);
+
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [chatEnvelopes.length]);
+
+  async function onNewSession() {
+    if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
+    try {
+      await api.startNewSession(project.id);
+    } catch (err) {
+      alert(`Couldn't start a new session: ${(err as Error).message}`);
+    }
+  }
 
   function markApprovalResolved(
     workflowRunId: string,
@@ -140,6 +174,22 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
 
   return (
     <div className="flex h-full flex-col bg-background">
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
+        <div className="min-w-0 flex-1 truncate text-sm">
+          {session?.title ? (
+            <span className="text-foreground" title={session.title}>{session.title}</span>
+          ) : (
+            <span className="italic text-muted-foreground">Untitled session</span>
+          )}
+        </div>
+        <button
+          onClick={onNewSession}
+          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="End the current chat session and start a fresh one"
+        >
+          + New session
+        </button>
+      </div>
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
           {chatEnvelopes.map((env, idx) => {

@@ -6,7 +6,9 @@
 // shared with future affordances (Q5). Active-slug comes from a zustand
 // store, not props.
 
-import type { Project } from '@/api/client';
+import { useEffect, useState } from 'react';
+
+import { api, type Project } from '@/api/client';
 import { useActiveProject } from '@/store/active-project';
 
 interface ProjectRailProps {
@@ -14,9 +16,39 @@ interface ProjectRailProps {
   onCreateProject: () => void;
 }
 
+interface MenuPos {
+  projectId: string;
+  x: number;
+  y: number;
+}
+
 export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
+  const [menu, setMenu] = useState<MenuPos | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const dismiss = () => setMenu(null);
+    window.addEventListener('click', dismiss);
+    window.addEventListener('contextmenu', dismiss);
+    window.addEventListener('keydown', dismiss);
+    return () => {
+      window.removeEventListener('click', dismiss);
+      window.removeEventListener('contextmenu', dismiss);
+      window.removeEventListener('keydown', dismiss);
+    };
+  }, [menu]);
+
+  async function startNewSession(projectId: string) {
+    setMenu(null);
+    try {
+      await api.startNewSession(projectId);
+    } catch (err) {
+      console.error('[pc] startNewSession failed', err);
+      alert(`Couldn't start a new session: ${(err as Error).message}`);
+    }
+  }
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
@@ -33,6 +65,10 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
               <button
                 key={p.id}
                 onClick={() => setActiveSlug(p.slug)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu({ projectId: p.id, x: e.clientX, y: e.clientY });
+                }}
                 title={p.folderPath}
                 className={
                   'block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted ' +
@@ -55,6 +91,26 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
           + New project
         </button>
       </div>
+      {menu && (
+        <div
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          style={{ position: 'fixed', top: menu.y, left: menu.x, zIndex: 50 }}
+          className="min-w-[10rem] rounded-md border border-border bg-popover py-1 shadow-md"
+        >
+          <button
+            role="menuitem"
+            onClick={() => startNewSession(menu.projectId)}
+            className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+          >
+            New session
+          </button>
+        </div>
+      )}
     </div>
   );
 }
