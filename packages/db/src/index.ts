@@ -8,9 +8,14 @@ export {
   getProjectById,
   getProjectBySlug,
   listProjects,
+  updateProjectMeta,
   updateProjectStages,
 } from './repos/projects.ts';
-export type { CreateProjectInput } from './repos/projects.ts';
+export type {
+  CreateProjectInput,
+  ListProjectsOptions,
+  UpdateProjectMetaInput,
+} from './repos/projects.ts';
 
 export {
   applyRunOutcome,

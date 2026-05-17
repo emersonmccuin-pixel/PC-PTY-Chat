@@ -41,13 +41,17 @@ function toDomain(row: ProjectRow): Project {
   };
 }
 
-export function listProjects(): Project[] {
-  const rows = getDb()
-    .select()
-    .from(projects)
-    .where(isNull(projects.deletedAt))
-    .orderBy(asc(projects.createdAt))
-    .all() as ProjectRow[];
+export interface ListProjectsOptions {
+  /** Include soft-deleted rows. Off by default — P11's `?include_deleted=1`
+   *  is the only caller that opts in. */
+  includeDeleted?: boolean;
+}
+
+export function listProjects(opts: ListProjectsOptions = {}): Project[] {
+  const q = getDb().select().from(projects).orderBy(asc(projects.createdAt));
+  const rows = (opts.includeDeleted
+    ? q.all()
+    : q.where(isNull(projects.deletedAt)).all()) as ProjectRow[];
   return rows.map(toDomain);
 }
 
@@ -104,4 +108,30 @@ export function updateProjectStages(id: ULID, stages: Stage[]): void {
     .set({ stages, updatedAt: Date.now() })
     .where(eq(projects.id, id))
     .run();
+}
+
+export interface UpdateProjectMetaInput {
+  /** Display name. Slug stays locked — rename → slug migration is deferred. */
+  name?: string;
+  /** Origin URL; pass `null` to clear. Omit to leave unchanged. */
+  gitRemote?: string | null;
+}
+
+/** Patch the mutable metadata for a project (name + git remote). Returns
+ *  the updated Project, or null if no such project (or soft-deleted). */
+export function updateProjectMeta(id: ULID, input: UpdateProjectMetaInput): Project | null {
+  const patch: { name?: string; gitRemote?: string | null; updatedAt: number } = {
+    updatedAt: Date.now(),
+  };
+  if (typeof input.name === 'string') patch.name = input.name;
+  if (input.gitRemote !== undefined) patch.gitRemote = input.gitRemote;
+  if (patch.name === undefined && patch.gitRemote === undefined) {
+    return getProjectById(id);
+  }
+  getDb()
+    .update(projects)
+    .set(patch)
+    .where(and(eq(projects.id, id), isNull(projects.deletedAt)))
+    .run();
+  return getProjectById(id);
 }

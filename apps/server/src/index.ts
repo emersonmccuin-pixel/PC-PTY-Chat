@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { ULID } from '@pc/domain';
-import { runMigrations } from '@pc/db';
+import { listProjects, runMigrations, updateProjectMeta } from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -172,6 +172,37 @@ app.post('/api/fs/probe', async (c) => {
 });
 
 // ── Project lifecycle ─────────────────────────────────────────────────────
+
+/** List projects. `?include_deleted=1` includes soft-deleted rows (off by
+ *  default per design's soft-delete semantics). */
+app.get('/api/projects', (c) => {
+  const includeDeleted = c.req.query('include_deleted') === '1';
+  return c.json({ projects: listProjects({ includeDeleted }) });
+});
+
+/** Patch a project's mutable metadata (name + git_remote). Slug stays locked
+ *  per MULTI-TENANCY-DESIGN.md "Open / deferred". Body: `{ name?, git_remote? }`. */
+app.patch('/api/projects/:projectId', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const body = await c.req.json<{ name?: string; git_remote?: string | null }>();
+  const patch: { name?: string; gitRemote?: string | null } = {};
+  if (typeof body.name === 'string') {
+    const name = body.name.trim();
+    if (!name) return c.json({ ok: false, error: 'name cannot be empty' }, 400);
+    patch.name = name;
+  }
+  if (body.git_remote !== undefined) {
+    patch.gitRemote = body.git_remote === null ? null : String(body.git_remote).trim() || null;
+  }
+  try {
+    const updated = updateProjectMeta(id, patch);
+    if (!updated) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+    projectRegistry.refresh(updated);
+    return c.json({ ok: true, project: updated });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
 
 /** Create a project: git init in `folder_path`, write the PC scaffold, commit,
  *  insert the DB row, register the runtime. Body:

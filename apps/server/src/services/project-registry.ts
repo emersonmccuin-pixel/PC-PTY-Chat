@@ -60,6 +60,15 @@ export class ProjectRegistry {
     return runtime;
   }
 
+  /** Apply an updated `Project` to its cached runtime + slug cache. P11's
+   *  PATCH endpoint calls this so renames + git-remote edits stick without
+   *  a server restart. No-op if the runtime hasn't been hydrated yet. */
+  refresh(project: Project): void {
+    const runtime = this.runtimes.get(project.id);
+    if (runtime) runtime.refresh(project);
+    this.slugById.set(project.id, project.slug);
+  }
+
   /** Drop a runtime (e.g. on soft-delete). Kills its PtySession + clears caches. */
   remove(projectId: ULID): void {
     const runtime = this.runtimes.get(projectId);
