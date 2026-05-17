@@ -29,6 +29,6 @@ export type {
   SessionEndedReason,
   SessionStatus,
 } from './orchestrator.ts';
-export type { GlobalSettings } from './settings.ts';
-export { defaultGlobalSettings } from './settings.ts';
+export type { ActivityPanelSettings, GlobalSettings } from './settings.ts';
+export { defaultGlobalSettings, withSettingsDefaults } from './settings.ts';
 export type { Worktree, WorktreeStatus } from './worktree.ts';

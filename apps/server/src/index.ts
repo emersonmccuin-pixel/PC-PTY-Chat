@@ -7,14 +7,20 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
-import type { ULID } from '@pc/domain';
+import { homedir } from 'node:os';
+
+import type { GlobalSettings, ULID } from '@pc/domain';
+import { withSettingsDefaults } from '@pc/domain';
 import {
+  getGlobalSettings,
   getProjectById,
   listProjects,
   runMigrations,
+  setGlobalSettings,
   softDeleteProject,
   updateProjectMeta,
 } from '@pc/db';
+import { getDataDir } from '@pc/utils';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -163,6 +169,48 @@ app.post('/api/ask', async (c) => {
   });
 
   return c.json({ answer });
+});
+
+// ── Global settings (Q10 envelope) ────────────────────────────────────────
+
+function readSettings(): GlobalSettings {
+  const stored = getGlobalSettings();
+  return withSettingsDefaults(stored ?? {}, getDataDir(), homedir());
+}
+
+app.get('/api/settings', (c) => {
+  return c.json({ ok: true, settings: readSettings() });
+});
+
+/** Partial settings update. Body accepts any subset of the envelope. Returns
+ *  the merged envelope + a `restartRequired` flag if `dataDir` changed (only
+ *  field that needs a restart per v1 decision #24). */
+app.patch('/api/settings', async (c) => {
+  const body = await c.req
+    .json<Partial<GlobalSettings>>()
+    .catch((): Partial<GlobalSettings> => ({}));
+  const current = readSettings();
+  const merged: GlobalSettings = withSettingsDefaults(
+    {
+      dataDir: typeof body.dataDir === 'string' ? body.dataDir.trim() || current.dataDir : current.dataDir,
+      telemetryOptIn:
+        typeof body.telemetryOptIn === 'boolean' ? body.telemetryOptIn : current.telemetryOptIn,
+      projectsFolder:
+        typeof body.projectsFolder === 'string' && body.projectsFolder.trim()
+          ? body.projectsFolder.trim()
+          : current.projectsFolder,
+      activityPanel: {
+        open: body.activityPanel?.open ?? current.activityPanel.open,
+        showAllProjects:
+          body.activityPanel?.showAllProjects ?? current.activityPanel.showAllProjects,
+      },
+    },
+    getDataDir(),
+    homedir(),
+  );
+  setGlobalSettings(merged);
+  const restartRequired = merged.dataDir !== current.dataDir;
+  return c.json({ ok: true, settings: merged, restartRequired });
 });
 
 // ── Filesystem browse + probe (create-project UI) ─────────────────────────

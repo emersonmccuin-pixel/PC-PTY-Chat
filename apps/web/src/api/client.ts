@@ -77,6 +77,20 @@ export interface FolderProbe {
 
 export type CreateProjectMode = 'init-empty' | 'init-in-place';
 
+// ── Global settings (Q10 envelope) ─────────────────────────────────────────
+
+export interface ActivityPanelSettings {
+  open: boolean;
+  showAllProjects: boolean;
+}
+
+export interface GlobalSettings {
+  dataDir: string;
+  telemetryOptIn: boolean;
+  projectsFolder: string;
+  activityPanel: ActivityPanelSettings;
+}
+
 export const api = {
   listProjects: () =>
     getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
@@ -124,4 +138,27 @@ export const api = {
       `/api/projects/${projectId}/work-items/move`,
       { id, toStage },
     ),
+
+  getSettings: () =>
+    getJson<{ ok: true; settings: GlobalSettings }>('/api/settings').then((r) => r.settings),
+
+  patchSettings: (patch: Partial<GlobalSettings>) =>
+    postJsonMethod<{ ok: true; settings: GlobalSettings; restartRequired: boolean }>(
+      '/api/settings',
+      patch,
+      'PATCH',
+    ),
 };
+
+async function postJsonMethod<T>(path: string, body: unknown, method: 'POST' | 'PATCH'): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as T & { ok?: boolean; error?: string };
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error ?? `${path} → ${res.status}`);
+  }
+  return data;
+}

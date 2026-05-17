@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
@@ -22,7 +23,7 @@ function seedGlobalSettings(): void {
   db.insert(settingsGlobal)
     .values({
       id: 'global',
-      values: defaultGlobalSettings(getDataDir()),
+      values: defaultGlobalSettings(getDataDir(), homedir()),
       updatedAt: Date.now(),
     })
     .run();

@@ -15,6 +15,8 @@ import {
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface CreateProjectModalProps {
+  /** Initial path for the folder picker (Q10 projectsFolder global setting). */
+  defaultFolder?: string;
   onClose: () => void;
   onCreated: (project: Project) => void;
 }
@@ -25,7 +27,7 @@ type ProbeState =
   | { status: 'ready'; probe: FolderProbe }
   | { status: 'error'; message: string };
 
-export function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
+export function CreateProjectModal({ defaultFolder, onClose, onCreated }: CreateProjectModalProps) {
   const [name, setName] = useState('');
   const [folderPath, setFolderPath] = useState('');
   const [probeState, setProbeState] = useState<ProbeState>({ status: 'idle' });
@@ -170,7 +172,7 @@ export function CreateProjectModal({ onClose, onCreated }: CreateProjectModalPro
       </div>
       {browserOpen && (
         <FolderBrowserModal
-          {...(folderPath ? { initialPath: folderPath } : {})}
+          {...(folderPath || defaultFolder ? { initialPath: folderPath || defaultFolder! } : {})}
           onCancel={() => setBrowserOpen(false)}
           onSelect={pickFolder}
         />
