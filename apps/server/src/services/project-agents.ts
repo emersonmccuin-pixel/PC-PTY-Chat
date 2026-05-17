@@ -1,7 +1,7 @@
 // Per-project agents. Lives at `<folder>/.claude/agents/*.md` — claude.exe
 // loads from cwd, so these are the LIVE files. Project-create copies the
 // user's library agents into here; edits diverge from the library per
-// MULTI-TENANCY-DESIGN.md §5.
+// docs/design/multi-tenancy.md §5.
 //
 // AgentLibrary owns the global pool at `~/.project-companion/agents/`; this
 // module owns the per-project surface only.

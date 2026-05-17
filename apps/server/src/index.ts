@@ -315,7 +315,7 @@ app.get('/api/projects', (c) => {
 });
 
 /** Patch a project's mutable metadata (name + git_remote). Slug stays locked
- *  per MULTI-TENANCY-DESIGN.md "Open / deferred". Body: `{ name?, git_remote? }`. */
+ *  per docs/design/multi-tenancy.md "Open / deferred". Body: `{ name?, git_remote? }`. */
 app.patch('/api/projects/:projectId', async (c) => {
   const id = c.req.param('projectId') as ULID;
   const body = await c.req.json<{ name?: string; git_remote?: string | null }>();
@@ -338,7 +338,7 @@ app.patch('/api/projects/:projectId', async (c) => {
   }
 });
 
-/** Soft-delete a project. Filesystem is untouched per MULTI-TENANCY-DESIGN.md;
+/** Soft-delete a project. Filesystem is untouched per docs/design/multi-tenancy.md;
  *  the separate DELETE /api/projects/:id/files endpoint is the only path to
  *  on-disk removal. Idempotent — returns 200 even if already deleted. */
 app.delete('/api/projects/:projectId', (c) => {
@@ -384,7 +384,7 @@ app.delete('/api/projects/:projectId/files', (c) => {
  *  insert the DB row, register the runtime. Body:
  *    { name, folder_path, mode: 'init-empty' | 'init-in-place', git_remote? }
  *
- *  Per MULTI-TENANCY-DESIGN.md Q2 the UI probes the folder first and picks the
+ *  Per docs/design/multi-tenancy.md Q2 the UI probes the folder first and picks the
  *  mode; the server enforces consistency (refuses init-empty on a non-empty
  *  folder; refuses to reinit an existing git repo). */
 app.post('/api/projects', async (c) => {

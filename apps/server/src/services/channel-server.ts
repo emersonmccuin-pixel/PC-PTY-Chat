@@ -1,6 +1,6 @@
 // Channel server. Single multiplexed HTTP listener on :8788 plus a WS registry
 // of per-project channel-stdio children. Replaces the rig-era per-process model
-// where each channel-server.js bound its own port — see MULTI-TENANCY-DESIGN.md
+// where each channel-server.js bound its own port — see docs/design/multi-tenancy.md
 // §3 for the locked routing.
 //
 // External callers POST to `/channel/<slug>/<source>` with a plain text body.

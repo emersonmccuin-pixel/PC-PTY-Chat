@@ -5,7 +5,7 @@
 //
 // HTTP receiver moved out of this process per multi-tenant design — apps/server
 // now owns the single :8788 listener and routes by project slug. See
-// MULTI-TENANCY-DESIGN.md §3.
+// docs/design/multi-tenancy.md §3.
 //
 // Required env (set by the per-project .mcp.json substitution):
 //   PC_PROJECT_ID  — ULID, registered with the dispatcher

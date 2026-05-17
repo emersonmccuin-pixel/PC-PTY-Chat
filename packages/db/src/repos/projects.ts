@@ -112,7 +112,7 @@ export function updateProjectStages(id: ULID, stages: Stage[]): void {
 
 /** Soft-delete a project: flip `deleted_at`. Idempotent — returns the row
  *  whether or not it was already deleted. Returns null if no such project.
- *  Filesystem is not touched (per MULTI-TENANCY-DESIGN.md soft-delete contract). */
+ *  Filesystem is not touched (per docs/design/multi-tenancy.md soft-delete contract). */
 export function softDeleteProject(id: ULID): Project | null {
   const existing = getDb()
     .select()

@@ -1,6 +1,6 @@
 // Project create flow. The `POST /api/projects` endpoint thin-wraps this.
 //
-// Order of operations (per MULTI-TENANCY-DESIGN.md §6):
+// Order of operations (per docs/design/multi-tenancy.md §6):
 //
 //   1. Validate name + folder.
 //   2. Resolve a unique slug from the name.
@@ -125,7 +125,7 @@ export class ProjectCreate {
   }
 
   /** Drop every library agent into `<folder>/.claude/agents/`. Default = all,
-   *  per MULTI-TENANCY-DESIGN.md §5. Per-project edits diverge from the library. */
+   *  per docs/design/multi-tenancy.md §5. Per-project edits diverge from the library. */
   private copyAgentsFromLibrary(folderPath: string): void {
     const destDir = resolve(folderPath, '.claude', 'agents');
     mkdirSync(destDir, { recursive: true });

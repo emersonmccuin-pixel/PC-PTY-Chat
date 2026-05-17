@@ -22,7 +22,7 @@ Six seed workflows under `workspace/.project-companion/workflows/` cover every n
 - **UI.** Vanilla HTML/JS/CSS at `apps/web/`. React 19 + Tailwind v4 + shadcn/ui (canary) on Vite 5 next.
 - **Multi-tenant / multi-project.** Single-tenant today. Project picker + per-project routing under chassis work.
 - **CI.** Not yet wired. Will port the v1 GitHub Actions workflow once the sqlite migration is past typecheck-clean.
-- **Slice 9 followups.** `when: false` semantics, `run.outputs` population, `done_when` enforcement, async dispatchers inside loop bodies, `$inputs.<key>` substitution, terminated-workflow ping back to orchestrator. Tracked in `BUILDOUT.md` § Followups.
+- **Slice 9 followups.** `when: false` semantics, `run.outputs` population, `done_when` enforcement, async dispatchers inside loop bodies, `$inputs.<key>` substitution, terminated-workflow ping back to orchestrator. Tracked in [`docs/TRACKER.md`](docs/TRACKER.md) — Workflows section.
 
 ## Why
 
@@ -62,8 +62,12 @@ channel-server/   Webhook channel server (vendored shape)
 workspace/        Dev fixture (gitignored — its own embedded git)
 data/             Runtime JSON state (gitignored except .gitkeep)
 worktrees/        Runtime git worktrees (gitignored)
-BUILDOUT.md       Slice-by-slice plan + session logs. Cold-readable.
-DESIGN-WORKFLOWS-V2.md  Live workflow architecture.
+docs/
+  TRACKER.md         Master build tracker — section checklist + phase status.
+  buildout/          Per-section implementation plans (chat, kanban, ...).
+  design/            Long-lived architecture docs.
+  session-log.md     Historical session log. Cold-readable narrative.
+archive/             Superseded planning docs kept for journey context.
 ```
 
 ## License
