@@ -2,34 +2,34 @@
 // Source: apps/web/src/components/Shell.tsx
 // Adapted for Project Companion: stripped to the 3-col skeleton — center area
 // renders an empty-state placeholder until Q5+ tabs land. ActivityPanel +
-// ProjectRail stubs swap in via later Q-milestones (Q4, Q12). API migrated to
+// ProjectRail stubs swap in via later Q-milestones (Q12, Q5). API migrated to
 // react-resizable-panels v4 (Group/Panel/Separator + usePanelRef hook).
+// Active-project state read from zustand directly inside children.
 
 import { useEffect } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { Project } from '@/api/client';
+import { useActiveProject } from '@/store/active-project';
 import { ActivityPanel } from './ActivityPanel';
 import { ProjectRail } from './ProjectRail';
 
 interface ShellProps {
   projects: Project[];
-  activeSlug: string | null;
-  activeProject: Project | null;
   activityPanelOpen: boolean;
-  onSelectProject: (slug: string) => void;
   onToggleActivityPanelOpen: (next: boolean) => void;
+  onCreateProject: () => void;
 }
 
 export function Shell({
   projects,
-  activeSlug,
-  activeProject,
   activityPanelOpen,
-  onSelectProject,
   onToggleActivityPanelOpen,
+  onCreateProject,
 }: ShellProps) {
   const activityRef = usePanelRef();
+  const activeSlug = useActiveProject((s) => s.activeSlug);
+  const activeProject = projects.find((p) => p.slug === activeSlug) ?? null;
 
   // Sync the imperative panel to the persisted `open` flag — settings is the
   // source of truth (header chevron and app-settings both flip it).
@@ -44,11 +44,7 @@ export function Shell({
   return (
     <Group orientation="horizontal" id="pc-shell" className="h-full">
       <Panel defaultSize={15} minSize={10} maxSize={30}>
-        <ProjectRail
-          projects={projects}
-          activeSlug={activeSlug}
-          onSelectProject={onSelectProject}
-        />
+        <ProjectRail projects={projects} onCreateProject={onCreateProject} />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel defaultSize={65} minSize={30}>
