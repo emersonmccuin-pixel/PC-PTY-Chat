@@ -571,6 +571,11 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     if (viewingSessionId) return false;
     for (let i = events.length - 1; i >= 0; i--) {
       const env = events[i]!;
+      // session-changed marks a hard boundary between sessions. Anything older
+      // belongs to a prior session — including any session-end the OLD PTY's
+      // SessionEnd hook fired AFTER the new-session broadcast (the kill→hook
+      // path is async, so session-end can arrive after session-changed).
+      if (env.type === 'session-changed') return false;
       if (env.type !== 'event') continue;
       const ev = (env as WsEnvelope & { event: ChatEvent }).event;
       if (ev?.kind === 'session-end') return true;
