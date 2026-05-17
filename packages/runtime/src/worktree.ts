@@ -1,9 +1,14 @@
-// Worktree primitive. Shells out to git from the workspace cwd.
+// Worktree primitive. Shells out to git from a workspace cwd.
 // Both @pc/mcp (orchestrator-facing tools) and @pc/server (UI-facing API)
 // call into this.
 //
-// In PC this will sit alongside pty-session.ts as a runtime primitive; the
-// apps/server service layer wraps it with persistence.
+// Path policy is the caller's responsibility: every mutating primitive takes
+// an absolute `wtPath`. In PC's multi-tenant layout the service layer computes
+// `<data_dir>/worktrees/<slug>/<name>/`; the rig used `<workspace>/../worktrees/<name>/`.
+// The primitive does not care which.
+//
+// In PC this sits alongside pty-session.ts as a runtime primitive; the
+// apps/server service layer wraps it with persistence + per-project scoping.
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -20,20 +25,30 @@ export interface WorktreeEntry {
   head: string;
 }
 
-/**
- * Create a worktree as a sibling of the workspace dir. `name` is used as both
- * the directory name (under `<workspace>/../worktrees/`) and the branch name.
- */
-export async function createWorktree(workspaceDir: string, name: string): Promise<WorktreeEntry> {
-  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+const BRANCH_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+
+function assertBranchName(name: string): void {
+  if (!BRANCH_NAME_RE.test(name)) {
     throw new Error(`invalid worktree name: ${JSON.stringify(name)} (must match [a-zA-Z0-9._-]+)`);
   }
+}
+
+/**
+ * Create a worktree at `wtPath` on a fresh branch named `branchName`.
+ * Caller owns the path; this primitive only runs `git worktree add wtPath -b branchName`.
+ */
+export async function createWorktree(
+  workspaceDir: string,
+  wtPath: string,
+  branchName: string,
+): Promise<WorktreeEntry> {
+  assertBranchName(branchName);
   const wsAbs = resolve(workspaceDir);
-  const wtPath = resolve(wsAbs, '..', 'worktrees', name);
-  await exec('git', ['worktree', 'add', wtPath, '-b', name], { cwd: wsAbs });
+  const wtAbs = resolve(wtPath);
+  await exec('git', ['worktree', 'add', wtAbs, '-b', branchName], { cwd: wsAbs });
   const all = await listWorktrees(wsAbs);
-  const entry = all.find((w) => normalize(w.path) === normalize(wtPath));
-  if (!entry) throw new Error(`worktree created but not found in list: ${wtPath}`);
+  const entry = all.find((w) => normalize(w.path) === normalize(wtAbs));
+  if (!entry) throw new Error(`worktree created but not found in list: ${wtAbs}`);
   return entry;
 }
 
@@ -45,20 +60,18 @@ export async function listWorktrees(workspaceDir: string): Promise<WorktreeEntry
 }
 
 /**
- * Remove a worktree. `target` can be an absolute path or a name relative to
- * `<workspace>/../worktrees/`.
+ * Remove a worktree at `wtPath` (absolute). Caller resolves names to paths.
  */
 export async function destroyWorktree(
   workspaceDir: string,
-  target: string,
+  wtPath: string,
   opts: { force?: boolean } = {},
 ): Promise<void> {
   const wsAbs = resolve(workspaceDir);
-  const isAbs = /^[a-zA-Z]:[\\/]/.test(target) || target.startsWith('/');
-  const wtPath = isAbs ? target : resolve(wsAbs, '..', 'worktrees', target);
+  const wtAbs = resolve(wtPath);
   const args = ['worktree', 'remove'];
   if (opts.force) args.push('--force');
-  args.push(wtPath);
+  args.push(wtAbs);
   await exec('git', args, { cwd: wsAbs });
 }
 
@@ -68,23 +81,22 @@ export async function pruneWorktrees(workspaceDir: string): Promise<void> {
 }
 
 /**
- * Attach an existing branch as a worktree (no `-b`). Used to recover from
- * "branch exists but worktree dir is gone" — i.e. orphaned branch from a
- * failed prior dispatch. Workspace dir = git root.
+ * Attach an existing branch as a worktree at `wtPath` (no `-b`). Used to
+ * recover from "branch exists but worktree dir is gone" — i.e. orphaned
+ * branch from a failed prior dispatch.
  */
 export async function attachWorktree(
   workspaceDir: string,
-  name: string,
+  wtPath: string,
+  branchName: string,
 ): Promise<WorktreeEntry> {
-  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
-    throw new Error(`invalid worktree name: ${JSON.stringify(name)} (must match [a-zA-Z0-9._-]+)`);
-  }
+  assertBranchName(branchName);
   const wsAbs = resolve(workspaceDir);
-  const wtPath = resolve(wsAbs, '..', 'worktrees', name);
-  await exec('git', ['worktree', 'add', wtPath, name], { cwd: wsAbs });
+  const wtAbs = resolve(wtPath);
+  await exec('git', ['worktree', 'add', wtAbs, branchName], { cwd: wsAbs });
   const all = await listWorktrees(wsAbs);
-  const entry = all.find((w) => normalize(w.path) === normalize(wtPath));
-  if (!entry) throw new Error(`worktree attached but not found in list: ${wtPath}`);
+  const entry = all.find((w) => normalize(w.path) === normalize(wtAbs));
+  if (!entry) throw new Error(`worktree attached but not found in list: ${wtAbs}`);
   return entry;
 }
 

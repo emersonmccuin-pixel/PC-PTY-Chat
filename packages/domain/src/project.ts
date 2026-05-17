@@ -15,6 +15,10 @@ export interface Stage {
 
 export interface Project {
   id: ULID;
+  /** URL-safe routing key. Derived from name + uniqued at create; locked thereafter
+   *  (rename → slug migration is a deferred followup). Drives worktree paths, channel
+   *  routes, and per-project filesystem layout. */
+  slug: string;
   name: string;
   stages: Stage[];
   /** Absolute path to the user's project folder. Git-backed. */

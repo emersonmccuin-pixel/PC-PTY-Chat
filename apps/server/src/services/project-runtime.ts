@@ -48,9 +48,23 @@ export class ProjectRuntime {
     return resolve(this.opts.dataDir, 'projects', this.project.id);
   }
 
-  /** Refresh the cached `Project` after rename / settings change. */
+  /**
+   * Base dir for this project's worktrees: `<data_dir>/worktrees/<slug>/`.
+   * Per `MULTI-TENANCY-DESIGN.md` §4 — keeps the user's actual repo clean and
+   * namespaces parallel-project worktrees on disk. Slug is locked at create
+   * time (rename → slug migration is a deferred followup).
+   */
+  get worktreeBaseDir(): string {
+    return resolve(this.opts.dataDir, 'worktrees', this.project.slug);
+  }
+
+  /** Refresh the cached `Project` after rename / settings change. Drops the
+   *  cached WorktreeService when slug changes so the next access rebuilds with
+   *  the new baseDir. Rename → slug migration itself is a deferred followup. */
   refresh(project: Project): void {
+    const slugChanged = project.slug !== this.project.slug;
     this.project = project;
+    if (slugChanged) this.worktreesSvc = null;
   }
 
   /** Lazy: workflow YAML registry rooted at `<folder>/.project-companion/workflows/`. */
@@ -63,10 +77,13 @@ export class ProjectRuntime {
     return this.registry;
   }
 
-  /** Lazy: WorktreeService bound to this project's repo. P6 reshapes the paths. */
+  /**
+   * Lazy: WorktreeService bound to this project's repo + per-project baseDir
+   * under `<data_dir>/worktrees/<slug>/`.
+   */
   worktrees(): WorktreeService {
     if (!this.worktreesSvc) {
-      this.worktreesSvc = new WorktreeService(this.project.folderPath);
+      this.worktreesSvc = new WorktreeService(this.project.folderPath, this.worktreeBaseDir);
     }
     return this.worktreesSvc;
   }

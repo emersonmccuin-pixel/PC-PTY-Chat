@@ -17,6 +17,9 @@ export interface ProjectRegistryDeps {
 
 export class ProjectRegistry {
   private readonly runtimes = new Map<ULID, ProjectRuntime>();
+  /** projectId → slug cache. Populated at boot/register; refreshed on rename
+   *  (P6). Hot path: WorktreeService path resolution + future channel routing. */
+  private readonly slugById = new Map<ULID, string>();
 
   constructor(private readonly deps: ProjectRegistryDeps) {}
 
@@ -24,6 +27,7 @@ export class ProjectRegistry {
   loadAll(): void {
     for (const p of listProjects()) {
       this.runtimes.set(p.id, this.construct(p));
+      this.slugById.set(p.id, p.slug);
     }
   }
 
@@ -35,6 +39,7 @@ export class ProjectRegistry {
     if (!project) return null;
     const runtime = this.construct(project);
     this.runtimes.set(projectId, runtime);
+    this.slugById.set(project.id, project.slug);
     return runtime;
   }
 
@@ -42,10 +47,16 @@ export class ProjectRegistry {
     return this.runtimes.get(projectId) ?? null;
   }
 
+  /** Cached slug for `projectId`. Null if unknown. */
+  slugOf(projectId: ULID): string | null {
+    return this.slugById.get(projectId) ?? null;
+  }
+
   /** Register a freshly-created project so subsequent calls skip the DB hit. */
   register(project: Project): ProjectRuntime {
     const runtime = this.construct(project);
     this.runtimes.set(project.id, runtime);
+    this.slugById.set(project.id, project.slug);
     return runtime;
   }
 
@@ -55,6 +66,7 @@ export class ProjectRegistry {
     if (!runtime) return;
     runtime.shutdown();
     this.runtimes.delete(projectId);
+    this.slugById.delete(projectId);
   }
 
   list(): ProjectRuntime[] {
@@ -64,6 +76,7 @@ export class ProjectRegistry {
   shutdownAll(): void {
     for (const r of this.runtimes.values()) r.shutdown();
     this.runtimes.clear();
+    this.slugById.clear();
   }
 
   private construct(project: Project): ProjectRuntime {

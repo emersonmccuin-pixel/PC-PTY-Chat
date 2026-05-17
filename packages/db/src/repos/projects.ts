@@ -29,6 +29,7 @@ interface ProjectRow {
 function toDomain(row: ProjectRow): Project {
   return {
     id: row.id,
+    slug: row.slug,
     name: row.name,
     stages: row.stages,
     folderPath: row.folderPath,
@@ -82,7 +83,14 @@ export function createProject(input: CreateProjectInput): Project {
       updatedAt: now,
     })
     .run();
-  return { id, name: input.name, stages: input.stages, folderPath: input.folderPath, gitRemote };
+  return {
+    id,
+    slug: input.slug,
+    name: input.name,
+    stages: input.stages,
+    folderPath: input.folderPath,
+    gitRemote,
+  };
 }
 
 /** Update the stored stages for a project. */
