@@ -2,6 +2,8 @@
 // Wire shapes mirror packages/domain — kept inline here (no @pc/domain dep on the
 // browser bundle) so the web package stays import-cycle-free.
 
+export type ULID = string;
+
 export type WorkItemStatus = 'pending' | 'in-progress' | 'blocked' | 'complete' | 'failed';
 
 export interface Stage {
@@ -11,9 +13,12 @@ export interface Stage {
 }
 
 export interface Project {
-  id: string;
+  id: ULID;
+  slug: string;
   name: string;
   stages: Stage[];
+  folderPath: string;
+  gitRemote: string | null;
 }
 
 export interface WorkItem {
@@ -47,14 +52,23 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
-  project: () => getJson<Project>('/api/project'),
-  workItems: () => getJson<{ workItems: WorkItem[] }>('/api/work-items').then((r) => r.workItems),
-  createWorkItem: (title: string, stageId: string, body?: string) =>
-    postJson<{ ok: true; workItem: WorkItem }>('/api/work-items/create', {
-      title,
-      stageId,
-      body,
-    }),
-  moveWorkItem: (id: string, toStage: string) =>
-    postJson<{ ok: true; workItem: WorkItem }>('/api/work-items/move', { id, toStage }),
+  listProjects: () =>
+    getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
+
+  // Per-project endpoints (Q7+ consumers).
+  project: (projectId: ULID) => getJson<Project>(`/api/projects/${projectId}`),
+  workItems: (projectId: ULID) =>
+    getJson<{ workItems: WorkItem[] }>(`/api/projects/${projectId}/work-items`).then(
+      (r) => r.workItems,
+    ),
+  createWorkItem: (projectId: ULID, title: string, stageId: string, body?: string) =>
+    postJson<{ ok: true; workItem: WorkItem }>(
+      `/api/projects/${projectId}/work-items/create`,
+      { title, stageId, body },
+    ),
+  moveWorkItem: (projectId: ULID, id: string, toStage: string) =>
+    postJson<{ ok: true; workItem: WorkItem }>(
+      `/api/projects/${projectId}/work-items/move`,
+      { id, toStage },
+    ),
 };
