@@ -2,7 +2,7 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session M closed 2026-05-16 — repo promoted from learning rig to PC v2 trunk. 14 commits: identity (git init + LICENSE + project CLAUDE.md + README rewrite + package rename), sqlite migration (new `@pc/utils` + `@pc/db` packages, drizzle on better-sqlite3, 7 tables in `0000_init.sql`, JSON-rip from `apps/server`), 4 UX fixes during user-test (wired `pc_create_work_item`, scoped orchestrator MCP via `--strict-mcp-config`, ask card now shows option descriptions inline + Cancel button, dropped dead `worktrees.json` writes from `@pc/mcp`). User-test passed end-to-end including 2 parallel `review-research` runs that completed cleanly. **Next: chassis #3 — React + Tailwind + shadcn UI rewrite (~1–2 sessions).** Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) are open — pick alongside chassis work or defer.
+**Current session:** Session N closed 2026-05-16 — React + Tailwind v4 + shadcn (canary) scaffold stood up in `apps/web`, WorkItemsList panel ported end-to-end against existing API, Hono now serves `apps/web/dist/` in prod and Vite dev-proxies to `:4040` on `:5173`. 9 commits. User-test passed both modes. Bug caught + fixed during user-test: `/api/work-items` returns `{ workItems: [...] }` not bare array (legacy app.js knew this). Vite IPv4 bind fix (default was [::1] only). Old vanilla files moved to `apps/web/legacy/` as port-time reference. **Next: Session O — multi-tenancy planning.** User confirmed during Session N close-out planning that multi-project + git-backed + folder-linked is CORE to the app, not deferred. Per-project orchestrator (PtySession), per-project workflow registry, per-project channels, project-folder-with-git-init at creation. Session O is a planning-only session: read v1's docs/architecture.md decisions, lock down 7 open design questions (see Followups section), write BUILDOUT entries for sessions P (server multi-tenancy) + Q (UI vendor of v1 React app over the now-working server). Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) still open — pick alongside or defer.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 
@@ -419,9 +419,11 @@ Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern
 > 1. **Dev mode.** `pnpm dev` (server on 4040) + `pnpm --filter @pc/web dev` (Vite on 5173). Open `http://127.0.0.1:5173/`. WorkItemsList renders, can create a new work item, can move it between stages. Network tab shows requests on `:5173` proxied to `:4040`.
 > 2. **Prod mode.** `pnpm --filter @pc/web build` then `pnpm dev`. Open `http://127.0.0.1:4040/`. Same panel renders, same actions work, dist/ assets served from Hono.
 
-- [ ] User test passed
+- [x] User test passed (2026-05-16, both modes verified via playwright + visual)
 
-**Out of scope for Session N:** chat panel, xterm terminal panel, worktrees panel, workflows panel, approvals panel, WS client, channel-event UI. The old vanilla `app.js` / `styles.css` STAY on disk until the follow-up session ports the remaining panels — they won't be served, but they're the reference for what each panel needs.
+**Out of scope for Session N:** chat panel, xterm terminal panel, worktrees panel, workflows panel, approvals panel, WS client, channel-event UI. The old vanilla `app.js` / `styles.css` were moved to `apps/web/legacy/` for reference; not served.
+
+**Pivot during planning for next session:** xterm terminal panel is OUT entirely (dev-only, not a product feature). User confirmed multi-project + git-backed + folder-linked is CORE to the app, not deferred to a "chassis #3" later. That cascades through the next sessions' shape — see Session N log entry below.
 
 ## Session E — Multi-tenancy (optional)
 
@@ -452,6 +454,55 @@ Folded back into PC: Phase 9-B (PTY transport for chat) → 9-C (PTY for workflo
 ## Session log
 
 Append findings, surprises, and decisions here as sessions close. Cold-readable artifact for the next session.
+
+### Session N — React/Tailwind/shadcn scaffold + first panel + planning pivot (2026-05-16)
+
+Stood up the React UI rewrite chassis in `apps/web`. 9 commits. Then a long
+planning conversation at session close shifted the next sessions' shape: xterm
+is out (dev tool, not a product feature), and multi-project + git-backed +
+folder-linked is core to the app rather than a deferred chassis item.
+
+**What shipped (9 commits, `2eeae6a` → `53732a0`):**
+- **N1+N4** (`666e24f`): `apps/web` becomes `@pc/web`, a Vite 5 + React 19 + TS 5.7 package. tsconfig project-references (`tsconfig.app.json` for DOM, `tsconfig.node.json` for vite.config). `server.proxy` maps `/api/*` → `:4040` and `/ws` → `ws://:4040`. Old vanilla files moved to `apps/web/legacy/` as reference; not served.
+- **N2** (`3f80c62`): Tailwind v4 via `@tailwindcss/vite`. CSS-first config (no `tailwind.config.js`, no postcss). `vite-env.d.ts` for `noUncheckedSideEffectImports`.
+- **N3** (`c09e72d`): shadcn new-york style installed manually (canary CLI is greenfield-focused, fights existing Vite apps). `components.json`, `lib/utils.ts` (cn helper), shadcn v4 oklch slate theme in `index.css`, Button/Card/Badge components. Will be RE-SKINNED in next sessions: vellum tokens replace slate-oklch, `--radius: 0`, JetBrains Mono — see decisions below.
+- **N5** (`b18f573`): `WorkItemsList` panel against existing API. Kanban-style grid grouped by stage, shadcn Card per item, inline create form, per-item stage-move via native select. Manual Refresh button (no WS yet).
+- **N6+N7** (`00e737c`): Hono drops the three hardcoded handlers (`/`, `/app.js`, `/styles.css`), replaces with a catch-all GET that serves `apps/web/dist/` by MIME with SPA fallback. Path-traversal guard. Helpful 503 when dist/ missing. Root `pnpm build`.
+- **User-test fallout** (`7ea5bca`): two bugs surfaced by playwright. (1) `/api/work-items` returns `{ workItems: [...] }`, not bare array — `api/client.ts` wraps with `.then(r => r.workItems)`. Legacy app.js knew this; I missed it during the port. (2) Vite defaults to IPv6-only bind on Windows (`[::1]:5173`); added `server.host: '127.0.0.1'` for consistency with the rest of the stack.
+- **Cleanup** (`53732a0`): removed accidentally-committed debug PNGs, added `scripts/*.png` to .gitignore, kept `scripts/pw-debug.py` (headless load + console/error dump + screenshot) and `scripts/pw-smoke.py` (create + move + reload-verify) as long-term debugging tools.
+
+**User test (2026-05-16):**
+- Dev mode `:5173` (Vite proxying to Hono `:4040`): WorkItemsList renders both seed work items in Draft, create+move actions work, 0 console errors, 0 page errors via playwright headless run.
+- Prod mode `:4040` (Hono serving Vite dist): same DOM, same behavior, 0 errors.
+- End-to-end smoke: create timestamped work item via form → move to Review → reload → confirms in Review. PASS.
+
+**Decisions worth carrying (locked during Session N + close-out planning):**
+- **Keep shadcn** as the component foundation, but **swap palette to vellum** from v1. shadcn references CSS vars; replacing the oklch slate tokens with vellum hex (background `#080604`, foreground `#f0e4c4`, primary `#f0d080`, etc.) + `--radius: 0` + JetBrains Mono override gives the v1 aesthetic over a Radix-backed component skeleton. v1's hand-rolled components (Shell, Orchestrator, KanbanBoard, etc.) use the same Tailwind utility classes against the same CSS vars, so they coexist cleanly.
+- **WS-first for everything, no polling.** Each panel fetches one snapshot on mount, then subscribes to the WS event stream for live updates. Trunk server already broadcasts the events we need (chat, channel, work-items mutations, status). Polling fallback nowhere. This is more correct than v1's polling shape — we're not bound by v1's choice.
+- **Multi-tenancy is core, not chassis #3.** Project picker fully functional from day one. Each project is git-backed (mandatory), linked to a folder on the user's machine (existing or new), optional git remote at creation editable in project settings.
+- **Per-project everything:** PtySession, workflow registry (`<project-folder>/.project-companion/workflows/`), channel server (open question: per-port or multiplexed), worktrees layout (open question), `.claude/agents/` (open question).
+- **Workflow builder deferred** to its own planning session (Session R) → build sessions (S+). For Session Q the workflows tab is a read-only `WorkflowList` against the file registry.
+- **Settings envelope endpoint** added server-side (small): `GET /api/settings` returns `{ values, activeDataDir, restartRequired }`, `PATCH /api/settings` writes to `settings_global` row. v1's components depend on this shape; cheaper to stub server-side than patch every consumer.
+- **Skip on UI for first cut**: isolation environments, file attachments. Not in the multi-project + git + folder core; come back later.
+- **xterm is OUT** of the product entirely. Was useful as dev tooling for Sessions A-M; not part of the React UI going forward. `legacy/` files still have it if anyone needs the raw PTY stream for debugging.
+
+**Open design questions for Session O to lock down (7):**
+1. Default projects-folder location. v1 has `projectsFolder` global setting. Default suggestion: `~/Projects/` (familiar) vs `~/.project-companion/projects/` (self-contained) vs always-user-picks (no default).
+2. Existing folder w/ files but no `.git` — refuse, init in place, or ask user?
+3. Channel server topology: one multiplexed channel with per-project event tags, OR one channel server per project on its own port (8788, 8789, …, per Slice 7 design). Multiplexed is simpler if WS events are already tagged with `projectId`.
+4. Worktrees layout: trunk-level `worktrees/<project-slug>/wi-X/`, OR per-project-folder `<project-folder>/.worktrees/wi-X/`. Per-project keeps everything in one place; trunk-level keeps the user's actual repo cleaner.
+5. Per-project `.claude/agents/` — each project gets its own subagent definitions copied from a template at creation? Or one shared trunk-level template?
+6. First commit on project create — empty repo (no commits, no files), OR seed with `.project-companion/` scaffold + README and commit it?
+7. The existing seeded 'rig' project: migrate it into the new multi-tenant shape (preserves Session M's work items), or wipe and start fresh on first multi-tenant boot?
+
+**Files touched at trunk level:**
+- New: `apps/web/package.json`, `apps/web/vite.config.ts`, `apps/web/tsconfig{,.app,.node}.json`, `apps/web/index.html`, `apps/web/components.json`, `apps/web/src/{main.tsx, App.tsx, index.css, vite-env.d.ts}`, `apps/web/src/lib/utils.ts`, `apps/web/src/components/ui/{button,card,badge}.tsx`, `apps/web/src/api/client.ts`, `apps/web/src/components/work-items-list.tsx`, `scripts/{pw-debug.py, pw-smoke.py}`.
+- Moved: `apps/web/{index.html, app.js, styles.css}` → `apps/web/legacy/`.
+- Modified: `apps/server/src/index.ts` (static handler rewrite), root `package.json` (build script), `.gitignore` (scripts/*.png).
+
+**Cold-read recovery:** next session is **Session O — multi-tenancy planning, no code**. Open this entry + the `**Current session:**` line at the top. Then read v1's `E:/Claude Code Projects/Personal/Project Companion/docs/architecture.md` §2 (24 locked decisions) for multi-tenancy answers v1 already worked through — don't re-derive what's already decided there. Then walk the 7 open questions above with the user. Output of Session O: a `MULTI-TENANCY-DESIGN.md` doc capturing the locked answers, and BUILDOUT entries for Sessions P (server multi-tenancy build) + Q (vendor v1 UI). Do not write code in Session O.
+
+**Important reference**: v1's `apps/web/src/` is the vendor source for Session Q. ~50 components covering Shell (174 LOC), ProjectRail (191), Orchestrator chat (1295), KanbanBoard (280), Tabs (72), AppSettingsModal, FolderPicker, FolderBrowserModal, ProjectSettingsPanel, work-items/* (12 files), workflows/* (26 files — most will be deferred until the builder session), activity/ActivityPanel. Stack: React 19, Vite 5, Tailwind v4 (same as ours), zustand (state mgmt — we'll add it), react-resizable-panels (3-column shell), react-markdown + remark-gfm (chat markdown), @dnd-kit/core (kanban DnD), lucide-react (already installed via shadcn). xyflow + dagre are workflow-builder only, defer. v1 has NO WebSocket plumbing — it polls. We do WS-first, so the Orchestrator chat in particular needs adaptation when vendored.
 
 ### Session M — v2 trunk promotion + sqlite migration + UX fixes (2026-05-16)
 
