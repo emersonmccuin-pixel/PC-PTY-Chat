@@ -469,7 +469,7 @@ Scope: replace the singleton runtime with per-project runtimes, multiplex channe
 - [x] P11. Project list / get / update endpoints: `GET /api/projects` (excludes soft-deleted by default; `?include_deleted=1` opt-in), `GET /api/projects/:id`, `PATCH /api/projects/:id` (rename + git remote — slug stays locked per design's "deferred" section).
 - [x] P12. Project soft-delete: `DELETE /api/projects/:id` flips `deleted_at`; filesystem untouched. Separate `DELETE /api/projects/:id/files` (danger-zone) removes `.project-companion/` + `.claude/` only — user's own files stay.
 - [x] P13. Agent library endpoints: `GET /api/agents` (library list), `POST /api/agents` (write new library agent), `GET /api/projects/:id/agents` (per-project copies), `POST /api/projects/:id/agents` (add-from-library — copy a library agent into `<folder>/.claude/agents/`), `PATCH /api/projects/:id/agents/:name` (edit project copy — library untouched).
-- [ ] P14. WS broadcast envelope: every event (chat, channel, work-item mutation, status) carries `projectId`. Server already broadcasts most of these; just tag them.
+- [x] P14. WS broadcast envelope: every event (chat, channel, work-item mutation, status) carries `projectId`. Server already broadcasts most of these; just tag them.
 - [ ] P15. `pnpm -r typecheck` green across all 5 packages + `@pc/web`.
 
 > **Session break.** Get to clean state (tree clean, P1-P15 ticked, work committed) before crossing into the user test. The test is the gate for Session Q.

@@ -53,10 +53,21 @@ agentLibrary.bootstrap();
 // keeping one subscriber set per project.
 const subscribers = new Map<ULID, Set<WebSocket>>();
 
+/**
+ * Send `msg` to every WS subscribed to this project. P14: every outgoing
+ * object envelope is tagged with `projectId` so UI clients can route events
+ * to the right project's panel (and an "all projects" subscriber knows
+ * where each event came from). An explicit `projectId` already on the
+ * payload wins so call sites stay self-describing.
+ */
 function broadcastTo(projectId: ULID, msg: unknown): void {
   const set = subscribers.get(projectId);
   if (!set) return;
-  const data = JSON.stringify(msg);
+  const tagged =
+    msg !== null && typeof msg === 'object'
+      ? { projectId, ...(msg as Record<string, unknown>) }
+      : msg;
+  const data = JSON.stringify(tagged);
   for (const c of set) {
     if (c.readyState === c.OPEN) c.send(data);
   }
