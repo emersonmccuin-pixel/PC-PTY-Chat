@@ -1,54 +1,32 @@
+/* Vendored from emersonmccuin-pixel/project-companion @ 1e843cc (MIT)
+   Source: apps/web/src/styles.css
+   Adapted for Project Companion: added @fontsource/jetbrains-mono import;
+   dropped tw-animate-css + dark-variant scaffolding (single locked look). */
+
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/600.css';
+@import '@fontsource/jetbrains-mono/700.css';
 @import 'tailwindcss';
-@import 'tw-animate-css';
 
-@custom-variant dark (&:is(.dark *));
+/* ──────────────────────────────────────────────────────────────────────
+   Theme: Vellum (minimalist chrome — single locked look)
 
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
-  --radius: 0.625rem;
-}
+   Semantic tokens live in :root. The @theme block binds them to
+   Tailwind v4 utility class names (bg-background, text-foreground,
+   bg-card, border-border, bg-muted, text-muted-foreground, etc.).
+   Components address tokens, never raw palette values. No `dark:`
+   variants — one cohesive look, swap palette to swap the app.
 
-.dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
-}
+   Palette: warm parchment cream on charcoal, tan/gold primary,
+   bronze secondary, moss success, muted-rust destructive.
+   ────────────────────────────────────────────────────────────────────── */
 
-@theme inline {
+@theme {
+  --font-ui: 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', Consolas, ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', Consolas, ui-monospace, monospace;
+
+  /* Core semantic colors → utility classes */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -68,17 +46,451 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+
+  /* State colors */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-danger: var(--destructive);
+
+  /* Surface elevation (subtle overlays on background) */
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+
+  /* Minimalist: all radii collapse to 0 */
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-full: 9999px;
 }
 
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
+:root {
+  /* ── Vellum palette ── */
+  --background: #080604;
+  --foreground: #f0e4c4;
+
+  --card: #100c08;
+  --card-foreground: #f0e4c4;
+
+  --popover: #100c08;
+  --popover-foreground: #f0e4c4;
+
+  --primary: #f0d080;
+  --primary-foreground: #080604;
+
+  --secondary: #d8a848;
+  --secondary-foreground: #080604;
+
+  --muted: #1a1610;
+  --muted-foreground: #9a8e7a;
+
+  --accent: #f5e8c8;
+  --accent-foreground: #080604;
+
+  --destructive: #c74a3a;
+  --destructive-foreground: #ffffff;
+
+  --border: rgba(240, 208, 128, 0.22);
+  --input: rgba(240, 208, 128, 0.18);
+  --ring: rgba(240, 208, 128, 0.55);
+
+  /* State colors — moss/bronze/cream/rust */
+  --success: #8cb06a;
+  --success-foreground: #080604;
+  --warning: #d8a848;
+  --warning-foreground: #080604;
+  --info: #f0d080;
+  --info-foreground: #080604;
+
+  /* Surface elevation — flat washes on background, no gradients */
+  --surface-1: #14100a;
+  --surface-2: #1f1810;
+
+  /* Foreground contrast variants */
+  --fg-hot: #f5ead0;
+  --fg-dim: #7a6e5a;
+
+  /* shadcn radius token — collapsed to 0 for Vellum */
+  --radius: 0;
+
+  /* Typography — JetBrains Mono throughout */
+  --font-ui: 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', Consolas, ui-monospace, monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', 'Fira Code', Consolas, ui-monospace, monospace;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Document base
+   ────────────────────────────────────────────────────────────────────── */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-ui);
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+}
+
+/* Selection: warm gold wash on dark cream text */
+::selection {
+  background: color-mix(in srgb, var(--primary) 35%, transparent);
+  color: var(--foreground);
+}
+
+/* Bare <a> default — components override locally where needed */
+a {
+  color: var(--primary);
+  text-decoration-color: color-mix(in srgb, var(--primary) 50%, transparent);
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  text-decoration-color: var(--primary);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Minimalist chrome — global defaults
+
+   Sharp corners (handled via @theme radius=0), 1px borders, no glows,
+   no animations, no gradients. Components use semantic tokens and these
+   rules apply universally without per-component overrides.
+   ────────────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  border-color: var(--border);
+}
+
+/* Focus ring: 1px solid primary, 1px offset, no halo */
+*:focus-visible {
+  outline: 1px solid var(--primary);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+/* Inputs/textareas/selects — flat, 1px primary-tinted border */
+input,
+textarea,
+select {
+  background-color: transparent;
+  border: 1px solid var(--input);
+  color: var(--foreground);
+  font-family: inherit;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--primary);
+  outline: none;
+  box-shadow: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Buttons — strip browser default, components style via Tailwind utilities */
+button {
+  font-family: inherit;
+  background-color: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Scrollbars — gold thumb on transparent track, thin
+   ────────────────────────────────────────────────────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(240, 208, 128, 0.32) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(240, 208, 128, 0.32);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(240, 208, 128, 0.55);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Reduced motion — respect user preference (we already use no animations
+   on chrome, but ensure any component-level transitions also yield).
+   ────────────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   .markdown-body — rendered markdown inside chat / artifact previews.
+   Sits on top of bg-muted or bg-card surfaces; doesn't add its own bg.
+   ────────────────────────────────────────────────────────────────────── */
+
+.markdown-body {
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--foreground);
+  word-break: break-word;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Generous paragraph + block spacing — Google Docs "space before"
+   feel so blocks breathe instead of mashing into a wall. */
+.markdown-body p {
+  margin: 0.9em 0;
+}
+
+/* Headers: bigger, brighter, bordered. h1/h2 use --fg-hot so they punch
+   against body text; h3 keeps the primary gold accent. */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--fg-hot);
+  margin: 1.5em 0 0.65em;
+  line-height: 1.25;
+}
+
+.markdown-body > h1:first-child,
+.markdown-body > h2:first-child,
+.markdown-body > h3:first-child,
+.markdown-body > h4:first-child,
+.markdown-body > h5:first-child,
+.markdown-body > h6:first-child {
+  margin-top: 0.25em;
+}
+
+.markdown-body h1 {
+  font-size: 1.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  padding-bottom: 0.3em;
+}
+
+.markdown-body h2 {
+  font-size: 1.2rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  padding-bottom: 0.25em;
+}
+
+.markdown-body h3 {
+  font-size: 1.05rem;
+  color: var(--primary);
+}
+
+.markdown-body h4 {
+  font-size: 0.95rem;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 0.875rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.9em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-body ul {
+  list-style: disc;
+}
+
+.markdown-body ol {
+  list-style: decimal;
+}
+
+/* List items get the same breathing room as paragraphs. */
+.markdown-body li {
+  margin: 0.45em 0;
+}
+
+.markdown-body li > p {
+  margin: 0.45em 0;
+}
+
+.markdown-body li > p:first-child {
+  margin-top: 0;
+}
+
+.markdown-body li > p:last-child {
+  margin-bottom: 0;
+}
+
+/* Nested lists tuck slightly tighter so they don't sprawl. */
+.markdown-body li ul,
+.markdown-body li ol {
+  margin: 0.45em 0;
+}
+
+/* GFM task lists */
+.markdown-body li input[type='checkbox'] {
+  margin-right: 0.4em;
+  accent-color: var(--primary);
+  transform: translateY(1px);
+}
+
+.markdown-body a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--primary) 50%, transparent);
+  text-underline-offset: 2px;
+}
+
+.markdown-body a:hover {
+  text-decoration-color: var(--primary);
+}
+
+.markdown-body blockquote {
+  border-left: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  padding: 0.1em 0 0.1em 0.8em;
+  margin: 0.6em 0;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  padding: 0.05em 0.3em;
+  color: var(--primary);
+}
+
+.markdown-body pre {
+  background: color-mix(in srgb, black 35%, transparent);
+  border: 1px solid var(--border);
+  padding: 0.6em 0.8em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--foreground);
+  font-size: inherit;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin: 0.6em 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 0.3em 0.55em;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  color: var(--primary);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.markdown-body tr:nth-child(even) td {
+  background: color-mix(in srgb, white 3%, transparent);
+}
+
+/* GFM strikethrough */
+.markdown-body del {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+
+.markdown-body strong {
+  color: var(--fg-hot);
+  font-weight: 700;
+}
+
+.markdown-body em {
+  color: var(--accent);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
 }
