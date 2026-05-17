@@ -2,6 +2,11 @@
 // Source: apps/web/src/components/Shell.tsx
 // Adapted for Project Companion: react-resizable-panels v4 API; active-slug
 // from zustand store; per-project tab persistence from a tab-store.
+//
+// v4 sizing gotcha: numeric Panel size props ({18}) are pixels; strings
+// without a unit are percentages; "18%" is explicit. Always use the string
+// form for percent-based layouts or you get pixel constraints that lock
+// the rails to ~20px wide. (Found 2026-05-17 after a UX bug report.)
 
 import { useEffect } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
@@ -61,12 +66,16 @@ export function Shell({
   }, [activityPanelOpen, activityRef]);
 
   return (
-    <Group orientation="horizontal" id="pc-shell" className="h-full">
-      <Panel defaultSize={15} minSize={10} maxSize={30}>
+    <Group
+      orientation="horizontal"
+      id="pc-shell-v3"
+      className="h-full"
+    >
+      <Panel id="rail" defaultSize="18%" minSize="14%" maxSize="28%">
         <ProjectRail projects={projects} onCreateProject={onCreateProject} />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
-      <Panel defaultSize={65} minSize={30}>
+      <Panel id="center" defaultSize="54%" minSize="30%">
         <Center
           activeProject={activeProject}
           wsEvents={wsEvents}
@@ -77,12 +86,13 @@ export function Shell({
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel
+        id="activity"
         panelRef={activityRef}
-        defaultSize={20}
-        minSize={10}
-        maxSize={40}
+        defaultSize="28%"
+        minSize="20%"
+        maxSize="45%"
         collapsible
-        collapsedSize={0}
+        collapsedSize="0%"
       >
         <ActivityPanel
           projects={projects}

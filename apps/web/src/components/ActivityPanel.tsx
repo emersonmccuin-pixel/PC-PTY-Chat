@@ -110,7 +110,6 @@ export function ActivityPanel({
               <li
                 key={`${env.type}-${rows.length - i}`}
                 className="px-3 py-1.5"
-                title={JSON.stringify(env)}
               >
                 <EventRow env={env} slug={slugById.get(env.projectId) ?? '?'} showSlug={showAllProjects} />
               </li>
@@ -133,8 +132,11 @@ function EventRow({
 }) {
   const { kind, summary, color } = describeEnvelope(env);
   const ts = extractTs(env);
+  const hoverText = summary
+    ? `[${ts}${showSlug ? ' ' + slug : ''}] ${kind}: ${summary}`
+    : `[${ts}${showSlug ? ' ' + slug : ''}] ${kind}`;
   return (
-    <div className="flex items-baseline gap-2 text-[11px]">
+    <div className="flex items-baseline gap-2 text-[11px]" title={hoverText}>
       <span className="shrink-0 font-mono text-muted-foreground">{ts}</span>
       {showSlug && (
         <span className="shrink-0 bg-muted px-1 font-mono text-[10px] uppercase tracking-wider text-foreground">
