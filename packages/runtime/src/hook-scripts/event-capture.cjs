@@ -133,6 +133,40 @@ switch (eventType) {
     } catch { /* swallow */ }
     break;
   }
+  case 'SubagentStop': {
+    // Section 0 phase 0e — supplemental signal. Section 2 (Subagents) decides
+    // how to render. For now, capture the data so the activity panel + future
+    // subagent UX has the history.
+    appendEvent({
+      ts: now,
+      kind: 'subagent-stop',
+      subagent: payload.subagent_type ?? payload.agent_type ?? null,
+      result: typeof payload.last_assistant_message === 'string'
+        ? truncate(payload.last_assistant_message, 4000)
+        : null,
+    });
+    break;
+  }
+  case 'SessionEnd': {
+    // Composer disables on this in the chat panel — CC's session is gone.
+    appendEvent({
+      ts: now,
+      kind: 'session-end',
+      reason: typeof payload.reason === 'string' ? payload.reason : null,
+    });
+    break;
+  }
+  case 'Notification': {
+    // CC's own notification surface — agent waiting on input, idle timeout,
+    // etc. Render as a small system-message row in the chat.
+    appendEvent({
+      ts: now,
+      kind: 'notification',
+      message: typeof payload.message === 'string' ? payload.message : '',
+      title: typeof payload.title === 'string' ? payload.title : null,
+    });
+    break;
+  }
   default:
     appendEvent({ ts: now, kind: 'unknown-event', eventType, payload });
 }

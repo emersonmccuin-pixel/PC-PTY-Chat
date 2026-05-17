@@ -8,7 +8,7 @@
 // claude.exe processes — each waits for a UI subscriber.
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { OrchestratorSession, Project, ULID } from '@pc/domain';
@@ -239,6 +239,16 @@ export class ProjectRuntime {
         if (!f.endsWith('.cjs')) continue;
         const raw = readFileSync(resolve(srcDir, f), 'utf-8');
         writeFileSync(resolve(destDir, f), renderTemplate(raw, tokens), 'utf-8');
+      }
+      // Also re-render settings.json so additions to the template
+      // (new hook events, permissions, etc.) reach existing projects without
+      // requiring re-scaffold. Section 0 phase 0e added SubagentStop /
+      // SessionEnd / Notification entries that need this.
+      const settingsSrc = resolve(this.opts.templatesDir, '.claude', 'settings.template.json');
+      const settingsDest = resolve(this.project.folderPath, '.claude', 'settings.json');
+      if (existsSync(settingsSrc)) {
+        const raw = readFileSync(settingsSrc, 'utf-8');
+        writeFileSync(settingsDest, renderTemplate(raw, tokens), 'utf-8');
       }
     } catch (err) {
       console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);

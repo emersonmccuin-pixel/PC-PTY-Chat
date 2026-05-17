@@ -15,6 +15,7 @@ import type {
   AssistantEvent,
   ChatEvent,
   JsonlEvent,
+  NotificationEvent,
   TaskEndEvent,
   TaskStartEvent,
   TodosEvent,
@@ -546,6 +547,24 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     prevDequeueRef.current = 0;
   }, [session?.id]);
 
+  // Section 0 phase 0e — session-end event from CC's SessionEnd hook. The
+  // PTY is gone; disable the composer + surface a footer notice. Cleared on
+  // new-session (the session?.id useEffect above doesn't fire because the
+  // session id changes after a fresh spawn, but checking events.length below
+  // re-derives this correctly).
+  const sessionEnded = useMemo(() => {
+    if (viewingSessionId) return false;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'event') continue;
+      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+      if (ev?.kind === 'session-end') return true;
+      // A more recent user prompt OR turn-end means a fresh session is active.
+      if (ev?.kind === 'user' || ev?.kind === 'assistant') return false;
+    }
+    return false;
+  }, [events, viewingSessionId]);
+
   // Elapsed-time counter — starts when state flips to thinking, ticks every
   // 200ms while thinking, frozen on Stop. Cheap setInterval; teardown cancels.
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
@@ -700,7 +719,12 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
           )}
         </div>
       </div>
-      {!isViewingPast && (
+      {!isViewingPast && sessionEnded && (
+        <div className="border-t border-border bg-warning/10 px-4 py-2 text-center text-xs text-warning">
+          This session ended. Click <span className="font-semibold">+ New session</span> above to start a fresh chat.
+        </div>
+      )}
+      {!isViewingPast && !sessionEnded && (
         <Composer
           projectSlug={project.slug}
           onSend={(text) => {
@@ -768,9 +792,27 @@ function EventBubble({
           onResolved={onApprovalResolved}
         />
       );
+    case 'notification':
+      return <NotificationBubble event={event as NotificationEvent} />;
+    // session-end renders as a footer notice on the chat panel (not inline);
+    // subagent-stop is captured but not rendered in chat (Section 2 owns it).
+    case 'session-end':
+    case 'subagent-stop':
+      return null;
     default:
       return null;
   }
+}
+
+function NotificationBubble({ event }: { event: NotificationEvent }) {
+  return (
+    <div className="self-center max-w-[85%] border border-border bg-muted/30 px-3 py-1.5 text-center text-xs text-muted-foreground">
+      <div className="text-[10px] uppercase tracking-wider">
+        {event.title ?? 'Notification'}
+      </div>
+      <div className="mt-0.5 italic">{event.message || '(no message)'}</div>
+    </div>
+  );
 }
 
 // ── Thinking indicator (with elapsed-time counter) ───────────────────────

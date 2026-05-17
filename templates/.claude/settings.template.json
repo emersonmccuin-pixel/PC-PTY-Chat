@@ -89,6 +89,36 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" SubagentStop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" SessionEnd"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" Notification"
+          }
+        ]
+      }
     ]
   }
 }

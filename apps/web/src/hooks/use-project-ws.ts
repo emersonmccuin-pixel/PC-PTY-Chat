@@ -93,6 +93,25 @@ export interface ApprovalRequiredEvent extends ChatEventBase {
   on_reject_prompt?: string;
 }
 
+// Section 0 phase 0e — supplemental hook events.
+
+export interface NotificationEvent extends ChatEventBase {
+  kind: 'notification';
+  message: string;
+  title?: string | null;
+}
+
+export interface SessionEndEvent extends ChatEventBase {
+  kind: 'session-end';
+  reason?: string | null;
+}
+
+export interface SubagentStopEvent extends ChatEventBase {
+  kind: 'subagent-stop';
+  subagent: string | null;
+  result?: string | null;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -102,6 +121,9 @@ export type ChatEvent =
   | TaskStartEvent
   | TaskEndEvent
   | ApprovalRequiredEvent
+  | NotificationEvent
+  | SessionEndEvent
+  | SubagentStopEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────
