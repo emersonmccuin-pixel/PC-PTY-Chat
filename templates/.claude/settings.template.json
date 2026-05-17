@@ -1,0 +1,94 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(echo:*)",
+      "Bash(node:*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(del:*)",
+      "Bash(format:*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode|EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/ask-intercept.cjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/path-guard.cjs\" bind"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Write|Edit|Bash|Glob|Grep|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/path-guard.cjs\" enforce"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/path-guard.cjs\" unbind"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" Stop"
+          }
+        ]
+      }
+    ]
+  }
+}

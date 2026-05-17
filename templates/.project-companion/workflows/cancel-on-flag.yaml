@@ -1,0 +1,19 @@
+id: cancel-on-flag
+description: Demonstrate cancel — a bash node emits a known flag; a cancel node fires when the flag matches; a downstream bash never runs because the run is cancelled.
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: check
+    bash: |
+      printf "reject"
+
+  - id: abort
+    depends_on: [check]
+    when: "$check.output.stdout == 'reject'"
+    cancel: "Scope check rejected; aborting run."
+
+  - id: downstream
+    depends_on: [abort]
+    bash: |
+      echo "this line should not appear"

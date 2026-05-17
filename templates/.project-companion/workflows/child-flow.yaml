@@ -1,0 +1,9 @@
+id: child-flow
+description: Child workflow fired from parent-flow's nested node. Also callable on its own for isolated testing.
+triggers:
+  callable: true
+worktree: auto
+nodes:
+  - id: child-do
+    bash: |
+      echo "child: hello from nested run"

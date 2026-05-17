@@ -1,0 +1,19 @@
+id: parent-flow
+description: Demonstrate workflow-as-node — parent fires a bash node, then a nested child workflow, then a final bash that references the child's captured output.
+triggers:
+  callable: true
+worktree: auto
+nodes:
+  - id: parent-start
+    bash: |
+      echo "parent: before nested call"
+
+  - id: nested
+    depends_on: [parent-start]
+    workflow: child-flow
+
+  - id: parent-end
+    depends_on: [nested]
+    bash: |
+      echo "parent: nested run terminated"
+      echo "captured nested.output: $nested.output"

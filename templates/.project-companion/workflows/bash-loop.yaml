@@ -1,0 +1,14 @@
+id: bash-loop
+description: Demonstrate the loop node — bash body runs, the until-expression evaluates true after the first iteration, the loop terminates. M13's loop dispatcher only supports sync nodes in the body (no subagent / approval / nested workflow), so the body here is a single bash node.
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: counter
+    loop:
+      body:
+        - id: tick
+          bash: |
+            echo "ran"
+      until: "$tick.output.exitCode == 0"
+      max_iterations: 3
