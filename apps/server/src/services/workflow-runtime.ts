@@ -54,6 +54,7 @@ import {
   getWorkItem,
   listActiveRuns,
   listRuns as dbListRuns,
+  listRunsByProject as dbListRunsByProject,
   listWorkItems as dbListWorkItems,
   moveWorkItemStage,
   newId,
@@ -310,6 +311,11 @@ export class WorkflowRuntime {
   /** Read all workflow runs — used by the UI's run history pane (when it lands). */
   readRuns(): WorkflowRun[] {
     return dbListRuns();
+  }
+
+  /** Read this project's workflow runs (recent first). */
+  readRunsForProject(): WorkflowRun[] {
+    return dbListRunsByProject(this.projectId);
   }
 
   /**

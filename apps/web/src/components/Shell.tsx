@@ -15,6 +15,7 @@ import { KanbanBoard } from './KanbanBoard';
 import { Orchestrator } from './Orchestrator';
 import { ProjectRail } from './ProjectRail';
 import { TabBar, TABS, type Tab } from './Tabs';
+import { WorkflowList } from './WorkflowList';
 
 interface ShellProps {
   projects: Project[];
@@ -108,7 +109,7 @@ function Center({
         ) : tab === 'orchestrator' ? (
           <Orchestrator project={activeProject} events={wsEvents} send={wsSend} />
         ) : tab === 'workflows' ? (
-          <Stub label="Workflows" milestone="Q9" />
+          <WorkflowList project={activeProject} events={wsEvents} />
         ) : tab === 'project-settings' ? (
           <Stub label="Project settings" milestone="Q11" />
         ) : null}

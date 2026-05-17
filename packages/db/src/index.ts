@@ -35,6 +35,7 @@ export {
   getRun,
   listActiveRuns,
   listRuns,
+  listRunsByProject,
   listRunsByWorkItem,
   persistRun,
 } from './repos/workflow-runs.ts';

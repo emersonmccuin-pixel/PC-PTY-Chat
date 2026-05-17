@@ -473,6 +473,14 @@ app.get('/api/projects/:projectId/workflows', (c) => {
   });
 });
 
+app.get('/api/projects/:projectId/workflow-runs', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const runs = runtime.workflowRuntime().readRunsForProject();
+  return c.json({ runs });
+});
+
 app.get('/api/projects/:projectId/worktrees', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);

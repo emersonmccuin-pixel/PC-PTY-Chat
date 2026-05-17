@@ -146,6 +146,16 @@ export function listRunsByWorkItem(workItemId: ULID): WorkflowRun[] {
   return rows.map(toDomain);
 }
 
+export function listRunsByProject(projectId: ULID): WorkflowRun[] {
+  const rows = getDb()
+    .select()
+    .from(workflowRuns)
+    .where(eq(workflowRuns.projectId, projectId))
+    .orderBy(asc(workflowRuns.createdAt))
+    .all() as WorkflowRunRow[];
+  return rows.map(toDomain);
+}
+
 /** Persist a full WorkflowRun back to the row. Used by tick to capture all
  *  changes (status, nodeOutputs, lastReason, timestamps) in one write. */
 export function persistRun(run: WorkflowRun): void {
