@@ -750,7 +750,9 @@ wss.on('connection', (ws, req) => {
     (session as unknown as { __pcHandlersAttached?: boolean }).__pcHandlersAttached = true;
   }
 
-  ws.send(JSON.stringify({ type: 'state', state: session.getState() }));
+  // P14: tag direct-to-client sends with projectId, same as broadcastTo does
+  // for fan-out paths. Keeps the envelope contract uniform.
+  ws.send(JSON.stringify({ projectId, type: 'state', state: session.getState() }));
 
   // Replay events.jsonl so a reloaded tab doesn't lose its chat panel.
   const eventsFile = resolve(runtime.dataPath, 'events.jsonl');
@@ -760,7 +762,7 @@ wss.on('connection', (ws, req) => {
       for (const line of lines) {
         let event: unknown;
         try { event = JSON.parse(line); } catch { continue; }
-        ws.send(JSON.stringify({ type: 'event', event }));
+        ws.send(JSON.stringify({ projectId, type: 'event', event }));
       }
     } catch {
       /* best-effort replay */

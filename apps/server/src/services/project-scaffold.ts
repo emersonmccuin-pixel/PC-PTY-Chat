@@ -119,17 +119,23 @@ export class ProjectScaffold {
   }
 
   /** Build the token map for `target`. Exposed for callers that need to render
-   *  an ad-hoc template using the same set. */
+   *  an ad-hoc template using the same set.
+   *
+   *  Path tokens are normalized to forward slashes — backslashes from `path.resolve`
+   *  on Windows would otherwise produce invalid JSON when substituted into the
+   *  .mcp.json / settings.json templates (`"E:\\Claude\\C..."`-style strings).
+   *  Node + git accept forward slashes natively on Windows, so this normalization
+   *  is cross-platform safe. */
   buildTokens(target: ProjectScaffoldTarget): Record<string, string> {
     return {
-      PC_TRUNK_PATH: this.deps.trunkPath,
+      PC_TRUNK_PATH: posixPath(this.deps.trunkPath),
       PC_SERVER_PORT: String(this.deps.serverPort),
       PC_CHANNEL_PORT: String(this.deps.channelPort),
       PROJECT_ID: target.projectId,
       PROJECT_SLUG: target.projectSlug,
-      PROJECT_FOLDER: target.folderPath,
+      PROJECT_FOLDER: posixPath(target.folderPath),
       PROJECT_NAME: target.projectName,
-      PROJECT_DATA_DIR: resolve(this.deps.dataDir, 'projects', target.projectId),
+      PROJECT_DATA_DIR: posixPath(resolve(this.deps.dataDir, 'projects', target.projectId)),
     };
   }
 
@@ -150,4 +156,10 @@ export function renderTemplate(text: string, tokens: Record<string, string>): st
   return text.replace(/\{\{([A-Z_][A-Z0-9_]*)\}\}/g, (m, key) => {
     return Object.prototype.hasOwnProperty.call(tokens, key) ? tokens[key]! : m;
   });
+}
+
+/** Normalize a Windows path to forward slashes so it's safe to embed in a JSON
+ *  string literal without escaping. POSIX paths pass through untouched. */
+function posixPath(p: string): string {
+  return p.replace(/\\/g, '/');
 }
