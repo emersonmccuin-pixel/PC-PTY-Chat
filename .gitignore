@@ -20,6 +20,12 @@ workspace/
 # Debug artifacts (pw-debug screenshots, etc.)
 scripts/*.png
 
+# Playwright artifacts (regenerated per run)
+test-results/
+playwright-report/
+tests/playwright/results.json
+tests/playwright/snap-shell.png
+
 # OS / editor noise
 .DS_Store
 .vscode/
