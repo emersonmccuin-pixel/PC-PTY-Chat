@@ -2,11 +2,11 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session O closed 2026-05-16 — multi-tenancy planning, no code. 7 design questions from Session N locked + `MULTI-TENANCY-DESIGN.md` written (source of truth for the chassis #3 work) + BUILDOUT entries for Sessions P (server-side multi-tenancy, 15 milestones) + Q (UI vendor of v1 React app over the multi-tenant server, 14 milestones) drafted in the new "Chassis — Multi-tenancy" section. Old "Session E — Multi-tenancy (optional) / Slice 7" placeholder removed (superseded). Headline decisions: projects folder defaults `~/Projects/`; existing-folder-with-files asks once and inits in place by default (two commits); single multiplexed channel server path-routed by project slug; trunk-level worktrees at `<data_dir>/worktrees/<slug>/<name>/`; agents are a global library pool with per-project copies that diverge on edit; first commit is always scaffold + README; rig project gets wiped on first multi-tenant boot. **Next: Session P — server-side multi-tenancy build.** Read `MULTI-TENANCY-DESIGN.md` end-to-end first; then the Session P checklist in the new chassis section. Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) still open — bundled-channel-events lands naturally in Session Q's chat panel reshape; the rest pick alongside or defer.
+**Current session:** Session P closed 2026-05-17 — server-side multi-tenancy shipped + user test passed. P1–P15 all ticked (schema migration, templates dir, agent-library bootstrap, ProjectRuntime/Registry, multiplexed channel server, scoped worktrees, per-project scaffold renderer, full create endpoint w/ git init + commits, fs/probe + fs/browse, list/get/PATCH, soft-delete + danger-zone files, agent library + per-project agents, WS broadcast envelope, typecheck gate). Two defects caught during user test + fixed in `d25ecd0`: (1) Windows backslashes in path tokens broke `.mcp.json` JSON parse — normalize `PC_TRUNK_PATH` / `PROJECT_FOLDER` / `PROJECT_DATA_DIR` to forward slashes; (2) two direct `ws.send` paths on WS connect (state snapshot + events.jsonl replay) bypassed the broadcast envelope tag — patched inline. **Next: Session Q — UI vendor + multi-tenant shell** (14 milestones, vendors v1's React app over the new server). Read `MULTI-TENANCY-DESIGN.md` § "Per-project filesystem layout" + Session Q checklist below + the Session P log entry at the bottom. Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) still open — bundled-channel-events lands naturally in Session Q's chat panel reshape.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 
-**Cold-read order after `/clear`:** `MULTI-TENANCY-DESIGN.md` (top to bottom — the locked design for chassis #3, drives Sessions P + Q) → this doc (intro + `**Current session:**` line + the new "Chassis — Multi-tenancy" section + Session O log entry at the bottom). For workflow-runtime work: `DESIGN-WORKFLOWS-V2.md` is still the active design (node catalog + execution model + Decisions/Deferred). `DESIGN-WORKFLOWS-AND-CONTRACTS.md` and `PLANNING-CONTRACTS-MODELS.md` are superseded; skip on cold reads.
+**Cold-read order after `/clear`:** `MULTI-TENANCY-DESIGN.md` (still the source of truth for the multi-tenant contract; Session Q vendors the UI on top of it) → this doc (intro + `**Current session:**` line + the "Chassis — Multi-tenancy" section's Session Q checklist + Session P log entry at the bottom). For workflow-runtime work: `DESIGN-WORKFLOWS-V2.md` is still the active design (node catalog + execution model + Decisions/Deferred). `DESIGN-WORKFLOWS-AND-CONTRACTS.md` and `PLANNING-CONTRACTS-MODELS.md` are superseded; skip on cold reads.
 
 ## How to use this doc
 
@@ -486,7 +486,7 @@ Scope: replace the singleton runtime with per-project runtimes, multiplex channe
 > 9. Add a library agent via `POST /api/agents`. `GET /api/agents` lists it. Add it to project B via `POST /api/projects/<id>/agents`. Confirm copy lands in B's `.claude/agents/` and library version is unchanged.
 > 10. Edit B's copy via `PATCH /api/projects/<id>/agents/<name>`. Confirm library version still untouched.
 
-- [ ] User test passed
+- [x] User test passed
 
 **Not in scope here:** UI shell (Session Q), project rename → slug migration, agent "push to library" affordance, per-project concurrency caps, isolation environments, file attachments, vault. All flagged in `MULTI-TENANCY-DESIGN.md` "Open / deferred."
 
@@ -541,6 +541,37 @@ Folded back into PC: Phase 9-B (PTY transport for chat) → 9-C (PTY for workflo
 ## Session log
 
 Append findings, surprises, and decisions here as sessions close. Cold-readable artifact for the next session.
+
+### Session P — server-side multi-tenancy (2026-05-16 → 2026-05-17)
+
+All 15 milestones shipped + user test passed. Server is now fully multi-tenant: per-project `ProjectRuntime` (PtySession + WorkflowRuntime + WorktreeService bundle), `ProjectRegistry` map, multiplexed channel server, scoped worktrees, full create-project HTTP API, fs probe + browse for the picker, list/get/PATCH/soft-delete, danger-zone file removal, library + per-project agent endpoints, projectId tagging on every WS broadcast envelope. The rig fixture is gone (migration `0002_drop_rig_fixture.sql`); fresh boots open with zero projects.
+
+**Shape that landed (highlights):**
+- `slug` exposed on the domain `Project` type (already in DB; needed for path policy + cache).
+- `@pc/runtime` worktree primitives (`createWorktree` / `attachWorktree` / `destroyWorktree`) now take an explicit absolute `wtPath`. Path policy is the service's job — `WorktreeService(workspaceDir, baseDir)` composes `<baseDir>/<name>` from `<data_dir>/worktrees/<slug>/`. Keeps the user's repo clean (no `<workspace>/../worktrees/`).
+- `ProjectRegistry.slugById` cache populated at `loadAll`/`register`/`remove`; `ProjectRegistry.refresh(updated)` is the rename-friendly seam (slug change invalidates the cached `WorktreeService` on the runtime so the next access rebuilds against the new baseDir — rename → slug migration itself is still a deferred followup).
+- `ProjectScaffold` renders the full per-project scaffold from `templates/`: configs (rendered), hooks (rendered — they carry `PROJECT_DATA_DIR` etc.), workflow YAMLs (plain copy), `CLAUDE.md` (rendered), `README.md` (rendered). Path tokens are forward-slash-normalized so they're JSON-safe (see defect #1 below).
+- `ProjectCreate` orchestrates: validate → uniqueSlug against DB → mint ULID up-front → `git init -b main` → optionally `Initial import` for in-place mode → scaffold + library-agent copy → `Initial commit` or `Add Project Companion scaffold` → DB insert with pre-minted id → `registry.register`. Default stages: `draft` / `review` / `done`.
+- `createProject` in `@pc/db` gained an optional `id` so the scaffold pass and the DB row share an identity.
+- HTTP surface added in Session P: `POST/GET/PATCH/DELETE /api/projects`, `DELETE /api/projects/:id/files` (danger zone), `POST /api/fs/probe`, `GET /api/fs/browse`, `GET/POST /api/agents`, `GET/POST /api/projects/:id/agents`, `PATCH /api/projects/:id/agents/:name`.
+
+**Defects caught + fixed during user test (commit `d25ecd0`):**
+1. `ProjectScaffold` token substitution embedded Windows-resolved paths (with backslashes) into the JSON templates → `.mcp.json` failed `JSON.parse` with "Bad escaped character". Normalized `PC_TRUNK_PATH`, `PROJECT_FOLDER`, `PROJECT_DATA_DIR` to forward slashes via a `posixPath()` helper. Node + git both accept forward slashes on Windows natively; the existing template already used forward slashes for the `/packages/mcp/src/server.ts` segment, so the trunk-author's expectation was forward-slash all along.
+2. P14's broadcast envelope tagging missed two direct `ws.send` paths in `apps/server/src/index.ts`'s WS-connect handler: the initial state snapshot and the events.jsonl replay. Tagged both inline so every envelope a client sees carries `projectId`. The pattern to watch for going forward: `broadcastTo(...)` is the only fan-out path; direct sends on a specific socket must self-tag.
+
+**Other findings worth carrying forward:**
+- `tsx watch` doesn't release the channel-server port (`:8788`) cleanly between reloads — on a code change to a file the channel-server transitively imports, the reload hits `EADDRINUSE` and the process dies. Workaround during dev: `taskkill /F /PID <pid>` and restart manually. Real fix is a graceful-shutdown hook on `process.on('SIGTERM')`/etc. that calls `channelServer.shutdown()` before the new process starts. Filing as a Session Q-or-later followup; doesn't affect production binding behavior, just dev ergonomics.
+- The worktrees table has a unique constraint on `(name)` where `status='active'`. Multiple projects launching workflows with overlapping `run-<short>` names (`runId.slice(0, 8)` = 32 bits) could collide across projects. Low risk for a single-user app but worth noting — a `project_id` column on `worktrees` + scoped unique constraint is the proper fix when collisions matter.
+- v1's `apps/web/src/` is the vendor source for Session Q's UI port (~50 components, full inventory in the Session Q intro block above).
+
+**Files touched (12 commits in Session P):**
+- New services: `apps/server/src/services/project-runtime.ts`, `project-registry.ts`, `project-scaffold.ts`, `project-create.ts`, `project-agents.ts`, `fs-probe.ts`, `fs-browse.ts`.
+- Rewritten: `apps/server/src/services/worktree.ts` (per-project baseDir), `packages/runtime/src/worktree.ts` (path policy moved out), `apps/server/src/services/channel-server.ts` (multiplexed; landed earlier in P5).
+- DB: `packages/db/src/repos/projects.ts` (slug on domain, optional id, list-with-deleted, updateProjectMeta, softDeleteProject), schema migration `0002_drop_rig_fixture.sql` (landed earlier in P4).
+- Trunk templates: `templates/` populated in P2.
+- WS envelope tagging: `apps/server/src/index.ts`.
+
+**Cold-read recovery for Session Q:** Open `MULTI-TENANCY-DESIGN.md` § "Per-project filesystem layout" + § "ProjectRuntime abstraction" + § "Channel server" so you have the runtime shape in your head, then this Session P log entry, then the Session Q checklist above. Vendor source lives at `E:/Claude Code Projects/Personal/Project Companion/apps/web/src/` — read-only. Stack adds for Q1: zustand, react-resizable-panels, react-markdown + remark-gfm, @dnd-kit/core + @dnd-kit/sortable.
 
 ### Session O — multi-tenancy planning (2026-05-16)
 
