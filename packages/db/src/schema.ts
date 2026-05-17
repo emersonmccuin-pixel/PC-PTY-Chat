@@ -209,6 +209,11 @@ export const orchestratorSessions = sqliteTable(
     startedAt: integer('started_at').notNull(),
     endedAt: integer('ended_at'),
     deletedAt: integer('deleted_at'),
+    /** Absolute path of CC's per-session JSONL file. Discovered by the runtime
+     *  after spawn (scans `~/.claude/projects/<encoded-cwd>/`). */
+    jsonlPath: text('jsonl_path'),
+    /** Line count of CC's JSONL we've consumed. Persisted for resume. */
+    jsonlLineCursor: integer('jsonl_line_cursor').notNull().default(0),
   },
   (t) => [
     /** One active session per project (DB-enforced). */

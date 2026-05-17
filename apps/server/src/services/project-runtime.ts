@@ -147,6 +147,11 @@ export class ProjectRuntime {
       claudeSessionId: session.providerSessionId,
       resume: session.resume,
       extraEnv: { PC_SESSION_ID: session.row.id },
+      // Resume case: if we have a persisted JSONL path for this row, attach
+      // the tailer to it directly at the persisted cursor. Else PtySession
+      // runs the discovery loop and finds the file once CC creates it.
+      jsonlPath: session.row.jsonlPath ?? undefined,
+      jsonlStartLine: session.row.jsonlLineCursor,
     });
     return this.pty;
   }

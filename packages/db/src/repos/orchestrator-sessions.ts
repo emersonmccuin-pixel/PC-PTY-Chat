@@ -27,6 +27,8 @@ interface SessionRow {
   startedAt: number;
   endedAt: number | null;
   deletedAt: number | null;
+  jsonlPath: string | null;
+  jsonlLineCursor: number;
 }
 
 function toDomain(row: SessionRow): OrchestratorSession {
@@ -42,6 +44,8 @@ function toDomain(row: SessionRow): OrchestratorSession {
     startedAt: row.startedAt,
     endedAt: row.endedAt,
     deletedAt: row.deletedAt,
+    jsonlPath: row.jsonlPath,
+    jsonlLineCursor: row.jsonlLineCursor,
   };
 }
 
@@ -85,6 +89,8 @@ export function createOrchestratorSession(
     startedAt: now,
     endedAt: null,
     deletedAt: null,
+    jsonlPath: null,
+    jsonlLineCursor: 0,
   };
 }
 
@@ -143,6 +149,27 @@ export function setOrchestratorSessionTitle(id: ULID, title: string): void {
   getDb()
     .update(orchestratorSessions)
     .set({ title })
+    .where(eq(orchestratorSessions.id, id))
+    .run();
+}
+
+/** Persist the CC JSONL file path. Called once per spawn, immediately after
+ *  the runtime's discovery loop finds the right file. */
+export function setOrchestratorSessionJsonlPath(id: ULID, jsonlPath: string): void {
+  getDb()
+    .update(orchestratorSessions)
+    .set({ jsonlPath })
+    .where(eq(orchestratorSessions.id, id))
+    .run();
+}
+
+/** Persist the line cursor. Called debounced (~once per second) as the tailer
+ *  consumes events, so a server restart followed by `--resume` can skip past
+ *  already-processed lines. */
+export function setOrchestratorSessionJsonlCursor(id: ULID, cursor: number): void {
+  getDb()
+    .update(orchestratorSessions)
+    .set({ jsonlLineCursor: cursor })
     .where(eq(orchestratorSessions.id, id))
     .run();
 }

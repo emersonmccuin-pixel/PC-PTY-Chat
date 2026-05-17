@@ -19,6 +19,8 @@ import {
   listProjects,
   runMigrations,
   setGlobalSettings,
+  setOrchestratorSessionJsonlCursor,
+  setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
   softDeleteProject,
   updateProjectMeta,
@@ -147,6 +149,20 @@ function attachPtyHandlers(
   session.on('event', (event: unknown) => {
     maybeSetSessionTitle(projectId, event);
     broadcastTo(projectId, { type: 'event', event });
+  });
+  // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
+  // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
+  // so the chat panel can merge them without ambiguity.
+  session.on('jsonl-event', (event: unknown) => {
+    broadcastTo(projectId, { type: 'jsonl', event });
+  });
+  session.on('jsonl-path-resolved', (jsonlPath: string) => {
+    const active = getActiveOrchestratorSession(projectId);
+    if (active) setOrchestratorSessionJsonlPath(active.id, jsonlPath);
+  });
+  session.on('jsonl-cursor-tick', (_path: string, cursor: number) => {
+    const active = getActiveOrchestratorSession(projectId);
+    if (active) setOrchestratorSessionJsonlCursor(active.id, cursor);
   });
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
     broadcastTo(projectId, { type: 'exit', code, signal });

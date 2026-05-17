@@ -7,15 +7,28 @@ import { EventEmitter } from 'node:events';
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   watchFile,
   writeFileSync,
 } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 
 const DEFAULT_CLAUDE = 'C:\\Users\\example\\.local\\bin\\claude.exe';
+
+/** CC encodes the absolute cwd as the dir name under `~/.claude/projects/`.
+ *  Replace any non-[A-Za-z0-9._-] character with '-'. Empirically verified
+ *  against `C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test` →
+ *  `C--Users-emers-AppData-Local-Temp-cc-stream-test` and
+ *  `E:\\Projects\\Caisson\\workspace` →
+ *  `E--Claude-Code-Projects-Personal-PC-PTY-Chat-workspace`. */
+export function encodeCwdForClaude(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9._-]/g, '-');
+}
 
 export interface PtySessionOptions {
   workspaceDir: string;
@@ -36,6 +49,16 @@ export interface PtySessionOptions {
    *  PC_SESSION_ID through so hooks can route their writes into the
    *  per-session data dir. */
   extraEnv?: Record<string, string>;
+  /** Root of CC's per-project session dirs. Defaults to
+   *  `<homedir>/.claude/projects`. Override only for tests. */
+  claudeProjectsDir?: string;
+  /** Pre-resolved CC JSONL path. When set, the JSONL tailer attaches to this
+   *  file immediately and skips the discovery scan. Used for `--resume` so we
+   *  re-attach to the same file the prior session was writing into. */
+  jsonlPath?: string;
+  /** Cursor (line count) to resume the tailer from. Only used when
+   *  `jsonlPath` is set. Defaults to 0. */
+  jsonlStartLine?: number;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -43,10 +66,15 @@ export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
 /**
  * One PTY session = one claude.exe child.
  * Emits:
- *   'chunk'   (raw bytes, ANSI-stripped) — stream to UI
- *   'raw'     (raw bytes, untouched)     — for transcript / debug
- *   'state'   (SessionState)             — UI status indicator
- *   'exit'    (code, signal)
+ *   'chunk'                (raw bytes, ANSI-stripped) — stream to UI
+ *   'raw'                  (raw bytes, untouched)     — for transcript / debug
+ *   'state'                (SessionState)             — UI status indicator
+ *   'exit'                 (code, signal)
+ *   'turn-end'             — legacy hook-derived turn marker (vestigial; will go in 0f)
+ *   'event'                — legacy hook-derived structured event from events.jsonl
+ *   'jsonl-event'          (JsonlEvent)               — canonical event from CC's session JSONL
+ *   'jsonl-path-resolved'  (path: string)             — emitted once after discovery succeeds
+ *   'jsonl-cursor-tick'    (path: string, cursor: number) — debounced cursor tick for persistence
  */
 export class PtySession extends EventEmitter {
   private child: pty.IPty;
@@ -58,12 +86,21 @@ export class PtySession extends EventEmitter {
   private eventsPath: string;
   private lastMarkerCount = 0;
   private lastEventCount = 0;
+  private workspaceDir: string;
+  private claudeProjectsDir: string;
+  private spawnedAt = 0;
+  private tailer: JsonlTailer | null = null;
+  private discoveryTimer: NodeJS.Timeout | null = null;
+  private cursorPersistTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: PtySessionOptions) {
     super();
     const claudeExe = opts.claudeExe ?? process.env.CLAUDE_EXE ?? DEFAULT_CLAUDE;
     this.stopMarkerPath = resolve(opts.stopMarkerPath);
     this.eventsPath = resolve(opts.eventsPath);
+    this.workspaceDir = opts.workspaceDir;
+    this.claudeProjectsDir =
+      opts.claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
 
     mkdirSync(dirname(opts.transcriptPath), { recursive: true });
     writeFileSync(opts.transcriptPath, '');
@@ -209,6 +246,89 @@ export class PtySession extends EventEmitter {
         /* file may not exist yet */
       }
     });
+
+    // JSONL tailer — CC's per-session transcript is the canonical source for
+    // turn lifecycle + tool calls (see docs/design/chat-reliability.md).
+    // Resume case: caller passed jsonlPath → attach immediately at the
+    // persisted cursor. Fresh case: poll the project dir until CC writes a
+    // .jsonl file with mtime past spawn time, then attach.
+    this.spawnedAt = Date.now();
+    if (opts.jsonlPath && existsSync(opts.jsonlPath)) {
+      this.attachTailer(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+    } else {
+      this.startJsonlDiscovery();
+    }
+  }
+
+  /** Poll `~/.claude/projects/<encoded-cwd>/` every 250ms for a .jsonl file
+   *  whose mtime is at/after our spawn time. First match wins. */
+  private startJsonlDiscovery(): void {
+    const projectDir = join(
+      this.claudeProjectsDir,
+      encodeCwdForClaude(this.workspaceDir),
+    );
+    // Allow a small grace window for clock skew between Date.now() and
+    // filesystem mtime — we'd rather latch onto a freshly-created file than
+    // poll forever.
+    const cutoff = this.spawnedAt - 1000;
+    const tryFind = () => {
+      if (this.tailer || this.state === 'exited') return;
+      try {
+        if (!existsSync(projectDir)) {
+          this.discoveryTimer = setTimeout(tryFind, 250);
+          return;
+        }
+        let best: { path: string; mtime: number } | null = null;
+        for (const name of readdirSync(projectDir)) {
+          if (!name.endsWith('.jsonl')) continue;
+          const p = join(projectDir, name);
+          try {
+            const st = statSync(p);
+            const mt = st.mtimeMs;
+            if (mt >= cutoff && (!best || mt > best.mtime)) {
+              best = { path: p, mtime: mt };
+            }
+          } catch {
+            /* file vanished mid-scan */
+          }
+        }
+        if (best) {
+          this.attachTailer(best.path, 0);
+          this.emit('jsonl-path-resolved', best.path);
+          return;
+        }
+      } catch {
+        /* dir disappeared / perms — keep polling */
+      }
+      this.discoveryTimer = setTimeout(tryFind, 250);
+    };
+    this.discoveryTimer = setTimeout(tryFind, 250);
+  }
+
+  private attachTailer(filePath: string, startLine: number): void {
+    this.tailer = new JsonlTailer({ filePath, startLine });
+    this.tailer.on('event', (ev: JsonlEvent) => {
+      this.emit('jsonl-event', ev);
+      this.scheduleCursorPersist(filePath);
+    });
+    this.tailer.on('error', (err: Error) => {
+      this.emit('jsonl-error', err);
+    });
+    this.tailer.start();
+  }
+
+  /** Debounced — coalesce cursor persistence to ~1Hz to avoid hammering the
+   *  DB during a flurry of tool calls. The trailing tick fires after activity
+   *  stops; if the process dies mid-flurry we lose <=1s of cursor advance,
+   *  which means at most 1s of duplicate broadcasts on resume. Acceptable. */
+  private scheduleCursorPersist(filePath: string): void {
+    if (this.cursorPersistTimer) return;
+    this.cursorPersistTimer = setTimeout(() => {
+      this.cursorPersistTimer = null;
+      if (this.tailer) {
+        this.emit('jsonl-cursor-tick', filePath, this.tailer.getCursor());
+      }
+    }, 1000);
   }
 
   /** Send a user message. Adds carriage return to submit. */
@@ -237,6 +357,18 @@ export class PtySession extends EventEmitter {
   }
 
   kill() {
+    if (this.discoveryTimer) {
+      clearTimeout(this.discoveryTimer);
+      this.discoveryTimer = null;
+    }
+    if (this.cursorPersistTimer) {
+      clearTimeout(this.cursorPersistTimer);
+      this.cursorPersistTimer = null;
+    }
+    if (this.tailer) {
+      this.tailer.stop();
+      this.tailer = null;
+    }
     try {
       this.child.write('\x03');
       setTimeout(() => this.child.kill(), 500);

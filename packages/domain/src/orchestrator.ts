@@ -28,4 +28,11 @@ export interface OrchestratorSession {
   startedAt: number;
   endedAt: number | null;
   deletedAt: number | null;
+  /** Absolute path of CC's per-session JSONL file (`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`).
+   *  Discovered after the PtySession spawns; persisted so resume can re-attach
+   *  to the same file with the cursor below. */
+  jsonlPath: string | null;
+  /** Line count of CC's JSONL we've consumed. Persisted so a server restart
+   *  followed by `--resume` doesn't re-broadcast already-processed events. */
+  jsonlLineCursor: number;
 }

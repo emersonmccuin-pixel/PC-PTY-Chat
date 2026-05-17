@@ -56,6 +56,8 @@ export {
   endOrchestratorSession,
   getActiveOrchestratorSession,
   listOrchestratorSessionsForProject,
+  setOrchestratorSessionJsonlCursor,
+  setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
 } from './repos/orchestrator-sessions.ts';
 export type { CreateOrchestratorSessionInput } from './repos/orchestrator-sessions.ts';
