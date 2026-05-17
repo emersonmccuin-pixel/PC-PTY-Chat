@@ -223,10 +223,12 @@ export class PtySession extends EventEmitter {
     }, 50);
   }
 
-  /** Send Ctrl+C to interrupt the current turn. */
+  /** Stop the current turn. In claude.exe interactive mode, Escape (\x1b) is
+   *  the stop-streaming key. Ctrl+C (\x03) only triggers the "Press Ctrl-C
+   *  again to exit" prompt — it does NOT abort the in-flight response. */
   interrupt() {
     if (this.state === 'exited') return;
-    this.child.write('\x03');
+    this.child.write('\x1b');
   }
 
   resize(cols: number, rows: number) {

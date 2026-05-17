@@ -1667,7 +1667,7 @@ function Composer({
           type="button"
           onClick={clickInterrupt}
           disabled={interruptFeedback === 'sent'}
-          title="Send Ctrl+C to the PTY"
+          title="Stop the current response (sends Escape to the PTY)"
           className={
             'px-3 py-1 text-xs font-medium uppercase tracking-wider disabled:opacity-100 ' +
             (interruptFeedback === 'sent'
