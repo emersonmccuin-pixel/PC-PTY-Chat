@@ -2,7 +2,7 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session Q **closed** — UI vendor + multi-tenant shell. **All 14 milestones shipped + user-tested + committed.** Q11 ProjectSettingsPanel; Q12 ActivityPanel + all-projects toggle; Q13 WS hardening (backoff + dedup, dedup empirically verified 6→6 events across reconnect); Q14 typecheck + build green. User-test gate ticked 2026-05-17 after visual smoke pass on `http://127.0.0.1:5173/`.
+**Current session:** Phase-2 hardening **in progress** — Session Q closed clean; this phase fixes UX + stability before any new features. **First hardening item shipped 2026-05-17:** chat-session continuity. The chat panel now reflects what `claude.exe` actually has in context (the bug that kicked off phase 2). Backed by the `orchestrator_sessions` table (activated; was scaffolded but unwired) and `claude.exe --session-id <uuid>` / `--resume <uuid>`. Right-click on a project → "New session" wipes and respawns. Title auto-derives from first user message. See `### Phase 2 — chat session continuity (2026-05-17)` in the log.
 
 > **READ `NEXT-SESSION.md` BEFORE STARTING ANYTHING.** The user has set explicit priorities for the next phase: plan first, harden the existing UX second, features (incl. Session R workflow builder) third. Do not roll into Session R or any other feature work without re-reading `NEXT-SESSION.md` and getting alignment.
 
@@ -543,6 +543,38 @@ Folded back into PC: Phase 9-B (PTY transport for chat) → 9-C (PTY for workflo
 ## Session log
 
 Append findings, surprises, and decisions here as sessions close. Cold-readable artifact for the next session.
+
+### Phase 2 — chat session continuity (2026-05-17)
+
+First hardening item out of `NEXT-SESSION.md`. The reported bug: a returning user sees prior chat history in the panel, but if they ask the orchestrator to summarize, Claude only sees the last few messages — because every PtySession respawn fired a brand-new `claude.exe` process while the UI was replaying our project-wide `events.jsonl`. UI and Claude were two stores of the same conversation, kept in sync by nothing.
+
+**Fix.** Take ownership of the session id. Mint a UUID per session in PC, persist it in the (already-scaffolded-but-unwired) `orchestrator_sessions` table, pass `claude.exe --session-id <uuid>` on first spawn, `--resume <uuid>` on every spawn after. Claude's session JSONL and our `events.jsonl` now point at the same conversation.
+
+**What landed.** Five commits on `main`:
+- `e447d2a` — `orchestrator-sessions` repo (create / getActive / list / end / setTitle).
+- `eab8109` — `PtySession` accepts `claudeSessionId` + `resume`; `ProjectRuntime.ensurePty()` resolves the active row → `--resume` or mint → `--session-id`. `startNewSession()` ends the row, wipes `events.jsonl` + `tasks.json` + `stop-markers.txt`, kills the PTY, clears the cache.
+- `d8aa6df` — server routes: `GET /api/projects/:id/session`, `GET /api/projects/:id/sessions`, `POST /api/projects/:id/sessions/new`. WS handler refactor — `attachPtyHandlers` extracted so the new-session endpoint can re-bind handlers after a fresh PTY instance.
+- `32c879d` — auto-title from first user message (60-char single-line truncation), pushed via `session-changed` broadcast.
+- `490b988` — UI: ProjectRail right-click context menu + Orchestrator chat header (title + "+ New session" button). `useProjectWs` treats `session-changed` as a checkpoint: drops the prior events buffer + `seenTs` cache.
+
+**Findings worth carrying forward:**
+
+1. **`claude --help` lists more session-control flags than we knew about.** `--session-id <uuid>` (mint), `-r/--resume [value]`, `--continue` (most recent in cwd), `--fork-session` (opt-in mint-new-id-on-resume). The presence of `--fork-session` as an opt-in confirms `--resume` reuses the original id by default — so one DB row maps to one thread, no `parent_session_id` chaining needed. Saved us from a more complex schema. Worth a re-read of the help any time we touch CC integration.
+2. **Hook-payload session_id cross-check was scoped, then deferred.** The original plan was to capture session_id from the first hook payload and warn if it diverged from our minted UUID. After verifying `--session-id` is a documented flag with no known-broken history, the cross-check became a "what if Claude breaks its own contract" check that would never fire under normal operation. Deferred indefinitely. If we ever see resume returning stale state, this is the first place to add instrumentation.
+3. **`apps/web/src/components/work-items-list.tsx` LSP error is stale.** File was deleted in Q3 (per `Session Q (mid-session)` log) but the LSP cache still surfaces it as "cannot find module @/api/client". Real `pnpm -r typecheck` is clean. Restating the Q2 finding: trust typecheck over the diagnostic stream when they disagree.
+4. **`events.jsonl` is now per-Claude-session, not per-project.** It still lives at `<data_dir>/projects/<projectId>/events.jsonl` (same path), but the file is wiped on every "New session" action. Means we lose visible history of past sessions in the UI today. The future left-rail "previous sessions" tab will need per-session events files (`<data_dir>/projects/<projectId>/sessions/<sessionId>/events.jsonl`) and a session-select that reloads from that file. Filed as the natural extension when that tab lands.
+5. **`prompt: '<<autonomous-loop-dynamic>>'` doesn't apply to us — noting only because the `--session-id` flag is the same UUID format as ULIDs in shape but is a v4 UUID specifically.** `randomUUID()` from `node:crypto` is fine; ULIDs would not be (Claude validates).
+
+**What this changes for the UI today.** Boot the server, open `/`, open a project's chat: header shows "Untitled session" until you send your first message, then flips to that message truncated. Right-click on any project in the rail → "New session" → menu dismisses, chat clears, header flips back to "Untitled session". The "+ New session" button in the chat header is the equivalent action, with a `confirm()` prompt as a guard since it's prominent. The next message you send writes both to our `events.jsonl` AND into the same Claude session that the panel is showing.
+
+**What's NOT done in this round** (deliberate, per scope discipline):
+- Per-session `events.jsonl` files. Today every "New session" wipes the project's single file, losing visible history of past sessions in the UI. Required when the previous-sessions rail tab lands.
+- Session-select UI in the left rail. The `GET /api/projects/:id/sessions` endpoint exists and returns the full history, but nothing renders it yet.
+- "Suggest title" / smarter auto-title. First-user-message truncation is fine for v1; the user explicitly opted to defer the AI-generated title path.
+- Manual rename. Backend has `setOrchestratorSessionTitle` but no PATCH endpoint or UI control. Trivial when it's needed.
+- Cross-check from hook payload (see Finding #2).
+
+**Cold-read recovery for the next hardening item:** read `NEXT-SESSION.md` for the full UX backlog → this entry → if touching session lifecycle, also read `apps/server/src/services/project-runtime.ts` (the `resolveSessionForSpawn` + `startNewSession` shape is the contract). The active session row is the source of truth — never spawn a PTY without consulting it.
 
 ### Session Q (closeout) — all 14 milestones shipped + user-tested (2026-05-17)
 
