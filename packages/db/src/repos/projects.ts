@@ -5,6 +5,10 @@ import { newId } from '../id.ts';
 import { projects } from '../schema.ts';
 
 export interface CreateProjectInput {
+  /** Pre-generated ULID. Optional — when omitted the repo mints a new one.
+   *  Used by the create-project flow so the scaffold pass (which embeds the
+   *  id into hooks + .mcp.json) and the DB row share an identity. */
+  id?: ULID;
   slug: string;
   name: string;
   stages: Stage[];
@@ -67,7 +71,7 @@ export function getProjectBySlug(slug: string): Project | null {
 
 export function createProject(input: CreateProjectInput): Project {
   const now = Date.now();
-  const id = newId();
+  const id = input.id ?? newId();
   const gitRemote = input.gitRemote ?? null;
   getDb()
     .insert(projects)

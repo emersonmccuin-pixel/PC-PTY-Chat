@@ -1,13 +1,22 @@
 // Project scaffold writer. Renders trunk-side templates into a project folder
-// with per-project tokens substituted. P8's create-project endpoint calls into
-// this after `git init` to produce `<folder>/.mcp.json` and
-// `<folder>/.claude/settings.json` (then commits them as part of the scaffold).
+// with per-project tokens substituted. P8's create-project flow calls into
+// this after `git init` to produce the full PC scaffold:
+//
+//   <folder>/.mcp.json                          (rendered)
+//   <folder>/.claude/settings.json              (rendered)
+//   <folder>/.claude/hooks/*.cjs                (rendered)
+//   <folder>/.project-companion/workflows/*.yaml (plain copy)
+//   <folder>/.project-companion/CLAUDE.md       (rendered)
+//   <folder>/README.md                          (rendered)
+//
+// Agent copies (`.claude/agents/`) come from the per-user library via
+// AgentLibrary, not from templates — they're handled by ProjectCreate, not here.
 //
 // Template format: `{{TOKEN}}` placeholders, alnum + underscore. Unknown tokens
-// are left as-is so a malformed template is visible on inspection rather than
+// pass through so a malformed template is visible on inspection rather than
 // silently emptied.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 export interface ProjectScaffoldDeps {
@@ -15,6 +24,8 @@ export interface ProjectScaffoldDeps {
   trunkPath: string;
   /** Absolute path to the `templates/` dir. */
   templatesDir: string;
+  /** Trunk data dir. PROJECT_DATA_DIR is `<dataDir>/projects/<projectId>/`. */
+  dataDir: string;
   /** apps/server bind port. Substituted into `{{PC_SERVER_PORT}}`. */
   serverPort: number;
   /** Channel server bind port. Substituted into `{{PC_CHANNEL_PORT}}`. */
@@ -35,13 +46,22 @@ export interface ProjectScaffoldTarget {
 export class ProjectScaffold {
   constructor(private readonly deps: ProjectScaffoldDeps) {}
 
+  /** Full scaffold pass: configs + hooks + workflow seeds + orchestrator prompt + README. */
+  writeAll(target: ProjectScaffoldTarget): void {
+    this.writeConfigs(target);
+    this.writeHooks(target);
+    this.writeWorkflowSeeds(target);
+    this.writeOrchestratorPrompt(target);
+    this.writeReadme(target);
+  }
+
   /**
    * Write the two generated configs into the project folder:
    *  - `<folder>/.mcp.json` from `templates/.mcp.template.json`
    *  - `<folder>/.claude/settings.json` from `templates/.claude/settings.template.json`
    *
-   * Parent dirs are created if missing. Overwrites existing files — P8 commits
-   * pre-existing user files first, so the scaffold pass is allowed to clobber.
+   * Overwrites existing files — P8 commits pre-existing user files first, so
+   * the scaffold pass is allowed to clobber.
    */
   writeConfigs(target: ProjectScaffoldTarget): void {
     const tokens = this.buildTokens(target);
@@ -57,8 +77,49 @@ export class ProjectScaffold {
     );
   }
 
+  /** Copy + render every `.cjs` in `templates/.claude/hooks/`. */
+  writeHooks(target: ProjectScaffoldTarget): void {
+    const srcDir = resolve(this.deps.templatesDir, '.claude', 'hooks');
+    const destDir = resolve(target.folderPath, '.claude', 'hooks');
+    const tokens = this.buildTokens(target);
+    mkdirSync(destDir, { recursive: true });
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.cjs')) continue;
+      this.writeFromTemplate(resolve(srcDir, f), resolve(destDir, f), tokens);
+    }
+  }
+
+  /** Copy seed workflow YAMLs verbatim (no token substitution). */
+  writeWorkflowSeeds(target: ProjectScaffoldTarget): void {
+    const srcDir = resolve(this.deps.templatesDir, '.project-companion', 'workflows');
+    const destDir = resolve(target.folderPath, '.project-companion', 'workflows');
+    mkdirSync(destDir, { recursive: true });
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.yaml')) continue;
+      copyFileSync(resolve(srcDir, f), resolve(destDir, f));
+    }
+  }
+
+  /** Render `<folder>/.project-companion/CLAUDE.md` from template. */
+  writeOrchestratorPrompt(target: ProjectScaffoldTarget): void {
+    this.writeFromTemplate(
+      resolve(this.deps.templatesDir, '.project-companion', 'CLAUDE.md'),
+      resolve(target.folderPath, '.project-companion', 'CLAUDE.md'),
+      this.buildTokens(target),
+    );
+  }
+
+  /** Render `<folder>/README.md` from template. */
+  writeReadme(target: ProjectScaffoldTarget): void {
+    this.writeFromTemplate(
+      resolve(this.deps.templatesDir, 'README.template.md'),
+      resolve(target.folderPath, 'README.md'),
+      this.buildTokens(target),
+    );
+  }
+
   /** Build the token map for `target`. Exposed for callers that need to render
-   *  a different template (e.g. P8's README pass). */
+   *  an ad-hoc template using the same set. */
   buildTokens(target: ProjectScaffoldTarget): Record<string, string> {
     return {
       PC_TRUNK_PATH: this.deps.trunkPath,
@@ -68,6 +129,7 @@ export class ProjectScaffold {
       PROJECT_SLUG: target.projectSlug,
       PROJECT_FOLDER: target.folderPath,
       PROJECT_NAME: target.projectName,
+      PROJECT_DATA_DIR: resolve(this.deps.dataDir, 'projects', target.projectId),
     };
   }
 

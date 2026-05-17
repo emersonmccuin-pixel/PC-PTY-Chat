@@ -12,8 +12,10 @@ import { runMigrations } from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
+import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
+import { ProjectScaffold } from './services/project-scaffold.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -52,6 +54,15 @@ const projectRegistry = new ProjectRegistry({
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
 projectRegistry.loadAll();
+
+const projectScaffold = new ProjectScaffold({
+  trunkPath: ROOT,
+  templatesDir: TEMPLATES,
+  dataDir: DATA,
+  serverPort: PORT,
+  channelPort: CHANNEL_PORT,
+});
+const projectCreate = new ProjectCreate(projectScaffold, agentLibrary, projectRegistry);
 
 // Multiplexed channel server on :8788. Per-project channel-stdio children
 // register via WS; external webhooks POST /channel/<slug>/<source>; we route
@@ -127,6 +138,44 @@ app.post('/api/ask', async (c) => {
   });
 
   return c.json({ answer });
+});
+
+// ── Project lifecycle ─────────────────────────────────────────────────────
+
+/** Create a project: git init in `folder_path`, write the PC scaffold, commit,
+ *  insert the DB row, register the runtime. Body:
+ *    { name, folder_path, mode: 'init-empty' | 'init-in-place', git_remote? }
+ *
+ *  Per MULTI-TENANCY-DESIGN.md Q2 the UI probes the folder first and picks the
+ *  mode; the server enforces consistency (refuses init-empty on a non-empty
+ *  folder; refuses to reinit an existing git repo). */
+app.post('/api/projects', async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    folder_path?: string;
+    mode?: CreateProjectMode;
+    git_remote?: string | null;
+  }>();
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const folderPath = typeof body.folder_path === 'string' ? body.folder_path.trim() : '';
+  const mode = body.mode;
+  if (!name || !folderPath || (mode !== 'init-empty' && mode !== 'init-in-place')) {
+    return c.json({ ok: false, error: 'name, folder_path, and mode required' }, 400);
+  }
+  try {
+    const project = await projectCreate.create({
+      name,
+      folderPath,
+      mode,
+      gitRemote: body.git_remote ?? null,
+    });
+    return c.json({ ok: true, project }, 201);
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is400 =
+      /required$|^invalid mode|^folder is not empty|^folder is already a git repo/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
 });
 
 // ── Project-scoped endpoints ──────────────────────────────────────────────
