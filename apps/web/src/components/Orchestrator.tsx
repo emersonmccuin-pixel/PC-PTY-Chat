@@ -22,6 +22,7 @@ import type {
   WsEnvelope,
   WsOutbound,
 } from '@/hooks/use-project-ws';
+import { useViewingSession } from '@/store/viewing-session';
 
 interface OrchestratorProps {
   project: Project;
@@ -103,10 +104,56 @@ async function respondToApproval(
 // ── Main component ───────────────────────────────────────────────────────
 
 export function Orchestrator({ project, events, send }: OrchestratorProps) {
-  // Pull chat-event envelopes + ask envelopes out of the WS stream.
+  // Viewing a past session? When set, the chat panel renders that session's
+  // events.jsonl in read-only mode (composer hidden, "Return to live" button).
+  const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
+  const setViewing = useViewingSession((s) => s.setViewing);
+
+  // Fetched events for the viewing-past-session case. Lives in component
+  // state, refetched when viewingSessionId changes.
+  const [pastEvents, setPastEvents] = useState<WsEnvelope[]>([]);
+  const [pastLoading, setPastLoading] = useState(false);
+  const [pastError, setPastError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!viewingSessionId) {
+      setPastEvents([]);
+      setPastError(null);
+      return;
+    }
+    let cancelled = false;
+    setPastLoading(true);
+    setPastError(null);
+    api
+      .getSessionEvents(project.id, viewingSessionId)
+      .then((raw) => {
+        if (cancelled) return;
+        // Wrap each raw chat event into the same { type:'event', event } shape
+        // the live stream uses so the renderer below doesn't branch.
+        const wrapped: WsEnvelope[] = raw.map((event) => ({
+          projectId: project.id,
+          type: 'event',
+          event: event as Record<string, unknown>,
+        }));
+        setPastEvents(wrapped);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setPastError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setPastLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewingSessionId, project.id]);
+
+  // Pull chat-event envelopes + ask envelopes out of the WS stream OR the
+  // past-session events depending on mode.
+  const sourceEvents = viewingSessionId ? pastEvents : events;
   const chatEnvelopes = useMemo(
-    () => events.filter((e) => e.type === 'event' || e.type === 'ask'),
-    [events],
+    () => sourceEvents.filter((e) => e.type === 'event' || e.type === 'ask'),
+    [sourceEvents],
   );
 
   // Track approvals resolved client-side so we can hide their cards
@@ -172,23 +219,39 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     }));
   }
 
+  const isViewingPast = viewingSessionId !== null;
+
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
         <div className="min-w-0 flex-1 truncate text-sm">
-          {session?.title ? (
+          {isViewingPast ? (
+            <span className="text-muted-foreground">
+              Viewing past session <span className="text-foreground/80">(read-only)</span>
+            </span>
+          ) : session?.title ? (
             <span className="text-foreground" title={session.title}>{session.title}</span>
           ) : (
             <span className="italic text-muted-foreground">Untitled session</span>
           )}
         </div>
-        <button
-          onClick={onNewSession}
-          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="End the current chat session and start a fresh one"
-        >
-          + New session
-        </button>
+        {isViewingPast ? (
+          <button
+            onClick={() => setViewing(project.slug, null)}
+            className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Stop viewing this past session and return to the live chat"
+          >
+            ← Return to live
+          </button>
+        ) : (
+          <button
+            onClick={onNewSession}
+            className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="End the current chat session and start a fresh one"
+          >
+            + New session
+          </button>
+        )}
       </div>
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
@@ -228,17 +291,27 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
               />
             );
           })}
-          {chatEnvelopes.length === 0 && (
+          {chatEnvelopes.length === 0 && !pastLoading && !pastError && (
             <div className="text-center text-xs text-muted-foreground">
-              No chat events yet. Send a message below to wake the orchestrator.
+              {isViewingPast
+                ? 'This session has no events on disk.'
+                : 'No chat events yet. Send a message below to wake the orchestrator.'}
             </div>
+          )}
+          {pastLoading && (
+            <div className="text-center text-xs text-muted-foreground">Loading session…</div>
+          )}
+          {pastError && (
+            <div className="text-center text-xs text-red-400">Error loading session: {pastError}</div>
           )}
         </div>
       </div>
-      <Composer
-        onSend={(text) => send({ type: 'send', text })}
-        onInterrupt={() => send({ type: 'interrupt' })}
-      />
+      {!isViewingPast && (
+        <Composer
+          onSend={(text) => send({ type: 'send', text })}
+          onInterrupt={() => send({ type: 'interrupt' })}
+        />
+      )}
     </div>
   );
 }

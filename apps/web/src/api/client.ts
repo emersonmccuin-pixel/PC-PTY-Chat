@@ -220,6 +220,16 @@ export const api = {
       `/api/projects/${projectId}/sessions/new`,
       {},
     ).then((r) => r.session),
+
+  listSessions: (projectId: ULID) =>
+    getJson<{ ok: true; sessions: OrchestratorSession[] }>(
+      `/api/projects/${projectId}/sessions`,
+    ).then((r) => r.sessions),
+
+  getSessionEvents: (projectId: ULID, sessionId: ULID) =>
+    getJson<{ ok: true; events: unknown[] }>(
+      `/api/projects/${projectId}/sessions/${sessionId}/events`,
+    ).then((r) => r.events),
 };
 
 export interface AgentEntry {

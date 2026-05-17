@@ -1,0 +1,142 @@
+// SessionsRail — left-rail body when the rail mode is "sessions". Lists the
+// active project's orchestrator sessions (most recent first); clicking one
+// puts the Orchestrator into read-only view of that session's events.
+// "Live" is just the active session — click it to return to the WS stream.
+
+import { useEffect, useState } from 'react';
+
+import { api, type OrchestratorSession, type Project } from '@/api/client';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useViewingSession } from '@/store/viewing-session';
+
+interface SessionsRailProps {
+  project: Project | null;
+  /** WS event stream for the active project. We watch for session-changed
+   *  envelopes so a fresh "New session" surfaces here without a refetch. */
+  events: WsEnvelope[];
+}
+
+export function SessionsRail({ project, events }: SessionsRailProps) {
+  const [sessions, setSessions] = useState<OrchestratorSession[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const viewing = useViewingSession((s) => (project ? s.bySlug[project.slug] ?? null : null));
+  const setViewing = useViewingSession((s) => s.setViewing);
+
+  useEffect(() => {
+    if (!project) {
+      setSessions([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .listSessions(project.id)
+      .then((rows) => {
+        if (!cancelled) setSessions(rows);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  // Refetch when the chat fires a session-changed event (new session minted,
+  // title set, etc.).
+  useEffect(() => {
+    if (!project) return;
+    const last = [...events].reverse().find((e) => e.type === 'session-changed');
+    if (!last) return;
+    api
+      .listSessions(project.id)
+      .then(setSessions)
+      .catch(() => {});
+  }, [events, project?.id]);
+
+  if (!project) {
+    return (
+      <div className="flex h-full flex-col bg-card text-foreground">
+        <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Sessions
+        </div>
+        <div className="px-3 py-3 text-xs text-muted-foreground">
+          Select a project to see its chat history.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-card text-foreground">
+      <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Sessions
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {loading && sessions.length === 0 && (
+          <div className="px-3 py-3 text-xs text-muted-foreground">Loading…</div>
+        )}
+        {error && (
+          <div className="px-3 py-3 text-xs text-red-400">Error: {error}</div>
+        )}
+        {!loading && !error && sessions.length === 0 && (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No sessions yet.</div>
+        )}
+        {sessions.map((s) => {
+          const isActive = s.status === 'active';
+          const isViewing = viewing === s.id;
+          const isLive = isActive && viewing === null;
+          return (
+            <button
+              key={s.id}
+              onClick={() => {
+                setViewing(project.slug, isActive ? null : s.id);
+              }}
+              title={titleForSession(s)}
+              className={
+                'block w-full border-l-2 px-3 py-1.5 text-left text-xs hover:bg-muted ' +
+                (isViewing || isLive
+                  ? 'border-primary bg-muted text-primary'
+                  : 'border-transparent text-foreground/80')
+              }
+            >
+              <div className="flex items-center gap-1.5">
+                {isActive && (
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="active" />
+                )}
+                <span className="truncate">{titleForSession(s)}</span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                {formatStarted(s.startedAt)}{isLive ? ' · live' : isViewing ? ' · viewing' : ''}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function titleForSession(s: OrchestratorSession): string {
+  return s.title?.trim() || 'Untitled session';
+}
+
+function formatStarted(ms: number): string {
+  const d = new Date(ms);
+  const today = new Date();
+  const sameDay =
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate();
+  if (sameDay) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+    ' ' +
+    d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}

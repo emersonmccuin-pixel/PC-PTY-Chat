@@ -18,8 +18,8 @@ import { useActiveProject } from '@/store/active-project';
 import { usePerProjectTab } from '@/store/per-project-tab';
 import { ActivityPanel } from './ActivityPanel';
 import { KanbanBoard } from './KanbanBoard';
+import { LeftRail } from './LeftRail';
 import { Orchestrator } from './Orchestrator';
-import { ProjectRail } from './ProjectRail';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { TabBar, TABS, type Tab } from './Tabs';
 import { WorkflowList } from './WorkflowList';
@@ -72,7 +72,12 @@ export function Shell({
       className="h-full"
     >
       <Panel id="rail" defaultSize="18%" minSize="14%" maxSize="28%">
-        <ProjectRail projects={projects} onCreateProject={onCreateProject} />
+        <LeftRail
+          projects={projects}
+          activeProject={activeProject}
+          events={wsEvents}
+          onCreateProject={onCreateProject}
+        />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel id="center" defaultSize="54%" minSize="30%">
