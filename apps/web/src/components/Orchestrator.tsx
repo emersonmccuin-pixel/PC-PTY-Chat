@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
 import { api, type OrchestratorSession, type Project } from '@/api/client';
@@ -970,7 +971,7 @@ function AssistantBubble({ event }: { event: AssistantEvent }) {
     <div className="group relative self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm text-foreground">
       <RoleLabel role="claude" />
       <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
       </div>
       <CopyButton text={text} />
     </div>
@@ -1424,7 +1425,7 @@ function TaskEndBubble({ event }: { event: TaskEndEvent }) {
       </div>
       {text ? (
         <div className="markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
         </div>
       ) : (
         <div className="text-sm italic text-muted-foreground">(no result text)</div>
