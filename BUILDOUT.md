@@ -2,11 +2,11 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session N closed 2026-05-16 — React + Tailwind v4 + shadcn (canary) scaffold stood up in `apps/web`, WorkItemsList panel ported end-to-end against existing API, Hono now serves `apps/web/dist/` in prod and Vite dev-proxies to `:4040` on `:5173`. 9 commits. User-test passed both modes. Bug caught + fixed during user-test: `/api/work-items` returns `{ workItems: [...] }` not bare array (legacy app.js knew this). Vite IPv4 bind fix (default was [::1] only). Old vanilla files moved to `apps/web/legacy/` as port-time reference. **Next: Session O — multi-tenancy planning.** User confirmed during Session N close-out planning that multi-project + git-backed + folder-linked is CORE to the app, not deferred. Per-project orchestrator (PtySession), per-project workflow registry, per-project channels, project-folder-with-git-init at creation. Session O is a planning-only session: read v1's docs/architecture.md decisions, lock down 7 open design questions (see Followups section), write BUILDOUT entries for sessions P (server multi-tenancy) + Q (UI vendor of v1 React app over the now-working server). Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) still open — pick alongside or defer.
+**Current session:** Session O closed 2026-05-16 — multi-tenancy planning, no code. 7 design questions from Session N locked + `MULTI-TENANCY-DESIGN.md` written (source of truth for the chassis #3 work) + BUILDOUT entries for Sessions P (server-side multi-tenancy, 15 milestones) + Q (UI vendor of v1 React app over the multi-tenant server, 14 milestones) drafted in the new "Chassis — Multi-tenancy" section. Old "Session E — Multi-tenancy (optional) / Slice 7" placeholder removed (superseded). Headline decisions: projects folder defaults `~/Projects/`; existing-folder-with-files asks once and inits in place by default (two commits); single multiplexed channel server path-routed by project slug; trunk-level worktrees at `<data_dir>/worktrees/<slug>/<name>/`; agents are a global library pool with per-project copies that diverge on edit; first commit is always scaffold + README; rig project gets wiped on first multi-tenant boot. **Next: Session P — server-side multi-tenancy build.** Read `MULTI-TENANCY-DESIGN.md` end-to-end first; then the Session P checklist in the new chassis section. Slice 9 Followups (when:false, run.outputs, done_when, async loop bodies, $inputs.x, terminated-workflow ping, bundled channel-events rendering) still open — bundled-channel-events lands naturally in Session Q's chat panel reshape; the rest pick alongside or defer.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 
-**Cold-read order after `/clear`:** `DESIGN-WORKFLOWS-V2.md` (top to bottom — the active design; node catalog + execution model + Decisions/Deferred sections are required reading) → this doc (intro + `**Current session:**` line + Slice 9 section between 8b and Slice 7 + Session I log at the bottom). The 17-milestone checklist in Slice 9 is the work plan; don't re-derive. `DESIGN-WORKFLOWS-AND-CONTRACTS.md` and `PLANNING-CONTRACTS-MODELS.md` are superseded; skip on cold reads.
+**Cold-read order after `/clear`:** `MULTI-TENANCY-DESIGN.md` (top to bottom — the locked design for chassis #3, drives Sessions P + Q) → this doc (intro + `**Current session:**` line + the new "Chassis — Multi-tenancy" section + Session O log entry at the bottom). For workflow-runtime work: `DESIGN-WORKFLOWS-V2.md` is still the active design (node catalog + execution model + Decisions/Deferred). `DESIGN-WORKFLOWS-AND-CONTRACTS.md` and `PLANNING-CONTRACTS-MODELS.md` are superseded; skip on cold reads.
 
 ## How to use this doc
 
@@ -425,25 +425,112 @@ Scope: stand up the React stack + port ONE panel end-to-end to prove the pattern
 
 **Pivot during planning for next session:** xterm terminal panel is OUT entirely (dev-only, not a product feature). User confirmed multi-project + git-backed + folder-linked is CORE to the app, not deferred to a "chassis #3" later. That cascades through the next sessions' shape — see Session N log entry below.
 
-## Session E — Multi-tenancy (optional)
+## Chassis — Multi-tenancy
 
-**Slice 7.** Two parallel projects.
+**Goal.** Server runs N projects in parallel without crosstalk; UI is a multi-project shell with full per-project workspace (chat, kanban, workflows, channel events, settings). Replaces the singleton rig fixture with the real PC contract.
 
-Goal: confirm two PtySessions can run in parallel without crosstalk. Validates the "one orchestrator per project" model.
+**Spec.** `MULTI-TENANCY-DESIGN.md` is the source of truth — read top to bottom before touching server scaffolding or the project shell. 7 design questions locked in Session O (2026-05-16, planning-only).
+
+**Headline locked decisions:** projects folder defaults `~/Projects/`; existing-folder-with-files asks once and inits in place by default with two commits (`Initial import` then `Add Project Companion scaffold`); single multiplexed channel server, path-routed by project slug; trunk-level worktrees at `<data_dir>/worktrees/<slug>/<name>/`; agents are a global library pool (`~/.project-companion/agents/`) with per-project copies that diverge on edit; first commit is always scaffold + README; rig project gets wiped on first multi-tenant boot.
+
+**Supersedes:** the old "Session E — Multi-tenancy (optional) / Slice 7" placeholder (per-port-per-project + bundled workspace/data/.claude). Removed below.
+
+### Session P — Server-side multi-tenancy
+
+Scope: replace the singleton runtime with per-project runtimes, multiplex channels, scaffold the create-project flow, wire the agent library, drop the rig. No UI — Session Q vendors the shell. User test is curl / httpie + WS tail.
 
 **Ports to:**
-- `apps/server/src/services/project-runtime.ts` (project registry; rig version is the foundation of PC's)
-- `apps/web/` (project picker — vanilla in rig, React in PC)
+- `packages/db/src/schema/projects.ts` (add `folder_path`, `git_remote`, `created_at`, `deleted_at`)
+- `apps/server/src/services/project-runtime.ts` (new — per-project PtySession + WorkflowRuntime + WorktreeService bundle)
+- `apps/server/src/services/project-registry.ts` (new — `Map<ULID, ProjectRuntime>`, lifecycle)
+- `apps/server/src/services/channel-server.ts` (rewrite — multiplexed, path-routed)
+- `apps/server/src/services/worktree.ts` (scoped: `<data_dir>/worktrees/<slug>/<name>/`)
+- `apps/server/src/services/workflow-runtime.ts` (per-project; registry watches `<folder>/.project-companion/workflows/`)
+- `apps/server/src/services/agent-library.ts` (new — read `~/.project-companion/agents/`, write per-project copies)
+- `apps/server/src/services/fs-probe.ts` (new — folder existence / git-state probe)
+- `apps/server/src/services/fs-browse.ts` (new — folder listing for picker)
+- `apps/server/src/services/project-create.ts` (new — git init + scaffold writes + first commit(s))
+- `apps/server/src/index.ts` (drop singletons; wire registry; add `/api/projects`, `/api/fs/*`, `/api/agents` endpoints)
+- `packages/mcp/src/server.ts` (per-project routing via `X-PC-Project` header from per-project `.mcp.json`)
+- `templates/.claude/{agents,hooks}/`, `templates/.project-companion/{workflows,CLAUDE.md}`, `templates/.mcp.template.json`, `templates/README.template.md` (new — checked in)
 
-- [ ] Refactor server.ts: PtySessions keyed by project ID, not singleton
-- [ ] Each project owns its own channel server port (8788, 8789, …)
-- [ ] Each project has its own workspace/, data/, .claude/
-- [ ] UI: project picker tab; chat panel switches between active project
-- [ ] Test: move a card in project A, confirm project B's orchestrator/cards untouched
+**Build order — 15 milestones.** Each is one logical commit's worth of work. Server boots between milestones; from P4 onward the singleton rig path is gone — first multi-tenant boot opens with zero projects.
 
-> **User test.** Boot rig with two projects configured. Send channel events to both in rapid succession. Move cards in both. Confirm zero crosstalk: each orchestrator sees only its own events, each chat panel shows only its own bubbles.
+- [ ] P1. Schema migration: `projects` gets `folder_path`, `git_remote` (nullable), `created_at` (epoch ms per v1 #15), `deleted_at` (nullable, soft-delete per v1 #16). Drizzle migration file.
+- [ ] P2. `templates/` dir at trunk root: canonical agents, hooks, seed workflows, `CLAUDE.md`, `.mcp.template.json`, `README.template.md`. Check in. (Trunk-level template source — distinct from per-project copies users edit.)
+- [ ] P3. Agent library bootstrap: on server start, if `~/.project-companion/agents/` is empty / missing, copy from `templates/.claude/agents/`. `AgentLibrary.list()` reads the dir; `AgentLibrary.write(name, body)` writes a new file. No DB row — files-on-disk are the registry (same shape as workflows).
+- [ ] P4. `ProjectRuntime` + `ProjectRegistry` abstractions. Drop singleton `WorkflowRuntime` / `PtySession`. Bootstrap rewrite removes the hardcoded `rig` seed. PtySession cwd = `project.folder_path`. `--mcp-config` points at `<folder>/.mcp.json`.
+- [ ] P5. Channel server rewrite: one server on `:8788`, path-routed `POST /channel/<slug>/<source>`. WS broadcast envelope adds `projectId`. `pc_log` MCP tool reads projectId from the request context (per-project MCP config injects `X-PC-Project` header).
+- [ ] P6. `WorktreeService` scoped per-project. Path key: `<data_dir>/worktrees/<slug>/<name>/`. Run-triggered worktrees: `<data_dir>/worktrees/<slug>/run-<short>/`. Slug cache: `projectId → slug` lookup at registry boot; refresh on rename.
+- [ ] P7. Per-project `.mcp.json` generated at create time from `templates/.mcp.template.json` with project id + PC's MCP URL substituted. Same pattern for `.claude/settings.json` from `templates/.claude/settings.template.json`.
+- [ ] P8. `POST /api/projects` endpoint: `{ name, folder_path, mode: 'init-empty' | 'init-in-place' }`. `init-empty` → git init + write scaffold + one commit (`Initial commit`). `init-in-place` → git init + commit existing files (`Initial import`) + write scaffold + commit (`Add Project Companion scaffold`). Returns the created project row. Slug derived from name, uniqued.
+- [ ] P9. `POST /api/fs/probe` endpoint: `{ path }` → `{ exists, isDirectory, hasFiles, fileCount, isGitRepo }`. Drives the create-project UI's folder-state preview.
+- [ ] P10. `GET /api/fs/browse?path=...` endpoint: dir listing for the folder picker. Defaults to `~/`; allows anywhere under the user's home; explicit allow-path config for outside-home paths.
+- [ ] P11. Project list / get / update endpoints: `GET /api/projects` (excludes soft-deleted by default; `?include_deleted=1` opt-in), `GET /api/projects/:id`, `PATCH /api/projects/:id` (rename + git remote — slug stays locked per design's "deferred" section).
+- [ ] P12. Project soft-delete: `DELETE /api/projects/:id` flips `deleted_at`; filesystem untouched. Separate `DELETE /api/projects/:id/files` (danger-zone) removes `.project-companion/` + `.claude/` only — user's own files stay.
+- [ ] P13. Agent library endpoints: `GET /api/agents` (library list), `POST /api/agents` (write new library agent), `GET /api/projects/:id/agents` (per-project copies), `POST /api/projects/:id/agents` (add-from-library — copy a library agent into `<folder>/.claude/agents/`), `PATCH /api/projects/:id/agents/:name` (edit project copy — library untouched).
+- [ ] P14. WS broadcast envelope: every event (chat, channel, work-item mutation, status) carries `projectId`. Server already broadcasts most of these; just tag them.
+- [ ] P15. `pnpm -r typecheck` green across all 5 packages + `@pc/web`.
+
+> **Session break.** Get to clean state (tree clean, P1-P15 ticked, work committed) before crossing into the user test. The test is the gate for Session Q.
+
+> **User test.** No UI yet. Run via httpie / curl + a WS tail script.
+> 1. Boot fresh DB. `GET /api/projects` returns `[]`.
+> 2. Create project A at a fresh empty folder (`POST /api/projects` mode `init-empty`). Expect: git repo initialized, `.claude/`, `.project-companion/`, `README.md` written, one commit titled `Initial commit`. `GET /api/projects` lists it.
+> 3. Create project B at an existing folder with files (mode `init-in-place`). Expect: two commits — `Initial import` then `Add Project Companion scaffold`. Pre-existing files survive.
+> 4. Confirm worktrees, agent copies, `.mcp.json` all landed under each project's folder. Library at `~/.project-companion/agents/` is untouched.
+> 5. WS tail: every event carries `projectId`.
+> 6. Send a channel POST to `/channel/<slug-A>/test`. Only project A's WS subscribers see it; B's are silent.
+> 7. Trigger a workflow in A (via `pc_run_workflow` from A's orchestrator) and B in parallel. Confirm runs don't bleed: A's worktree dir is under `<data_dir>/worktrees/<slug-A>/`, B's under `<data_dir>/worktrees/<slug-B>/`.
+> 8. Soft-delete project A. `GET /api/projects` filters it out. Folder + files untouched on disk.
+> 9. Add a library agent via `POST /api/agents`. `GET /api/agents` lists it. Add it to project B via `POST /api/projects/<id>/agents`. Confirm copy lands in B's `.claude/agents/` and library version is unchanged.
+> 10. Edit B's copy via `PATCH /api/projects/<id>/agents/<name>`. Confirm library version still untouched.
 
 - [ ] User test passed
+
+**Not in scope here:** UI shell (Session Q), project rename → slug migration, agent "push to library" affordance, per-project concurrency caps, isolation environments, file attachments, vault. All flagged in `MULTI-TENANCY-DESIGN.md` "Open / deferred."
+
+### Session Q — UI vendor + multi-tenant shell
+
+Scope: vendor v1's React UI components onto the multi-tenant server. Vellum re-skin. WS-first reshape of Orchestrator chat (v1 polled). Workflow builder deferred to a later session (currently sketched as Session R).
+
+**Reference source:** `E:/Claude Code Projects/Personal/Project Companion/apps/web/src/` (~50 components — Shell 174 LOC, ProjectRail 191, Orchestrator chat 1295, KanbanBoard 280, Tabs 72, AppSettingsModal, FolderPicker, FolderBrowserModal, ProjectSettingsPanel, work-items/* 12 files, workflows/* 26 files mostly builder-only, activity/ActivityPanel). Stack additions: zustand, react-resizable-panels, react-markdown + remark-gfm, @dnd-kit/core + @dnd-kit/sortable. lucide-react already installed via shadcn.
+
+**Ports to:** N/A — this IS the UI port. v1's `apps/web/src/` files are the vendor source; per-file vendor headers per trunk `CLAUDE.md` rule.
+
+**Build order — 14 milestones.**
+
+- [ ] Q1. Add deps: zustand, react-resizable-panels, react-markdown, remark-gfm, @dnd-kit/core, @dnd-kit/sortable. `pnpm install`.
+- [ ] Q2. Vellum re-skin: replace shadcn slate-oklch tokens in `apps/web/src/index.css` with vellum hex (background `#080604`, foreground `#f0e4c4`, primary `#f0d080`, etc.). `--radius: 0`. JetBrains Mono via `@fontsource/jetbrains-mono`. Existing shadcn Button / Card / Badge inherit the new palette.
+- [ ] Q3. Vendor Shell (3-col layout, react-resizable-panels). Header + left ProjectRail + center workspace + right ActivityPanel (stub here, filled in Q12).
+- [ ] Q4. Vendor ProjectRail. Lists projects from `GET /api/projects`. Active-project state in zustand. "Create project" button surfaces the create-project modal.
+- [ ] Q5. Create-project flow: vendor FolderPicker + FolderBrowserModal. Wire to `GET /api/fs/browse` (drill into dirs) + `POST /api/fs/probe` (show the folder-state preview: "12 files, no .git — we'll init here and commit them as `Initial import`. Proceed?"). On confirm, `POST /api/projects` with mode derived from the probe.
+- [ ] Q6. Active-project plumbing: zustand store holds `activeProjectId`. WS hook filters events by `projectId === activeProjectId` (with an opt-in "all projects" mode for ActivityPanel per v1 §7). All API calls scope to the active project.
+- [ ] Q7. Vendor Tabs strip + WorkItems → KanbanBoard. Replaces N5's simple WorkItemsList. Live updates via WS. @dnd-kit/core for drag-between-stages. Retire `apps/web/src/components/work-items-list.tsx`.
+- [ ] Q8. Vendor Orchestrator chat panel. WS-first reshape: drop v1's polling, subscribe to per-project chat events. Markdown via react-markdown + remark-gfm. Approval cards inline. Ask cards: stacked descriptions + Cancel button per Session M point 3. Bundled `<channel>` blocks: parse out and render one bubble per block (closes the Session M Followup).
+- [ ] Q9. Workflows tab (read-only). Vendor a minimal `WorkflowList` showing `<project>/.project-companion/workflows/*.yaml` from `GET /api/workflows`. Read-only YAML view + run history + pending-approval cards. Builder deferred to Session R.
+- [ ] Q10. Vendor AppSettingsModal. Gear icon → modal. `PATCH /api/settings` (envelope from Session N close-out planning). `projectsFolder` global override editable here.
+- [ ] Q11. Vendor ProjectSettingsPanel. Per-project tab. Rename, edit git remote, agent library picker (add agent from library — `POST /api/projects/:id/agents`), "Save as new library agent" when editing a project's agent (`POST /api/agents` with the project copy's body), project soft-delete + danger-zone "Also delete files on disk".
+- [ ] Q12. Vendor ActivityPanel. WS event log scoped to active project (default) or all projects (toggle, per v1 §7). Persist toggle in `settings_global.activity_panel`.
+- [ ] Q13. WS client hardening: port the Session F point 4 wins from legacy `app.js` (exponential backoff 2 → 5 → 15 → 30s cap, single banner per disconnect, event-timestamp dedup against server replay). Land as a zustand-friendly hook.
+- [ ] Q14. `pnpm -r typecheck` green; `pnpm build` produces a clean `apps/web/dist/`.
+
+> **Session break.** Tree clean before user test.
+
+> **User test.** All via the UI on `http://127.0.0.1:5173/` (Vite dev → Hono `:4040`) — also verify prod (`pnpm build` + `http://127.0.0.1:4040/`).
+> 1. Empty state: project rail shows "no projects." Click "Create project."
+> 2. Folder picker drills under `~/`. Pick an empty subfolder; preview reads "empty folder — will git init here." Confirm. Project A lands in the rail; switching to it shows empty kanban + empty chat.
+> 3. Create project B at an existing folder with files. Preview reads "12 files, no .git — will commit as Initial import then add scaffold." Confirm. Two commits land; B's kanban + chat are empty.
+> 4. Switch between A and B in the rail. Workspace fully re-keys: chat, kanban, workflows, channel events all scope to the active project. Zero crosstalk.
+> 5. Drag a work item between stages in A (kanban DnD). Live update via WS. Concurrently move one in B. Both update; neither bleeds.
+> 6. Send a channel POST to `/channel/<slug-A>/webhook`. Only A's chat panel shows the event (assuming A is active or the user has opt-in "all projects" toggled in ActivityPanel).
+> 7. Project settings → add an agent from the library to B. Edit B's copy. Confirm library version untouched (verify via `GET /api/agents` returning the unmodified original).
+> 8. App settings → change `projectsFolder` global. Restart-required prompt? (No — projectsFolder is hot-reloadable; only `data_dir` requires restart per v1 #24.)
+> 9. Soft-delete A from project settings → A disappears from rail. Files untouched on disk (verify in OS file browser).
+
+- [ ] User test passed
+
+**Not in scope here:** workflow builder UI (Session R), isolation environments UI, file attachments UI, vault / secrets UI, agent "push to library" sync, project rename → slug migration.
 
 ## When this whole plan is done
 
@@ -454,6 +541,49 @@ Folded back into PC: Phase 9-B (PTY transport for chat) → 9-C (PTY for workflo
 ## Session log
 
 Append findings, surprises, and decisions here as sessions close. Cold-readable artifact for the next session.
+
+### Session O — multi-tenancy planning (2026-05-16)
+
+Planning-only session. No code. Walked the 7 open design questions from the Session N log with the user, locked answers, wrote `MULTI-TENANCY-DESIGN.md`, drafted BUILDOUT entries for Sessions P + Q under a new "Chassis — Multi-tenancy" section, removed the old "Session E — Multi-tenancy (optional) / Slice 7" placeholder.
+
+**Locked answers (rationale in `MULTI-TENANCY-DESIGN.md`):**
+1. Default projects folder: `~/Projects/`, settable as `projectsFolder` global. Rejected `~/.project-companion/projects/` (conflates user repos with PC's data dir).
+2. Existing folder with files but no `.git`: ask once at create-time, init-in-place as the default action. Show file count + plan. Two commits: `Initial import` then `Add Project Companion scaffold`. Rejected silent init (destructive-feeling) and refusal (unhelpful).
+3. Channel server: multiplexed, one server on `:8788`, path-routed `POST /channel/<slug>/<source>`. WS events tag `projectId`. Rejected per-port-per-project (operational drag for negligible isolation upside on local-first single-user).
+4. Worktrees: trunk-level `<data_dir>/worktrees/<slug>/<name>/`. Matches v1 architecture §4. Keeps user's repo clean.
+5. Agents: hybrid — global library pool at `~/.project-companion/agents/` (seeded from trunk `templates/.claude/agents/` on first run) + per-project copies that diverge on edit. UI: "Add from library" per-project + "Save as new library agent" when authoring in-project. Library version stays put when project copy diverges. Rejected single-source-of-truth (one breaking edit nukes all projects' agents).
+6. First commit: always seed scaffold + README. Fresh folder = one commit; existing folder = two commits. Rejected empty repo (unborn HEAD → fragile worktrees) and scaffold-without-commit (surprises users).
+7. Rig project on first multi-tenant boot: wipe. Rig was Session A-N scaffolding; multi-tenancy is a new contract. Migration code is complexity for a one-user state recreatable in 30s. Rejected migrate-in-place and parallel-systems.
+
+**Cross-cutting decisions reaffirmed (from Session N close-out):**
+- Multi-project is core, not deferred. Project picker functional day one.
+- Every project is git-backed (mandatory). Every project is folder-linked (PC stores absolute `folder_path`). Optional git remote at create, editable in project settings.
+- Per-project everything: PtySession (cwd = `folder_path`), workflow registry (`<folder>/.project-companion/workflows/`), channel routes, `.claude/agents/` copies, worktree namespace, settings.
+- WS-first for live updates; no polling. Each panel snapshot-on-mount, then subscribe.
+- Workflow builder deferred to its own session (sketched as Session R).
+- Skip on UI for first cut: isolation environments, file attachments, vault. (Future work.)
+
+**Cross-cutting Q5 nuance worth highlighting:** The user pushed back on the binary "copied vs shared" framing and asked for a library pool + per-project copies. Followup clarification confirmed: library = template pool (not source-of-truth), edits in projects diverge from the library, optional "save as new library agent" affordance closes the back-flow loop without forcing auto-sync. Concrete shape locked in design doc §5.
+
+**Implementation shape that fell out (highlights — full detail in `MULTI-TENANCY-DESIGN.md`):**
+- `projects` table gets `folder_path`, `git_remote` (nullable), `created_at` (epoch ms per v1 #15), `deleted_at` (soft-delete per v1 #16).
+- `templates/` dir lands at trunk root with canonical agents / hooks / workflows / `CLAUDE.md` / `.mcp.template.json` / `README.template.md`. Checked in. Distinct from per-project copies users edit.
+- `ProjectRuntime` (PtySession + WorkflowRuntime + WorktreeService bundle) + `ProjectRegistry` (`Map<ULID, ProjectRuntime>`) replace the server's singletons.
+- Per-project `.mcp.json` injects `X-PC-Project: <ulid>` header so the in-process MCP server can scope tools to the calling project.
+- Soft-delete leaves filesystem untouched. Separate danger-zone "Also delete files on disk" only nukes `.project-companion/` + `.claude/` — user's own files always stay.
+
+**Deferred (in design doc § "Open / deferred"):**
+- Project rename → slug migration (worktree dirs + channel URLs embed slug). First cut: name renamable, slug locked at create.
+- "Push project edits to library" affordance for agents (the Q5 back-flow).
+- Per-project concurrency caps (defer until concurrency caps exist in PC v2 at all).
+- Isolation environments, file attachments, vault — flagged as "first-cut skip" in Session N log.
+- Activity panel scope toggle (active vs all projects per v1 §7) — backend has the data; UI lands in Session Q12.
+
+**Files touched (planning only):**
+- New: `MULTI-TENANCY-DESIGN.md` at trunk root.
+- Modified: `BUILDOUT.md` — `**Current session:**` line, cold-read order pointer, removed old "Session E — Multi-tenancy (optional) / Slice 7" section, added "Chassis — Multi-tenancy" section with Session P (15 milestones) + Session Q (14 milestones).
+
+**Cold-read recovery for Session P:** Open `MULTI-TENANCY-DESIGN.md` end-to-end, then the "Chassis — Multi-tenancy" section in this doc, then this Session O log entry. Then start ticking the P1-P15 checklist. The session ends at the user-test gate (P15 → session break); user runs the curl/WS-tail test; Session Q only starts after that passes.
 
 ### Session N — React/Tailwind/shadcn scaffold + first panel + planning pivot (2026-05-16)
 
