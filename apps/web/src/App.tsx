@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { api, type Project } from '@/api/client';
+import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { Shell } from '@/components/Shell';
 import { useActiveProject } from '@/store/active-project';
 
@@ -59,34 +60,15 @@ export default function App() {
         />
       </div>
       {createOpen && (
-        <CreateProjectPlaceholder onClose={() => setCreateOpen(false)} />
+        <CreateProjectModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={(p) => {
+            setProjects((prev) => (prev ? [p, ...prev] : [p]));
+            setActiveSlug(p.slug);
+            setCreateOpen(false);
+          }}
+        />
       )}
-    </div>
-  );
-}
-
-// Q5 swaps this for the real FolderPicker + FolderBrowserModal + create flow.
-function CreateProjectPlaceholder({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 grid place-items-center bg-background/80 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="border border-border bg-card p-6 text-sm text-foreground"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 font-semibold">Create project</div>
-        <div className="mb-4 text-muted-foreground">
-          Folder picker + folder probe + POST /api/projects land in Q5.
-        </div>
-        <button
-          onClick={onClose}
-          className="bg-primary px-3 py-1 text-primary-foreground hover:bg-primary/90"
-        >
-          Close
-        </button>
-      </div>
     </div>
   );
 }

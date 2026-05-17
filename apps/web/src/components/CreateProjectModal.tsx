@@ -1,0 +1,225 @@
+// Create-project modal. Composes FolderBrowserModal + POST /api/fs/probe +
+// POST /api/projects. Mode is derived from the probe:
+//   - empty folder            → 'init-empty'
+//   - has files, no .git      → 'init-in-place'
+//   - already a git repo      → refuse (server also refuses)
+
+import { useEffect, useRef, useState } from 'react';
+
+import {
+  api,
+  type CreateProjectMode,
+  type FolderProbe,
+  type Project,
+} from '@/api/client';
+import { FolderBrowserModal } from './FolderBrowserModal';
+
+interface CreateProjectModalProps {
+  onClose: () => void;
+  onCreated: (project: Project) => void;
+}
+
+type ProbeState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'ready'; probe: FolderProbe }
+  | { status: 'error'; message: string };
+
+export function CreateProjectModal({ onClose, onCreated }: CreateProjectModalProps) {
+  const [name, setName] = useState('');
+  const [folderPath, setFolderPath] = useState('');
+  const [probeState, setProbeState] = useState<ProbeState>({ status: 'idle' });
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const probeReqId = useRef(0);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !browserOpen) onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [browserOpen, onClose]);
+
+  function probe(path: string) {
+    if (!path.trim()) {
+      setProbeState({ status: 'idle' });
+      return;
+    }
+    setProbeState({ status: 'checking' });
+    const my = ++probeReqId.current;
+    api
+      .probeFolder(path)
+      .then((p) => {
+        if (my !== probeReqId.current) return;
+        setProbeState({ status: 'ready', probe: p });
+      })
+      .catch((e) => {
+        if (my !== probeReqId.current) return;
+        setProbeState({ status: 'error', message: (e as Error).message });
+      });
+  }
+
+  function pickFolder(p: string) {
+    setBrowserOpen(false);
+    setFolderPath(p);
+    probe(p);
+  }
+
+  const mode = derivedMode(probeState);
+  const canCreate =
+    !busy && name.trim().length > 0 && mode !== null;
+
+  async function submit() {
+    if (!canCreate || mode === null) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const project = await api.createProject({
+        name: name.trim(),
+        folder_path: folderPath,
+        mode,
+      });
+      onCreated(project);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 grid place-items-center bg-black/40"
+        onClick={onClose}
+      >
+        <div
+          className="flex w-[520px] flex-col border border-border bg-card text-foreground"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <header className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="text-base font-semibold">Create project</h2>
+            <button
+              onClick={onClose}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </header>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+            className="flex flex-col gap-3 px-4 py-4"
+          >
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-muted-foreground">Name</span>
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My project"
+                className="bg-muted px-2 py-1 text-sm"
+              />
+            </label>
+
+            <div className="flex flex-col gap-1 text-sm">
+              <span className="text-muted-foreground">Folder</span>
+              <div className="flex items-stretch gap-1">
+                <button
+                  type="button"
+                  onClick={() => setBrowserOpen(true)}
+                  className="border border-border bg-card px-2 py-1 text-xs text-foreground hover:bg-muted"
+                >
+                  Browse…
+                </button>
+                <code className="flex-1 truncate border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+                  {folderPath || (
+                    <span className="text-muted-foreground">No folder selected</span>
+                  )}
+                </code>
+              </div>
+              <ProbePreview state={probeState} />
+            </div>
+
+            {err && <div className="text-xs text-destructive">{err}</div>}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="border border-border px-3 py-1.5 text-sm hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!canCreate}
+                className="bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {busy ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      {browserOpen && (
+        <FolderBrowserModal
+          {...(folderPath ? { initialPath: folderPath } : {})}
+          onCancel={() => setBrowserOpen(false)}
+          onSelect={pickFolder}
+        />
+      )}
+    </>
+  );
+}
+
+function ProbePreview({ state }: { state: ProbeState }) {
+  if (state.status === 'idle') return null;
+  if (state.status === 'checking') {
+    return <div className="text-xs text-muted-foreground">Checking…</div>;
+  }
+  if (state.status === 'error') {
+    return <div className="text-xs text-destructive">{state.message}</div>;
+  }
+  const { probe } = state;
+  if (!probe.exists) {
+    return <div className="text-xs text-destructive">Folder does not exist.</div>;
+  }
+  if (!probe.isDirectory) {
+    return <div className="text-xs text-destructive">Path is not a directory.</div>;
+  }
+  if (probe.isGitRepo) {
+    return (
+      <div className="text-xs text-destructive">
+        Already a git repo — cannot create a project here.
+      </div>
+    );
+  }
+  if (!probe.hasFiles) {
+    return (
+      <div className="text-xs text-success">
+        Empty folder — will git init here and commit the scaffold.
+      </div>
+    );
+  }
+  return (
+    <div className="text-xs text-warning">
+      {probe.fileCount} existing {probe.fileCount === 1 ? 'entry' : 'entries'}, no .git
+      — will commit as <code className="bg-muted px-1">Initial import</code> then add
+      scaffold.
+    </div>
+  );
+}
+
+function derivedMode(state: ProbeState): CreateProjectMode | null {
+  if (state.status !== 'ready') return null;
+  const p = state.probe;
+  if (!p.exists || !p.isDirectory || p.isGitRepo) return null;
+  return p.hasFiles ? 'init-in-place' : 'init-empty';
+}

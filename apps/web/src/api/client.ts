@@ -51,9 +51,62 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
+// ── Filesystem (folder picker) ─────────────────────────────────────────────
+
+export interface BrowseEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isHidden: boolean;
+}
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+}
+
+export interface FolderProbe {
+  path: string;
+  exists: boolean;
+  isDirectory: boolean;
+  hasFiles: boolean;
+  fileCount: number;
+  isGitRepo: boolean;
+}
+
+export type CreateProjectMode = 'init-empty' | 'init-in-place';
+
 export const api = {
   listProjects: () =>
     getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
+
+  createProject: (input: {
+    name: string;
+    folder_path: string;
+    mode: CreateProjectMode;
+    git_remote?: string | null;
+  }) =>
+    postJson<{ ok: true; project: Project }>('/api/projects', input).then(
+      (r) => r.project,
+    ),
+
+  browseFolder: async (path?: string): Promise<BrowseResult> => {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+    const res = await fetch(`/api/fs/browse${qs}`);
+    const data = (await res.json()) as
+      | { ok: true; path: string; parent: string | null; entries: BrowseEntry[] }
+      | { ok: false; error: string; kind?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `browse → ${res.status}`);
+    }
+    return { path: data.path, parent: data.parent, entries: data.entries };
+  },
+
+  probeFolder: async (path: string): Promise<FolderProbe> => {
+    const r = await postJson<{ ok: true; probe: FolderProbe }>('/api/fs/probe', { path });
+    return r.probe;
+  },
 
   // Per-project endpoints (Q7+ consumers).
   project: (projectId: ULID) => getJson<Project>(`/api/projects/${projectId}`),
