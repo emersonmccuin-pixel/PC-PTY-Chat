@@ -2,7 +2,9 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session Q **closed** — UI vendor + multi-tenant shell. **All 14 milestones shipped + user-tested + committed.** Q11 ProjectSettingsPanel; Q12 ActivityPanel + all-projects toggle; Q13 WS hardening (backoff + dedup, dedup empirically verified 6→6 events across reconnect); Q14 typecheck + build green. User-test gate ticked 2026-05-17 after visual smoke pass on `http://127.0.0.1:5173/`. **Next:** session break — wait for direction on Session R (workflow builder UI) or another chassis priority. Cold-read entry for the closeout is `### Session Q (closeout)` at the bottom of this doc.
+**Current session:** Session Q **closed** — UI vendor + multi-tenant shell. **All 14 milestones shipped + user-tested + committed.** Q11 ProjectSettingsPanel; Q12 ActivityPanel + all-projects toggle; Q13 WS hardening (backoff + dedup, dedup empirically verified 6→6 events across reconnect); Q14 typecheck + build green. User-test gate ticked 2026-05-17 after visual smoke pass on `http://127.0.0.1:5173/`.
+
+> **READ `NEXT-SESSION.md` BEFORE STARTING ANYTHING.** The user has set explicit priorities for the next phase: plan first, harden the existing UX second, features (incl. Session R workflow builder) third. Do not roll into Session R or any other feature work without re-reading `NEXT-SESSION.md` and getting alignment.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 
