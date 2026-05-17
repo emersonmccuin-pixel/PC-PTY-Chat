@@ -12,6 +12,7 @@ import { runMigrations } from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
+import { probeFolder } from './services/fs-probe.ts';
 import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
@@ -138,6 +139,21 @@ app.post('/api/ask', async (c) => {
   });
 
   return c.json({ answer });
+});
+
+// ── Filesystem probe (create-project UI) ──────────────────────────────────
+
+/** Probe a folder for the create-project preview. Body: `{ path }`.
+ *  Response: { path, exists, isDirectory, hasFiles, fileCount, isGitRepo }. */
+app.post('/api/fs/probe', async (c) => {
+  const body = await c.req.json<{ path?: string }>();
+  const raw = typeof body.path === 'string' ? body.path.trim() : '';
+  if (!raw) return c.json({ ok: false, error: 'path required' }, 400);
+  try {
+    return c.json({ ok: true, probe: probeFolder(raw) });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
 });
 
 // ── Project lifecycle ─────────────────────────────────────────────────────
