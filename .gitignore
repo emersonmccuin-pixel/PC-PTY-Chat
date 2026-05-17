@@ -10,6 +10,9 @@ build/
 data/*
 !data/.gitkeep
 
+# Manual / accidental data-dir snapshots (timestamped)
+data.bak.*
+
 # Worktrees managed by the runtime (regenerated)
 worktrees/
 
