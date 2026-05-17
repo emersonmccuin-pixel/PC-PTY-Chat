@@ -9,8 +9,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@pc/domain": "workspace:*",
-    "@pc/runtime": "workspace:*"
+    "@pc/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

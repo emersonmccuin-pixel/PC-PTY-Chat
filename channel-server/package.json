@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./server.js",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.18.0"
   }
 }

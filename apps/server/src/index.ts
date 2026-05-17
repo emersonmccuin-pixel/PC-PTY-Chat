@@ -11,6 +11,7 @@ import type { ULID } from '@pc/domain';
 import { runMigrations } from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
+import { ChannelServer } from './services/channel-server.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 
@@ -51,6 +52,18 @@ const projectRegistry = new ProjectRegistry({
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
 projectRegistry.loadAll();
+
+// Multiplexed channel server on :8788. Per-project channel-stdio children
+// register via WS; external webhooks POST /channel/<slug>/<source>; we route
+// to the matching child + emit a UI broadcast tagged with projectId.
+const channelServer = new ChannelServer({
+  port: CHANNEL_PORT,
+  allowedSenders: new Set((process.env.CHANNEL_ALLOWED_SENDERS ?? 'test').split(',').filter(Boolean)),
+  onEvent: (projectId, event) => {
+    broadcastTo(projectId, { type: 'channel-event', projectId, event });
+  },
+});
+channelServer.start();
 
 const app = new Hono();
 
@@ -541,7 +554,8 @@ wss.on('connection', (ws, req) => {
 });
 
 process.on('SIGINT', () => {
-  console.log('[pc] SIGINT — shutting down project runtimes');
+  console.log('[pc] SIGINT — shutting down project runtimes + channel server');
   projectRegistry.shutdownAll();
+  channelServer.shutdown();
   process.exit(0);
 });

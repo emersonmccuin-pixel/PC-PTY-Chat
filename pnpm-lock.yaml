@@ -105,6 +105,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.1
 
   packages/db:
     dependencies:
@@ -154,9 +157,6 @@ importers:
       '@pc/domain':
         specifier: workspace:*
         version: link:../domain
-      '@pc/runtime':
-        specifier: workspace:*
-        version: link:../runtime
     devDependencies:
       '@types/node':
         specifier: ^22.10.2

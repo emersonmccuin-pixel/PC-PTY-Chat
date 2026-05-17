@@ -1,6 +1,7 @@
-// Rig MCP server. Single tool (pc_log) — proves end-to-end MCP wiring.
-// CC spawns this via stdio per workspace/.mcp.json. Status heartbeat at
-// data/mcp-status.json lets the UI render an "MCP: N" pill.
+// Per-project MCP server. Spawned by each project's claude.exe via its
+// .mcp.json. Tools are scoped to PC_PROJECT_ID — set by the per-project config
+// at substitution time. All work-item / workflow / worktree calls shim through
+// to apps/server's project-scoped HTTP API so dispatch logic stays in one place.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -13,24 +14,18 @@ import { request as httpRequest } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  createWorktree,
-  destroyWorktree,
-  listWorktrees,
-} from '@pc/runtime';
-
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-// packages/mcp/src/server.ts → rig root is three levels up.
+// packages/mcp/src/server.ts → trunk root is three levels up. Used as the
+// fallback data dir; PC_DATA_DIR override wins.
 const ROOT = resolve(__dirname, '..', '..', '..');
-const DATA = resolve(ROOT, 'data');
-const WORKSPACE = resolve(ROOT, 'workspace');
-const LOG = resolve(DATA, 'mcp-log.jsonl');
-const STATUS = resolve(DATA, 'mcp-status.json');
-
-// Workflow card tools (pc_move_card, pc_update_card) shim through to the
-// apps/server HTTP API so dispatch logic stays in one place. SERVER_PORT
-// matches apps/server's PORT (default 4040).
+const DATA = process.env.PC_DATA_DIR ? resolve(process.env.PC_DATA_DIR) : resolve(ROOT, 'data');
+const PROJECT_ID = process.env.PC_PROJECT_ID ?? '';
 const SERVER_PORT = Number(process.env.PC_SERVER_PORT ?? 4040);
+
+// Per-project log + heartbeat — keep each project's MCP signals isolated.
+const PROJECT_DATA = PROJECT_ID ? resolve(DATA, 'projects', PROJECT_ID) : DATA;
+const LOG = resolve(PROJECT_DATA, 'mcp-log.jsonl');
+const STATUS = resolve(PROJECT_DATA, 'mcp-status.json');
 
 const TOOLS = [
   {
@@ -191,6 +186,11 @@ const TOOLS = [
   },
 ] as const;
 
+function projectPath(suffix: string): string {
+  if (!PROJECT_ID) throw new Error('PC_PROJECT_ID is required for project-scoped calls');
+  return `/api/projects/${PROJECT_ID}/${suffix.replace(/^\//, '')}`;
+}
+
 async function postServer(
   path: string,
   body: unknown,
@@ -218,6 +218,23 @@ async function postServer(
     );
     req.on('error', rej);
     req.write(payload);
+    req.end();
+  });
+}
+
+async function getServer(path: string): Promise<{ status: number; body: string }> {
+  return new Promise((res, rej) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port: SERVER_PORT, method: 'GET', path },
+      (r) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c) => chunks.push(c as Buffer));
+        r.on('end', () =>
+          res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
+        );
+      },
+    );
+    req.on('error', rej);
     req.end();
   });
 }
@@ -298,11 +315,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'pc_create_worktree: name required' }], isError: true };
       }
       try {
-        const entry = await createWorktree(WORKSPACE, name);
+        const res = await postServer(projectPath('worktrees/create'), { name });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
         return {
-          content: [
-            { type: 'text', text: `created worktree ${entry.path} on branch ${entry.branch}` },
-          ],
+          content: [{ type: 'text', text: `pc_create_worktree failed (${res.status}): ${res.body}` }],
+          isError: true,
         };
       } catch (err) {
         return {
@@ -314,8 +333,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case 'pc_list_worktrees': {
       try {
-        const entries = await listWorktrees(WORKSPACE);
-        return { content: [{ type: 'text', text: JSON.stringify(entries, null, 2) }] };
+        const res = await getServer(projectPath('worktrees'));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_worktrees failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_worktrees failed: ${(err as Error).message}` }],
@@ -335,7 +360,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
-        const res = await postServer('/api/work-items/create', {
+        const res = await postServer(projectPath('work-items/create'), {
           title,
           stageId,
           ...(bodyText ? { body: bodyText } : {}),
@@ -362,7 +387,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'pc_move_work_item: id and toStage required' }], isError: true };
       }
       try {
-        const res = await postServer('/api/work-items/move', { id, toStage });
+        const res = await postServer(projectPath('work-items/move'), { id, toStage });
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -382,7 +407,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'pc_update_work_item: id and fields required' }], isError: true };
       }
       try {
-        const res = await postServer('/api/work-items/update', { id, fields });
+        const res = await postServer(projectPath('work-items/update'), { id, fields });
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -408,7 +433,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
-        const res = await postServer('/api/workflow/node-complete', {
+        const res = await postServer(projectPath('workflow/node-complete'), {
           workflowRunId,
           nodeId,
           output,
@@ -441,7 +466,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
-        const res = await postServer('/api/workflow/node-failed', {
+        const res = await postServer(projectPath('workflow/node-failed'), {
           workflowRunId,
           nodeId,
           reason,
@@ -468,7 +493,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'pc_run_workflow: name required' }], isError: true };
       }
       try {
-        const res = await postServer('/api/workflow/run', { name, input });
+        const res = await postServer(projectPath('workflow/run'), { name, input });
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -491,8 +516,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'pc_destroy_worktree: target required' }], isError: true };
       }
       try {
-        await destroyWorktree(WORKSPACE, target, { force });
-        return { content: [{ type: 'text', text: `destroyed worktree ${target}` }] };
+        const res = await postServer(projectPath('worktrees/destroy'), { target, force });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: `destroyed worktree ${target}` }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_destroy_worktree failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_destroy_worktree failed: ${(err as Error).message}` }],

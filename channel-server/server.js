@@ -1,25 +1,29 @@
-// Vendored from PC-Validation/shared/channel-server/server.js (no changes).
-// Itself a Node port of the canonical webhook channel server example at
-// https://code.claude.com/docs/en/channels-reference#example-build-a-webhook-receiver
-// Listens on 127.0.0.1:8788 for POSTs; forwards each to Claude Code as a
-// `notifications/claude/channel` event over stdio (MCP transport).
+// Per-project webhook channel bridge. Spawned by each project's claude.exe
+// via its .mcp.json (one process per CC). Connects WS-upstream to apps/server's
+// /channel-register endpoint to receive routed events, then re-emits them as
+// `notifications/claude/channel` MCP messages over stdio to its CC.
 //
-// Gating: `X-Sender` header must be in the `allowed` set. Default allowlist
-// is just "test" — the rig's /api/channel-send proxy sets this for us.
+// HTTP receiver moved out of this process per multi-tenant design — apps/server
+// now owns the single :8788 listener and routes by project slug. See
+// MULTI-TENANCY-DESIGN.md §3.
+//
+// Required env (set by the per-project .mcp.json substitution):
+//   PC_PROJECT_ID  — ULID, registered with the dispatcher
+//   PC_PROJECT_SLUG — slug, registered with the dispatcher
+//   PC_SERVER_PORT — apps/server HTTP port (default 4040)
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createServer } from 'node:http';
+import WebSocket from 'ws';
 
-const PORT = Number(process.env.CHANNEL_PORT ?? 8788);
-const allowed = new Set((process.env.CHANNEL_ALLOWED_SENDERS ?? 'test').split(','));
+const PROJECT_ID = process.env.PC_PROJECT_ID ?? '';
+const PROJECT_SLUG = process.env.PC_PROJECT_SLUG ?? '';
+const SERVER_PORT = Number(process.env.PC_SERVER_PORT ?? 4040);
 
 const mcp = new Server(
   { name: 'webhook', version: '0.0.1' },
   {
-    capabilities: {
-      experimental: { 'claude/channel': {} },
-    },
+    capabilities: { experimental: { 'claude/channel': {} } },
     instructions:
       'Events from the webhook channel arrive as <channel source="webhook" ...>. ' +
       'They are one-way: read them and act, no reply expected.',
@@ -28,35 +32,55 @@ const mcp = new Server(
 
 await mcp.connect(new StdioServerTransport());
 
-// stderr is the only safe place to log — stdout is the MCP transport.
 const log = (...args) => process.stderr.write('[webhook] ' + args.join(' ') + '\n');
 
-const httpServer = createServer(async (req, res) => {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const body = Buffer.concat(chunks).toString('utf-8');
+if (!PROJECT_ID || !PROJECT_SLUG) {
+  log('PC_PROJECT_ID and PC_PROJECT_SLUG required — exiting');
+  process.exit(1);
+}
 
-  const sender = req.headers['x-sender'];
-  if (typeof sender !== 'string' || !allowed.has(sender)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain' });
-    res.end('forbidden');
-    log(`REJECT sender=${sender ?? '<missing>'}`);
-    return;
-  }
+let ws = null;
+let reconnectTimer = null;
 
-  await mcp.notification({
-    method: 'notifications/claude/channel',
-    params: {
-      content: body,
-      meta: { path: req.url ?? '/', method: req.method ?? 'POST' },
-    },
+function connect() {
+  const url = `ws://127.0.0.1:${SERVER_PORT}/channel-register?projectId=${encodeURIComponent(PROJECT_ID)}&slug=${encodeURIComponent(PROJECT_SLUG)}`;
+  log(`connecting to ${url}`);
+  ws = new WebSocket(url);
+
+  ws.on('open', () => log('registered with dispatcher'));
+  ws.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg.type !== 'channel-event') return;
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: msg.content ?? '',
+          meta: { path: msg.path ?? '/', method: msg.method ?? 'POST', source: msg.source ?? 'webhook' },
+        },
+      });
+      log(`FORWARD ${(msg.content ?? '').slice(0, 80)}`);
+    } catch (err) {
+      log(`forward failed: ${err.message}`);
+    }
   });
+  ws.on('close', () => {
+    log('disconnected — retrying in 2s');
+    scheduleReconnect();
+  });
+  ws.on('error', (err) => {
+    log(`ws error: ${err.message}`);
+  });
+}
 
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('ok');
-  log(`FORWARD ${body.slice(0, 80)}`);
-});
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, 2000);
+  reconnectTimer.unref?.();
+}
 
-httpServer.listen(PORT, '127.0.0.1', () => {
-  log(`listening on 127.0.0.1:${PORT}`);
-});
+connect();
