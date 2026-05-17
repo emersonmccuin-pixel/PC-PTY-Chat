@@ -75,6 +75,7 @@ switch (eventType) {
       ts: now,
       kind: 'tool-start',
       tool: payload.tool_name ?? 'unknown',
+      toolUseId: payload.tool_use_id ?? null,
       input: payload.tool_input ?? null,
     });
     break;
@@ -109,7 +110,8 @@ switch (eventType) {
       ts: now,
       kind: 'tool-end',
       tool: payload.tool_name ?? 'unknown',
-      result: truncate(payload.tool_response, 1000),
+      toolUseId: payload.tool_use_id ?? null,
+      result: truncate(payload.tool_response, 4000),
     });
     break;
   }

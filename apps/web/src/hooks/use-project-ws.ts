@@ -50,12 +50,14 @@ export interface AssistantEvent extends ChatEventBase {
 export interface ToolStartEvent extends ChatEventBase {
   kind: 'tool-start';
   tool: string;
+  toolUseId?: string | null;
   input?: unknown;
 }
 
 export interface ToolEndEvent extends ChatEventBase {
   kind: 'tool-end';
   tool: string;
+  toolUseId?: string | null;
   result?: unknown;
 }
 
