@@ -10,6 +10,7 @@ import { useEffect } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { Project } from '@/api/client';
+import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
 import { ActivityPanel } from './ActivityPanel';
 import { ProjectRail } from './ProjectRail';
@@ -19,6 +20,8 @@ interface ShellProps {
   activityPanelOpen: boolean;
   onToggleActivityPanelOpen: (next: boolean) => void;
   onCreateProject: () => void;
+  wsEvents: WsEnvelope[];
+  wsStatus: WsStatus;
 }
 
 export function Shell({
@@ -26,6 +29,8 @@ export function Shell({
   activityPanelOpen,
   onToggleActivityPanelOpen,
   onCreateProject,
+  wsEvents,
+  wsStatus,
 }: ShellProps) {
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -59,7 +64,11 @@ export function Shell({
         collapsible
         collapsedSize={0}
       >
-        <ActivityPanel onClose={() => onToggleActivityPanelOpen(false)} />
+        <ActivityPanel
+          events={wsEvents}
+          status={wsStatus}
+          onClose={() => onToggleActivityPanelOpen(false)}
+        />
       </Panel>
     </Group>
   );

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { api, type Project } from '@/api/client';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { Shell } from '@/components/Shell';
+import { useProjectWs } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
 
 export default function App() {
@@ -24,6 +25,13 @@ export default function App() {
     setActiveSlug(projects[0]!.slug);
   }, [projects, activeSlug, setActiveSlug]);
 
+  const activeProject = useMemo(
+    () => projects?.find((p) => p.slug === activeSlug) ?? null,
+    [projects, activeSlug],
+  );
+
+  const ws = useProjectWs(activeProject);
+
   if (projects === null) {
     return (
       <div className="grid h-full place-items-center bg-background text-muted-foreground">
@@ -38,7 +46,13 @@ export default function App() {
         <div className="text-sm font-semibold tracking-wide text-foreground">
           PROJECT COMPANION
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          <span
+            className="text-[10px] uppercase tracking-wider text-muted-foreground"
+            title={`WS: ${ws.status}`}
+          >
+            ws: {ws.status}
+          </span>
           <button
             onClick={() => setActivityPanelOpen((v) => !v)}
             title={activityPanelOpen ? 'Hide activity panel' : 'Show activity panel'}
@@ -57,6 +71,8 @@ export default function App() {
           activityPanelOpen={activityPanelOpen}
           onToggleActivityPanelOpen={setActivityPanelOpen}
           onCreateProject={() => setCreateOpen(true)}
+          wsEvents={ws.events}
+          wsStatus={ws.status}
         />
       </div>
       {createOpen && (
