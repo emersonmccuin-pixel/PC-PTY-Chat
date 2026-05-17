@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { api, type GlobalSettings, type Project } from '@/api/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
@@ -38,6 +38,25 @@ export default function App() {
   );
 
   const ws = useProjectWs(activeProject);
+
+  const handleProjectUpdated = useCallback((next: Project) => {
+    setProjects((prev) => (prev ? prev.map((p) => (p.id === next.id ? next : p)) : prev));
+  }, []);
+
+  const handleProjectDeleted = useCallback(
+    (projectId: string) => {
+      setProjects((prev) => {
+        if (!prev) return prev;
+        const filtered = prev.filter((p) => p.id !== projectId);
+        const wasActive = prev.find((p) => p.id === projectId)?.slug === activeSlug;
+        if (wasActive) {
+          setActiveSlug(filtered[0]?.slug ?? null);
+        }
+        return filtered;
+      });
+    },
+    [activeSlug, setActiveSlug],
+  );
 
   if (projects === null) {
     return (
@@ -100,6 +119,8 @@ export default function App() {
           activityPanelOpen={activityPanelOpen}
           onToggleActivityPanelOpen={setActivityPanelOpen}
           onCreateProject={() => setCreateOpen(true)}
+          onProjectUpdated={handleProjectUpdated}
+          onProjectDeleted={handleProjectDeleted}
           wsEvents={ws.events}
           wsStatus={ws.status}
           wsSend={ws.send}

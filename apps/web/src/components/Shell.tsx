@@ -14,6 +14,7 @@ import { ActivityPanel } from './ActivityPanel';
 import { KanbanBoard } from './KanbanBoard';
 import { Orchestrator } from './Orchestrator';
 import { ProjectRail } from './ProjectRail';
+import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { TabBar, TABS, type Tab } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 
@@ -22,6 +23,8 @@ interface ShellProps {
   activityPanelOpen: boolean;
   onToggleActivityPanelOpen: (next: boolean) => void;
   onCreateProject: () => void;
+  onProjectUpdated: (next: Project) => void;
+  onProjectDeleted: (projectId: string) => void;
   wsEvents: WsEnvelope[];
   wsStatus: WsStatus;
   wsSend: (msg: WsOutbound) => boolean;
@@ -32,6 +35,8 @@ export function Shell({
   activityPanelOpen,
   onToggleActivityPanelOpen,
   onCreateProject,
+  onProjectUpdated,
+  onProjectDeleted,
   wsEvents,
   wsStatus,
   wsSend,
@@ -55,7 +60,13 @@ export function Shell({
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel defaultSize={65} minSize={30}>
-        <Center activeProject={activeProject} wsEvents={wsEvents} wsSend={wsSend} />
+        <Center
+          activeProject={activeProject}
+          wsEvents={wsEvents}
+          wsSend={wsSend}
+          onProjectUpdated={onProjectUpdated}
+          onProjectDeleted={onProjectDeleted}
+        />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel
@@ -80,10 +91,14 @@ function Center({
   activeProject,
   wsEvents,
   wsSend,
+  onProjectUpdated,
+  onProjectDeleted,
 }: {
   activeProject: Project | null;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
+  onProjectUpdated: (next: Project) => void;
+  onProjectDeleted: (projectId: string) => void;
 }) {
   const storedTab = usePerProjectTab((s) =>
     activeProject ? s.tabBySlug[activeProject.slug] : undefined,
@@ -111,18 +126,12 @@ function Center({
         ) : tab === 'workflows' ? (
           <WorkflowList project={activeProject} events={wsEvents} />
         ) : tab === 'project-settings' ? (
-          <Stub label="Project settings" milestone="Q11" />
+          <ProjectSettingsPanel
+            project={activeProject}
+            onProjectUpdated={onProjectUpdated}
+            onProjectDeleted={onProjectDeleted}
+          />
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-function Stub({ label, milestone }: { label: string; milestone: string }) {
-  return (
-    <div className="grid h-full place-items-center text-muted-foreground">
-      <div className="text-sm">
-        {label} lands in {milestone}.
       </div>
     </div>
   );
