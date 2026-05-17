@@ -33,6 +33,7 @@ interface ShellProps {
   onProjectDeleted: (projectId: string) => void;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
+  wsClear: () => void;
   activityEvents: WsEnvelope[];
   activityStatus: WsStatus;
   showAllProjects: boolean;
@@ -48,6 +49,7 @@ export function Shell({
   onProjectDeleted,
   wsEvents,
   wsSend,
+  wsClear,
   activityEvents,
   activityStatus,
   showAllProjects,
@@ -85,6 +87,7 @@ export function Shell({
           activeProject={activeProject}
           wsEvents={wsEvents}
           wsSend={wsSend}
+          wsClear={wsClear}
           onProjectUpdated={onProjectUpdated}
           onProjectDeleted={onProjectDeleted}
         />
@@ -116,12 +119,14 @@ function Center({
   activeProject,
   wsEvents,
   wsSend,
+  wsClear,
   onProjectUpdated,
   onProjectDeleted,
 }: {
   activeProject: Project | null;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
+  wsClear: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
 }) {
@@ -147,7 +152,12 @@ function Center({
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />
         ) : tab === 'orchestrator' ? (
-          <Orchestrator project={activeProject} events={wsEvents} send={wsSend} />
+          <Orchestrator
+            project={activeProject}
+            events={wsEvents}
+            send={wsSend}
+            clearWs={wsClear}
+          />
         ) : tab === 'workflows' ? (
           <WorkflowList project={activeProject} events={wsEvents} />
         ) : tab === 'project-settings' ? (

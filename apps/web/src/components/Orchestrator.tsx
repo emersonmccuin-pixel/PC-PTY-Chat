@@ -32,6 +32,7 @@ interface OrchestratorProps {
   project: Project;
   events: WsEnvelope[];
   send: (msg: WsOutbound) => boolean;
+  clearWs: () => void;
 }
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
@@ -377,7 +378,7 @@ async function respondToApproval(
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export function Orchestrator({ project, events, send }: OrchestratorProps) {
+export function Orchestrator({ project, events, send, clearWs }: OrchestratorProps) {
   // Viewing a past session? When set, the chat panel renders that session's
   // events.jsonl in read-only mode (composer hidden, "Return to live" button).
   const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
@@ -624,6 +625,10 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
     try {
       await api.startNewSession(project.id);
+      // Eagerly clear local WS-event state. The server broadcasts
+      // session-changed too, but we don't want to rely on that timing — clear
+      // here so the chat panel reflects the new session immediately.
+      clearWs();
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
     }

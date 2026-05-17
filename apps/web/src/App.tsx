@@ -216,6 +216,7 @@ export default function App() {
           onProjectDeleted={handleProjectDeleted}
           wsEvents={ws.events}
           wsSend={ws.send}
+          wsClear={ws.clear}
           activityEvents={activityEvents}
           activityStatus={activityStatus}
           showAllProjects={showAllProjects}
