@@ -513,12 +513,33 @@ app.get('/api/projects/:projectId/session', (c) => {
 });
 
 /** Full history of orchestrator sessions for the project (most recent first).
- *  Feeds the future "previous sessions" rail tab. */
+ *  Feeds the "previous sessions" rail tab. */
 app.get('/api/projects/:projectId/sessions', (c) => {
   const id = c.req.param('projectId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   return c.json({ ok: true, sessions: listOrchestratorSessionsForProject(id) });
+});
+
+/** Replay a specific session's events.jsonl. Used by the Sessions tab to
+ *  render past chats in read-only mode. */
+app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const sessionId = c.req.param('sessionId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const eventsFile = resolve(runtime.sessionDataPath(sessionId), 'events.jsonl');
+  if (!existsSync(eventsFile)) return c.json({ ok: true, events: [] });
+  try {
+    const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
+    const events: unknown[] = [];
+    for (const line of lines) {
+      try { events.push(JSON.parse(line)); } catch { /* skip malformed */ }
+    }
+    return c.json({ ok: true, events });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
 });
 
 /** Start a fresh session: end the active row, wipe per-project chat files,
