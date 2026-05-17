@@ -83,10 +83,13 @@ export class PtySession extends EventEmitter {
     const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
     try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
 
-    // Order matters: `--dangerously-load-development-channels` is variadic in
-    // commander — it absorbs every following positional arg as a channel name
-    // until the next flag. Put it LAST so trailing options we add later (e.g.
-    // --session-id, --resume) don't get gobbled.
+    // Session-continuity args (--session-id / --resume) are currently DISABLED.
+    // The plumbing on the project side still mints UUIDs + writes rows, but
+    // we don't pass them to claude.exe yet — interactive PTY spawns with
+    // --session-id are dying for reasons not yet isolated. Gating on the env
+    // var so the codepath can be re-enabled for testing without a code change.
+    // TODO(phase-2): finish diagnosing + remove the gate.
+    const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS === '1';
     const args: string[] = [
       '--dangerously-skip-permissions',
       // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
@@ -97,7 +100,7 @@ export class PtySession extends EventEmitter {
       '.mcp.json',
       '--strict-mcp-config',
     ];
-    if (opts.claudeSessionId) {
+    if (enableSessionFlags && opts.claudeSessionId) {
       if (opts.resume) {
         args.push('--resume', opts.claudeSessionId);
       } else {
@@ -106,7 +109,8 @@ export class PtySession extends EventEmitter {
     }
     // Load the webhook channel registered in workspace/.mcp.json. CC will
     // prompt once on boot to confirm dev-channel usage; we auto-press
-    // Enter below. Variadic — keep this at the end of the arg list.
+    // Enter below. Variadic — keep at the end of the arg list so any future
+    // flags don't get gobbled.
     args.push('--dangerously-load-development-channels', 'server:webhook');
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
