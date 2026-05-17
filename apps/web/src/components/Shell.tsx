@@ -7,11 +7,12 @@ import { useEffect } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { Project } from '@/api/client';
-import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
 import { usePerProjectTab } from '@/store/per-project-tab';
 import { ActivityPanel } from './ActivityPanel';
 import { KanbanBoard } from './KanbanBoard';
+import { Orchestrator } from './Orchestrator';
 import { ProjectRail } from './ProjectRail';
 import { TabBar, TABS, type Tab } from './Tabs';
 
@@ -22,6 +23,7 @@ interface ShellProps {
   onCreateProject: () => void;
   wsEvents: WsEnvelope[];
   wsStatus: WsStatus;
+  wsSend: (msg: WsOutbound) => boolean;
 }
 
 export function Shell({
@@ -31,6 +33,7 @@ export function Shell({
   onCreateProject,
   wsEvents,
   wsStatus,
+  wsSend,
 }: ShellProps) {
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -51,7 +54,7 @@ export function Shell({
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel defaultSize={65} minSize={30}>
-        <Center activeProject={activeProject} wsEvents={wsEvents} />
+        <Center activeProject={activeProject} wsEvents={wsEvents} wsSend={wsSend} />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel
@@ -75,9 +78,11 @@ export function Shell({
 function Center({
   activeProject,
   wsEvents,
+  wsSend,
 }: {
   activeProject: Project | null;
   wsEvents: WsEnvelope[];
+  wsSend: (msg: WsOutbound) => boolean;
 }) {
   const storedTab = usePerProjectTab((s) =>
     activeProject ? s.tabBySlug[activeProject.slug] : undefined,
@@ -101,7 +106,7 @@ function Center({
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />
         ) : tab === 'orchestrator' ? (
-          <Stub label="Orchestrator chat" milestone="Q8" />
+          <Orchestrator project={activeProject} events={wsEvents} send={wsSend} />
         ) : tab === 'workflows' ? (
           <Stub label="Workflows" milestone="Q9" />
         ) : tab === 'project-settings' ? (

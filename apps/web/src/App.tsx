@@ -73,6 +73,7 @@ export default function App() {
           onCreateProject={() => setCreateOpen(true)}
           wsEvents={ws.events}
           wsStatus={ws.status}
+          wsSend={ws.send}
         />
       </div>
       {createOpen && (
