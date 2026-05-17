@@ -25,7 +25,7 @@ export type JsonlEvent =
       result: unknown;
       isError: boolean;
     }
-  | { kind: 'jsonl-turn-end'; text: string; stopReason: string }
+  | { kind: 'jsonl-turn-end'; text: string; stopReason: string | null }
   | { kind: 'jsonl-sidechain'; raw: unknown };
 
 export interface JsonlTailerOptions {
@@ -185,10 +185,19 @@ export class JsonlTailer extends EventEmitter {
           } satisfies JsonlEvent);
         }
       }
-      // Turn-end fires only on stop_reason === 'end_turn'. Other stop_reasons
-      // ('tool_use', 'pause_turn', 'max_tokens', etc.) mean CC is mid-loop —
-      // the turn isn't actually over.
-      if (message.stop_reason === 'end_turn') {
+      // Turn-end fires for any stop_reason that means "model is no longer
+      // working" — covers the four documented Stop-skip cases from CC's
+      // src/query.ts:1267 (user interrupt, API error, max_tokens, reactive
+      // compact). Mid-loop signals are `tool_use` (continuing with tool
+      // execution) and `pause_turn` (extended thinking pause). Everything
+      // else — including `null` (verified empirically as the user-interrupt
+      // signature: assistant line lands with stop_reason:null, followed
+      // immediately by a user message containing "[Request interrupted by
+      // user]") — is treated as a turn-end.
+      const stopReason = message.stop_reason as string | null | undefined;
+      const isMidLoop = stopReason === 'tool_use' || stopReason === 'pause_turn';
+      const hasStopReasonField = 'stop_reason' in message;
+      if (hasStopReasonField && !isMidLoop) {
         const text = Array.isArray(content)
           ? content
               .filter(
@@ -204,7 +213,7 @@ export class JsonlTailer extends EventEmitter {
         this.emit('event', {
           kind: 'jsonl-turn-end',
           text,
-          stopReason: 'end_turn',
+          stopReason: stopReason ?? null,
         } satisfies JsonlEvent);
       }
       return;

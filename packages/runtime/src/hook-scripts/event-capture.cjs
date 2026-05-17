@@ -156,6 +156,25 @@ switch (eventType) {
     });
     break;
   }
+  case 'StopFailure': {
+    // Phase 0c-followup case 1 — CC fires this when the assistant turn ends
+    // via an API error (rate limit, prompt-too-long, auth failure, etc.;
+    // see CC src/query.ts:1263). No assistant content lands in the JSONL,
+    // so the chat panel's `isThinking` would otherwise hang. Emit a
+    // synthetic turn-end so the indicator clears.
+    let text = typeof payload.last_assistant_message === 'string'
+      ? payload.last_assistant_message
+      : '';
+    const error = typeof payload.error === 'string' ? payload.error : 'unknown';
+    appendEvent({
+      ts: now,
+      kind: 'stop-failure',
+      text,
+      error,
+      errorDetails: payload.error_details ?? null,
+    });
+    break;
+  }
   case 'Notification': {
     // CC's own notification surface — agent waiting on input, idle timeout,
     // etc. Render as a small system-message row in the chat.

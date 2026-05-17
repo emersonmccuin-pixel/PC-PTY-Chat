@@ -110,6 +110,16 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" StopFailure"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [

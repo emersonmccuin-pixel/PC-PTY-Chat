@@ -112,6 +112,17 @@ export interface SubagentStopEvent extends ChatEventBase {
   result?: string | null;
 }
 
+// Section 0 phase 0c-followup — fired by CC's StopFailure hook when the
+// assistant turn ends via an API error (rate limit, prompt-too-long, auth
+// failure). No assistant content lands in the JSONL on this path, so the
+// chat panel uses this as a defensive turn-end signal.
+export interface StopFailureEvent extends ChatEventBase {
+  kind: 'stop-failure';
+  text: string;
+  error: string;
+  errorDetails?: unknown;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -124,6 +135,7 @@ export type ChatEvent =
   | NotificationEvent
   | SessionEndEvent
   | SubagentStopEvent
+  | StopFailureEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────

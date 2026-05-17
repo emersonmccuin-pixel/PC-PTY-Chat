@@ -105,6 +105,12 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
         event: { kind: 'user', text: ev.text },
       };
     case 'jsonl-turn-end':
+      // Phase 0c-followup: a user-interrupted turn lands a `stop_reason: null`
+      // assistant entry containing only a partial thinking block — no text.
+      // Don't synthesize an empty assistant bubble for that; the jsonlBusy
+      // derivation (which reads the raw envelope, not the normalized one)
+      // still clears the thinking indicator correctly.
+      if (!ev.text && ev.stopReason !== 'end_turn') return null;
       return {
         projectId: env.projectId,
         type: 'event',
@@ -490,6 +496,14 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
       const env = events[i]!;
       if (env.type === 'turn-end') return 'ready';
       if (env.type === 'state') return (env as WsEnvelope & { state: string }).state;
+      // Phase 0c-followup case 1: API errors fire `StopFailure` (not `Stop`).
+      // No assistant content lands in JSONL on rate-limit / prompt-too-long /
+      // auth failure, so the JSONL emit can't clear isThinking. Treat the
+      // hook-emitted `stop-failure` event as a defensive turn-end.
+      if (env.type === 'event') {
+        const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+        if (ev?.kind === 'stop-failure') return 'ready';
+      }
     }
     return null;
   }, [events, viewingSessionId]);
