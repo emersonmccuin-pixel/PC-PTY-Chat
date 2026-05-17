@@ -7,81 +7,65 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
-import { createProject, getProjectBySlug, runMigrations } from '@pc/db';
-import { PtySession } from '@pc/runtime';
-import { WorkflowRegistry } from '@pc/workflows';
+import type { ULID } from '@pc/domain';
+import { runMigrations } from '@pc/db';
 
-import { WorktreeService } from './services/worktree.ts';
-import { WorkflowRuntime } from './services/workflow-runtime.ts';
-import { evaluateBoolean, substituteOutputs } from './services/output-substitution.ts';
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
+import { ProjectRegistry } from './services/project-registry.ts';
+import type { ProjectRuntime } from './services/project-runtime.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-// apps/server/src/index.ts → rig root is three levels up.
+// apps/server/src/index.ts → trunk root is three levels up.
 const ROOT = resolve(__dirname, '..', '..', '..');
 const PUBLIC = resolve(ROOT, 'apps', 'web', 'dist');
-const WORKSPACE = resolve(ROOT, 'workspace');
 const DATA = resolve(ROOT, 'data');
-const WORKFLOWS_DIR = resolve(WORKSPACE, '.project-companion', 'workflows');
 const TEMPLATES = resolve(ROOT, 'templates');
 
 const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
-// Bootstrap: open DB, run migrations, ensure the default `rig` project exists.
-// This is the rig-phase single-tenant shape; Slice 7 multi-tenant work replaces
-// the slug lookup with a project picker.
 runMigrations();
 
 // Agent library — first-run seed from templates/.claude/agents/ into
 // ~/.project-companion/agents/. Per-project agent copies clone from here.
 const agentLibrary = new AgentLibrary(defaultLibraryDir(), resolve(TEMPLATES, '.claude', 'agents'));
 agentLibrary.bootstrap();
-const defaultProject =
-  getProjectBySlug('rig') ??
-  createProject({
-    slug: 'rig',
-    name: 'PC-PTY-Chat Rig',
-    folderPath: WORKSPACE,
-    stages: [
-      { id: 'draft', name: 'Draft', order: 0 },
-      { id: 'review', name: 'Review', order: 1 },
-      { id: 'done', name: 'Done', order: 2 },
-    ],
-  });
 
-// WS client set + broadcast — declared before the runtime so the approval
-// dispatcher can push UI events. The set fills as connections arrive later.
-const clients = new Set<WebSocket>();
-function broadcast(msg: unknown) {
+// Per-project WS subscriber map. P14 tags broadcasts with `projectId` so the UI
+// can route events to its active project; for P4 we route at the server by
+// keeping one subscriber set per project.
+const subscribers = new Map<ULID, Set<WebSocket>>();
+
+function broadcastTo(projectId: ULID, msg: unknown): void {
+  const set = subscribers.get(projectId);
+  if (!set) return;
   const data = JSON.stringify(msg);
-  for (const c of clients) {
+  for (const c of set) {
     if (c.readyState === c.OPEN) c.send(data);
   }
 }
 
-const worktrees = new WorktreeService(WORKSPACE);
-const registry = new WorkflowRegistry(WORKFLOWS_DIR);
-registry.reload();
-const workflow = new WorkflowRuntime({
-  workspaceDir: WORKSPACE,
-  projectId: defaultProject.id,
+const projectRegistry = new ProjectRegistry({
+  dataDir: DATA,
   channelPort: CHANNEL_PORT,
-  evaluateBoolean,
-  substituteOutputs,
-  broadcast,
-  registry,
-  worktrees,
+  broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
+projectRegistry.loadAll();
 
 const app = new Hono();
 
-// Holds promise resolvers for in-flight AskUserQuestion / ExitPlanMode calls.
-// The hook POSTs /api/ask which blocks here until the user clicks a reply.
+/** Holds resolvers for in-flight AskUserQuestion / ExitPlanMode calls. */
 const pendingAsks = new Map<string, (answer: string) => void>();
 
-// MCP status — read the heartbeat file the @pc/mcp server maintains. Considered
-// "alive" if heartbeat < 8s ago. Lets the UI show an "MCP: N" pill.
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+/** Look up the runtime for `projectId`. Returns null if unknown. */
+function resolveProject(projectId: string): ProjectRuntime | null {
+  return projectRegistry.ensure(projectId as ULID);
+}
+
+// ── Global endpoints ──────────────────────────────────────────────────────
+
 app.get('/api/mcp-status', (c) => {
   const file = resolve(DATA, 'mcp-status.json');
   if (!existsSync(file)) return c.json({ alive: false, toolCount: 0, tools: [] });
@@ -101,64 +85,97 @@ app.get('/api/mcp-status', (c) => {
   }
 });
 
-app.get('/api/worktrees', async (c) => {
-  // Use cached read for snappy UI polls; the actions below refresh it.
-  return c.json(worktrees.readCached());
+/**
+ * Ask intercept. Hook scripts POST { projectId, toolName, toolUseId, toolInput }.
+ * We broadcast the ask only to the originating project's WS subscribers, then
+ * block until the user answers (or the 10-minute timeout fires).
+ */
+app.post('/api/ask', async (c) => {
+  const body = await c.req.json<{
+    projectId?: string;
+    toolName: string;
+    toolUseId: string;
+    toolInput: unknown;
+  }>();
+  const { toolName, toolUseId, toolInput } = body;
+  const projectId = typeof body.projectId === 'string' ? (body.projectId as ULID) : null;
+  if (!projectId) return c.json({ answer: '(no projectId on ask payload)' });
+
+  broadcastTo(projectId, { type: 'ask', toolName, toolUseId, toolInput });
+
+  const answer = await new Promise<string>((resolveAnswer) => {
+    pendingAsks.set(toolUseId, resolveAnswer);
+    setTimeout(() => {
+      if (pendingAsks.has(toolUseId)) {
+        pendingAsks.delete(toolUseId);
+        resolveAnswer('(timeout — no user response)');
+      }
+    }, 10 * 60 * 1000);
+  });
+
+  return c.json({ answer });
 });
 
-app.post('/api/worktrees/create', async (c) => {
-  const body = await c.req.json<{ name?: string }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-  try {
-    const entry = await worktrees.create(name);
-    return c.json({ ok: true, entry });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
+// ── Project-scoped endpoints ──────────────────────────────────────────────
+
+app.get('/api/projects/:projectId', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json(runtime.workflowRuntime().readProject());
 });
 
-app.get('/api/project', (c) => c.json(workflow.readProject()));
+app.get('/api/projects/:projectId/work-items', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json(runtime.workflowRuntime().readWorkItems());
+});
 
-app.get('/api/work-items', (c) => c.json(workflow.readWorkItems()));
-
-app.post('/api/work-items/move', async (c) => {
+app.post('/api/projects/:projectId/work-items/move', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ id?: string; toStage?: string }>();
-  const id = typeof body.id === 'string' ? body.id.trim() : '';
+  const wiId = typeof body.id === 'string' ? body.id.trim() : '';
   const toStage = typeof body.toStage === 'string' ? body.toStage.trim() : '';
-  if (!id || !toStage) return c.json({ ok: false, error: 'id and toStage required' }, 400);
+  if (!wiId || !toStage) return c.json({ ok: false, error: 'id and toStage required' }, 400);
   try {
-    const workItem = await workflow.moveWorkItem(id, toStage);
+    const workItem = await runtime.workflowRuntime().moveWorkItem(wiId, toStage);
     return c.json({ ok: true, workItem });
   } catch (err) {
     const msg = (err as Error).message;
-    // Trigger-resolution errors render as 409 so the UI shows them as a
-    // red system-notice bubble in chat (matches 8b's contract).
     const is409 = /^ambiguous trigger|^no valid workflow|is locked: workflow in progress/.test(msg);
     return c.json({ ok: false, error: msg }, is409 ? 409 : 500);
   }
 });
 
-app.post('/api/work-items/update', async (c) => {
+app.post('/api/projects/:projectId/work-items/update', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ id?: string; fields?: Record<string, unknown> }>();
-  const id = typeof body.id === 'string' ? body.id.trim() : '';
+  const wiId = typeof body.id === 'string' ? body.id.trim() : '';
   const fields = body.fields && typeof body.fields === 'object' ? body.fields : null;
-  if (!id || !fields) return c.json({ ok: false, error: 'id and fields required' }, 400);
+  if (!wiId || !fields) return c.json({ ok: false, error: 'id and fields required' }, 400);
   try {
-    const workItem = workflow.updateWorkItem(id, fields);
+    const workItem = runtime.workflowRuntime().updateWorkItem(wiId, fields);
     return c.json({ ok: true, workItem });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 
-app.post('/api/work-items/create', async (c) => {
+app.post('/api/projects/:projectId/work-items/create', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ title?: string; stageId?: string; body?: string }>();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
   try {
-    const workItem = workflow.createWorkItem(title, stageId, body.body);
+    const workItem = runtime.workflowRuntime().createWorkItem(title, stageId, body.body);
     return c.json({ ok: true, workItem });
   } catch (err) {
     const msg = (err as Error).message;
@@ -167,10 +184,11 @@ app.post('/api/work-items/create', async (c) => {
   }
 });
 
-// GET /api/workflows — registry snapshot for the UI's Workflows pane. Reload
-// on every call so live YAML edits surface within the UI's poll interval.
-app.get('/api/workflows', (c) => {
-  const state = registry.reload();
+app.get('/api/projects/:projectId/workflows', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const state = runtime.workflowRegistry().reload();
   return c.json({
     valid: state.valid.map((e) => ({
       id: e.workflow.id,
@@ -186,22 +204,47 @@ app.get('/api/workflows', (c) => {
   });
 });
 
-app.post('/api/worktrees/destroy', async (c) => {
+app.get('/api/projects/:projectId/worktrees', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json(runtime.worktrees().readCached());
+});
+
+app.post('/api/projects/:projectId/worktrees/create', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ name?: string }>();
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
+  try {
+    const entry = await runtime.worktrees().create(name);
+    return c.json({ ok: true, entry });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+app.post('/api/projects/:projectId/worktrees/destroy', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ target?: string; force?: boolean }>();
   const target = typeof body.target === 'string' ? body.target.trim() : '';
   if (!target) return c.json({ ok: false, error: 'target required' }, 400);
   try {
-    await worktrees.destroy(target, body.force === true);
+    await runtime.worktrees().destroy(target, body.force === true);
     return c.json({ ok: true });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 
-// Workflow node completion endpoints. Backing for the pc_complete_node /
-// pc_node_failed MCP tools — subagents call these to close out their assigned
-// node. The runtime re-ticks the run on success so downstream nodes fire.
-app.post('/api/workflow/node-complete', async (c) => {
+app.post('/api/projects/:projectId/workflow/node-complete', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ workflowRunId?: string; nodeId?: string; output?: unknown }>();
   const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
   const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
@@ -209,16 +252,43 @@ app.post('/api/workflow/node-complete', async (c) => {
     return c.json({ ok: false, error: 'workflowRunId and nodeId required' }, 400);
   }
   try {
-    const result = await workflow.nodeComplete(runId, nodeId, body.output ?? {});
+    const result = await runtime.workflowRuntime().nodeComplete(runId, nodeId, body.output ?? {});
     return c.json(result);
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 
-app.get('/api/approvals', (c) => c.json({ approvals: workflow.listPendingApprovals() }));
+app.post('/api/projects/:projectId/workflow/node-failed', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ workflowRunId?: string; nodeId?: string; reason?: string }>();
+  const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
+  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
+  const reason = typeof body.reason === 'string' ? body.reason : '';
+  if (!runId || !nodeId || !reason) {
+    return c.json({ ok: false, error: 'workflowRunId, nodeId, and reason required' }, 400);
+  }
+  try {
+    const result = await runtime.workflowRuntime().nodeFailed(runId, nodeId, reason);
+    return c.json(result);
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
 
-app.post('/api/approval/respond', async (c) => {
+app.get('/api/projects/:projectId/approvals', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ approvals: runtime.workflowRuntime().listPendingApprovals() });
+});
+
+app.post('/api/projects/:projectId/approval/respond', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{
     workflowRunId?: string;
     nodeId?: string;
@@ -231,17 +301,19 @@ app.post('/api/approval/respond', async (c) => {
     return c.json({ ok: false, error: 'workflowRunId, nodeId, and approved required' }, 400);
   }
   try {
-    const result = await workflow.respondToApproval(runId, nodeId, body.approved, body.response ?? '');
+    const result = await runtime
+      .workflowRuntime()
+      .respondToApproval(runId, nodeId, body.approved, body.response ?? '');
     return c.json(result);
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 
-// Orchestrator-callable workflow entry. Backing for the pc_run_workflow MCP
-// tool. Lookup failures (unknown / many / invalid / not callable) map to 409
-// so the UI renders them as a red system-notice bubble.
-app.post('/api/workflow/run', async (c) => {
+app.post('/api/projects/:projectId/workflow/run', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ name?: string; input?: unknown }>();
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name) return c.json({ ok: false, error: 'name required' }, 400);
@@ -250,39 +322,22 @@ app.post('/api/workflow/run', async (c) => {
       ? (body.input as Record<string, unknown>)
       : undefined;
   try {
-    const run = await workflow.runWorkflow(name, inputs);
+    const run = await runtime.workflowRuntime().runWorkflow(name, inputs);
     return c.json({ ok: true, run });
   } catch (err) {
     const msg = (err as Error).message;
-    const is409 =
-      /^ambiguous trigger|^no valid workflow|^unknown workflow|is not callable/.test(msg);
+    const is409 = /^ambiguous trigger|^no valid workflow|^unknown workflow|is not callable/.test(msg);
     return c.json({ ok: false, error: msg }, is409 ? 409 : 500);
   }
 });
 
-app.post('/api/workflow/node-failed', async (c) => {
-  const body = await c.req.json<{ workflowRunId?: string; nodeId?: string; reason?: string }>();
-  const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
-  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
-  const reason = typeof body.reason === 'string' ? body.reason : '';
-  if (!runId || !nodeId || !reason) {
-    return c.json({ ok: false, error: 'workflowRunId, nodeId, and reason required' }, 400);
-  }
-  try {
-    const result = await workflow.nodeFailed(runId, nodeId, reason);
-    return c.json(result);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-// Proxy /api/channel-send → POST to the webhook channel server on
-// 127.0.0.1:8788 with the required X-Sender allowlist header. The webhook
-// server is spawned by CC itself (per workspace/.mcp.json) the first time the
-// PtySession boots; if the orchestrator hasn't booted yet, the connect will
-// fail and we return 503.
-
-app.post('/api/channel-send', async (c) => {
+// Proxy to the channel server. P5 reshapes the channel server to a
+// multiplexed path-routed shape (POST /channel/<slug>/<source>); for now this
+// forwards a plain text body with the rig's allowlist header.
+app.post('/api/projects/:projectId/channel-send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const body = await c.req.json<{ message?: string }>();
   const message = typeof body.message === 'string' ? body.message : '';
   if (!message) return c.json({ ok: false, error: 'empty message' }, 400);
@@ -318,29 +373,8 @@ app.post('/api/channel-send', async (c) => {
   }
 });
 
-app.post('/api/ask', async (c) => {
-  const body = await c.req.json<{ toolName: string; toolUseId: string; toolInput: unknown }>();
-  const { toolName, toolUseId, toolInput } = body;
+// ── Static / SPA fallback ─────────────────────────────────────────────────
 
-  // Tell every connected client to render a chooser for this question.
-  broadcast({ type: 'ask', toolName, toolUseId, toolInput });
-
-  const answer = await new Promise<string>((resolve) => {
-    pendingAsks.set(toolUseId, resolve);
-    setTimeout(() => {
-      if (pendingAsks.has(toolUseId)) {
-        pendingAsks.delete(toolUseId);
-        resolve('(timeout — no user response)');
-      }
-    }, 10 * 60 * 1000);
-  });
-
-  return c.json({ answer });
-});
-
-// Catch-all static serve from apps/web/dist/. SPA fallback to index.html when
-// the requested path isn't a real file — lets the React app handle deep links
-// without server-side route knowledge. /api/* and /ws fall through via next().
 const STATIC_MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -381,7 +415,7 @@ app.get('*', async (c, next) => {
       });
     }
   } catch {
-    // Fall through to SPA index.
+    /* fall through to SPA index */
   }
 
   try {
@@ -396,61 +430,64 @@ app.get('*', async (c, next) => {
 });
 
 const server = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
-  console.log(`[pc-pty-chat] http://127.0.0.1:${info.port}`);
+  console.log(`[pc] http://127.0.0.1:${info.port}`);
 });
+
+// ── WebSocket: /ws?projectId=<ULID> ────────────────────────────────────────
 
 const wss = new WebSocketServer({ server: server as never, path: '/ws' });
 
-let session: PtySession | null = null;
-
-function ensureSession() {
-  if (session && session.getState() !== 'exited') return session;
-
-  console.log('[pc-pty-chat] spawning PtySession');
-  session = new PtySession({
-    workspaceDir: WORKSPACE,
-    stopMarkerPath: resolve(DATA, 'stop-markers.txt'),
-    eventsPath: resolve(DATA, 'events.jsonl'),
-    transcriptPath: resolve(DATA, 'transcript.log'),
-  });
-
-  session.on('raw', (text: string) => broadcast({ type: 'raw', text }));
-  session.on('state', (state: string) => broadcast({ type: 'state', state }));
-  session.on('turn-end', () => {
-    // Safety net: mark any subagent node still 'running' as failed. Async
-    // version — fire and forget; tick errors surface in console only.
-    workflow.onTurnEnd().catch((err) => {
-      console.error('[pc-pty-chat] onTurnEnd failed:', (err as Error).message);
-    });
-    broadcast({ type: 'turn-end' });
-  });
-  session.on('event', (event: unknown) => broadcast({ type: 'event', event }));
-  session.on('exit', (code, signal) => {
-    broadcast({ type: 'exit', code, signal });
-    console.log(`[pc-pty-chat] session exited code=${code} signal=${signal}`);
-    session = null;
-  });
-
-  return session;
-}
-
-wss.on('connection', (ws) => {
-  // Single-tenant rig: a new connection drops any stale ones to prevent
-  // doubled broadcasts when tsx-watch reloads or the user reload-races the
-  // server. Browser will reconnect once via its close handler if it's a real
-  // duplicate tab.
-  for (const prior of clients) {
-    if (prior.readyState === prior.OPEN) {
-      try { prior.close(1000, 'superseded by newer client'); } catch { /* best effort */ }
-    }
-    clients.delete(prior);
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url ?? '/ws', 'http://127.0.0.1');
+  const projectId = url.searchParams.get('projectId') as ULID | null;
+  if (!projectId) {
+    try { ws.close(1008, 'projectId query param required'); } catch { /* best effort */ }
+    return;
   }
-  clients.add(ws);
-  const s = ensureSession();
-  ws.send(JSON.stringify({ type: 'state', state: s.getState() }));
+  const runtime = resolveProject(projectId);
+  if (!runtime) {
+    try { ws.close(1008, `unknown project: ${projectId}`); } catch { /* best effort */ }
+    return;
+  }
 
-  // Replay events history so a reloaded browser doesn't lose the chat panel.
-  const eventsFile = resolve(DATA, 'events.jsonl');
+  // Supersede prior subscribers for this project so tsx-watch reloads + tab
+  // reload-races don't doubled-broadcast.
+  const existing = subscribers.get(projectId);
+  if (existing) {
+    for (const prior of existing) {
+      if (prior.readyState === prior.OPEN) {
+        try { prior.close(1000, 'superseded by newer client'); } catch { /* best effort */ }
+      }
+    }
+  }
+  const set = new Set<WebSocket>();
+  set.add(ws);
+  subscribers.set(projectId, set);
+
+  // Spawn the PtySession on first subscriber. Bind event forwarders.
+  const session = runtime.ensurePty();
+  const handlersAttached = (session as unknown as { __pcHandlersAttached?: boolean }).__pcHandlersAttached;
+  if (!handlersAttached) {
+    session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
+    session.on('state', (state: string) => broadcastTo(projectId, { type: 'state', state }));
+    session.on('turn-end', () => {
+      runtime.workflowRuntime().onTurnEnd().catch((err) => {
+        console.error('[pc] onTurnEnd failed:', (err as Error).message);
+      });
+      broadcastTo(projectId, { type: 'turn-end' });
+    });
+    session.on('event', (event: unknown) => broadcastTo(projectId, { type: 'event', event }));
+    session.on('exit', (code, signal) => {
+      broadcastTo(projectId, { type: 'exit', code, signal });
+      console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
+    });
+    (session as unknown as { __pcHandlersAttached?: boolean }).__pcHandlersAttached = true;
+  }
+
+  ws.send(JSON.stringify({ type: 'state', state: session.getState() }));
+
+  // Replay events.jsonl so a reloaded tab doesn't lose its chat panel.
+  const eventsFile = resolve(runtime.dataPath, 'events.jsonl');
   if (existsSync(eventsFile)) {
     try {
       const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
@@ -471,17 +508,17 @@ wss.on('connection', (ws) => {
     } catch {
       return;
     }
-    if (!session) return;
+    const live = runtime.ptySession();
     switch (msg.type) {
       case 'send':
-        if (typeof msg.text === 'string') session.send(msg.text);
+        if (live && typeof msg.text === 'string') live.send(msg.text);
         break;
       case 'interrupt':
-        session.interrupt();
+        live?.interrupt();
         break;
       case 'resize':
-        if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          session.resize(msg.cols, msg.rows);
+        if (live && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+          live.resize(msg.cols, msg.rows);
         }
         break;
       case 'ask-reply': {
@@ -497,11 +534,14 @@ wss.on('connection', (ws) => {
     }
   });
 
-  ws.on('close', () => clients.delete(ws));
+  ws.on('close', () => {
+    set.delete(ws);
+    if (set.size === 0) subscribers.delete(projectId);
+  });
 });
 
 process.on('SIGINT', () => {
-  console.log('[pc-pty-chat] SIGINT — killing session');
-  session?.kill();
+  console.log('[pc] SIGINT — shutting down project runtimes');
+  projectRegistry.shutdownAll();
   process.exit(0);
 });
