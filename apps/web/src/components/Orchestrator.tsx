@@ -625,9 +625,15 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
     try {
       await api.startNewSession(project.id);
-      // Eagerly clear local WS-event state. The server broadcasts
-      // session-changed too, but we don't want to rely on that timing — clear
-      // here so the chat panel reflects the new session immediately.
+      // Clear EVERYTHING that could pin the panel to old content:
+      //  - viewingSessionId: a past-session view hijacks sourceEvents to
+      //    pastEvents (fetched from disk). If the user navigated into a past
+      //    session at any point in this tab, viewingSessionId is non-null and
+      //    the live `events` reset doesn't help.
+      //  - WS events: belt-and-suspenders since the server broadcast may not
+      //    arrive in time.
+      setViewing(project.slug, null);
+      setPastEvents([]);
       clearWs();
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
