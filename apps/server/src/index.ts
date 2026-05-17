@@ -408,6 +408,7 @@ app.post('/api/projects/:projectId/work-items/move', async (c) => {
   if (!wiId || !toStage) return c.json({ ok: false, error: 'id and toStage required' }, 400);
   try {
     const workItem = await runtime.workflowRuntime().moveWorkItem(wiId, toStage);
+    broadcastTo(id as ULID, { type: 'work-items-changed', change: 'moved', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
     const msg = (err as Error).message;
@@ -426,6 +427,7 @@ app.post('/api/projects/:projectId/work-items/update', async (c) => {
   if (!wiId || !fields) return c.json({ ok: false, error: 'id and fields required' }, 400);
   try {
     const workItem = runtime.workflowRuntime().updateWorkItem(wiId, fields);
+    broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
@@ -442,6 +444,7 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
   if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
   try {
     const workItem = runtime.workflowRuntime().createWorkItem(title, stageId, body.body);
+    broadcastTo(id as ULID, { type: 'work-items-changed', change: 'created', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
     const msg = (err as Error).message;

@@ -1,10 +1,7 @@
 // Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
 // Source: apps/web/src/components/Shell.tsx
-// Adapted for Project Companion: stripped to the 3-col skeleton — center area
-// renders an empty-state placeholder until Q5+ tabs land. ActivityPanel +
-// ProjectRail stubs swap in via later Q-milestones (Q12, Q5). API migrated to
-// react-resizable-panels v4 (Group/Panel/Separator + usePanelRef hook).
-// Active-project state read from zustand directly inside children.
+// Adapted for Project Companion: react-resizable-panels v4 API; active-slug
+// from zustand store; per-project tab persistence from a tab-store.
 
 import { useEffect } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
@@ -12,8 +9,11 @@ import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 import type { Project } from '@/api/client';
 import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
+import { usePerProjectTab } from '@/store/per-project-tab';
 import { ActivityPanel } from './ActivityPanel';
+import { KanbanBoard } from './KanbanBoard';
 import { ProjectRail } from './ProjectRail';
+import { TabBar, TABS, type Tab } from './Tabs';
 
 interface ShellProps {
   projects: Project[];
@@ -36,8 +36,6 @@ export function Shell({
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const activeProject = projects.find((p) => p.slug === activeSlug) ?? null;
 
-  // Sync the imperative panel to the persisted `open` flag — settings is the
-  // source of truth (header chevron and app-settings both flip it).
   useEffect(() => {
     const panel = activityRef.current;
     if (!panel) return;
@@ -53,7 +51,7 @@ export function Shell({
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel defaultSize={65} minSize={30}>
-        <Center activeProject={activeProject} />
+        <Center activeProject={activeProject} wsEvents={wsEvents} />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />
       <Panel
@@ -74,7 +72,18 @@ export function Shell({
   );
 }
 
-function Center({ activeProject }: { activeProject: Project | null }) {
+function Center({
+  activeProject,
+  wsEvents,
+}: {
+  activeProject: Project | null;
+  wsEvents: WsEnvelope[];
+}) {
+  const storedTab = usePerProjectTab((s) =>
+    activeProject ? s.tabBySlug[activeProject.slug] : undefined,
+  );
+  const setTab = usePerProjectTab((s) => s.setTab);
+
   if (!activeProject) {
     return (
       <div className="grid h-full place-items-center bg-background text-muted-foreground">
@@ -82,15 +91,32 @@ function Center({ activeProject }: { activeProject: Project | null }) {
       </div>
     );
   }
+
+  const tab: Tab = storedTab ?? TABS[1]; // default to work-items
+
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="border-b border-border px-4 py-2 text-sm">
-        <span className="text-muted-foreground">project:</span>{' '}
-        <span className="font-semibold text-foreground">{activeProject.name}</span>{' '}
-        <span className="text-muted-foreground">/ {activeProject.slug}</span>
+      <TabBar value={tab} onChange={(t) => setTab(activeProject.slug, t)} />
+      <div className="flex-1 overflow-hidden">
+        {tab === 'work-items' ? (
+          <KanbanBoard project={activeProject} events={wsEvents} />
+        ) : tab === 'orchestrator' ? (
+          <Stub label="Orchestrator chat" milestone="Q8" />
+        ) : tab === 'workflows' ? (
+          <Stub label="Workflows" milestone="Q9" />
+        ) : tab === 'project-settings' ? (
+          <Stub label="Project settings" milestone="Q11" />
+        ) : null}
       </div>
-      <div className="grid flex-1 place-items-center text-muted-foreground">
-        <div className="text-sm">Workspace tabs land in Q7+.</div>
+    </div>
+  );
+}
+
+function Stub({ label, milestone }: { label: string; milestone: string }) {
+  return (
+    <div className="grid h-full place-items-center text-muted-foreground">
+      <div className="text-sm">
+        {label} lands in {milestone}.
       </div>
     </div>
   );
