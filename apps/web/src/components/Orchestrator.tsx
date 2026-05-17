@@ -14,6 +14,7 @@ import type {
   ApprovalRequiredEvent,
   AssistantEvent,
   ChatEvent,
+  JsonlEvent,
   TaskEndEvent,
   TaskStartEvent,
   TodosEvent,
@@ -79,6 +80,135 @@ interface EnvItem {
 }
 
 type RenderItem = ToolGroupItem | EnvItem;
+
+// ── JSONL→hook normalization + cross-channel dedupe (Section 0) ──────────
+// Until Section 0 phase 0f strips the legacy hook path, BOTH `type:'event'`
+// (hook-driven) AND `type:'jsonl'` (canonical) envelopes flow through. The
+// jsonl path is preferred for turn lifecycle + tool calls; we drop the hook
+// envelope when a logically-matching jsonl envelope exists in the stream.
+
+/** Convert a jsonl envelope into a hook-shape envelope so the downstream
+ *  synthesizer doesn't need to branch on origin. Returns null for jsonl event
+ *  kinds that aren't rendered as chat bubbles (queue ops → 0d; sidechain →
+ *  Section 6 / Activity panel). */
+function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
+  if (env.type !== 'jsonl') return env;
+  const ev = env.event as JsonlEvent | undefined;
+  if (!ev || typeof ev !== 'object') return null;
+  switch (ev.kind) {
+    case 'jsonl-user':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'user', text: ev.text },
+      };
+    case 'jsonl-turn-end':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'assistant', text: ev.text },
+      };
+    case 'jsonl-tool-call':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'tool-start',
+          tool: ev.name,
+          toolUseId: ev.toolUseId,
+          input: ev.input,
+        },
+      };
+    case 'jsonl-tool-result':
+      // Tool name is not on the result line in CC's JSONL; downstream tool-
+      // group matching uses toolUseId so a placeholder name is fine.
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'tool-end',
+          tool: '',
+          toolUseId: ev.toolUseId,
+          result: ev.result,
+        },
+      };
+    case 'jsonl-queue-enqueue':
+    case 'jsonl-queue-dequeue':
+    case 'jsonl-sidechain':
+      return null;
+    default:
+      return null;
+  }
+}
+
+/** Walk the envelope stream and mark hook envelopes that have a matching
+ *  jsonl counterpart for suppression. Greedy left-to-right pairing: each
+ *  jsonl event claims the earliest unclaimed hook envelope of matching
+ *  identity (text for user/assistant; toolUseId for tools). Tool-start AND
+ *  tool-end hook envelopes for a given toolUseId are both suppressed when
+ *  any jsonl-tool-call/result with that id is present. */
+function buildSuppressedHookIndices(envelopes: WsEnvelope[]): Set<number> {
+  const suppressed = new Set<number>();
+  const hookUsers: Array<{ idx: number; text: string; claimed: boolean }> = [];
+  const hookAssistants: Array<{ idx: number; text: string; claimed: boolean }> = [];
+  const hookToolsByUseId = new Map<string, number[]>();
+  const jsonlEvents: JsonlEvent[] = [];
+
+  for (let i = 0; i < envelopes.length; i++) {
+    const env = envelopes[i]!;
+    if (env.type === 'event') {
+      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+      if (!ev || typeof ev !== 'object') continue;
+      if (ev.kind === 'user') {
+        hookUsers.push({ idx: i, text: (ev as UserEvent).text ?? '', claimed: false });
+      } else if (ev.kind === 'assistant') {
+        hookAssistants.push({
+          idx: i,
+          text: (ev as AssistantEvent).text ?? '',
+          claimed: false,
+        });
+      } else if (ev.kind === 'tool-start' || ev.kind === 'tool-end') {
+        const t = ev as ToolStartEvent | ToolEndEvent;
+        if (t.toolUseId) {
+          const arr = hookToolsByUseId.get(t.toolUseId) ?? [];
+          arr.push(i);
+          hookToolsByUseId.set(t.toolUseId, arr);
+        }
+      }
+    } else if (env.type === 'jsonl') {
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (ev && typeof ev === 'object') jsonlEvents.push(ev);
+    }
+  }
+
+  for (const ev of jsonlEvents) {
+    if (ev.kind === 'jsonl-user') {
+      for (const h of hookUsers) {
+        if (!h.claimed && h.text === ev.text) {
+          h.claimed = true;
+          suppressed.add(h.idx);
+          break;
+        }
+      }
+    } else if (ev.kind === 'jsonl-turn-end') {
+      for (const h of hookAssistants) {
+        if (!h.claimed && h.text === ev.text) {
+          h.claimed = true;
+          suppressed.add(h.idx);
+          break;
+        }
+      }
+    } else if (ev.kind === 'jsonl-tool-call' || ev.kind === 'jsonl-tool-result') {
+      const id = ev.toolUseId;
+      if (id) {
+        const indices = hookToolsByUseId.get(id);
+        if (indices) for (const i of indices) suppressed.add(i);
+      }
+    }
+  }
+
+  return suppressed;
+}
 
 function synthesizeRenderItems(envelopes: WsEnvelope[]): RenderItem[] {
   const items: RenderItem[] = [];
@@ -287,10 +417,26 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
   // Pull chat-event envelopes + ask envelopes out of the WS stream OR the
   // past-session events depending on mode.
   const sourceEvents = viewingSessionId ? pastEvents : events;
-  const chatEnvelopes = useMemo(
-    () => sourceEvents.filter((e) => e.type === 'event' || e.type === 'ask'),
-    [sourceEvents],
-  );
+  // Section 0 phase 0c: dedupe hook-driven events against their jsonl-tailer
+  // counterparts (preferring jsonl) and normalize jsonl envelopes into the
+  // hook shape the synthesizer + bubble components already understand.
+  const chatEnvelopes = useMemo(() => {
+    const suppressed = buildSuppressedHookIndices(sourceEvents);
+    const out: WsEnvelope[] = [];
+    for (let i = 0; i < sourceEvents.length; i++) {
+      if (suppressed.has(i)) continue;
+      const env = sourceEvents[i]!;
+      if (env.type === 'ask' || env.type === 'event') {
+        out.push(env);
+        continue;
+      }
+      if (env.type === 'jsonl') {
+        const normalized = normalizeJsonlEnvelope(env);
+        if (normalized) out.push(normalized);
+      }
+    }
+    return out;
+  }, [sourceEvents]);
   // Collapse the flat envelope list into render-ready items: most envelopes
   // pass through as-is, but consecutive tool-start/tool-end events fold into
   // a single ToolGroup bucket for the L1/L2/L3 hierarchy.
@@ -333,9 +479,9 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
   }, [events]);
 
   // Latest PTY state from the WS stream (`{type:'state', state:'thinking'|'ready'|...}`).
-  // Used to render the thinking indicator + elapsed timer below the chat.
-  // turn-end also flips us out of thinking — the channel fires that immediately
-  // after Stop, sometimes ahead of the trailing state:'ready' envelope.
+  // Legacy hook-driven derivation — kept as fallback when no jsonl events are
+  // present (replay of historical sessions, or CC versions where the JSONL
+  // shape doesn't match what we parse).
   const liveState = useMemo<string | null>(() => {
     if (viewingSessionId) return null;
     for (let i = events.length - 1; i >= 0; i--) {
@@ -345,7 +491,32 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     }
     return null;
   }, [events, viewingSessionId]);
-  const isThinking = liveState === 'thinking';
+
+  // Section 0 phase 0c — jsonl-busy: true between jsonl-user and the matching
+  // jsonl-turn-end. Authoritative for the thinking indicator when any jsonl
+  // event is present; falls back to legacy hook state otherwise. Defensive:
+  // if jsonl claims busy but the legacy hook says 'ready' (Stop fired), trust
+  // the legacy state — protects against a stuck indicator if jsonl-turn-end
+  // never lands for some reason.
+  const jsonlBusy = useMemo<boolean | null>(() => {
+    if (viewingSessionId) return null;
+    let anyJsonl = false;
+    let busy = false;
+    for (const env of events) {
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (!ev || typeof ev !== 'object') continue;
+      anyJsonl = true;
+      if (ev.kind === 'jsonl-user') busy = true;
+      else if (ev.kind === 'jsonl-turn-end') busy = false;
+    }
+    return anyJsonl ? busy : null;
+  }, [events, viewingSessionId]);
+
+  const isThinking =
+    jsonlBusy === null
+      ? liveState === 'thinking'
+      : jsonlBusy && liveState !== 'ready';
 
   // Elapsed-time counter — starts when state flips to thinking, ticks every
   // 200ms while thinking, frozen on Stop. Cheap setInterval; teardown cancels.

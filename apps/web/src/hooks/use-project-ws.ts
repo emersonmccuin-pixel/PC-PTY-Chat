@@ -104,6 +104,60 @@ export type ChatEvent =
   | ApprovalRequiredEvent
   | (ChatEventBase & Record<string, unknown>);
 
+// ── JSONL event shapes (Section 0) ────────────────────────────────────────
+// Server emits canonical-source events as `{type:'jsonl', event:{kind,...}}`
+// from the per-session JSONL tailer. Mirrors `JsonlEvent` in
+// `packages/runtime/src/jsonl-tailer.ts`. Keep in lockstep.
+
+export interface JsonlUserEvent {
+  kind: 'jsonl-user';
+  text: string;
+}
+
+export interface JsonlTurnEndEvent {
+  kind: 'jsonl-turn-end';
+  text: string;
+  stopReason: string;
+}
+
+export interface JsonlToolCallEvent {
+  kind: 'jsonl-tool-call';
+  toolUseId: string;
+  name: string;
+  input: unknown;
+}
+
+export interface JsonlToolResultEvent {
+  kind: 'jsonl-tool-result';
+  toolUseId: string;
+  result: unknown;
+  isError: boolean;
+}
+
+export interface JsonlQueueEnqueueEvent {
+  kind: 'jsonl-queue-enqueue';
+  timestamp: string | null;
+}
+
+export interface JsonlQueueDequeueEvent {
+  kind: 'jsonl-queue-dequeue';
+  timestamp: string | null;
+}
+
+export interface JsonlSidechainEvent {
+  kind: 'jsonl-sidechain';
+  raw: unknown;
+}
+
+export type JsonlEvent =
+  | JsonlUserEvent
+  | JsonlTurnEndEvent
+  | JsonlToolCallEvent
+  | JsonlToolResultEvent
+  | JsonlQueueEnqueueEvent
+  | JsonlQueueDequeueEvent
+  | JsonlSidechainEvent;
+
 // ── Outbound WS messages (Q8 chat send + interrupt + ask-reply) ───────────
 
 export type WsOutbound =
