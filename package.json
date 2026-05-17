@@ -8,7 +8,8 @@
     "dev": "pnpm --filter @pc/server dev",
     "start": "pnpm --filter @pc/server start",
     "build": "pnpm --filter @pc/web build",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test:smoke": "playwright test tests/playwright/chat-smoke.spec.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
