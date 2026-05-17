@@ -608,14 +608,11 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-// ── Role label chip (top of each user / assistant bubble) ────────────────
+// ── Role label (small text header on top of each user / assistant bubble) ─
 
 function RoleLabel({ role }: { role: 'user' | 'claude' }) {
   const text = role === 'user' ? 'You' : 'Claude';
-  const tone =
-    role === 'user'
-      ? 'text-primary'
-      : 'text-muted-foreground';
+  const tone = role === 'user' ? 'text-primary/80' : 'text-muted-foreground';
   return (
     <div className={`mb-1 text-[10px] uppercase tracking-wider ${tone}`}>{text}</div>
   );
@@ -644,7 +641,7 @@ function UserBubble({ event }: { event: UserEvent }) {
         ) : (
           <div
             key={idx}
-            className="group relative self-end max-w-[85%] border border-primary/50 bg-primary/15 px-3 py-2 text-sm text-foreground"
+            className="group relative self-end max-w-[85%] border border-primary/60 bg-primary/30 px-3 py-2 text-sm text-foreground"
           >
             <RoleLabel role="user" />
             <div className="whitespace-pre-wrap break-words">
@@ -823,14 +820,60 @@ function WritePreview({ input }: { input: Record<string, unknown> }) {
   );
 }
 
-function ToolCallRow({ call }: { call: ToolCall }) {
-  const [open, setOpen] = useState(() => AUTO_EXPAND_TOOLS.has(call.tool));
+// Expand / collapse-all chip pair used at L1 + L2 headers. Stops the parent
+// button's click-bubble so toggling the chip doesn't also toggle the header.
+function ExpandCollapseChips({
+  onExpandAll,
+  onCollapseAll,
+  scope,
+}: {
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
+  scope: string;
+}) {
+  return (
+    <div className="flex gap-1 text-[10px] uppercase tracking-wider">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onExpandAll();
+        }}
+        className="border border-border bg-background px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+        title={`Expand every ${scope}`}
+      >
+        expand all
+      </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onCollapseAll();
+        }}
+        className="border border-border bg-background px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+        title={`Collapse every ${scope}`}
+      >
+        collapse all
+      </button>
+    </div>
+  );
+}
+
+function ToolCallRow({
+  call,
+  open,
+  onToggle,
+}: {
+  call: ToolCall;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const summary = summarizeInput(call.tool, call.input);
   return (
     <div className="border-l border-border pl-2">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         className="flex w-full items-baseline gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
       >
         <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
@@ -848,29 +891,51 @@ function ToolCallRow({ call }: { call: ToolCall }) {
 function ToolSubgroup({
   tool,
   calls,
-  forceOpen,
+  open,
+  onToggle,
+  onExpandAll,
+  onCollapseAll,
+  isRowOpen,
+  toggleRow,
 }: {
   tool: string;
   calls: ToolCall[];
-  forceOpen: boolean | null;
+  open: boolean;
+  onToggle: () => void;
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
+  isRowOpen: (c: ToolCall) => boolean;
+  toggleRow: (c: ToolCall) => void;
 }) {
-  const [open, setOpen] = useState(true);
-  const effectiveOpen = forceOpen === null ? open : forceOpen;
   return (
     <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-baseline gap-1.5 text-left text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
-      >
-        <span className="font-mono text-[10px]">{effectiveOpen ? '▼' : '▶'}</span>
-        <span>{tool}</span>
-        <span className="text-muted-foreground/70">({calls.length})</span>
-      </button>
-      {effectiveOpen && (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex flex-1 items-baseline gap-1.5 text-left text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
+          <span>{tool}</span>
+          <span className="text-muted-foreground/70">({calls.length})</span>
+        </button>
+        {open && calls.length > 1 && (
+          <ExpandCollapseChips
+            onExpandAll={onExpandAll}
+            onCollapseAll={onCollapseAll}
+            scope={`${tool} call`}
+          />
+        )}
+      </div>
+      {open && (
         <div className="flex flex-col gap-1 pl-3">
           {calls.map((c, i) => (
-            <ToolCallRow key={`${c.toolUseId ?? c.startedAt}-${i}`} call={c} />
+            <ToolCallRow
+              key={`${c.toolUseId ?? c.startedAt}-${i}`}
+              call={c}
+              open={isRowOpen(c)}
+              onToggle={() => toggleRow(c)}
+            />
           ))}
         </div>
       )}
@@ -880,11 +945,11 @@ function ToolSubgroup({
 
 function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
   const [open, setOpen] = useState(false);
-  // null = subgroups + rows manage their own state; true/false = forced from L1
-  // expand-all / collapse-all. Cleared whenever the user clicks an individual
-  // subgroup / row chevron (handled via key-bump below).
-  const [forceState, setForceState] = useState<boolean | null>(null);
-  const [bumpKey, setBumpKey] = useState(0);
+  // Per-row + per-subgroup open state lifted up here so L1's expand-all can
+  // actually cascade to every level. Missing keys fall back to defaults (rows
+  // default closed unless AUTO_EXPAND_TOOLS; subgroups default open).
+  const [rowsOpen, setRowsOpen] = useState<Record<string, boolean>>({});
+  const [subgroupsOpen, setSubgroupsOpen] = useState<Record<string, boolean>>({});
 
   const byTool = useMemo(() => {
     const map = new Map<string, ToolCall[]>();
@@ -899,14 +964,55 @@ function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
   const total = calls.length;
   const running = calls.filter((c) => !c.ended).length;
 
+  const rowKey = (c: ToolCall) => `${c.toolUseId ?? c.startedAt}`;
+  const isRowOpen = (c: ToolCall) => {
+    const k = rowKey(c);
+    return k in rowsOpen ? rowsOpen[k]! : AUTO_EXPAND_TOOLS.has(c.tool);
+  };
+  const toggleRow = (c: ToolCall) => {
+    const k = rowKey(c);
+    setRowsOpen((prev) => ({ ...prev, [k]: !isRowOpen(c) }));
+  };
+  const isSubgroupOpen = (tool: string) =>
+    tool in subgroupsOpen ? subgroupsOpen[tool]! : true;
+  const toggleSubgroup = (tool: string) =>
+    setSubgroupsOpen((prev) => ({ ...prev, [tool]: !isSubgroupOpen(tool) }));
+
   function expandAll() {
-    setForceState(true);
-    setBumpKey((k) => k + 1);
     setOpen(true);
+    const r: Record<string, boolean> = {};
+    const s: Record<string, boolean> = {};
+    for (const c of calls) {
+      r[rowKey(c)] = true;
+      s[c.tool] = true;
+    }
+    setRowsOpen(r);
+    setSubgroupsOpen(s);
   }
   function collapseAll() {
-    setForceState(false);
-    setBumpKey((k) => k + 1);
+    const r: Record<string, boolean> = {};
+    const s: Record<string, boolean> = {};
+    for (const c of calls) {
+      r[rowKey(c)] = false;
+      s[c.tool] = false;
+    }
+    setRowsOpen(r);
+    setSubgroupsOpen(s);
+  }
+  function expandSubgroup(tool: string) {
+    setSubgroupsOpen((prev) => ({ ...prev, [tool]: true }));
+    setRowsOpen((prev) => {
+      const next = { ...prev };
+      for (const c of calls) if (c.tool === tool) next[rowKey(c)] = true;
+      return next;
+    });
+  }
+  function collapseSubgroup(tool: string) {
+    setRowsOpen((prev) => {
+      const next = { ...prev };
+      for (const c of calls) if (c.tool === tool) next[rowKey(c)] = false;
+      return next;
+    });
   }
 
   return (
@@ -925,30 +1031,27 @@ function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
           )}
         </button>
         {open && (
-          <div className="flex gap-1 text-[10px] uppercase tracking-wider">
-            <button
-              type="button"
-              onClick={expandAll}
-              className="border border-border bg-background px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
-              title="Expand all calls"
-            >
-              expand all
-            </button>
-            <button
-              type="button"
-              onClick={collapseAll}
-              className="border border-border bg-background px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
-              title="Collapse all calls"
-            >
-              collapse all
-            </button>
-          </div>
+          <ExpandCollapseChips
+            onExpandAll={expandAll}
+            onCollapseAll={collapseAll}
+            scope="call"
+          />
         )}
       </div>
       {open && (
-        <div key={bumpKey} className="mt-2 flex flex-col gap-2">
+        <div className="mt-2 flex flex-col gap-2">
           {byTool.map(([tool, list]) => (
-            <ToolSubgroup key={tool} tool={tool} calls={list} forceOpen={forceState} />
+            <ToolSubgroup
+              key={tool}
+              tool={tool}
+              calls={list}
+              open={isSubgroupOpen(tool)}
+              onToggle={() => toggleSubgroup(tool)}
+              onExpandAll={() => expandSubgroup(tool)}
+              onCollapseAll={() => collapseSubgroup(tool)}
+              isRowOpen={isRowOpen}
+              toggleRow={toggleRow}
+            />
           ))}
         </div>
       )}
@@ -1219,42 +1322,79 @@ function AskCard({ toolName, toolInput, answered, onReply }: AskCardProps) {
             const picked = picks[qIdx];
             return (
               <div key={qIdx} className="flex flex-col gap-2 border-l border-border pl-3">
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Q{qIdx + 1}
-                  {q.header ? ` · ${q.header}` : ''}
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Q{qIdx + 1}
+                    {q.header ? ` · ${q.header}` : ''}
+                  </span>
+                  {picked ? (
+                    <span className="bg-success px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
+                      picked
+                    </span>
+                  ) : (
+                    <span className="text-[10px] uppercase tracking-wider text-warning">
+                      pick one
+                    </span>
+                  )}
                 </div>
                 <div className="text-sm text-foreground">
                   {q.question || '(blank question)'}
                 </div>
                 <div className="flex flex-col gap-2">
-                  {(q.options ?? []).map((opt) => (
-                    <div key={opt.label} className="flex flex-col gap-0.5">
-                      <button
-                        type="button"
-                        disabled={!!answered}
-                        onClick={() =>
-                          setPicks((prev) => ({ ...prev, [qIdx]: opt.label }))
-                        }
-                        className={
-                          'self-start border border-border bg-background px-3 py-1 text-xs uppercase tracking-wider hover:bg-muted hover:text-foreground disabled:opacity-50 ' +
-                          (picked === opt.label
-                            ? 'border-primary text-primary'
-                            : 'text-foreground')
-                        }
-                      >
-                        {opt.label}
-                      </button>
-                      {opt.description && (
-                        <div className="ml-1 text-xs text-muted-foreground">
-                          {opt.description}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                  {(q.options ?? []).map((opt) => {
+                    const selected = picked === opt.label;
+                    return (
+                      <div key={opt.label} className="flex flex-col gap-0.5">
+                        <button
+                          type="button"
+                          disabled={!!answered}
+                          onClick={() =>
+                            setPicks((prev) => ({ ...prev, [qIdx]: opt.label }))
+                          }
+                          className={
+                            'self-start border px-3 py-1 text-xs uppercase tracking-wider disabled:opacity-50 ' +
+                            (selected
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border bg-background text-foreground hover:bg-muted hover:text-foreground')
+                          }
+                        >
+                          {selected ? '✓ ' : ''}
+                          {opt.label}
+                        </button>
+                        {opt.description && (
+                          <div className="ml-1 text-xs text-muted-foreground">
+                            {opt.description}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
           })}
+
+          {/* Picks-so-far summary so the user sees exactly what's about to be submitted. */}
+          <div className="border border-border bg-background/50 px-2 py-1.5">
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+              your answers
+            </div>
+            <ul className="flex flex-col gap-0.5 text-xs">
+              {questions.map((_q, qIdx) => {
+                const picked = picks[qIdx];
+                return (
+                  <li key={qIdx} className="flex items-baseline gap-1.5">
+                    <span className="text-muted-foreground">Q{qIdx + 1}:</span>
+                    {picked ? (
+                      <span className="text-foreground">{picked}</span>
+                    ) : (
+                      <span className="italic text-warning/80">(not picked yet)</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         </div>
       ) : (
         // Single question — fast-path click-to-submit.
@@ -1263,26 +1403,30 @@ function AskCard({ toolName, toolInput, answered, onReply }: AskCardProps) {
             {questions[0]!.question || '(blank question)'}
           </div>
           <div className="flex flex-col gap-2">
-            {(questions[0]!.options ?? []).map((opt) => (
-              <div key={opt.label} className="flex flex-col gap-0.5">
-                <button
-                  type="button"
-                  disabled={!!answered}
-                  onClick={() => reply(opt.label)}
-                  className={
-                    'self-start border border-border bg-background px-3 py-1 text-xs uppercase tracking-wider hover:bg-muted hover:text-foreground disabled:opacity-50 ' +
-                    (answered === opt.label
-                      ? 'border-primary text-primary'
-                      : 'text-foreground')
-                  }
-                >
-                  {opt.label}
-                </button>
-                {opt.description && (
-                  <div className="ml-1 text-xs text-muted-foreground">{opt.description}</div>
-                )}
-              </div>
-            ))}
+            {(questions[0]!.options ?? []).map((opt) => {
+              const selected = answered === opt.label;
+              return (
+                <div key={opt.label} className="flex flex-col gap-0.5">
+                  <button
+                    type="button"
+                    disabled={!!answered}
+                    onClick={() => reply(opt.label)}
+                    className={
+                      'self-start border px-3 py-1 text-xs uppercase tracking-wider disabled:opacity-50 ' +
+                      (selected
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-background text-foreground hover:bg-muted hover:text-foreground')
+                    }
+                  >
+                    {selected ? '✓ ' : ''}
+                    {opt.label}
+                  </button>
+                  {opt.description && (
+                    <div className="ml-1 text-xs text-muted-foreground">{opt.description}</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </>
       )}
@@ -1296,7 +1440,7 @@ function AskCard({ toolName, toolInput, answered, onReply }: AskCardProps) {
             title={canSubmitMulti ? 'Submit all answers' : 'Pick an option for every question first'}
             className="bg-primary px-3 py-1 text-xs font-medium uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            Submit
+            Submit{canSubmitMulti ? ` ${Object.keys(picks).length} answer${Object.keys(picks).length === 1 ? '' : 's'}` : ''}
           </button>
         )}
         <button
