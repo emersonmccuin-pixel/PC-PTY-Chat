@@ -12,6 +12,7 @@ import { runMigrations } from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
+import { browseFolder, BrowseError } from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
 import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
@@ -141,7 +142,21 @@ app.post('/api/ask', async (c) => {
   return c.json({ answer });
 });
 
-// ── Filesystem probe (create-project UI) ──────────────────────────────────
+// ── Filesystem browse + probe (create-project UI) ─────────────────────────
+
+/** List a directory for the folder picker. Query: `path` (default = ~/). */
+app.get('/api/fs/browse', (c) => {
+  const path = c.req.query('path') ?? '';
+  try {
+    return c.json({ ok: true, ...browseFolder(path) });
+  } catch (err) {
+    if (err instanceof BrowseError) {
+      const status = err.kind === 'forbidden' ? 403 : err.kind === 'not_found' ? 404 : 400;
+      return c.json({ ok: false, error: err.message, kind: err.kind }, status);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
 
 /** Probe a folder for the create-project preview. Body: `{ path }`.
  *  Response: { path, exists, isDirectory, hasFiles, fileCount, isGitRepo }. */
