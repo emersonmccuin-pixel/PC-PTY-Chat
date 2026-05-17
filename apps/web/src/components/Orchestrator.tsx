@@ -351,6 +351,10 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
   // 200ms while thinking, frozen on Stop. Cheap setInterval; teardown cancels.
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  // When the user clicks Interrupt while thinking, swap the indicator label
+  // to "Interrupting…" until the turn actually ends (state flips off thinking).
+  // Claude takes a beat to honor Ctrl+C — don't let the user think nothing happened.
+  const [interruptedAt, setInterruptedAt] = useState<number | null>(null);
   useEffect(() => {
     if (isThinking) {
       if (thinkingStartedAt === null) {
@@ -361,8 +365,14 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
     } else if (thinkingStartedAt !== null) {
       setThinkingStartedAt(null);
       setElapsedMs(0);
+      setInterruptedAt(null);
     }
   }, [isThinking, thinkingStartedAt]);
+  function handleInterrupt(): boolean {
+    const ok = send({ type: 'interrupt' });
+    if (ok && isThinking) setInterruptedAt(Date.now());
+    return ok;
+  }
   useEffect(() => {
     if (thinkingStartedAt === null) return;
     const tick = () => setElapsedMs(Date.now() - thinkingStartedAt);
@@ -486,14 +496,16 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
           {pastError && (
             <div className="text-center text-xs text-red-400">Error loading session: {pastError}</div>
           )}
-          {isThinking && <ThinkingIndicator elapsedMs={elapsedMs} />}
+          {isThinking && (
+            <ThinkingIndicator elapsedMs={elapsedMs} interruptedAt={interruptedAt} />
+          )}
         </div>
       </div>
       {!isViewingPast && (
         <Composer
           projectSlug={project.slug}
           onSend={(text) => send({ type: 'send', text })}
-          onInterrupt={() => send({ type: 'interrupt' })}
+          onInterrupt={handleInterrupt}
         />
       )}
     </div>
@@ -565,18 +577,55 @@ function formatElapsed(ms: number): string {
   return `${m}m ${rem.toString().padStart(2, '0')}s`;
 }
 
-function ThinkingIndicator({ elapsedMs }: { elapsedMs: number }) {
+function ThinkingIndicator({
+  elapsedMs,
+  interruptedAt,
+}: {
+  elapsedMs: number;
+  interruptedAt: number | null;
+}) {
+  // While interrupting, tick our OWN clock against interruptedAt so the
+  // user sees the wait until Claude actually stops responding. Show a hint
+  // after 5s in case Claude is wedged.
+  const [sinceInterrupt, setSinceInterrupt] = useState(0);
+  useEffect(() => {
+    if (interruptedAt === null) {
+      setSinceInterrupt(0);
+      return;
+    }
+    const tick = () => setSinceInterrupt(Date.now() - interruptedAt);
+    tick();
+    const id = setInterval(tick, 200);
+    return () => clearInterval(id);
+  }, [interruptedAt]);
+
+  const interrupting = interruptedAt !== null;
+  const stuck = interrupting && sinceInterrupt > 5_000;
   return (
-    <div className="self-start flex items-center gap-2 border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
-      <span className="thinking-dots inline-flex items-center gap-0.5">
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
-      </span>
-      <span>Thinking</span>
-      <span className="font-mono tabular-nums text-foreground/70">
-        {formatElapsed(elapsedMs)}
-      </span>
+    <div
+      className={
+        'self-start flex flex-col gap-1 border px-3 py-1.5 text-xs ' +
+        (interrupting
+          ? 'border-warning/60 bg-warning/10 text-warning'
+          : 'border-border bg-card text-muted-foreground')
+      }
+    >
+      <div className="flex items-center gap-2">
+        <span className="thinking-dots inline-flex items-center gap-0.5">
+          <span className="thinking-dot" />
+          <span className="thinking-dot" />
+          <span className="thinking-dot" />
+        </span>
+        <span>{interrupting ? 'Interrupting' : 'Thinking'}</span>
+        <span className="font-mono tabular-nums opacity-80">
+          {interrupting ? formatElapsed(sinceInterrupt) : formatElapsed(elapsedMs)}
+        </span>
+      </div>
+      {stuck && (
+        <div className="text-[10px] uppercase tracking-wider opacity-90">
+          Claude isn't responding to the interrupt — click it again, or use "+ New session" if stuck.
+        </div>
+      )}
     </div>
   );
 }
