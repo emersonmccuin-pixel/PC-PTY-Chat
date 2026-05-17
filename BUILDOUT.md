@@ -500,7 +500,7 @@ Scope: vendor v1's React UI components onto the multi-tenant server. Vellum re-s
 
 **Build order — 14 milestones.**
 
-- [ ] Q1. Add deps: zustand, react-resizable-panels, react-markdown, remark-gfm, @dnd-kit/core, @dnd-kit/sortable. `pnpm install`.
+- [x] Q1. Add deps: zustand, react-resizable-panels, react-markdown, remark-gfm, @dnd-kit/core, @dnd-kit/sortable. `pnpm install`.
 - [ ] Q2. Vellum re-skin: replace shadcn slate-oklch tokens in `apps/web/src/index.css` with vellum hex (background `#080604`, foreground `#f0e4c4`, primary `#f0d080`, etc.). `--radius: 0`. JetBrains Mono via `@fontsource/jetbrains-mono`. Existing shadcn Button / Card / Badge inherit the new palette.
 - [ ] Q3. Vendor Shell (3-col layout, react-resizable-panels). Header + left ProjectRail + center workspace + right ActivityPanel (stub here, filled in Q12).
 - [ ] Q4. Vendor ProjectRail. Lists projects from `GET /api/projects`. Active-project state in zustand. "Create project" button surfaces the create-project modal.
