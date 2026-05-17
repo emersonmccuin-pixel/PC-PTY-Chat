@@ -1504,6 +1504,20 @@ function Composer({
   onInterrupt: () => boolean;
 }) {
   const [text, setText] = useState('');
+  // 'sent' confirms a Ctrl+C went out (button flashes "Sent ✓" briefly).
+  // 'failed' if WS was closed when we tried — at least the user knows.
+  const [interruptFeedback, setInterruptFeedback] = useState<'sent' | 'failed' | null>(null);
+  const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clickInterrupt() {
+    if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
+    const ok = onInterrupt();
+    setInterruptFeedback(ok ? 'sent' : 'failed');
+    interruptTimerRef.current = setTimeout(() => setInterruptFeedback(null), 1500);
+  }
+  useEffect(() => () => {
+    if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
+  }, []);
   // History buffer + cursor. `historyIdx === null` means "not navigating".
   // When navigating, Up/Down move through entries; sending resets to null.
   const historyRef = useRef<string[]>(readHistory(projectSlug));
@@ -1602,11 +1616,23 @@ function Composer({
         </button>
         <button
           type="button"
-          onClick={() => onInterrupt()}
+          onClick={clickInterrupt}
+          disabled={interruptFeedback === 'sent'}
           title="Send Ctrl+C to the PTY"
-          className="bg-destructive px-3 py-1 text-xs font-medium uppercase tracking-wider text-destructive-foreground hover:bg-destructive/90"
+          className={
+            'px-3 py-1 text-xs font-medium uppercase tracking-wider disabled:opacity-100 ' +
+            (interruptFeedback === 'sent'
+              ? 'bg-success text-background'
+              : interruptFeedback === 'failed'
+                ? 'bg-warning text-background'
+                : 'bg-destructive text-destructive-foreground hover:bg-destructive/90')
+          }
         >
-          Interrupt
+          {interruptFeedback === 'sent'
+            ? '✓ Sent'
+            : interruptFeedback === 'failed'
+              ? 'Failed — not connected'
+              : 'Interrupt'}
         </button>
       </div>
     </div>
