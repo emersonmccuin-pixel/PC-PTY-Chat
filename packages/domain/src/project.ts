@@ -17,4 +17,8 @@ export interface Project {
   id: ULID;
   name: string;
   stages: Stage[];
+  /** Absolute path to the user's project folder. Git-backed. */
+  folderPath: string;
+  /** Optional origin URL; null = local-only repo. Editable in project settings. */
+  gitRemote: string | null;
 }

@@ -456,7 +456,7 @@ Scope: replace the singleton runtime with per-project runtimes, multiplex channe
 
 **Build order — 15 milestones.** Each is one logical commit's worth of work. Server boots between milestones; from P4 onward the singleton rig path is gone — first multi-tenant boot opens with zero projects.
 
-- [ ] P1. Schema migration: `projects` gets `folder_path`, `git_remote` (nullable), `created_at` (epoch ms per v1 #15), `deleted_at` (nullable, soft-delete per v1 #16). Drizzle migration file.
+- [x] P1. Schema migration: `projects` gets `folder_path`, `git_remote` (nullable), `created_at` (epoch ms per v1 #15), `deleted_at` (nullable, soft-delete per v1 #16). Drizzle migration file.
 - [ ] P2. `templates/` dir at trunk root: canonical agents, hooks, seed workflows, `CLAUDE.md`, `.mcp.template.json`, `README.template.md`. Check in. (Trunk-level template source — distinct from per-project copies users edit.)
 - [ ] P3. Agent library bootstrap: on server start, if `~/.project-companion/agents/` is empty / missing, copy from `templates/.claude/agents/`. `AgentLibrary.list()` reads the dir; `AgentLibrary.write(name, body)` writes a new file. No DB row — files-on-disk are the registry (same shape as workflows).
 - [ ] P4. `ProjectRuntime` + `ProjectRegistry` abstractions. Drop singleton `WorkflowRuntime` / `PtySession`. Bootstrap rewrite removes the hardcoded `rig` seed. PtySession cwd = `project.folder_path`. `--mcp-config` points at `<folder>/.mcp.json`.

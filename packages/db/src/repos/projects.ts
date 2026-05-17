@@ -8,6 +8,8 @@ export interface CreateProjectInput {
   slug: string;
   name: string;
   stages: Stage[];
+  folderPath: string;
+  gitRemote?: string | null;
   settings?: Record<string, unknown>;
 }
 
@@ -17,13 +19,21 @@ interface ProjectRow {
   name: string;
   settings: Record<string, unknown>;
   stages: Stage[];
+  folderPath: string;
+  gitRemote: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
 }
 
 function toDomain(row: ProjectRow): Project {
-  return { id: row.id, name: row.name, stages: row.stages };
+  return {
+    id: row.id,
+    name: row.name,
+    stages: row.stages,
+    folderPath: row.folderPath,
+    gitRemote: row.gitRemote,
+  };
 }
 
 export function listProjects(): Project[] {
@@ -57,6 +67,7 @@ export function getProjectBySlug(slug: string): Project | null {
 export function createProject(input: CreateProjectInput): Project {
   const now = Date.now();
   const id = newId();
+  const gitRemote = input.gitRemote ?? null;
   getDb()
     .insert(projects)
     .values({
@@ -64,12 +75,14 @@ export function createProject(input: CreateProjectInput): Project {
       slug: input.slug,
       name: input.name,
       stages: input.stages,
+      folderPath: input.folderPath,
+      gitRemote,
       settings: input.settings ?? {},
       createdAt: now,
       updatedAt: now,
     })
     .run();
-  return { id, name: input.name, stages: input.stages };
+  return { id, name: input.name, stages: input.stages, folderPath: input.folderPath, gitRemote };
 }
 
 /** Update the stored stages for a project. */

@@ -37,6 +37,8 @@ export const projects = sqliteTable(
       .default(sql`'{}'`)
       .$type<Record<string, unknown>>(),
     stages: text('stages', { mode: 'json' }).notNull().$type<Stage[]>(),
+    folderPath: text('folder_path').notNull().default(''),
+    gitRemote: text('git_remote'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),

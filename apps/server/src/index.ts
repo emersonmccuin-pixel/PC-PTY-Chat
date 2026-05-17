@@ -35,6 +35,7 @@ const defaultProject =
   createProject({
     slug: 'rig',
     name: 'PC-PTY-Chat Rig',
+    folderPath: WORKSPACE,
     stages: [
       { id: 'draft', name: 'Draft', order: 0 },
       { id: 'review', name: 'Review', order: 1 },
