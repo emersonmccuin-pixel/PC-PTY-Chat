@@ -19,6 +19,7 @@ import {
   listProjects,
   runMigrations,
   setGlobalSettings,
+  setOrchestratorSessionTitle,
   softDeleteProject,
   updateProjectMeta,
 } from '@pc/db';
@@ -142,12 +143,42 @@ function attachPtyHandlers(
     });
     broadcastTo(projectId, { type: 'turn-end' });
   });
-  session.on('event', (event: unknown) => broadcastTo(projectId, { type: 'event', event }));
+  session.on('event', (event: unknown) => {
+    maybeSetSessionTitle(projectId, event);
+    broadcastTo(projectId, { type: 'event', event });
+  });
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
     broadcastTo(projectId, { type: 'exit', code, signal });
     console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
   });
   flag.__pcHandlersAttached = true;
+}
+
+/**
+ * If the active session has no title and the event is the first user prompt,
+ * derive a title from the prompt text and broadcast the updated session so
+ * the UI's chat header re-renders.
+ */
+function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
+  if (!event || typeof event !== 'object') return;
+  const ev = event as { kind?: string; text?: string };
+  if (ev.kind !== 'user' || typeof ev.text !== 'string') return;
+  const active = getActiveOrchestratorSession(projectId);
+  if (!active || active.title) return;
+  const title = deriveTitleFromText(ev.text);
+  if (!title) return;
+  setOrchestratorSessionTitle(active.id, title);
+  const updated = getActiveOrchestratorSession(projectId);
+  if (updated) broadcastTo(projectId, { type: 'session-changed', session: updated });
+}
+
+/** First non-empty line, collapsed whitespace, truncated to ~60 chars. */
+function deriveTitleFromText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const firstLine = trimmed.split(/\r?\n/, 1)[0]!.replace(/\s+/g, ' ').trim();
+  if (firstLine.length <= 60) return firstLine;
+  return firstLine.slice(0, 57).trimEnd() + '…';
 }
 
 // ── Global endpoints ──────────────────────────────────────────────────────
