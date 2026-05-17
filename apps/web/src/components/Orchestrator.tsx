@@ -518,6 +518,34 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
       ? liveState === 'thinking'
       : jsonlBusy && liveState !== 'ready';
 
+  // Section 0 phase 0d — queued-prompt UI. CC's JSONL queue-operation lines
+  // don't carry the prompt text (verified empirically against real sessions),
+  // so we cache locally what the user typed while busy and pop entries when
+  // matching dequeue events arrive. Push happens in the onSend closure below.
+  const [queuedPrompts, setQueuedPrompts] = useState<string[]>([]);
+  const dequeueCount = useMemo(() => {
+    let n = 0;
+    for (const env of events) {
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (ev && ev.kind === 'jsonl-queue-dequeue') n++;
+    }
+    return n;
+  }, [events]);
+  const prevDequeueRef = useRef(0);
+  useEffect(() => {
+    const diff = dequeueCount - prevDequeueRef.current;
+    if (diff > 0) setQueuedPrompts((prev) => prev.slice(diff));
+    prevDequeueRef.current = dequeueCount;
+  }, [dequeueCount]);
+  // Reset queue cache on session change — fresh PC session ⇒ no inheritable
+  // queue state. Project switch unmounts the component so no extra cleanup
+  // needed there.
+  useEffect(() => {
+    setQueuedPrompts([]);
+    prevDequeueRef.current = 0;
+  }, [session?.id]);
+
   // Elapsed-time counter — starts when state flips to thinking, ticks every
   // 200ms while thinking, frozen on Stop. Cheap setInterval; teardown cancels.
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
@@ -675,8 +703,15 @@ export function Orchestrator({ project, events, send }: OrchestratorProps) {
       {!isViewingPast && (
         <Composer
           projectSlug={project.slug}
-          onSend={(text) => send({ type: 'send', text })}
+          onSend={(text) => {
+            const ok = send({ type: 'send', text });
+            if (ok && isThinking) {
+              setQueuedPrompts((prev) => [...prev, text]);
+            }
+            return ok;
+          }}
           onInterrupt={handleInterrupt}
+          queuedPrompts={queuedPrompts}
         />
       )}
     </div>
@@ -1718,10 +1753,12 @@ function Composer({
   projectSlug,
   onSend,
   onInterrupt,
+  queuedPrompts,
 }: {
   projectSlug: string;
   onSend: (text: string) => boolean;
   onInterrupt: () => boolean;
+  queuedPrompts: string[];
 }) {
   const [text, setText] = useState('');
   // 'sent' confirms a Ctrl+C went out (button flashes "Sent ✓" briefly).
@@ -1825,6 +1862,25 @@ function Composer({
         placeholder="Message the orchestrator (Enter to send, Shift+Enter for newline, ↑/↓ for history)"
         className="resize-none border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none"
       />
+      {queuedPrompts.length > 0 && (
+        <div className="flex flex-col gap-1 border border-dashed border-border bg-muted/30 px-2 py-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            Queued · {queuedPrompts.length}
+          </div>
+          {queuedPrompts.map((q, i) => (
+            <div
+              key={i}
+              className="flex items-start gap-2 text-xs text-muted-foreground"
+              title="Will be sent when the current turn ends"
+            >
+              <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider">
+                #{i + 1}
+              </span>
+              <span className="truncate italic" title={q}>{q}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <button
           type="button"
