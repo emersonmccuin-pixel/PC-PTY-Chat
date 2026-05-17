@@ -134,7 +134,10 @@ function Column({
     <div
       ref={setNodeRef}
       className={
-        'flex w-72 shrink-0 flex-col border bg-card p-3 transition-colors ' +
+        // Flex-1 columns share the available width evenly; min-w stops them
+        // shrinking past readability. Parent has overflow-x-auto, so projects
+        // with many stages still get a horizontal scrollbar instead of squish.
+        'flex min-w-[14rem] flex-1 basis-0 flex-col border bg-card p-3 transition-colors ' +
         (isOver ? 'border-primary' : 'border-border')
       }
     >
