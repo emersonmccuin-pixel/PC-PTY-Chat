@@ -50,3 +50,12 @@ export {
 export type { UpsertWorktreeInput } from './repos/worktrees.ts';
 
 export { getGlobalSettings, setGlobalSettings } from './repos/settings.ts';
+
+export {
+  createOrchestratorSession,
+  endOrchestratorSession,
+  getActiveOrchestratorSession,
+  listOrchestratorSessionsForProject,
+  setOrchestratorSessionTitle,
+} from './repos/orchestrator-sessions.ts';
+export type { CreateOrchestratorSessionInput } from './repos/orchestrator-sessions.ts';
