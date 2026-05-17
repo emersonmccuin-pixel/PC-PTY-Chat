@@ -62,6 +62,7 @@ Each item is something we observed but did not fix. Use this as the starter list
 - Long markdown messages with code blocks: width is constrained by center pane minus padding. Test horizontal-scrollable code blocks at narrow widths.
 - Interrupt button sends `type:'interrupt'` to the WS. No visual confirmation of "interrupt delivered." Worth a transient toast.
 - Ask cards: Cancel sends `__cancelled__` per a Session M finding. Verify the orchestrator handles that gracefully and the UI reflects the cancel state clearly.
+- **"Reload session" action.** `claude.exe` reads `.mcp.json`, `.claude/settings.json`, and `.claude/agents/*.md` at spawn time only — editing them mid-session is a no-op until the PTY respawns. Today the only respawn paths are "New session" (loses chat) or a server restart (sledgehammer; all projects). Add a per-project reload that kills the PTY and respawns with `--resume <uuid>` — same chat, new process picks up new config. Right-click menu item alongside "New session". Plumbing is mostly there: same shape as `startNewSession` minus the wipe + new-UUID parts.
 
 ### Project settings
 
