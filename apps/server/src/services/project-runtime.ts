@@ -8,7 +8,7 @@
 // claude.exe processes — each waits for a UI subscriber.
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { OrchestratorSession, Project, ULID } from '@pc/domain';
@@ -20,6 +20,7 @@ import {
 import { PtySession } from '@pc/runtime';
 import { WorkflowRegistry } from '@pc/workflows';
 
+import { renderTemplate } from './project-scaffold.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
 import { evaluateBoolean, substituteOutputs } from './output-substitution.ts';
@@ -31,6 +32,8 @@ export interface ProjectRuntimeOptions {
   channelPort: number;
   /** WS broadcaster pre-bound to this project — registry produces it. */
   broadcast: BroadcastFn;
+  /** Templates dir for hook re-render (per-session paths via env var). */
+  templatesDir: string;
 }
 
 export class ProjectRuntime {
@@ -38,6 +41,7 @@ export class ProjectRuntime {
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
+  private hooksRefreshed = false;
 
   constructor(public project: Project, private readonly opts: ProjectRuntimeOptions) {}
 
@@ -49,9 +53,16 @@ export class ProjectRuntime {
     return this.project.folderPath;
   }
 
-  /** Where this project's events / transcript / stop-marker / tasks land. */
+  /** Per-project data root. Holds the `sessions/` subtree + legacy
+   *  project-wide files (until they're all session-scoped). */
   get dataPath(): string {
     return resolve(this.opts.dataDir, 'projects', this.project.id);
+  }
+
+  /** Per-session data dir. Hooks read PC_SESSION_ID to write here; the
+   *  Sessions tab reads from here to render past chats. */
+  sessionDataPath(sessionId: string): string {
+    return resolve(this.dataPath, 'sessions', sessionId);
   }
 
   /**
@@ -124,15 +135,18 @@ export class ProjectRuntime {
    */
   ensurePty(): PtySession {
     if (this.pty && this.pty.getState() !== 'exited') return this.pty;
-    mkdirSync(this.dataPath, { recursive: true });
-    const { sessionId, resume } = this.resolveSessionForSpawn();
+    this.refreshHooksIfStale();
+    const session = this.resolveSessionForSpawn();
+    const sessionDir = this.sessionDataPath(session.row.id);
+    mkdirSync(sessionDir, { recursive: true });
     this.pty = new PtySession({
       workspaceDir: this.project.folderPath,
-      stopMarkerPath: resolve(this.dataPath, 'stop-markers.txt'),
-      eventsPath: resolve(this.dataPath, 'events.jsonl'),
-      transcriptPath: resolve(this.dataPath, 'transcript.log'),
-      claudeSessionId: sessionId,
-      resume,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      claudeSessionId: session.providerSessionId,
+      resume: session.resume,
+      extraEnv: { PC_SESSION_ID: session.row.id },
     });
     return this.pty;
   }
@@ -148,19 +162,16 @@ export class ProjectRuntime {
   }
 
   /**
-   * End the current session row, wipe per-project event/marker files, kill
-   * the PtySession, and clear cached state. The next `ensurePty()` mints a
-   * fresh session — UI and Claude both start blank.
+   * End the current session row, kill the PtySession, and clear cached state.
+   * The next `ensurePty()` mints a fresh session row + spawns into a new
+   * per-session dir — UI and Claude both start blank, and the prior session's
+   * events.jsonl is preserved on disk for the Sessions tab to surface.
    */
   startNewSession(): OrchestratorSession {
     const active = getActiveOrchestratorSession(this.project.id);
     if (active) endOrchestratorSession(active.id, 'user_ended');
     try { this.pty?.kill(); } catch { /* best-effort */ }
     this.pty = null;
-    // Wipe per-session ephemeral files. events.jsonl is the chat log the UI
-    // replays from; tasks.json is the per-session TaskTool snapshot; the
-    // stop-markers file is the turn-end counter.
-    this.wipeSessionFiles();
     const fresh = createOrchestratorSession({
       projectId: this.project.id,
       providerSessionId: randomUUID(),
@@ -177,31 +188,55 @@ export class ProjectRuntime {
     this.registry = null;
   }
 
-  private resolveSessionForSpawn(): { sessionId: string; resume: boolean } {
+  private resolveSessionForSpawn(): {
+    row: OrchestratorSession;
+    providerSessionId: string;
+    resume: boolean;
+  } {
     const active = getActiveOrchestratorSession(this.project.id);
     if (active?.providerSessionId) {
-      return { sessionId: active.providerSessionId, resume: true };
+      return { row: active, providerSessionId: active.providerSessionId, resume: true };
     }
     if (active) {
       // Row exists but no provider id — shouldn't happen since we mint at
-      // create-time, but treat it as resume-with-no-target → re-mint into
-      // the existing row would be wrong; end it and start fresh.
+      // create-time, but treat it as resume-with-no-target → end and re-mint.
       endOrchestratorSession(active.id, 'provider_session_lost');
     }
     const fresh = createOrchestratorSession({
       projectId: this.project.id,
       providerSessionId: randomUUID(),
     });
-    return { sessionId: fresh.providerSessionId!, resume: false };
+    return { row: fresh, providerSessionId: fresh.providerSessionId!, resume: false };
   }
 
-  private wipeSessionFiles(): void {
-    const events = resolve(this.dataPath, 'events.jsonl');
-    const markers = resolve(this.dataPath, 'stop-markers.txt');
-    const tasks = resolve(this.dataPath, 'tasks.json');
-    for (const p of [events, markers]) {
-      if (existsSync(p)) writeFileSync(p, '');
+  /**
+   * Re-render the project's `.claude/hooks/*.cjs` from the trunk templates
+   * once per server boot. The template was updated to read PC_SESSION_ID for
+   * per-session path routing; existing projects scaffolded before that
+   * update have the old hardcoded-path version and need a refresh. Idempotent;
+   * the second call per ProjectRuntime instance is a no-op.
+   */
+  private refreshHooksIfStale(): void {
+    if (this.hooksRefreshed) return;
+    this.hooksRefreshed = true;
+    const srcDir = resolve(this.opts.templatesDir, '.claude', 'hooks');
+    const destDir = resolve(this.project.folderPath, '.claude', 'hooks');
+    const tokens = {
+      PROJECT_DATA_DIR: this.dataPath.replace(/\\/g, '/'),
+      PROJECT_ID: this.project.id,
+      PROJECT_SLUG: this.project.slug,
+      PROJECT_NAME: this.project.name,
+      PROJECT_FOLDER: this.project.folderPath.replace(/\\/g, '/'),
+    };
+    try {
+      mkdirSync(destDir, { recursive: true });
+      for (const f of readdirSync(srcDir)) {
+        if (!f.endsWith('.cjs')) continue;
+        const raw = readFileSync(resolve(srcDir, f), 'utf-8');
+        writeFileSync(resolve(destDir, f), renderTemplate(raw, tokens), 'utf-8');
+      }
+    } catch (err) {
+      console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);
     }
-    if (existsSync(tasks)) writeFileSync(tasks, '{}');
   }
 }

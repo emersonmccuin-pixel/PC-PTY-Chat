@@ -32,6 +32,10 @@ export interface PtySessionOptions {
   /** When true, pass `--resume <uuid>`. When false, pass `--session-id <uuid>`
    *  (mint). Ignored if `claudeSessionId` is unset. */
   resume?: boolean;
+  /** Extra env vars merged into the claude.exe spawn env. Used to thread
+   *  PC_SESSION_ID through so hooks can route their writes into the
+   *  per-session data dir. */
+  extraEnv?: Record<string, string>;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -114,7 +118,7 @@ export class PtySession extends EventEmitter {
     args.push('--dangerously-load-development-channels', 'server:webhook');
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', ...(opts.extraEnv ?? {}) },
       cols: opts.cols ?? 120,
       rows: opts.rows ?? 30,
     });

@@ -84,6 +84,7 @@ function broadcastTo(projectId: ULID, msg: unknown): void {
 
 const projectRegistry = new ProjectRegistry({
   dataDir: DATA,
+  templatesDir: TEMPLATES,
   channelPort: CHANNEL_PORT,
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
@@ -893,18 +894,23 @@ wss.on('connection', (ws, req) => {
   // for fan-out paths. Keeps the envelope contract uniform.
   ws.send(JSON.stringify({ projectId, type: 'state', state: session.getState() }));
 
-  // Replay events.jsonl so a reloaded tab doesn't lose its chat panel.
-  const eventsFile = resolve(runtime.dataPath, 'events.jsonl');
-  if (existsSync(eventsFile)) {
-    try {
-      const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
-      for (const line of lines) {
-        let event: unknown;
-        try { event = JSON.parse(line); } catch { continue; }
-        ws.send(JSON.stringify({ projectId, type: 'event', event }));
+  // Replay the active session's events.jsonl so a reloaded tab doesn't lose
+  // its chat panel. Past sessions render via GET /api/projects/:id/sessions/
+  // :sessionId/events, not the WS replay.
+  const activeSession = getActiveOrchestratorSession(projectId);
+  if (activeSession) {
+    const eventsFile = resolve(runtime.sessionDataPath(activeSession.id), 'events.jsonl');
+    if (existsSync(eventsFile)) {
+      try {
+        const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          let event: unknown;
+          try { event = JSON.parse(line); } catch { continue; }
+          ws.send(JSON.stringify({ projectId, type: 'event', event }));
+        }
+      } catch {
+        /* best-effort replay */
       }
-    } catch {
-      /* best-effort replay */
     }
   }
 

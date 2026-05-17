@@ -10,6 +10,7 @@ import type { BroadcastFn } from './workflow-runtime.ts';
 
 export interface ProjectRegistryDeps {
   dataDir: string;
+  templatesDir: string;
   channelPort: number;
   /** Factory: produces a broadcast fn pre-bound to the given project id. */
   broadcastFor: (projectId: ULID) => BroadcastFn;
@@ -91,6 +92,7 @@ export class ProjectRegistry {
   private construct(project: Project): ProjectRuntime {
     return new ProjectRuntime(project, {
       dataDir: this.deps.dataDir,
+      templatesDir: this.deps.templatesDir,
       channelPort: this.deps.channelPort,
       broadcast: this.deps.broadcastFor(project.id),
     });

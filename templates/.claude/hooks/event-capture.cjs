@@ -1,7 +1,12 @@
 // Generic hook script. Wired for UserPromptSubmit, PreToolUse, PostToolUse, Stop.
 // Reads the hook JSON payload from stdin, optionally extracts the latest
 // assistant message from the session transcript on Stop, and appends a
-// normalized event to <project-data-dir>/events.jsonl.
+// normalized event to <session-dir>/events.jsonl.
+//
+// Path resolution: PC sets PC_SESSION_ID in the claude.exe spawn env. When
+// set, all per-session files land under <project-data-dir>/sessions/<id>/.
+// When unset (legacy / hand-invoke / first-run before plumbing), we fall
+// back to the project-wide path so the hook still works.
 //
 // Argv: node event-capture.cjs <eventType>
 //   <eventType> = UserPromptSubmit | PreToolUse | PostToolUse | Stop
@@ -9,10 +14,14 @@
 const { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
 
-const EVENTS_FILE = '{{PROJECT_DATA_DIR}}/events.jsonl';
-const STOP_MARKER = '{{PROJECT_DATA_DIR}}/stop-markers.txt';
-const DEBUG_FILE  = '{{PROJECT_DATA_DIR}}/hook-debug.jsonl';
-const TASKS_FILE  = '{{PROJECT_DATA_DIR}}/tasks.json';
+const PROJECT_DATA_DIR = '{{PROJECT_DATA_DIR}}';
+const SESSION_ID = process.env.PC_SESSION_ID || '';
+const DATA_DIR = SESSION_ID ? PROJECT_DATA_DIR + '/sessions/' + SESSION_ID : PROJECT_DATA_DIR;
+
+const EVENTS_FILE = DATA_DIR + '/events.jsonl';
+const STOP_MARKER = DATA_DIR + '/stop-markers.txt';
+const DEBUG_FILE  = DATA_DIR + '/hook-debug.jsonl';
+const TASKS_FILE  = DATA_DIR + '/tasks.json';
 
 const eventType = process.argv[2] ?? 'Unknown';
 
