@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  unwatchFile,
   watchFile,
   writeFileSync,
 } from 'node:fs';
@@ -369,6 +370,15 @@ export class PtySession extends EventEmitter {
       this.tailer.stop();
       this.tailer = null;
     }
+    // Detach the events.jsonl + stop-markers watchers BEFORE the child dies.
+    // CC fires SessionEnd in the 500ms grace window between \x03 and SIGKILL;
+    // that hook writes session-end into this session's events.jsonl. If the
+    // watcher is still active, the line emits, broadcasts on the WS, and lands
+    // in the NEXT session's chat stream as a stale "Session ended" notice.
+    try { unwatchFile(this.eventsPath); } catch { /* ignore */ }
+    try { unwatchFile(this.stopMarkerPath); } catch { /* ignore */ }
+    // Stop emitting to anyone listening on this dead session.
+    this.removeAllListeners();
     try {
       this.child.write('\x03');
       setTimeout(() => this.child.kill(), 500);
