@@ -18,6 +18,12 @@ import {
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
+import {
+  copyLibraryAgentToProject,
+  listProjectAgents,
+  readProjectAgent,
+  writeProjectAgent,
+} from './services/project-agents.ts';
 import { browseFolder, BrowseError } from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
 import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
@@ -284,6 +290,83 @@ app.post('/api/projects', async (c) => {
     const msg = (err as Error).message;
     const is400 =
       /required$|^invalid mode|^folder is not empty|^folder is already a git repo/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+// ── Agent library ─────────────────────────────────────────────────────────
+
+/** Global library at `~/.project-companion/agents/`. */
+app.get('/api/agents', (c) => {
+  return c.json({ agents: agentLibrary.list() });
+});
+
+/** Write a new library agent. Body: `{ name, body }`. 409 if the name is taken. */
+app.post('/api/agents', async (c) => {
+  const body = await c.req.json<{ name?: string; body?: string }>();
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const text = typeof body.body === 'string' ? body.body : '';
+  if (!name || !text) return c.json({ ok: false, error: 'name and body required' }, 400);
+  try {
+    const agent = agentLibrary.write(name, text);
+    return c.json({ ok: true, agent }, 201);
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is409 = /^agent already exists/.test(msg);
+    const is400 = /^invalid agent name|^agent name required/.test(msg);
+    return c.json({ ok: false, error: msg }, is409 ? 409 : is400 ? 400 : 500);
+  }
+});
+
+/** Per-project agent copies at `<folder>/.claude/agents/`. */
+app.get('/api/projects/:projectId/agents', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ agents: listProjectAgents(runtime.folderPath) });
+});
+
+/** Add an agent from the library into the project. Body: `{ name }`. 409 if
+ *  the project already has a copy with that name. */
+app.post('/api/projects/:projectId/agents', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ name?: string }>();
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
+  try {
+    const agent = copyLibraryAgentToProject(agentLibrary, runtime.folderPath, name);
+    return c.json({ ok: true, agent }, 201);
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (/^library agent not found/.test(msg)) return c.json({ ok: false, error: msg }, 404);
+    if (/^project already has an agent/.test(msg)) return c.json({ ok: false, error: msg }, 409);
+    if (/^invalid agent name|^agent name required/.test(msg)) return c.json({ ok: false, error: msg }, 400);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+/** Edit a project's agent copy. Library version is untouched. Body: `{ body }`.
+ *  PATCH per the design spec — semantically a full-body replace. */
+app.patch('/api/projects/:projectId/agents/:name', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const name = c.req.param('name');
+  const body = await c.req.json<{ body?: string }>();
+  if (typeof body.body !== 'string') {
+    return c.json({ ok: false, error: 'body required' }, 400);
+  }
+  if (!readProjectAgent(runtime.folderPath, name)) {
+    return c.json({ ok: false, error: `unknown project agent: ${name}` }, 404);
+  }
+  try {
+    const agent = writeProjectAgent(runtime.folderPath, name, body.body);
+    return c.json({ ok: true, agent });
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is400 = /^invalid agent name|^agent name required/.test(msg);
     return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
   }
 });

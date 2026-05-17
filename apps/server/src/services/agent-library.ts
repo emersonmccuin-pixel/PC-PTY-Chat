@@ -65,16 +65,22 @@ export class AgentLibrary {
 
   /** Slug guard: alnum / dash / dot / underscore. Strips a trailing .md if present. */
   private safeName(name: string, opts: { allowMissing?: boolean } = {}): string {
-    const trimmed = String(name ?? '').trim().replace(/\.md$/, '');
-    if (!trimmed) {
-      if (opts.allowMissing) return '';
-      throw new Error('agent name required');
-    }
-    if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
-      throw new Error(`invalid agent name: ${trimmed}`);
-    }
-    return trimmed;
+    return safeAgentName(name, opts);
   }
+}
+
+/** Module-level form of the safe-name guard so both AgentLibrary and the
+ *  per-project agents service share the same rule. */
+export function safeAgentName(name: string, opts: { allowMissing?: boolean } = {}): string {
+  const trimmed = String(name ?? '').trim().replace(/\.md$/, '');
+  if (!trimmed) {
+    if (opts.allowMissing) return '';
+    throw new Error('agent name required');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new Error(`invalid agent name: ${trimmed}`);
+  }
+  return trimmed;
 }
 
 /** Default library dir: `~/.project-companion/agents/`. Overridable via PC_AGENT_LIBRARY_DIR. */
