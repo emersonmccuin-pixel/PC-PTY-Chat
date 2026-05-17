@@ -60,6 +60,12 @@ export interface PtySessionOptions {
   /** Cursor (line count) to resume the tailer from. Only used when
    *  `jsonlPath` is set. Defaults to 0. */
   jsonlStartLine?: number;
+  /** JSONL paths claimed by PRIOR sessions for this project. Discovery skips
+   *  any file in this set. Prevents the new tailer from latching onto an
+   *  old session's JSONL when the user clicks `+ New session` while the old
+   *  CC was still writing — without this guard the entire old conversation
+   *  re-streams as live jsonl-* events and re-pops up in the chat panel. */
+  excludeJsonlPaths?: readonly string[];
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -90,6 +96,7 @@ export class PtySession extends EventEmitter {
   private workspaceDir: string;
   private claudeProjectsDir: string;
   private spawnedAt = 0;
+  private excludeJsonlPaths: Set<string>;
   private tailer: JsonlTailer | null = null;
   private discoveryTimer: NodeJS.Timeout | null = null;
   private cursorPersistTimer: NodeJS.Timeout | null = null;
@@ -102,6 +109,9 @@ export class PtySession extends EventEmitter {
     this.workspaceDir = opts.workspaceDir;
     this.claudeProjectsDir =
       opts.claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
+    this.excludeJsonlPaths = new Set(
+      (opts.excludeJsonlPaths ?? []).map((p) => resolve(p)),
+    );
 
     mkdirSync(dirname(opts.transcriptPath), { recursive: true });
     writeFileSync(opts.transcriptPath, '');
@@ -283,6 +293,11 @@ export class PtySession extends EventEmitter {
         for (const name of readdirSync(projectDir)) {
           if (!name.endsWith('.jsonl')) continue;
           const p = join(projectDir, name);
+          // Skip JSONL files claimed by prior sessions. Without this guard a
+          // fresh PtySession created via `+ New session` can latch onto the
+          // dying OLD CC's JSONL (still being written within the kill grace
+          // window) and re-emit the entire old conversation as jsonl-* events.
+          if (this.excludeJsonlPaths.has(resolve(p))) continue;
           try {
             const st = statSync(p);
             const mt = st.mtimeMs;

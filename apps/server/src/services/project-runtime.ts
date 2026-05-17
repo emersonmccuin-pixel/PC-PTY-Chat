@@ -16,6 +16,7 @@ import {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
+  listOrchestratorSessionsForProject,
 } from '@pc/db';
 import { PtySession } from '@pc/runtime';
 import { WorkflowRegistry } from '@pc/workflows';
@@ -139,6 +140,13 @@ export class ProjectRuntime {
     const session = this.resolveSessionForSpawn();
     const sessionDir = this.sessionDataPath(session.row.id);
     mkdirSync(sessionDir, { recursive: true });
+    // Collect JSONL paths claimed by all prior sessions for this project so
+    // discovery doesn't latch onto a dying OLD session's JSONL during a
+    // `+ New session` race. Resume case is unaffected (jsonlPath is passed
+    // directly, skipping discovery).
+    const priorJsonlPaths = listOrchestratorSessionsForProject(this.project.id)
+      .filter((s) => s.id !== session.row.id && s.jsonlPath)
+      .map((s) => s.jsonlPath as string);
     this.pty = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
@@ -152,6 +160,7 @@ export class ProjectRuntime {
       // runs the discovery loop and finds the file once CC creates it.
       jsonlPath: session.row.jsonlPath ?? undefined,
       jsonlStartLine: session.row.jsonlLineCursor,
+      excludeJsonlPaths: priorJsonlPaths,
     });
     return this.pty;
   }
