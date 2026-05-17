@@ -110,6 +110,27 @@ export function updateProjectStages(id: ULID, stages: Stage[]): void {
     .run();
 }
 
+/** Soft-delete a project: flip `deleted_at`. Idempotent — returns the row
+ *  whether or not it was already deleted. Returns null if no such project.
+ *  Filesystem is not touched (per MULTI-TENANCY-DESIGN.md soft-delete contract). */
+export function softDeleteProject(id: ULID): Project | null {
+  const existing = getDb()
+    .select()
+    .from(projects)
+    .where(eq(projects.id, id))
+    .get() as ProjectRow | undefined;
+  if (!existing) return null;
+  if (existing.deletedAt === null) {
+    const now = Date.now();
+    getDb()
+      .update(projects)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(eq(projects.id, id))
+      .run();
+  }
+  return toDomain({ ...existing, deletedAt: existing.deletedAt ?? Date.now() });
+}
+
 export interface UpdateProjectMetaInput {
   /** Display name. Slug stays locked — rename → slug migration is deferred. */
   name?: string;

@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { resolve } from 'node:path';
@@ -8,7 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { ULID } from '@pc/domain';
-import { listProjects, runMigrations, updateProjectMeta } from '@pc/db';
+import {
+  getProjectById,
+  listProjects,
+  runMigrations,
+  softDeleteProject,
+  updateProjectMeta,
+} from '@pc/db';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -202,6 +208,48 @@ app.patch('/api/projects/:projectId', async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
+});
+
+/** Soft-delete a project. Filesystem is untouched per MULTI-TENANCY-DESIGN.md;
+ *  the separate DELETE /api/projects/:id/files endpoint is the only path to
+ *  on-disk removal. Idempotent — returns 200 even if already deleted. */
+app.delete('/api/projects/:projectId', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const deleted = softDeleteProject(id);
+  if (!deleted) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  projectRegistry.remove(id);
+  return c.json({ ok: true, project: deleted });
+});
+
+/** Danger-zone: remove PC's scaffold dirs (`.project-companion/`, `.claude/`)
+ *  from the project's folder on disk. The user's own files, `.git/`, README,
+ *  and `.mcp.json` are NOT touched — per design, only what PC put there is
+ *  PC's to remove.
+ *
+ *  Independent of the soft-delete row flip; either can be invoked alone. */
+app.delete('/api/projects/:projectId/files', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  // Hard-look at the DB so deleted rows are still resolvable here — the UI
+  // flow soft-deletes first, then offers "Also delete files on disk".
+  const project = getProjectById(id) ?? listProjects({ includeDeleted: true }).find((p) => p.id === id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  // Drop the runtime first so no in-flight worker holds a file lock on the
+  // dirs we're about to remove.
+  projectRegistry.remove(id);
+  const folder = project.folderPath;
+  const removed: string[] = [];
+  for (const sub of ['.project-companion', '.claude']) {
+    const target = resolve(folder, sub);
+    if (existsSync(target)) {
+      try {
+        rmSync(target, { recursive: true, force: true });
+        removed.push(sub);
+      } catch (err) {
+        return c.json({ ok: false, error: `failed to remove ${sub}: ${(err as Error).message}` }, 500);
+      }
+    }
+  }
+  return c.json({ ok: true, removed });
 });
 
 /** Create a project: git init in `folder_path`, write the PC scaffold, commit,

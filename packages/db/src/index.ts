@@ -8,6 +8,7 @@ export {
   getProjectById,
   getProjectBySlug,
   listProjects,
+  softDeleteProject,
   updateProjectMeta,
   updateProjectStages,
 } from './repos/projects.ts';
