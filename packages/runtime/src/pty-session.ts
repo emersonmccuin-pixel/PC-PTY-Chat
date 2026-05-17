@@ -83,6 +83,10 @@ export class PtySession extends EventEmitter {
     const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
     try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
 
+    // Order matters: `--dangerously-load-development-channels` is variadic in
+    // commander — it absorbs every following positional arg as a channel name
+    // until the next flag. Put it LAST so trailing options we add later (e.g.
+    // --session-id, --resume) don't get gobbled.
     const args: string[] = [
       '--dangerously-skip-permissions',
       // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
@@ -92,11 +96,6 @@ export class PtySession extends EventEmitter {
       '--mcp-config',
       '.mcp.json',
       '--strict-mcp-config',
-      // Load the webhook channel registered in workspace/.mcp.json. CC will
-      // prompt once on boot to confirm dev-channel usage; we auto-press
-      // Enter below.
-      '--dangerously-load-development-channels',
-      'server:webhook',
     ];
     if (opts.claudeSessionId) {
       if (opts.resume) {
@@ -105,6 +104,10 @@ export class PtySession extends EventEmitter {
         args.push('--session-id', opts.claudeSessionId);
       }
     }
+    // Load the webhook channel registered in workspace/.mcp.json. CC will
+    // prompt once on boot to confirm dev-channel usage; we auto-press
+    // Enter below. Variadic — keep this at the end of the arg list.
+    args.push('--dangerously-load-development-channels', 'server:webhook');
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
       env: { ...process.env, FORCE_COLOR: '0' },
