@@ -6,8 +6,14 @@
 // needed. The per-project scope means events are pre-filtered: if you only
 // want one project's events, you only get that project's events.
 //
-// "All projects" mode (ActivityPanel toggle, Q12) will need a separate hook
-// that opens N parallel connections — out of scope here.
+// "All projects" mode (ActivityPanel toggle, Q12) is handled by a sibling
+// hook (useAllProjectsWs) that opens one socket per non-active project.
+//
+// Q13 hardening: exponential backoff on reconnect (2 → 5 → 15 → 30s cap), a
+// single status-update per disconnect (the WsStatus state only flips once
+// per close), and seenTs dedup so the server's events.jsonl replay (which
+// fires on every connect — `apps/server/src/index.ts:818`) doesn't
+// double-render history after a retry.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -114,6 +120,14 @@ interface UseProjectWsResult {
 }
 
 const MAX_BUFFERED = 500;
+/** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
+export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
+
+export function nextBackoffMs(prevDelay: number): number {
+  const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
+  if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
+  return RECONNECT_SCHEDULE_MS[idx + 1]!;
+}
 
 export function useProjectWs(project: Project | null): UseProjectWsResult {
   const [events, setEvents] = useState<WsEnvelope[]>([]);
@@ -126,39 +140,76 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
       setStatus('idle');
       return;
     }
-    setStatus('connecting');
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(project.id)}`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
 
-    ws.addEventListener('open', () => setStatus('open'));
-    ws.addEventListener('close', () => {
-      // Q13 hardens this with exponential backoff. For Q6 we just mark closed.
-      setStatus('closed');
-    });
-    ws.addEventListener('error', () => setStatus('closed'));
-    ws.addEventListener('message', (e) => {
-      let env: WsEnvelope | null = null;
-      try {
-        env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
-      } catch {
-        return;
-      }
-      if (!env || env.projectId !== project.id) return;
-      setEvents((prev) => {
-        const next = [...prev, env!];
-        return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let delay: number = RECONNECT_SCHEDULE_MS[0];
+    const seenTs = new Set<string>();
+
+    function connect(): void {
+      if (cancelled) return;
+      setStatus('connecting');
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(project!.id)}`;
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.addEventListener('open', () => {
+        if (cancelled) return;
+        setStatus('open');
+        delay = RECONNECT_SCHEDULE_MS[0];
       });
-    });
+
+      ws.addEventListener('close', () => {
+        if (cancelled) return;
+        wsRef.current = null;
+        setStatus('closed');
+        const wait = delay;
+        delay = nextBackoffMs(delay);
+        retryTimer = setTimeout(connect, wait);
+      });
+
+      ws.addEventListener('error', () => {
+        // `close` fires too — handle the retry there.
+      });
+
+      ws.addEventListener('message', (e) => {
+        if (cancelled) return;
+        let env: WsEnvelope | null = null;
+        try {
+          env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
+        } catch {
+          return;
+        }
+        if (!env || env.projectId !== project!.id) return;
+        if (env.type === 'event') {
+          const inner = (env.event as { ts?: unknown } | undefined) ?? {};
+          if (typeof inner.ts === 'string') {
+            if (seenTs.has(inner.ts)) return;
+            seenTs.add(inner.ts);
+          }
+        }
+        const final = env;
+        setEvents((prev) => {
+          const next = [...prev, final];
+          return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
+        });
+      });
+    }
+
+    connect();
 
     return () => {
-      try {
-        ws.close();
-      } catch {
-        // best-effort
+      cancelled = true;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
       }
+      const ws = wsRef.current;
       wsRef.current = null;
+      if (ws) {
+        try { ws.close(); } catch { /* best-effort */ }
+      }
     };
   }, [project]);
 

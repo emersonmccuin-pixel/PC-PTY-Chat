@@ -512,8 +512,8 @@ Scope: vendor v1's React UI components onto the multi-tenant server. Vellum re-s
 - [x] Q10. Vendor AppSettingsModal. Gear icon → modal. `PATCH /api/settings` (envelope from Session N close-out planning). `projectsFolder` global override editable here.
 - [x] Q11. Vendor ProjectSettingsPanel. Per-project tab. Rename, edit git remote, agent library picker (add agent from library — `POST /api/projects/:id/agents`), "Save as new library agent" when editing a project's agent (`POST /api/agents` with the project copy's body), project soft-delete + danger-zone "Also delete files on disk".
 - [x] Q12. Vendor ActivityPanel. WS event log scoped to active project (default) or all projects (toggle, per v1 §7). Persist toggle in `settings_global.activity_panel`.
-- [ ] Q13. WS client hardening: port the Session F point 4 wins from legacy `app.js` (exponential backoff 2 → 5 → 15 → 30s cap, single banner per disconnect, event-timestamp dedup against server replay). Land as a zustand-friendly hook.
-- [ ] Q14. `pnpm -r typecheck` green; `pnpm build` produces a clean `apps/web/dist/`.
+- [x] Q13. WS client hardening: port the Session F point 4 wins from legacy `app.js` (exponential backoff 2 → 5 → 15 → 30s cap, single banner per disconnect, event-timestamp dedup against server replay). Land as a zustand-friendly hook.
+- [x] Q14. `pnpm -r typecheck` green; `pnpm build` produces a clean `apps/web/dist/`.
 
 > **Session break.** Tree clean before user test.
 

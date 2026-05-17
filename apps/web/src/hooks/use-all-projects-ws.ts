@@ -11,17 +11,30 @@
 // plus an aggregate status: 'open' if every socket is open, 'connecting' if
 // any are still handshaking with none closed, 'closed' if any are closed,
 // 'idle' if disabled or no eligible projects.
+//
+// Q13: per-socket exponential backoff (2 → 5 → 15 → 30s cap), per-socket
+// seenTs dedup so the server's events.jsonl replay on reconnect doesn't
+// double-render.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/api/client';
-import type { WsEnvelope, WsStatus } from './use-project-ws';
+import {
+  nextBackoffMs,
+  RECONNECT_SCHEDULE_MS,
+  type WsEnvelope,
+  type WsStatus,
+} from './use-project-ws';
 
 const MAX_BUFFERED = 500;
 
 interface UseAllProjectsWsResult {
   events: WsEnvelope[];
   status: WsStatus;
+}
+
+interface ConnectionHandle {
+  close: () => void;
 }
 
 export function useAllProjectsWs(
@@ -31,7 +44,7 @@ export function useAllProjectsWs(
 ): UseAllProjectsWsResult {
   const [events, setEvents] = useState<WsEnvelope[]>([]);
   const [statuses, setStatuses] = useState<Record<string, WsStatus>>({});
-  const socketsRef = useRef<Map<string, WebSocket>>(new Map());
+  const connectionsRef = useRef<Map<string, ConnectionHandle>>(new Map());
 
   // Stable key — re-open sockets only when the eligible project ID set
   // changes, not on every Project[] identity flip.
@@ -49,59 +62,115 @@ export function useAllProjectsWs(
     setStatuses({});
 
     if (targetIds.length === 0) {
-      // Close any lingering sockets if we toggled off.
-      for (const ws of socketsRef.current.values()) {
-        try { ws.close(); } catch { /* best-effort */ }
-      }
-      socketsRef.current.clear();
+      for (const handle of connectionsRef.current.values()) handle.close();
+      connectionsRef.current.clear();
       return;
     }
 
-    const sockets = new Map<string, WebSocket>();
-    socketsRef.current = sockets;
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const connections = new Map<string, ConnectionHandle>();
+    connectionsRef.current = connections;
 
     for (const projectId of targetIds) {
-      const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(projectId)}`;
-      const ws = new WebSocket(url);
-      sockets.set(projectId, ws);
-      setStatuses((prev) => ({ ...prev, [projectId]: 'connecting' }));
-
-      ws.addEventListener('open', () =>
-        setStatuses((prev) => ({ ...prev, [projectId]: 'open' })),
+      connections.set(
+        projectId,
+        openWithBackoff(projectId, (next) =>
+          setStatuses((prev) => ({ ...prev, [projectId]: next })),
+        (env) =>
+          setEvents((prev) => {
+            const next = [...prev, env];
+            return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
+          }),
+        ),
       );
-      ws.addEventListener('close', () =>
-        setStatuses((prev) => ({ ...prev, [projectId]: 'closed' })),
-      );
-      ws.addEventListener('error', () =>
-        setStatuses((prev) => ({ ...prev, [projectId]: 'closed' })),
-      );
-      ws.addEventListener('message', (e) => {
-        let env: WsEnvelope | null = null;
-        try {
-          env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
-        } catch {
-          return;
-        }
-        if (!env || env.projectId !== projectId) return;
-        setEvents((prev) => {
-          const next = [...prev, env!];
-          return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
-        });
-      });
     }
 
     return () => {
-      for (const ws of sockets.values()) {
-        try { ws.close(); } catch { /* best-effort */ }
-      }
-      sockets.clear();
+      for (const handle of connections.values()) handle.close();
+      connections.clear();
     };
   }, [targetKey, targetIds]);
 
   const status = aggregateStatus(targetIds, statuses, enabled);
 
   return { events, status };
+}
+
+/** Open a WS for `projectId`, retrying with the Q13 backoff schedule on
+ *  close. Returns a handle whose `close()` cancels any pending retry and
+ *  closes the live socket. */
+function openWithBackoff(
+  projectId: string,
+  onStatus: (s: WsStatus) => void,
+  onEvent: (env: WsEnvelope) => void,
+): ConnectionHandle {
+  let cancelled = false;
+  let ws: WebSocket | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let delay: number = RECONNECT_SCHEDULE_MS[0];
+  const seenTs = new Set<string>();
+
+  function connect(): void {
+    if (cancelled) return;
+    onStatus('connecting');
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(projectId)}`;
+    const sock = new WebSocket(url);
+    ws = sock;
+
+    sock.addEventListener('open', () => {
+      if (cancelled) return;
+      onStatus('open');
+      delay = RECONNECT_SCHEDULE_MS[0];
+    });
+
+    sock.addEventListener('close', () => {
+      if (cancelled) return;
+      ws = null;
+      onStatus('closed');
+      const wait = delay;
+      delay = nextBackoffMs(delay);
+      retryTimer = setTimeout(connect, wait);
+    });
+
+    sock.addEventListener('error', () => {
+      // `close` fires too — handle retry there.
+    });
+
+    sock.addEventListener('message', (e) => {
+      if (cancelled) return;
+      let env: WsEnvelope | null = null;
+      try {
+        env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
+      } catch {
+        return;
+      }
+      if (!env || env.projectId !== projectId) return;
+      if (env.type === 'event') {
+        const inner = (env.event as { ts?: unknown } | undefined) ?? {};
+        if (typeof inner.ts === 'string') {
+          if (seenTs.has(inner.ts)) return;
+          seenTs.add(inner.ts);
+        }
+      }
+      onEvent(env);
+    });
+  }
+
+  connect();
+
+  return {
+    close() {
+      cancelled = true;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      if (ws) {
+        try { ws.close(); } catch { /* best-effort */ }
+        ws = null;
+      }
+    },
+  };
 }
 
 function aggregateStatus(
