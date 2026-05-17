@@ -7,10 +7,16 @@
 // access. Lets the server boot with N projects in the DB without spawning N
 // claude.exe processes — each waits for a UI subscriber.
 
-import { mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { Project, ULID } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID } from '@pc/domain';
+import {
+  createOrchestratorSession,
+  endOrchestratorSession,
+  getActiveOrchestratorSession,
+} from '@pc/db';
 import { PtySession } from '@pc/runtime';
 import { WorkflowRegistry } from '@pc/workflows';
 
@@ -109,15 +115,24 @@ export class ProjectRuntime {
    * Lazy: PtySession — spawned on first WS connect. cwd = project.folderPath
    * so `claude.exe --mcp-config .mcp.json` resolves to `<folder>/.mcp.json`
    * (generated at project-create per P7).
+   *
+   * Session continuity: looks up the active OrchestratorSession row for this
+   * project. If found → spawn with `--resume <uuid>` so Claude picks up the
+   * conversation it had. If none → mint a UUID, insert a row, spawn with
+   * `--session-id <uuid>` so the UI's events.jsonl and Claude's session JSONL
+   * stay in lockstep.
    */
   ensurePty(): PtySession {
     if (this.pty && this.pty.getState() !== 'exited') return this.pty;
     mkdirSync(this.dataPath, { recursive: true });
+    const { sessionId, resume } = this.resolveSessionForSpawn();
     this.pty = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(this.dataPath, 'stop-markers.txt'),
       eventsPath: resolve(this.dataPath, 'events.jsonl'),
       transcriptPath: resolve(this.dataPath, 'transcript.log'),
+      claudeSessionId: sessionId,
+      resume,
     });
     return this.pty;
   }
@@ -127,6 +142,32 @@ export class ProjectRuntime {
     return this.pty && this.pty.getState() !== 'exited' ? this.pty : null;
   }
 
+  /** Returns the active orchestrator session row, if any. */
+  activeSession(): OrchestratorSession | null {
+    return getActiveOrchestratorSession(this.project.id);
+  }
+
+  /**
+   * End the current session row, wipe per-project event/marker files, kill
+   * the PtySession, and clear cached state. The next `ensurePty()` mints a
+   * fresh session — UI and Claude both start blank.
+   */
+  startNewSession(): OrchestratorSession {
+    const active = getActiveOrchestratorSession(this.project.id);
+    if (active) endOrchestratorSession(active.id, 'user_ended');
+    try { this.pty?.kill(); } catch { /* best-effort */ }
+    this.pty = null;
+    // Wipe per-session ephemeral files. events.jsonl is the chat log the UI
+    // replays from; tasks.json is the per-session TaskTool snapshot; the
+    // stop-markers file is the turn-end counter.
+    this.wipeSessionFiles();
+    const fresh = createOrchestratorSession({
+      projectId: this.project.id,
+      providerSessionId: randomUUID(),
+    });
+    return fresh;
+  }
+
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
@@ -134,5 +175,33 @@ export class ProjectRuntime {
     this.workflow = null;
     this.worktreesSvc = null;
     this.registry = null;
+  }
+
+  private resolveSessionForSpawn(): { sessionId: string; resume: boolean } {
+    const active = getActiveOrchestratorSession(this.project.id);
+    if (active?.providerSessionId) {
+      return { sessionId: active.providerSessionId, resume: true };
+    }
+    if (active) {
+      // Row exists but no provider id — shouldn't happen since we mint at
+      // create-time, but treat it as resume-with-no-target → re-mint into
+      // the existing row would be wrong; end it and start fresh.
+      endOrchestratorSession(active.id, 'provider_session_lost');
+    }
+    const fresh = createOrchestratorSession({
+      projectId: this.project.id,
+      providerSessionId: randomUUID(),
+    });
+    return { sessionId: fresh.providerSessionId!, resume: false };
+  }
+
+  private wipeSessionFiles(): void {
+    const events = resolve(this.dataPath, 'events.jsonl');
+    const markers = resolve(this.dataPath, 'stop-markers.txt');
+    const tasks = resolve(this.dataPath, 'tasks.json');
+    for (const p of [events, markers]) {
+      if (existsSync(p)) writeFileSync(p, '');
+    }
+    if (existsSync(tasks)) writeFileSync(tasks, '{}');
   }
 }

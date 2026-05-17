@@ -25,6 +25,13 @@ export interface PtySessionOptions {
   transcriptPath: string;
   cols?: number;
   rows?: number;
+  /** Claude session UUID — caller mints it (or fetches from prior row).
+   *  When set, we either mint (resume=false) or resume (resume=true) the
+   *  named session so chat history in the UI matches Claude's actual context. */
+  claudeSessionId?: string;
+  /** When true, pass `--resume <uuid>`. When false, pass `--session-id <uuid>`
+   *  (mint). Ignored if `claudeSessionId` is unset. */
+  resume?: boolean;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -76,30 +83,34 @@ export class PtySession extends EventEmitter {
     const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
     try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
 
-    this.child = pty.spawn(
-      claudeExe,
-      [
-        '--dangerously-skip-permissions',
-        // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
-        // --strict-mcp-config the orchestrator merges global user-level MCPs
-        // (e.g. WCP, archon) and tries to use them — confusing and leaks
-        // unrelated capabilities into the rig.
-        '--mcp-config',
-        '.mcp.json',
-        '--strict-mcp-config',
-        // Load the webhook channel registered in workspace/.mcp.json. CC will
-        // prompt once on boot to confirm dev-channel usage; we auto-press
-        // Enter below.
-        '--dangerously-load-development-channels',
-        'server:webhook',
-      ],
-      {
-        cwd: opts.workspaceDir,
-        env: { ...process.env, FORCE_COLOR: '0' },
-        cols: opts.cols ?? 120,
-        rows: opts.rows ?? 30,
-      },
-    );
+    const args: string[] = [
+      '--dangerously-skip-permissions',
+      // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
+      // --strict-mcp-config the orchestrator merges global user-level MCPs
+      // (e.g. WCP, archon) and tries to use them — confusing and leaks
+      // unrelated capabilities into the rig.
+      '--mcp-config',
+      '.mcp.json',
+      '--strict-mcp-config',
+      // Load the webhook channel registered in workspace/.mcp.json. CC will
+      // prompt once on boot to confirm dev-channel usage; we auto-press
+      // Enter below.
+      '--dangerously-load-development-channels',
+      'server:webhook',
+    ];
+    if (opts.claudeSessionId) {
+      if (opts.resume) {
+        args.push('--resume', opts.claudeSessionId);
+      } else {
+        args.push('--session-id', opts.claudeSessionId);
+      }
+    }
+    this.child = pty.spawn(claudeExe, args, {
+      cwd: opts.workspaceDir,
+      env: { ...process.env, FORCE_COLOR: '0' },
+      cols: opts.cols ?? 120,
+      rows: opts.rows ?? 30,
+    });
 
     this.child.onData((data) => {
       this.rawBuffer += data;
