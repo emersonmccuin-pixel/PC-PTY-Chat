@@ -2,7 +2,7 @@
 
 Learning rig for Project Companion Phase 9. Goal: validate the full PC vision (orchestrator + subagents + worktrees + channels + workflows) inside this sandbox before porting to PC proper.
 
-**Current session:** Session Q **in flight** — UI vendor + multi-tenant shell. **Q1–Q10 of 14 shipped + ticked + committed.** Q1–Q7 (deps, Vellum re-skin, 3-col Shell, ProjectRail + active-project store, create-project flow, per-project WS hook, Tabs + KanbanBoard); Q8 (Orchestrator chat panel — markdown, channel-block split, ask/approval cards, composer, interrupt); Q9 (read-only Workflows tab + new `GET /api/projects/:id/workflow-runs` endpoint); Q10 (settings envelope + AppSettingsModal + restart-required banner). Q11–Q14 pending; no user test run yet (the test gate sits at the end of Q14). Tree clean, `pnpm -r typecheck` green across all 9 packages, `pnpm --filter @pc/web build` clean. User smoke-tested Q8–Q10 in the browser between sessions; nothing flagged. **Resume at Q11 — ProjectSettingsPanel** — every endpoint Q11 needs already exists server-side; v1's `ProjectSettingsPanel.tsx` is the vendor target. Full Q8–Q10 outcomes + Q11–Q14 plan + cold-read order are in the second Session Q mid-session log entry at the bottom of this doc.
+**Current session:** Session Q **closed** — UI vendor + multi-tenant shell. **All 14 milestones shipped + user-tested + committed.** Q11 ProjectSettingsPanel; Q12 ActivityPanel + all-projects toggle; Q13 WS hardening (backoff + dedup, dedup empirically verified 6→6 events across reconnect); Q14 typecheck + build green. User-test gate ticked 2026-05-17 after visual smoke pass on `http://127.0.0.1:5173/`. **Next:** session break — wait for direction on Session R (workflow builder UI) or another chassis priority. Cold-read entry for the closeout is `### Session Q (closeout)` at the bottom of this doc.
 
 **Rig lives at:** `E:/Projects/Caisson/`. All paths in this doc are relative to that root.
 
@@ -528,7 +528,7 @@ Scope: vendor v1's React UI components onto the multi-tenant server. Vellum re-s
 > 8. App settings → change `projectsFolder` global. Restart-required prompt? (No — projectsFolder is hot-reloadable; only `data_dir` requires restart per v1 #24.)
 > 9. Soft-delete A from project settings → A disappears from rail. Files untouched on disk (verify in OS file browser).
 
-- [ ] User test passed
+- [x] User test passed
 
 **Not in scope here:** workflow builder UI (Session R), isolation environments UI, file attachments UI, vault / secrets UI, agent "push to library" sync, project rename → slug migration.
 
@@ -541,6 +541,26 @@ Folded back into PC: Phase 9-B (PTY transport for chat) → 9-C (PTY for workflo
 ## Session log
 
 Append findings, surprises, and decisions here as sessions close. Cold-readable artifact for the next session.
+
+### Session Q (closeout) — all 14 milestones shipped + user-tested (2026-05-17)
+
+Q11–Q14 landed on top of the Q1–Q10 stack. Closeout commits: `516e054` (Q11 ProjectSettingsPanel), `49e19dc` (Q12 ActivityPanel + all-projects toggle), `42ac1f7` (Q13/Q14 WS hardening + green-check), plus polish/test commits `fa222fa` (rail widths + activity hover-title), `20439d3` (Playwright test infra + Q14-TEST-HANDOFF.md), `20a9fd9` (Kanban flex columns), `1481af8` (gap-fill tests + Windows tsx-watch fix).
+
+**User test:** passed via visual smoke on `http://127.0.0.1:5173/` after a clean server reboot. The Playwright automation (`tests/playwright/q14.spec.ts` + `q14-gaps.spec.ts`) was confirmatory only; user's eyes on the live UI is the canonical signal. Test runs: 29/0/3 on the main suite, 4/1/0 on the gap suite (the one failure was L.5 — a rapid kill/restart **stress** test for the backoff schedule; L.4 already verified the actual Q13 dedup signal by counting 6 events pre-kill and 6 events post-reconnect against the server's `events.jsonl` replay).
+
+**Three things worth carrying into Session R cold reads:**
+
+1. **`react-resizable-panels` v4 sizing gotcha.** Numeric Panel size props are PIXELS, not percentages. The original vendor copy used numeric defaults from v3 conventions, which on v4 locked both rails to ~14–28 *pixels* wide. Fix is to use string `"18%"` form explicitly. Note in `Shell.tsx` header. If you re-vendor anything that uses this library, do not pass raw numbers as size props.
+2. **Windows `tsx watch` over-restart.** `tsx watch` (and especially node's `tsx --watch`) on Windows reload-loops when files outside `src/` change. `apps/server/package.json` dev script now passes `--ignore "**/data/**" --ignore "**/test-results/**" --ignore "**/playwright-report/**"`. Quote the globs — pnpm passes them via spawn and unquoted globs get shell-tokenized inconsistently.
+3. **`/api/fs/browse` is homedir-scoped.** Picks anywhere outside `~/` are 403 by design (`apps/server/src/services/fs-browse.ts`). Tests that need to drill into other roots set `PC_FS_BROWSE_ALLOW=<root>` before booting Hono. Note in `Q14-TEST-HANDOFF.md`.
+
+**Followups for Session R or beyond** (not blocking the session break):
+
+- L.5 stress test is flaky on Windows because tsx-watch takes a few seconds to re-bind :4040 after a forced kill, and rapid back-to-back kills exceed Playwright's 30s window. Either widen the wait or skip L.5 explicitly with `test.skip` — it's redundant with L.1–L.4.
+- M.1 (prod URL smoke) auto-skips when `apps/web/dist/` is missing. Document a `pnpm --filter @pc/web build` step in the test prelude, or have the suite build on demand.
+- The Kanban DOM picked up a `data-stage-id` attribute on column roots to give the tests stable locators. If a future session wants tests for cards, drag handles, etc., follow the same pattern instead of hanging locators off Tailwind class names.
+
+**Cold-read recovery for the next session:** read `MULTI-TENANCY-DESIGN.md` § Open / deferred and § Per-project filesystem layout → `DESIGN-WORKFLOWS-V2.md` (still the active workflow design) → this closeout entry → the **Not in scope here** list at the end of the Session Q block above to know what was deliberately deferred. Session R is sketched in BUILDOUT.md:533 as the workflow builder UI.
 
 ### Session Q (mid-session 2) — Q8 chat panel + Q9 workflows tab + Q10 settings envelope (2026-05-17)
 

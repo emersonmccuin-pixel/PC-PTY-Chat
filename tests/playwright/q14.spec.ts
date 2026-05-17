@@ -261,7 +261,7 @@ test.describe('E. Project switching', () => {
     // After re-key the kanban for C should be empty (no cards).
     await setActiveTab(page, 'Work items');
     // Each stage column shows count "0" — there are 3 stages.
-    const zeroCounts = page.locator('div.flex.w-72 span.text-muted-foreground').filter({ hasText: /^\d+$/ });
+    const zeroCounts = page.locator('[data-stage-id] span.text-muted-foreground').filter({ hasText: /^\d+$/ });
     await expect(zeroCounts).toHaveCount(3);
     const texts = await zeroCounts.allInnerTexts();
     for (const t of texts) expect(t).toBe('0');
@@ -334,7 +334,7 @@ test.describe('F. Kanban DnD', () => {
     // means we have to move at least 4px before mouseup or the drag is
     // never started.
     const cardLoc = page.locator('text=First card').first();
-    const targetCol = page.locator('div.flex.w-72').nth(1);
+    const targetCol = page.locator('[data-stage-id]').nth(1);
     const cardBox = await cardLoc.boundingBox();
     const tgtBox = await targetCol.boundingBox();
     expect(cardBox).not.toBeNull();

@@ -133,6 +133,7 @@ function Column({
   return (
     <div
       ref={setNodeRef}
+      data-stage-id={stage.id}
       className={
         // Flex-1 columns share the available width evenly; min-w stops them
         // shrinking past readability. Parent has overflow-x-auto, so projects
