@@ -195,6 +195,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
           workItem={openItem}
           project={project}
           items={items}
+          events={events}
           onClose={() => setOpenItemId(null)}
           onSwitchItem={(id) => setOpenItemId(id)}
           onItemCreated={(wi) =>

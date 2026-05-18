@@ -7,13 +7,19 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
+
 import {
   api,
   WorkItemConflictError,
+  type Attachment,
   type Project,
   type WorkItem,
   type WorkItemPatch,
 } from '@/api/client';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 type TabId = 'overview' | 'children' | 'attachments' | 'activity';
 
@@ -28,6 +34,7 @@ interface WorkItemDetailModalProps {
   workItem: WorkItem;
   project: Project;
   items: WorkItem[];
+  events: WsEnvelope[];
   onClose: () => void;
   onSwitchItem: (id: string) => void;
   /** Optimistic insert into the parent's items list. Used by "+ New child" so
@@ -58,6 +65,7 @@ export function WorkItemDetailModal({
   workItem,
   project,
   items,
+  events,
   onClose,
   onSwitchItem,
   onItemCreated,
@@ -276,9 +284,10 @@ export function WorkItemDetailModal({
             />
           )}
           {tab === 'attachments' && (
-            <StubPanel
-              label="Attachments"
-              note="Attachment rows + expand-on-click rendering land in phase 2f."
+            <AttachmentsTab
+              projectId={project.id}
+              workItemId={baseline.id}
+              events={events}
             />
           )}
           {tab === 'activity' && (
@@ -623,6 +632,175 @@ function ChildrenTab({
         </button>
       )}
     </div>
+  );
+}
+
+function AttachmentsTab({
+  projectId,
+  workItemId,
+  events,
+}: {
+  projectId: string;
+  workItemId: string;
+  events: WsEnvelope[];
+}) {
+  const [items, setItems] = useState<Attachment[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const refetch = () => {
+    api
+      .listAttachments(projectId, workItemId)
+      .then(setItems)
+      .catch((e) => setErr((e as Error).message));
+  };
+
+  useEffect(() => {
+    setItems(null);
+    setExpandedId(null);
+    setErr(null);
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, workItemId]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (!last) return;
+    if (last.type === 'attachment-changed' && last.workItemId === workItemId) {
+      refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, workItemId]);
+
+  async function del(aId: string) {
+    if (!window.confirm('Delete this attachment? This cannot be undone.')) return;
+    try {
+      await api.deleteAttachment(projectId, workItemId, aId);
+      setItems((prev) => prev?.filter((a) => a.id !== aId) ?? null);
+      if (expandedId === aId) setExpandedId(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  if (err) {
+    return (
+      <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        {err}
+      </div>
+    );
+  }
+  if (items === null) {
+    return <div className="text-xs text-muted-foreground">Loading…</div>;
+  }
+  if (items.length === 0) {
+    return (
+      <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+        No attachments yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col">
+      {items.map((att) => (
+        <AttachmentRow
+          key={att.id}
+          attachment={att}
+          expanded={expandedId === att.id}
+          onToggle={() => setExpandedId((p) => (p === att.id ? null : att.id))}
+          onDelete={() => void del(att.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function AttachmentRow({
+  attachment,
+  expanded,
+  onToggle,
+  onDelete,
+}: {
+  attachment: Attachment;
+  expanded: boolean;
+  onToggle: () => void;
+  onDelete: () => void;
+}) {
+  const source = attachment.runId
+    ? `run ${attachment.runId.slice(-8)}`
+    : attachment.createdBySessionId
+      ? `session ${attachment.createdBySessionId.slice(-8)}`
+      : 'chat';
+  return (
+    <div className="border-b border-border last:border-b-0">
+      <div className="flex items-center gap-3 px-3 py-2">
+        <button
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="shrink-0 border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            {attachment.kind}
+          </span>
+          <span className="line-clamp-1 min-w-0 flex-1 break-words text-sm text-foreground">
+            {attachment.name}
+          </span>
+          <span
+            className="shrink-0 text-[11px] text-muted-foreground"
+            title={new Date(attachment.createdAt).toLocaleString()}
+          >
+            {source} · {formatRelative(attachment.createdAt)}
+          </span>
+          <span aria-hidden className="shrink-0 text-xs text-muted-foreground">
+            {expanded ? '▾' : '▸'}
+          </span>
+        </button>
+        <button
+          onClick={onDelete}
+          className="shrink-0 border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+          aria-label={`Delete ${attachment.name}`}
+        >
+          Delete
+        </button>
+      </div>
+      {expanded && (
+        <div className="border-t border-border bg-background px-3 py-2">
+          <AttachmentBody attachment={attachment} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AttachmentBody({ attachment }: { attachment: Attachment }) {
+  const kind = (attachment.kind || '').toLowerCase();
+  if (kind === 'markdown' || kind === 'md') {
+    return (
+      <div className="prose prose-sm prose-invert max-w-none text-sm">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+          {attachment.content}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+  if (kind === 'json') {
+    let pretty = attachment.content;
+    try {
+      pretty = JSON.stringify(JSON.parse(attachment.content), null, 2);
+    } catch {
+      // fall back to raw content
+    }
+    return (
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-foreground">
+        {pretty}
+      </pre>
+    );
+  }
+  return (
+    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-foreground">
+      {attachment.content}
+    </pre>
   );
 }
 

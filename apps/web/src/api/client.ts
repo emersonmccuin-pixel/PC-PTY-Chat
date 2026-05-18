@@ -44,6 +44,18 @@ export interface WorkItem {
   deletedAt: number | null;
 }
 
+export interface Attachment {
+  id: ULID;
+  workItemId: ULID;
+  kind: string;
+  name: string;
+  content: string;
+  contentType: string | null;
+  runId: ULID | null;
+  createdBySessionId: ULID | null;
+  createdAt: number;
+}
+
 export interface WorkItemPatch {
   title?: string;
   body?: string;
@@ -217,6 +229,27 @@ export const api = {
     }
     return data.workItem;
   },
+  listAttachments: (projectId: ULID, wiId: ULID) =>
+    getJson<{ ok: true; items: Attachment[] }>(
+      `/api/projects/${projectId}/work-items/${wiId}/attachments`,
+    ).then((r) => r.items),
+
+  getAttachment: (projectId: ULID, wiId: ULID, aId: ULID) =>
+    getJson<{ ok: true; attachment: Attachment }>(
+      `/api/projects/${projectId}/work-items/${wiId}/attachments/${aId}`,
+    ).then((r) => r.attachment),
+
+  deleteAttachment: async (projectId: ULID, wiId: ULID, aId: ULID): Promise<void> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/work-items/${wiId}/attachments/${aId}`,
+      { method: 'DELETE' },
+    );
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete attachment → ${res.status}`);
+    }
+  },
+
   /** Version-checked move. Same 409 semantics as patchWorkItem. */
   moveWorkItem: async (
     projectId: ULID,
