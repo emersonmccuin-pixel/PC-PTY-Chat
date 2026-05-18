@@ -439,6 +439,23 @@ export class ProjectRuntime {
         const raw = readFileSync(creatorSrc, 'utf-8');
         writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
       }
+      // Section 3 phase 3i: backfill any workflow YAMLs from templates that
+      // don't yet exist in the project. Write-if-missing — user-edited copies
+      // of seed workflows (bash-loop.yaml, review-research.yaml, etc.) survive.
+      // New built-in workflows (e.g. generic-agent-runner.yaml) land in
+      // existing projects on next boot.
+      const workflowsSrc = resolve(this.opts.templatesDir, '.project-companion', 'workflows');
+      const workflowsDest = resolve(this.project.folderPath, '.project-companion', 'workflows');
+      if (existsSync(workflowsSrc)) {
+        mkdirSync(workflowsDest, { recursive: true });
+        for (const f of readdirSync(workflowsSrc)) {
+          if (!f.endsWith('.yaml')) continue;
+          const destFile = resolve(workflowsDest, f);
+          if (existsSync(destFile)) continue;
+          const raw = readFileSync(resolve(workflowsSrc, f), 'utf-8');
+          writeFileSync(destFile, raw, 'utf-8');
+        }
+      }
     } catch (err) {
       console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);
     }

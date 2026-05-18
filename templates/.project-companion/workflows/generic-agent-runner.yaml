@@ -1,0 +1,44 @@
+id: generic-agent-runner
+description: |
+  One-shot agent dispatch. The orchestrator calls this when the user wants a
+  single subagent invocation without authoring a custom workflow. Pass the
+  agent name as `agent` and the prompt body as `prompt`.
+
+  This workflow is the named target of the path-guard hook's `gate-workflow`
+  deny message (Section 3 sub-phase 3h) — "Direct Task() blocked. Subagents
+  are workflow-only — call `pc_run_workflow` instead. For one-off agent work
+  without authoring a custom workflow, run the built-in 'generic-agent-runner'
+  workflow."
+
+  NOT YET FUNCTIONAL — pending two Section 4 deliverables:
+    1. `$inputs.<key>` substitution in node fields (per `pc_run_workflow`
+       tool description: "referenceable in the workflow as $inputs.<key>
+       once that substitution lands").
+    2. Dynamic `subagent:` field — `subagent: $inputs.agent` must resolve
+       at dispatch time. Today the subagent field is treated as a string
+       literal by the workflow-runtime parser/validator.
+
+  Until both land, `pc_run_workflow({ name: 'generic-agent-runner', ... })`
+  will return an error. In the meantime, the orchestrator should author a
+  one-off workflow with a hardcoded `subagent:` field (or reuse `review-research`
+  where stage-entry triggering is acceptable).
+
+triggers:
+  callable: true
+inputs:
+  agent: string   # subagent name (researcher / writer / reviewer / planner / extractor, or a project agent)
+  prompt: string  # prompt body — what the agent should do
+outputs:
+  result: string  # the agent's final answer, surfaced back to the orchestrator
+worktree: auto
+nodes:
+  - id: dispatch
+    subagent: $inputs.agent
+    prompt: |
+      $inputs.prompt
+
+      When you are done, call pc_complete_node with output:
+        - result (string) your final answer or summary
+
+      If the work cannot be completed, call pc_node_failed with a
+      one-sentence reason.
