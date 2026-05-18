@@ -191,7 +191,13 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
       </DragOverlay>
 
       {openItem && (
-        <WorkItemDetailModal workItem={openItem} onClose={() => setOpenItemId(null)} />
+        <WorkItemDetailModal
+          workItem={openItem}
+          project={project}
+          items={items}
+          onClose={() => setOpenItemId(null)}
+          onSwitchItem={(id) => setOpenItemId(id)}
+        />
       )}
 
       {error && (
