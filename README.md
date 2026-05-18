@@ -59,6 +59,8 @@ The chat has an interview tool that walks you through it:
 
 You answer in plain English. Companion writes the workflow. You run it. If something needs to change, you tell it — same chat, same conversation — and it adjusts.
 
+**Agents are built the same way.** Click **+ Create Agent** in Project Settings and you get an interview that walks you through purpose, what the agent should produce, where the output goes (a draft attached to a card, a new card, an external message, a file in the repo), which model and tools it needs, and a name. Plain English in, complete agent file out. No YAML, no system prompt to hand-write.
+
 The person who knows how the job should be done is finally the one operating the tool. No translator, no specialist, no waiting.
 
 ## What it costs

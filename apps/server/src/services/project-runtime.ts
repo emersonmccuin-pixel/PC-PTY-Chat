@@ -366,9 +366,17 @@ export class ProjectRuntime {
         writeFileSync(settingsDest, renderTemplate(raw, tokens), 'utf-8');
       }
       // Section 3 phase 3c: backfill the orchestrator PM prompt for projects
-      // scaffolded before this section. Write-if-missing only — preserves any
-      // per-project edits the user has made post-scaffold. Fresh projects get
-      // the file from ProjectScaffold.writeOrchestratorPrompt at create time.
+      // scaffolded before this section. Two cases:
+      //   - File missing → render template into place.
+      //   - File present but missing the 3e.4 agent-creation section → re-render
+      //     (sentinel-based detection on the section heading). This overwrites
+      //     user edits to the file as a tradeoff for keeping the prompt
+      //     current; in the rig users don't hand-edit this file. Add a new
+      //     sentinel string to ORCHESTRATOR_PROMPT_SENTINELS whenever a future
+      //     phase adds a load-bearing section.
+      const ORCHESTRATOR_PROMPT_SENTINELS = [
+        '## When the user wants a new agent', // 3e.4
+      ];
       const promptSrc = resolve(
         this.opts.templatesDir,
         '.project-companion',
@@ -379,10 +387,21 @@ export class ProjectRuntime {
         '.project-companion',
         'orchestrator-prompt.md',
       );
-      if (existsSync(promptSrc) && !existsSync(promptDest)) {
-        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
-        const raw = readFileSync(promptSrc, 'utf-8');
-        writeFileSync(promptDest, renderTemplate(raw, tokens), 'utf-8');
+      if (existsSync(promptSrc)) {
+        let needsWrite = !existsSync(promptDest);
+        if (!needsWrite) {
+          try {
+            const current = readFileSync(promptDest, 'utf-8');
+            needsWrite = ORCHESTRATOR_PROMPT_SENTINELS.some((s) => !current.includes(s));
+          } catch {
+            needsWrite = true;
+          }
+        }
+        if (needsWrite) {
+          mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
+          const raw = readFileSync(promptSrc, 'utf-8');
+          writeFileSync(promptDest, renderTemplate(raw, tokens), 'utf-8');
+        }
       }
       // Section 3 phase 3e.3: backfill the agent-creator prompt for the
       // transient Create-Agent modal session. Same write-if-missing rule.
