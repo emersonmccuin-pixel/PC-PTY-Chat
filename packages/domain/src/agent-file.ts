@@ -48,6 +48,7 @@ const KNOWN_KEYS = new Set<string>([
   'memory',
   'hooks',
   'skills',
+  'pc',
   'permissionMode',
   'initialPrompt',
 ]);
@@ -265,6 +266,9 @@ function readDefFromDocument(doc: Document): AgentDef {
   const skills = readStringList(json, 'skills');
   if (skills !== undefined) def.skills = skills;
 
+  const pc = readPcMetadata(json);
+  if (pc !== undefined) def.pc = pc;
+
   const permissionMode = readString(json, 'permissionMode');
   if (permissionMode !== undefined) def.permissionMode = permissionMode as AgentPermissionMode;
 
@@ -272,6 +276,20 @@ function readDefFromDocument(doc: Document): AgentDef {
   if (initialPrompt !== undefined) def.initialPrompt = initialPrompt;
 
   return def;
+}
+
+function readPcMetadata(
+  obj: Record<string, unknown>,
+): AgentDef['pc'] | undefined {
+  const v = obj.pc;
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const entry = v as Record<string, unknown>;
+  const out: NonNullable<AgentDef['pc']> = {};
+  const dest = entry.outputDestination;
+  if (typeof dest === 'string') {
+    out.outputDestination = dest as NonNullable<AgentDef['pc']>['outputDestination'];
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
 function readString(obj: Record<string, unknown>, key: string): string | undefined {

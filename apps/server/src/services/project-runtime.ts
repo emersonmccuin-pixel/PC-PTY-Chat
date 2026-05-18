@@ -376,6 +376,9 @@ export class ProjectRuntime {
       //     phase adds a load-bearing section.
       const ORCHESTRATOR_PROMPT_SENTINELS = [
         '## When the user wants a new agent', // 3e.4
+        // Bump whenever the section body picks up load-bearing language.
+        // 3e.4 + pc-outputDestination wiring (post-be42b41 follow-on).
+        'pc: { outputDestination: "passthrough"',
       ];
       const promptSrc = resolve(
         this.opts.templatesDir,
