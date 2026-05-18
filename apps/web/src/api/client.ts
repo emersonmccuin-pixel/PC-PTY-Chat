@@ -107,6 +107,18 @@ export class WorkItemConflictError extends Error {
   }
 }
 
+/** Thrown by replaceStages when removing a stage that still has work items.
+ *  Caller surfaces `orphans` (id + name + count) and re-tries with
+ *  `force: true` + `fallbackStageId` once the user picks a destination. */
+export class StageHasItemsError extends Error {
+  orphans: { id: string; name: string; count: number }[];
+  constructor(orphans: { id: string; name: string; count: number }[]) {
+    super('STAGE_HAS_ITEMS');
+    this.name = 'StageHasItemsError';
+    this.orphans = orphans;
+  }
+}
+
 /** Thrown by createWorkItem / patchWorkItem when the server rejects field
  *  validation. `errors` is a per-key map keyed by FieldSchema.key. */
 export class WorkItemFieldValidationError extends Error {
@@ -259,15 +271,57 @@ export const api = {
     });
     const data = (await res.json()) as
       | { ok: true; workItem: WorkItem }
-      | { ok: false; error: string; current?: WorkItem };
+      | { ok: false; error: string; current?: WorkItem; errors?: Record<string, string> };
     if (res.status === 409 && data.ok === false && data.current) {
       throw new WorkItemConflictError(data.current);
+    }
+    if (res.status === 400 && data.ok === false && data.errors) {
+      throw new WorkItemFieldValidationError(data.error, data.errors);
     }
     if (!res.ok || data.ok === false) {
       throw new Error(data.ok === false ? data.error : `patch → ${res.status}`);
     }
     return data.workItem;
   },
+  replaceStages: async (
+    projectId: ULID,
+    stages: Stage[],
+    opts: { force?: boolean; fallbackStageId?: string } = {},
+  ): Promise<Project> => {
+    const res = await fetch(`/api/projects/${projectId}/stages`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stages, ...opts }),
+    });
+    const data = (await res.json()) as
+      | { ok: true; project: Project }
+      | { ok: false; error: string; orphans?: { id: string; name: string; count: number }[] };
+    if (
+      res.status === 409 &&
+      data.ok === false &&
+      data.error === 'STAGE_HAS_ITEMS' &&
+      Array.isArray(data.orphans)
+    ) {
+      throw new StageHasItemsError(data.orphans);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `replace stages → ${res.status}`);
+    }
+    return data.project;
+  },
+
+  listFieldSchemas: (projectId: ULID) =>
+    getJson<{ ok: true; items: FieldSchema[] }>(
+      `/api/projects/${projectId}/field-schemas`,
+    ).then((r) => r.items),
+
+  replaceFieldSchemas: (projectId: ULID, items: FieldSchemaInput[]) =>
+    postJsonMethod<{ ok: true; items: FieldSchema[] }>(
+      `/api/projects/${projectId}/field-schemas`,
+      { items },
+      'PUT',
+    ).then((r) => r.items),
+
   listAttachments: (projectId: ULID, wiId: ULID) =>
     getJson<{ ok: true; items: Attachment[] }>(
       `/api/projects/${projectId}/work-items/${wiId}/attachments`,

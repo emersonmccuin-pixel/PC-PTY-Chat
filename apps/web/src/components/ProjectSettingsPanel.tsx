@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 
 import { api, type AgentEntry, type Project } from '@/api/client';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
+import { StagesEditor } from './project-settings/StagesEditor';
 
 interface ProjectSettingsPanelProps {
   project: Project;
@@ -37,6 +38,10 @@ export function ProjectSettingsPanel({
 
         <Section title="Project info">
           <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
+        </Section>
+
+        <Section title="Stages">
+          <StagesEditor project={project} onProjectUpdated={onProjectUpdated} />
         </Section>
 
         <Section title="Field schemas">
