@@ -335,6 +335,23 @@ export class ProjectRuntime {
         const raw = readFileSync(promptSrc, 'utf-8');
         writeFileSync(promptDest, renderTemplate(raw, tokens), 'utf-8');
       }
+      // Section 3 phase 3e.3: backfill the agent-creator prompt for the
+      // transient Create-Agent modal session. Same write-if-missing rule.
+      const creatorSrc = resolve(
+        this.opts.templatesDir,
+        '.project-companion',
+        'agent-creator-prompt.md',
+      );
+      const creatorDest = resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'agent-creator-prompt.md',
+      );
+      if (existsSync(creatorSrc) && !existsSync(creatorDest)) {
+        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
+        const raw = readFileSync(creatorSrc, 'utf-8');
+        writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
+      }
     } catch (err) {
       console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);
     }
