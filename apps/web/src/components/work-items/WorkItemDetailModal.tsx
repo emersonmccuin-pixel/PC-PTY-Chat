@@ -39,7 +39,7 @@ export function WorkItemDetailModal({ workItem, onClose }: WorkItemDetailModalPr
       onClick={onClose}
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-3xl flex-col border border-border bg-card text-foreground"
+        className="flex h-[80vh] w-full max-w-3xl flex-col border border-border bg-card text-foreground"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
@@ -75,7 +75,7 @@ export function WorkItemDetailModal({ workItem, onClose }: WorkItemDetailModalPr
           ))}
         </nav>
 
-        <div className="min-h-[12rem] flex-1 overflow-y-auto px-4 py-3 text-sm text-muted-foreground">
+        <div className="flex-1 overflow-y-auto px-4 py-3 text-sm text-muted-foreground">
           {tab === 'overview' && (
             <StubPanel
               label="Overview"
