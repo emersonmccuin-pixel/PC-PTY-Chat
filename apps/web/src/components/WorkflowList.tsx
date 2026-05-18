@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { Project, ULID } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { CreateWorkflowModal } from './CreateWorkflowModal';
 
 interface WorkflowList {
   valid: Array<{ id: string; stageId: string | null; callable: boolean; fileName: string }>;
@@ -98,6 +99,7 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const refetch = useCallback(
     async (projectId: ULID) => {
@@ -174,6 +176,15 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
           title="Workflows"
           empty="No workflow files in workspace/.project-companion/workflows/."
           count={registry ? registry.valid.length + registry.invalid.length : null}
+          action={
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-muted"
+            >
+              + New workflow
+            </button>
+          }
         >
           {registry?.valid.map((wf) => (
             <div
@@ -233,6 +244,13 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
             ))}
         </Section>
       </div>
+      {createOpen && (
+        <CreateWorkflowModal
+          projectId={project.id}
+          events={events}
+          onClose={() => setCreateOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -241,21 +259,26 @@ function Section({
   title,
   empty,
   count,
+  action,
   children,
 }: {
   title: string;
   empty: string;
   count: number | null;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
   return (
     <section className="flex flex-col gap-2">
-      <h2 className="flex items-baseline gap-2 text-xs font-semibold uppercase tracking-wider text-foreground">
-        <span>{title}</span>
-        {count !== null && (
-          <span className="text-muted-foreground">({count})</span>
-        )}
+      <h2 className="flex items-baseline justify-between gap-2 text-xs font-semibold uppercase tracking-wider text-foreground">
+        <span className="flex items-baseline gap-2">
+          <span>{title}</span>
+          {count !== null && (
+            <span className="text-muted-foreground">({count})</span>
+          )}
+        </span>
+        {action}
       </h2>
       {hasChildren ? (
         <div className="flex flex-col gap-1">{children}</div>
