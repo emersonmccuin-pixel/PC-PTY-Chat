@@ -786,6 +786,81 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
   return c.json({ ok: true, session });
 });
 
+// ── Agent-creator transient session (Section 3 phase 3e.3) ─────────────────
+//
+// One-off PtySession per project for the conversational "Create Agent" modal.
+// Layers `agent-creator-prompt.md` on top of CC's default system prompt; same
+// project cwd as the orchestrator so `.mcp.json` (pc-rig) is wired in. Lifetime
+// = modal-open. Closes implicitly when `pc_create_agent` fires (the route
+// broadcasts `project-agents-changed`, modal handles cleanup).
+//
+// WS envelopes are distinct from the orchestrator stream so the modal can
+// subscribe without filtering on session origin:
+//   { type: 'agent-creator-state', state }
+//   { type: 'agent-creator-event', event }       — legacy hook events
+//   { type: 'agent-creator-jsonl', event }       — JSONL tailer events
+//   { type: 'agent-creator-exit', code, signal }
+
+function attachAgentCreatorHandlers(
+  projectId: ULID,
+  session: ReturnType<ProjectRuntime['startAgentCreator']>,
+): void {
+  const flag = session as unknown as { __pcAgentCreatorAttached?: boolean };
+  if (flag.__pcAgentCreatorAttached) return;
+  session.on('state', (state: string) =>
+    broadcastTo(projectId, { type: 'agent-creator-state', state }),
+  );
+  session.on('event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'agent-creator-event', event }),
+  );
+  session.on('jsonl-event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'agent-creator-jsonl', event }),
+  );
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'agent-creator-exit', code, signal });
+  });
+  flag.__pcAgentCreatorAttached = true;
+}
+
+app.post('/api/projects/:projectId/agent-creator/start', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.startAgentCreator();
+  attachAgentCreatorHandlers(id, session);
+  return c.json({ ok: true, state: session.getState() });
+});
+
+app.post('/api/projects/:projectId/agent-creator/send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.agentCreatorPty();
+  if (!session) return c.json({ ok: false, error: 'no agent-creator session' }, 409);
+  const body = await c.req.json<{ text?: string }>();
+  if (typeof body.text !== 'string' || body.text === '') {
+    return c.json({ ok: false, error: 'text required' }, 400);
+  }
+  session.send(body.text);
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/agent-creator/interrupt', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.agentCreatorPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/projects/:projectId/agent-creator', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.endAgentCreator();
+  return c.json({ ok: true });
+});
+
 /** List work items with optional filters + cursor pagination. Query params:
  *    stage             — filter to a single stage id
  *    parentId          — '' (string) means top-level (parentId === null); other = exact match

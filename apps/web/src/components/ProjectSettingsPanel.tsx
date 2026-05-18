@@ -12,19 +12,23 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api, type Project, type ResolvedAgent } from '@/api/client';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectSettingsFocus } from '@/store/project-settings-focus';
 import { AgentEditor } from './project-settings/AgentEditor';
+import { CreateAgentModal } from './project-settings/CreateAgentModal';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
 import { StagesEditor } from './project-settings/StagesEditor';
 
 interface ProjectSettingsPanelProps {
   project: Project;
+  events: WsEnvelope[];
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
 }
 
 export function ProjectSettingsPanel({
   project,
+  events,
   onProjectUpdated,
   onProjectDeleted,
 }: ProjectSettingsPanelProps) {
@@ -63,7 +67,7 @@ export function ProjectSettingsPanel({
 
         <div ref={agentsRef}>
           <Section title="Agents">
-            <AgentsSection projectId={project.id} />
+            <AgentsSection projectId={project.id} events={events} />
           </Section>
         </div>
 
@@ -181,7 +185,13 @@ function ProjectInfoForm({
 // global creates a per-project override. Project-only agents are authored
 // just for this project (form-editor authoring lands in 3d).
 
-function AgentsSection({ projectId }: { projectId: string }) {
+function AgentsSection({
+  projectId,
+  events,
+}: {
+  projectId: string;
+  events: WsEnvelope[];
+}) {
   const [list, setList] = useState<{
     globals: ResolvedAgent[];
     overrides: ResolvedAgent[];
@@ -189,6 +199,7 @@ function AgentsSection({ projectId }: { projectId: string }) {
   } | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const refresh = () => {
     setLoadErr(null);
@@ -201,9 +212,21 @@ function AgentsSection({ projectId }: { projectId: string }) {
   useEffect(() => {
     setList(null);
     setEditingName(null);
+    setCreating(false);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // 3e.3 — refresh on `project-agents-changed` so a newly committed agent
+  // shows up immediately (modal closure path) AND so the section stays in sync
+  // if an agent is created from the orchestrator chat side. Look at the latest
+  // envelope only — the buffer in useProjectWs wraps after MAX_BUFFERED, so
+  // index-based dedup isn't reliable across the wrap.
+  useEffect(() => {
+    const last = events[events.length - 1];
+    if (last?.type === 'project-agents-changed') void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events]);
 
   async function resetToGlobal(name: string) {
     if (
@@ -249,6 +272,25 @@ function AgentsSection({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Authored conversationally. Click <span className="font-medium">+ Create Agent</span>{' '}
+          to walk through an interview that produces a complete agent.
+        </p>
+        <button
+          onClick={() => setCreating(true)}
+          className="border border-border bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          + Create Agent
+        </button>
+      </div>
+      {creating && (
+        <CreateAgentModal
+          projectId={projectId}
+          events={events}
+          onClose={() => setCreating(false)}
+        />
+      )}
       {sections.map((section) => (
         <div key={section.title}>
           <div className="mb-1 flex items-baseline justify-between">

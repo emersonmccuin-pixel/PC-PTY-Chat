@@ -163,6 +163,7 @@ function Center({
         ) : tab === 'project-settings' ? (
           <ProjectSettingsPanel
             project={activeProject}
+            events={wsEvents}
             onProjectUpdated={onProjectUpdated}
             onProjectDeleted={onProjectDeleted}
           />

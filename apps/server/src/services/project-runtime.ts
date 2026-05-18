@@ -43,6 +43,7 @@ export interface ProjectRuntimeOptions {
 
 export class ProjectRuntime {
   private pty: PtySession | null = null;
+  private agentCreator: PtySession | null = null;
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
@@ -250,13 +251,61 @@ export class ProjectRuntime {
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
+    try { this.agentCreator?.kill(); } catch { /* best-effort */ }
     this.pty = null;
+    this.agentCreator = null;
     this.workflow = null;
     this.worktreesSvc = null;
     this.registry = null;
     this.workItemSvc = null;
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
+  }
+
+  /** Section 3 phase 3e.3: transient PtySession driving the conversational
+   *  Create-Agent modal. Different from `ensurePty()`:
+   *   - no `orchestrator_sessions` row (Sessions tab never sees it)
+   *   - dedicated `agent-creator-prompt.md` system-prompt layer
+   *   - per-call `ac-<uuid>` PC_SESSION_ID routes hooks into a transient subdir
+   *     under `<dataPath>/sessions/` so events stay isolated from orchestrator
+   *  Only one agent-creator session per project at a time — calling `start`
+   *  again kills any prior one. */
+  startAgentCreator(): PtySession {
+    if (this.agentCreator) {
+      try { this.agentCreator.kill(); } catch { /* best-effort */ }
+      this.agentCreator = null;
+    }
+    this.refreshHooksIfStale();
+    const transientId = `ac-${randomUUID()}`;
+    const sessionDir = this.sessionDataPath(transientId);
+    mkdirSync(sessionDir, { recursive: true });
+    this.agentCreator = new PtySession({
+      workspaceDir: this.project.folderPath,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      extraEnv: { PC_SESSION_ID: transientId },
+      appendSystemPromptPath: resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'agent-creator-prompt.md',
+      ),
+    });
+    return this.agentCreator;
+  }
+
+  /** Returns the live agent-creator PtySession, or null if not started / exited. */
+  agentCreatorPty(): PtySession | null {
+    return this.agentCreator && this.agentCreator.getState() !== 'exited'
+      ? this.agentCreator
+      : null;
+  }
+
+  /** Kill the agent-creator session. Idempotent. */
+  endAgentCreator(): void {
+    if (!this.agentCreator) return;
+    try { this.agentCreator.kill(); } catch { /* best-effort */ }
+    this.agentCreator = null;
   }
 
   private resolveSessionForSpawn(): {

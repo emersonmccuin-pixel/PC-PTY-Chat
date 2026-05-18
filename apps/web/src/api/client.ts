@@ -504,6 +504,32 @@ export const api = {
       return data.kind ?? 'project-only';
     }),
 
+  // ── Agent-creator transient session (Section 3 phase 3e.3) ───────────────
+  /** Spawn the per-project Create-Agent modal's transient PtySession. The
+   *  session is layered with `agent-creator-prompt.md` and emits its events
+   *  on the `agent-creator-*` WS envelope kinds. */
+  startAgentCreator: (projectId: ULID) =>
+    postJson<{ ok: true; state: string }>(
+      `/api/projects/${projectId}/agent-creator/start`,
+      {},
+    ).then((r) => r.state),
+
+  /** Send a user prompt into the modal's transient session. */
+  sendAgentCreator: (projectId: ULID, text: string) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/agent-creator/send`, { text }),
+
+  /** Press Escape on the modal's session (matches orchestrator interrupt). */
+  interruptAgentCreator: (projectId: ULID) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/agent-creator/interrupt`, {}),
+
+  /** Kill the modal's transient session. Idempotent. */
+  stopAgentCreator: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/agent-creator`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`stop agent-creator → ${res.status}`);
+  },
+
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
     getJson<{ ok: true; session: OrchestratorSession | null }>(
