@@ -149,10 +149,6 @@ export function CreateAgentModal({ projectId, events, onClose }: CreateAgentModa
       role="dialog"
       aria-modal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={(e) => {
-        // Click-outside closes; modal body stops propagation below.
-        if (e.target === e.currentTarget) closeRef.current();
-      }}
     >
       <div className="flex h-[80vh] w-full max-w-3xl flex-col border border-border bg-card text-sm shadow-xl">
         <header className="flex items-center justify-between border-b border-border bg-muted/30 px-4 py-3">
