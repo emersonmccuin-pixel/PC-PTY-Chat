@@ -18,6 +18,7 @@ export type {
   CancelNode,
   DagNode,
   DoneWhen,
+  HttpNode,
   LoopNode,
   NestedWorkflowNode,
   ScriptNode,

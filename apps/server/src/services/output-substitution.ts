@@ -3,11 +3,13 @@
 // Two pure functions plugged into the WorkflowRuntime via constructor options:
 //
 //   substituteOutputs(text, run): string
-//     Replaces every `$<node-id>.output[.path]` and `$inputs.<key>[.path]`
-//     token in `text` with the value resolved from `run`. Outputs read from
-//     run.nodeOutputs[id].output; inputs read from run.inputs[key]. Strings
-//     are inlined verbatim; numbers/booleans use String(); arrays/objects
-//     are JSON.stringify'd. Missing values resolve to the empty string.
+//     Replaces every `$<node-id>.output[.path]`, `$inputs.<key>[.path]`, and
+//     `$ENV.<NAME>` token in `text` with the resolved value. Outputs read
+//     from run.nodeOutputs[id].output; inputs read from run.inputs[key]; env
+//     reads from process.env[NAME] (no dotted-path traversal — env values
+//     are strings). Strings are inlined verbatim; numbers/booleans use
+//     String(); arrays/objects are JSON.stringify'd. Missing values resolve
+//     to the empty string.
 //
 //   evaluateBoolean(expression, run): boolean
 //     Evaluates a tiny JS-ish expression. Grammar:
@@ -33,20 +35,32 @@
 
 import type { WorkflowRun } from '@pc/domain';
 
-// Inputs token must precede outputs in the alternation so `$inputs.foo`
-// doesn't get mis-tokenized as `$inputs` followed by `.foo` (it can't, since
-// outputs require literal `.output`, but the explicit ordering documents intent).
+// Inputs / env tokens must precede outputs in resolution order so a workflow
+// author can't name a step `inputs` or `ENV` and have its `.output` collide
+// with the prefix grammar. Env names follow shell convention: uppercase +
+// underscore + digits (no dotted-path traversal).
 const INPUTS_TOKEN = /\$inputs\.([a-zA-Z_][a-zA-Z0-9_]*)((?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+// Prefix `ENV` is literal-uppercase (signals env access); the env-var NAME
+// matches identifier rules so both `$ENV.JIRA_TOKEN` and the occasional
+// lowercase env var work on Linux. Windows env access is case-insensitive
+// regardless.
+const ENV_TOKEN = /\$ENV\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
 const OUTPUT_TOKEN = /\$([a-zA-Z][a-zA-Z0-9_-]*)\.output((?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
 
 export function substituteOutputs(text: string, run: WorkflowRun): string {
-  // Resolve $inputs.* first so a workflow author can't accidentally name a
-  // step `inputs` and have its `.output` collide with the inputs grammar.
+  // Resolve $inputs.* and $ENV.* before $<stepId>.output so the prefix-named
+  // tokens take precedence over any step that happened to be called inputs
+  // or ENV.
   const afterInputs = text.replace(INPUTS_TOKEN, (_match, key: string, path: string) => {
     const value = resolveInputPath(run, key, path);
     return stringifyValue(value);
   });
-  return afterInputs.replace(OUTPUT_TOKEN, (_match, id: string, path: string) => {
+  const afterEnv = afterInputs.replace(ENV_TOKEN, (_match, name: string) => {
+    const value = process.env[name];
+    // Empty string for missing — matches the missing-input contract.
+    return value === undefined ? '' : value;
+  });
+  return afterEnv.replace(OUTPUT_TOKEN, (_match, id: string, path: string) => {
     const value = resolveOutputPath(run, id, path);
     return stringifyValue(value);
   });
@@ -313,6 +327,13 @@ function evalAst(ast: Ast, run: WorkflowRun): unknown {
           cur = (cur as Record<string, unknown>)[s];
         }
         return cur;
+      }
+      if (head === 'ENV') {
+        // `$ENV.<NAME>` — read process.env directly. No deeper traversal:
+        // env values are strings.
+        const [name, ...deeper] = rest;
+        if (!name || deeper.length > 0) return undefined;
+        return process.env[name];
       }
       cur = run.nodeOutputs[head!];
       for (const s of rest) {

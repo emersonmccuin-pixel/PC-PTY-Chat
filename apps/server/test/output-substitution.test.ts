@@ -176,3 +176,81 @@ test('evaluateBoolean: undefined run.inputs still tokenizes + resolves to undefi
   assert.equal(evaluateBoolean('$inputs.foo', run), false);
   assert.equal(evaluateBoolean('!$inputs.foo', run), true);
 });
+
+// ── $ENV.<NAME> substitution + expression ───────────────────────────────────
+
+test('substituteOutputs: $ENV.<NAME> reads process.env', () => {
+  const KEY = '__PC_TEST_ENV_AAA';
+  const prior = process.env[KEY];
+  process.env[KEY] = 'secret-value';
+  try {
+    const run = mkRun();
+    assert.equal(substituteOutputs(`token=$ENV.${KEY}`, run), 'token=secret-value');
+  } finally {
+    if (prior === undefined) delete process.env[KEY]; else process.env[KEY] = prior;
+  }
+});
+
+test('substituteOutputs: missing $ENV.<NAME> resolves to empty string', () => {
+  const KEY = '__PC_TEST_ENV_NOT_SET';
+  delete process.env[KEY];
+  const run = mkRun();
+  assert.equal(substituteOutputs(`token=$ENV.${KEY}`, run), 'token=');
+});
+
+test('substituteOutputs: $ENV grammar requires literal `ENV.` prefix', () => {
+  // $env.foo (lowercase) should NOT match — left literal.
+  const run = mkRun();
+  assert.equal(substituteOutputs('$env.FOO', run), '$env.FOO');
+});
+
+test('substituteOutputs: $ENV does NOT support dotted-path traversal', () => {
+  const KEY = '__PC_TEST_ENV_BBB';
+  const prior = process.env[KEY];
+  process.env[KEY] = 'x';
+  try {
+    // `$ENV.<KEY>.foo` matches up to <KEY>, then `.foo` stays literal.
+    const run = mkRun();
+    assert.equal(substituteOutputs(`v=$ENV.${KEY}.foo`, run), 'v=x.foo');
+  } finally {
+    if (prior === undefined) delete process.env[KEY]; else process.env[KEY] = prior;
+  }
+});
+
+test('substituteOutputs: $ENV mixed with $inputs + $<stepId>.output', () => {
+  const KEY = '__PC_TEST_ENV_CCC';
+  const prior = process.env[KEY];
+  process.env[KEY] = 'token-xyz';
+  try {
+    const run = mkRun({
+      inputs: { agent: 'researcher' },
+      nodeOutputs: { gate: { status: 'complete', output: 'done' } },
+    });
+    assert.equal(
+      substituteOutputs(`Bearer $ENV.${KEY} :: $inputs.agent :: $gate.output`, run),
+      'Bearer token-xyz :: researcher :: done',
+    );
+  } finally {
+    if (prior === undefined) delete process.env[KEY]; else process.env[KEY] = prior;
+  }
+});
+
+test('evaluateBoolean: $ENV.<NAME> equality', () => {
+  const KEY = '__PC_TEST_ENV_DDD';
+  const prior = process.env[KEY];
+  process.env[KEY] = 'prod';
+  try {
+    const run = mkRun();
+    assert.equal(evaluateBoolean(`$ENV.${KEY} == "prod"`, run), true);
+    assert.equal(evaluateBoolean(`$ENV.${KEY} == "dev"`, run), false);
+  } finally {
+    if (prior === undefined) delete process.env[KEY]; else process.env[KEY] = prior;
+  }
+});
+
+test('evaluateBoolean: missing $ENV.<NAME> coerces to false', () => {
+  const KEY = '__PC_TEST_ENV_MISSING';
+  delete process.env[KEY];
+  const run = mkRun();
+  assert.equal(evaluateBoolean(`$ENV.${KEY}`, run), false);
+});

@@ -16,6 +16,7 @@ import type {
   CancelNode,
   DagNode,
   DoneWhen,
+  HttpNode,
   LoopNode,
   NestedWorkflowNode,
   ScriptNode,
@@ -51,12 +52,22 @@ const TRIGGER_RULES: ReadonlySet<TriggerRule> = new Set([
 const TYPE_BODY_FIELDS = [
   'subagent',
   'bash',
+  'http',
   'script',
   'approval',
   'cancel',
   'workflow',
   'loop',
 ] as const;
+
+const HTTP_METHODS: ReadonlySet<HttpNode['http']['method']> = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'HEAD',
+]);
 
 export function validateWorkflow(
   raw: unknown,
@@ -339,6 +350,8 @@ function validateNode(
       return validateSubagentBody(raw, base, path, errors);
     case 'bash':
       return validateBashBody(raw, base, path, errors);
+    case 'http':
+      return validateHttpBody(raw, base, path, errors);
     case 'script':
       return validateScriptBody(raw, base, path, errors);
     case 'approval':
@@ -382,6 +395,78 @@ function validateBashBody(
     return undefined;
   }
   return { ...base, kind: 'bash', bash: raw.bash };
+}
+
+function validateHttpBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): HttpNode | undefined {
+  if (!isObj(raw.http)) {
+    errors.push({ path: `${path}.http`, message: 'must be an object' });
+    return undefined;
+  }
+  const http = raw.http;
+  let ok = true;
+
+  let method: HttpNode['http']['method'] | undefined;
+  if (typeof http.method !== 'string') {
+    errors.push({ path: `${path}.http.method`, message: 'must be a string' });
+    ok = false;
+  } else if (!HTTP_METHODS.has(http.method as HttpNode['http']['method'])) {
+    errors.push({
+      path: `${path}.http.method`,
+      message: `must be one of ${[...HTTP_METHODS].join(', ')}`,
+    });
+    ok = false;
+  } else {
+    method = http.method as HttpNode['http']['method'];
+  }
+
+  if (typeof http.url !== 'string' || !http.url) {
+    errors.push({ path: `${path}.http.url`, message: 'must be a non-empty string' });
+    ok = false;
+  }
+
+  let headers: Record<string, string> | undefined;
+  if (http.headers !== undefined) {
+    headers = validateStringRecord(http.headers, `${path}.http.headers`, errors);
+    if (!headers && Array.isArray(http.headers)) ok = false;
+  }
+
+  if (http.body !== undefined && typeof http.body !== 'string') {
+    errors.push({
+      path: `${path}.http.body`,
+      message: 'must be a string if provided (JSON encoding is the author\'s responsibility)',
+    });
+    ok = false;
+  }
+
+  if (http.timeout !== undefined) {
+    if (typeof http.timeout !== 'number' || !Number.isFinite(http.timeout) || http.timeout <= 0) {
+      errors.push({
+        path: `${path}.http.timeout`,
+        message: 'must be a positive number (milliseconds) if provided',
+      });
+      ok = false;
+    }
+  }
+
+  if (!ok || !method) return undefined;
+  return {
+    ...base,
+    kind: 'http',
+    http: {
+      method,
+      url: http.url as string,
+      ...(headers ? { headers } : {}),
+      ...(typeof http.body === 'string' ? { body: http.body } : {}),
+      ...(typeof http.timeout === 'number' && http.timeout > 0
+        ? { timeout: http.timeout }
+        : {}),
+    },
+  };
 }
 
 function validateScriptBody(

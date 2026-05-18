@@ -105,3 +105,88 @@ test('validator: nested-workflow workflow: static id still accepted', () => {
   );
   assert.equal(result.ok, true, JSON.stringify(result.errors));
 });
+
+// ── http: step kind ─────────────────────────────────────────────────────────
+
+test('validator: http step happy path', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'fetch',
+        http: {
+          method: 'GET',
+          url: 'https://api.example.com/v1/items',
+          headers: { Authorization: 'Bearer $ENV.JIRA_TOKEN' },
+          timeout: 5000,
+        },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const node = result.workflow!.nodes[0]!;
+  assert.equal(node.kind, 'http');
+  assert.equal((node as { http: { url: string } }).http.url, 'https://api.example.com/v1/items');
+  assert.equal((node as { http: { timeout: number } }).http.timeout, 5000);
+});
+
+test('validator: http step rejects unknown method', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'fetch',
+        http: { method: 'OPTIONS', url: 'https://x' },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'nodes[0].http.method'));
+});
+
+test('validator: http step rejects empty url', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'fetch', http: { method: 'GET', url: '' } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'nodes[0].http.url'));
+});
+
+test('validator: http step rejects non-string body', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'fetch', http: { method: 'POST', url: 'https://x', body: { a: 1 } } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'nodes[0].http.body'));
+});
+
+test('validator: http step rejects non-positive timeout', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'fetch', http: { method: 'GET', url: 'https://x', timeout: 0 } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'nodes[0].http.timeout'));
+});
+
+test('validator: http and bash on the same node → both-discriminators error', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'fetch',
+        http: { method: 'GET', url: 'https://x' },
+        bash: 'echo hi',
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+});

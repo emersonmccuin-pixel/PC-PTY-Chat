@@ -31,6 +31,7 @@ import type {
   BashNode,
   CancelNode,
   DagNode,
+  HttpNode,
   LoopNode,
   NestedWorkflowNode,
   NodeOutput,
@@ -65,6 +66,7 @@ import {
 } from '@pc/db';
 import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
 
+import { runHttpStep } from './http-step.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { WorkItemService } from './work-item.ts';
 
@@ -175,12 +177,17 @@ export class WorkflowRuntime {
     this.dispatchers = {
       subagent: (ctx) => this.dispatchSubagent(ctx),
       bash: (ctx) => this.dispatchBash(ctx),
+      http: (ctx) => this.dispatchHttp(ctx),
       script: (ctx) => this.dispatchScript(ctx),
       approval: (ctx) => this.dispatchApproval(ctx),
       cancel: (ctx) => this.dispatchCancel(ctx),
       workflow: (ctx) => this.dispatchNestedWorkflow(ctx),
       loop: (ctx) => this.dispatchLoop(ctx),
     };
+  }
+
+  private async dispatchHttp(ctx: DispatchContext): Promise<DispatchResult> {
+    return runHttpStep(ctx.node as HttpNode, ctx.run, ctx.substituteOutputs);
   }
 
   // ── Project / work items ─────────────────────────────────────────────────

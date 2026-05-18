@@ -59,6 +59,25 @@ export interface BashNode extends BaseNode {
   bash: string;
 }
 
+/** HTTP request step (4a.4 / D20). Workflow authors reach external services
+ *  via raw HTTP. Auth lives in headers via `$ENV.NAME` substitution; no
+ *  in-app secrets vault in v1. Output is the response; 4xx/5xx don't auto-
+ *  fail the step — downstream `when:` / `trigger_rule:` decide. */
+export interface HttpNode extends BaseNode {
+  kind: 'http';
+  http: {
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
+    /** Absolute URL. Supports `$inputs.*`, `$<stepId>.output.*`, `$ENV.*`. */
+    url: string;
+    /** Request headers. Values support the same substitution grammar. */
+    headers?: Record<string, string>;
+    /** Request body (string). JSON is encoded by the author. */
+    body?: string;
+    /** Per-step timeout in ms. Defaults to 30 000 when unset. */
+    timeout?: number;
+  };
+}
+
 export interface ScriptNode extends BaseNode {
   kind: 'script';
   script: string;
@@ -104,6 +123,7 @@ export interface LoopNode extends BaseNode {
 export type DagNode =
   | SubagentNode
   | BashNode
+  | HttpNode
   | ScriptNode
   | ApprovalNode
   | CancelNode
