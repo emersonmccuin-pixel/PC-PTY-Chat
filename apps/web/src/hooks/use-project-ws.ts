@@ -183,6 +183,15 @@ export interface JsonlSidechainEvent {
   raw: unknown;
 }
 
+export interface JsonlUsageEvent {
+  kind: 'jsonl-usage';
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  model: string | null;
+}
+
 export type JsonlEvent =
   | JsonlUserEvent
   | JsonlTurnEndEvent
@@ -190,7 +199,8 @@ export type JsonlEvent =
   | JsonlToolResultEvent
   | JsonlQueueEnqueueEvent
   | JsonlQueueDequeueEvent
-  | JsonlSidechainEvent;
+  | JsonlSidechainEvent
+  | JsonlUsageEvent;
 
 // ── Outbound WS messages (Q8 chat send + interrupt + ask-reply) ───────────
 

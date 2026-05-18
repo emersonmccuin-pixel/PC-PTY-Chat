@@ -27,6 +27,7 @@ import type {
   WsOutbound,
 } from '@/hooks/use-project-ws';
 import { useViewingSession } from '@/store/viewing-session';
+import { StatusBar, type UsageTotals } from '@/components/StatusBar';
 
 interface OrchestratorProps {
   project: Project;
@@ -535,6 +536,43 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
       ? liveState === 'thinking'
       : jsonlBusy && liveState !== 'ready';
 
+  // Section 1 phase 2 — session token usage. Sum jsonl-usage events across the
+  // current event stream. Sidechain entries short-circuit at the tailer, so
+  // subagent tokens are NOT included here. Past-session view: aggregate over
+  // whatever events the past stream contains (jsonl-usage envelopes survive
+  // in events.jsonl since 0e), so the bar still shows useful numbers.
+  const sessionUsage = useMemo<UsageTotals>(() => {
+    const totals: UsageTotals = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    };
+    for (const env of events) {
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (!ev || ev.kind !== 'jsonl-usage') continue;
+      totals.inputTokens += ev.inputTokens;
+      totals.outputTokens += ev.outputTokens;
+      totals.cacheCreationTokens += ev.cacheCreationTokens;
+      totals.cacheReadTokens += ev.cacheReadTokens;
+    }
+    return totals;
+  }, [events]);
+
+  // Latest model the orchestrator's been observed using — prefer the
+  // most-recent jsonl-usage's model, fall back to the session-record model
+  // (server-populated after the first result event lands).
+  const liveModel = useMemo<string | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (ev?.kind === 'jsonl-usage' && ev.model) return ev.model;
+    }
+    return session?.model ?? null;
+  }, [events, session?.model]);
+
   // Section 0 phase 0d — queued-prompt UI. CC's JSONL queue-operation lines
   // don't carry the prompt text (verified empirically against real sessions),
   // so we cache locally what the user typed while busy and pop entries when
@@ -745,6 +783,11 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
           )}
         </div>
       </div>
+      <StatusBar
+        model={liveModel}
+        cwd={project.folderPath}
+        usage={sessionUsage}
+      />
       {!isViewingPast && sessionEnded && (
         <div className="border-t border-border bg-warning/10 px-4 py-2 text-center text-xs text-warning">
           This session ended. Click <span className="font-semibold">+ New session</span> above to start a fresh chat.
