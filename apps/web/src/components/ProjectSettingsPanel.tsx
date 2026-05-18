@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 
 import { api, type AgentEntry, type Project } from '@/api/client';
+import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
 
 interface ProjectSettingsPanelProps {
   project: Project;
@@ -36,6 +37,10 @@ export function ProjectSettingsPanel({
 
         <Section title="Project info">
           <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
+        </Section>
+
+        <Section title="Field schemas">
+          <FieldSchemasEditor projectId={project.id} />
         </Section>
 
         <Section title="Agents">

@@ -14,12 +14,15 @@ import remarkGfm from 'remark-gfm';
 import {
   api,
   WorkItemConflictError,
+  WorkItemFieldValidationError,
   type Attachment,
+  type FieldSchema,
   type Project,
   type WorkItem,
   type WorkItemPatch,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { TypedFieldEditor } from './TypedFieldEditor';
 
 type TabId = 'overview' | 'children' | 'attachments' | 'activity';
 
@@ -47,18 +50,46 @@ interface Draft {
   title: string;
   body: string;
   stageId: string;
+  fields: Record<string, unknown>;
 }
 
 function draftFromItem(wi: WorkItem): Draft {
-  return { title: wi.title, body: wi.body, stageId: wi.stageId };
+  return {
+    title: wi.title,
+    body: wi.body,
+    stageId: wi.stageId,
+    fields: { ...(wi.fields ?? {}) },
+  };
 }
 
 function isDirty(draft: Draft, baseline: WorkItem): boolean {
-  return (
-    draft.title !== baseline.title ||
-    draft.body !== baseline.body ||
-    draft.stageId !== baseline.stageId
-  );
+  if (draft.title !== baseline.title) return true;
+  if (draft.body !== baseline.body) return true;
+  if (draft.stageId !== baseline.stageId) return true;
+  return !shallowEqualRecord(draft.fields, baseline.fields ?? {});
+}
+
+function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!fieldValueEqual(a[k], b[k])) return false;
+  }
+  return true;
+}
+
+function fieldValueEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (typeof a !== typeof b) return false;
+  // Cheap deep-equal via JSON for the few cases (arrays of strings on enum options, etc.)
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
 }
 
 export function WorkItemDetailModal({
@@ -77,6 +108,32 @@ export function WorkItemDetailModal({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<WorkItem | null>(null);
   const [remoteChanged, setRemoteChanged] = useState<WorkItem | null>(null);
+  const [fieldSchemas, setFieldSchemas] = useState<FieldSchema[]>([]);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listFieldSchemas(project.id)
+      .then((s) => {
+        if (!cancelled) setFieldSchemas(s);
+      })
+      .catch(() => {
+        if (!cancelled) setFieldSchemas([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (!last) return;
+    if (last.type === 'field-schemas-changed' && Array.isArray(last.items)) {
+      setFieldSchemas(last.items as FieldSchema[]);
+    }
+  }, [events]);
 
   // Re-sync when the parent passes us a new (or refreshed) work item.
   // - Different id: parent breadcrumb switched targets — reset everything.
@@ -130,11 +187,15 @@ export function WorkItemDetailModal({
     setBusy(true);
     setError(null);
     setConflict(null);
+    setFieldErrors({});
     try {
       const patch: WorkItemPatch = {};
       if (draft.title !== baseline.title) patch.title = draft.title;
       if (draft.body !== baseline.body) patch.body = draft.body;
       if (draft.stageId !== baseline.stageId) patch.stageId = draft.stageId;
+      if (!shallowEqualRecord(draft.fields, baseline.fields ?? {})) {
+        patch.fields = draft.fields;
+      }
       const updated = await api.patchWorkItem(
         project.id,
         baseline.id,
@@ -147,6 +208,10 @@ export function WorkItemDetailModal({
     } catch (e) {
       if (e instanceof WorkItemConflictError) {
         setConflict(e.current);
+      } else if (e instanceof WorkItemFieldValidationError) {
+        setFieldErrors(e.errors);
+        setError('Fix the highlighted fields and try again.');
+        setTab('overview');
       } else {
         setError((e as Error).message);
       }
@@ -267,6 +332,8 @@ export function WorkItemDetailModal({
               setDraft={setDraft}
               parent={parent}
               stages={stageOptions}
+              fieldSchemas={fieldSchemas}
+              fieldErrors={fieldErrors}
               onSwitchToParent={() => parent && attemptSwitch(parent.id)}
             />
           )}
@@ -378,6 +445,8 @@ function OverviewTab({
   setDraft,
   parent,
   stages,
+  fieldSchemas,
+  fieldErrors,
   onSwitchToParent,
 }: {
   workItem: WorkItem;
@@ -385,9 +454,16 @@ function OverviewTab({
   setDraft: (next: Draft | ((p: Draft) => Draft)) => void;
   parent: WorkItem | null;
   stages: { id: string; name: string }[];
+  fieldSchemas: FieldSchema[];
+  fieldErrors: Record<string, string>;
   onSwitchToParent: () => void;
 }) {
-  const fieldEntries = Object.entries(workItem.fields ?? {});
+  const orderedSchemas = useMemo(
+    () => [...fieldSchemas].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key)),
+    [fieldSchemas],
+  );
+  const schemaKeys = useMemo(() => new Set(orderedSchemas.map((s) => s.key)), [orderedSchemas]);
+  const orphanEntries = Object.entries(draft.fields).filter(([k]) => !schemaKeys.has(k));
   return (
     <div className="flex flex-col gap-4 text-foreground">
       <div className="grid grid-cols-2 gap-4">
@@ -431,32 +507,58 @@ function OverviewTab({
         />
       </Field>
 
-      <Field label="Fields">
-        {fieldEntries.length === 0 ? (
+      {orderedSchemas.length === 0 && orphanEntries.length === 0 ? (
+        <Field label="Fields">
           <div className="border border-dashed border-border px-2 py-3 text-xs text-muted-foreground">
-            No fields set. Typed editor lands in phase 2g.
+            No field schemas configured for this project. Add some in Project
+            settings → Field schemas.
           </div>
-        ) : (
-          <div className="border border-border">
-            {fieldEntries.map(([k, v]) => (
-              <div
-                key={k}
-                className="flex items-start gap-3 border-b border-border px-2 py-1.5 last:border-b-0"
-              >
-                <div
-                  className="w-32 shrink-0 truncate font-mono text-xs text-muted-foreground"
-                  title={k}
-                >
-                  {k}
+        </Field>
+      ) : (
+        <Field label="Fields">
+          <div className="flex flex-col gap-3">
+            {orderedSchemas.map((schema) => (
+              <TypedFieldEditor
+                key={schema.id}
+                schema={schema}
+                value={draft.fields[schema.key]}
+                onChange={(v) =>
+                  setDraft((p) => ({
+                    ...p,
+                    fields: { ...p.fields, [schema.key]: v },
+                  }))
+                }
+                error={fieldErrors[schema.key] ?? null}
+              />
+            ))}
+            {orphanEntries.length > 0 && (
+              <div className="border-t border-border pt-2">
+                <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+                  Orphan fields (no schema)
                 </div>
-                <div className="min-w-0 flex-1 break-words font-mono text-xs text-foreground">
-                  {renderFieldValue(v)}
+                <div className="border border-dashed border-border">
+                  {orphanEntries.map(([k, v]) => (
+                    <div
+                      key={k}
+                      className="flex items-start gap-3 border-b border-border/60 px-2 py-1.5 last:border-b-0"
+                    >
+                      <div
+                        className="w-32 shrink-0 truncate font-mono text-xs text-muted-foreground"
+                        title={k}
+                      >
+                        {k}
+                      </div>
+                      <div className="min-w-0 flex-1 break-words font-mono text-xs text-foreground">
+                        {renderFieldValue(v)}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
           </div>
-        )}
-      </Field>
+        </Field>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
         <span>v{workItem.version}</span>

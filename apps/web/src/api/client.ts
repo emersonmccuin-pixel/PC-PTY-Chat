@@ -44,6 +44,34 @@ export interface WorkItem {
   deletedAt: number | null;
 }
 
+export type FieldSchemaType = 'text' | 'number' | 'boolean' | 'enum' | 'date';
+
+export interface FieldSchema {
+  id: ULID;
+  projectId: ULID;
+  key: string;
+  label: string;
+  type: FieldSchemaType;
+  options?: string[];
+  default?: unknown;
+  required: boolean;
+  description?: string;
+  order: number;
+}
+
+/** Bulk-replace payload shape (server mints ids for entries without one). */
+export interface FieldSchemaInput {
+  id?: ULID;
+  key: string;
+  label: string;
+  type: FieldSchemaType;
+  options?: string[];
+  default?: unknown;
+  required: boolean;
+  description?: string;
+  order: number;
+}
+
 export interface Attachment {
   id: ULID;
   workItemId: ULID;
@@ -76,6 +104,17 @@ export class WorkItemConflictError extends Error {
     super('work item version conflict');
     this.name = 'WorkItemConflictError';
     this.current = current;
+  }
+}
+
+/** Thrown by createWorkItem / patchWorkItem when the server rejects field
+ *  validation. `errors` is a per-key map keyed by FieldSchema.key. */
+export class WorkItemFieldValidationError extends Error {
+  errors: Record<string, string>;
+  constructor(message: string, errors: Record<string, string>) {
+    super(message);
+    this.name = 'WorkItemFieldValidationError';
+    this.errors = errors;
   }
 }
 
@@ -206,7 +245,7 @@ export const api = {
       { title, stageId, ...opts },
     ),
   /** Version-checked PATCH. Throws WorkItemConflictError on 409 (carrying the
-   *  current row so the caller can refetch + re-render). */
+   *  current row), WorkItemFieldValidationError on 400 field-validation. */
   patchWorkItem: async (
     projectId: ULID,
     wiId: ULID,
