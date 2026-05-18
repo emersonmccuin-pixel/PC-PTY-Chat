@@ -1,6 +1,6 @@
 # Project Companion
 
-Build your own AI workflows by talking to Claude. No code. No prompt engineering. No waiting.
+Build your own AI workflows by talking to Claude. No code. No prompt engineering. No terminal. No waiting.
 
 ---
 
@@ -16,7 +16,7 @@ Engineers built that leverage for themselves a year ago. The rest of the org is 
 
 A local app where anyone in your organization builds their own AI workflows by talking to Claude.
 
-You describe what you do — in plain English. Companion turns it into a workflow: an agent with the right tools, a work item with the right context, your steps in the right order. You run it on demand. You tweak it the same way you built it.
+A real GUI — click, drag, type. No commands, no config files, no editing JSON. You describe what you do in plain English; Companion turns it into something repeatable: an agent with the right tools, the context it needs, your steps in the right order. You run it on demand. You tweak it the same way you built it.
 
 You are the expert on how the work should be done. Companion captures your method so you stop redoing it from scratch every time.
 
@@ -24,22 +24,23 @@ You are the expert on how the work should be done. Companion captures your metho
 
 **Data analyst.** You answer the same handful of questions every week — "how's funnel conversion trending," "which channels are softening," "what broke in last night's run." Today that means re-explaining to Claude where the data lives, what your semantic layer is, what "active user" actually means in your warehouse.
 
-In Companion you build it once. A work item holds the credentials, the schema, an example query, the semantic-layer rules. A workflow walks the agent through how you'd answer the question. Now you call the workflow and the answer comes back built the way you'd build it — every time.
+In Companion you build a **pod**. It holds the credentials, the schema, an example query, the semantic-layer rules — and the workflow that walks the agent through how you'd answer. Call the pod. The answer comes back built the way you'd build it, every time.
 
 **Sales follow-up.** After every customer call you do the same thing: pull the Gong transcript, read it for questions and concerns, line them up against your product's answers, write a follow-up email in your voice.
 
-In Companion the workflow does all of it. The work item holds your product context, your voice samples, your standard answers to common objections. You ship the email twenty minutes after the call instead of two days later — and it sounds like you wrote it.
+In Companion this is a pod too. The product context, your voice samples, your standard answers to common objections — bundled with the workflow that does the pulling, parsing, matching, and drafting. You ship the email twenty minutes after the call instead of two days later, and it sounds like you wrote it.
 
 ## How it works
 
-Four pieces. You build all of them by chatting.
+Five pieces. You build them all by chatting.
 
-- **Projects** scope the work. One per initiative, with its own chat, board, agents, and workflows.
-- **Work items** hold context. Files, credentials, schemas, examples, instructions — everything an agent needs to do a job your way.
-- **Agents** do the specialized work. A data analyst, a researcher, a copy editor — each tuned for one role, each with its own tools.
-- **Workflows** orchestrate. A repeatable sequence of steps that ties context, agents, and tools into one call.
+- **Projects** scope the work. One per initiative, with its own chat, board, pods, and agents.
+- **Pods** are the repeatable engine. A bundle of a workflow plus everything it needs to run — context, credentials, files, the agent that does the job. Lives in its own tab. Built once, run forever.
+- **Workflows** are the steps. A repeatable sequence — what runs when, in what order, with what tools. Lives inside a pod for repeatable work, or runs free from chat for one-offs.
+- **Agents** are your library of specialists. A data analyst, a researcher, a copy editor — each tuned for one role, each with its own tools.
+- **Work items** are the kanban side. Cards moving through stages, for the day-to-day work that isn't yet a pod.
 
-The board surfaces what's in flight. The chat is where you build and run.
+The chat is where you build and run. The board surfaces what's in flight. The pods tab is the production line.
 
 ## Building a workflow
 
@@ -59,6 +60,17 @@ The chat has an interview tool that walks you through it:
 You answer in plain English. Companion writes the workflow. You run it. If something needs to change, you tell it — same chat, same conversation — and it adjusts.
 
 The person who knows how the job should be done is finally the one operating the tool. No translator, no specialist, no waiting.
+
+## Inside the app
+
+The surfaces you'll see:
+
+- **Projects** — top-level switcher; click to jump between initiatives
+- **Project chat** — the persistent thread, anchored to the project, where you build and run
+- **Kanban board** — drag-and-drop cards through stages you define
+- **Pods tab** — your library of repeatable workflows-plus-context
+- **Agents** — manage your roster of specialists
+- **Workflows** — browse, edit, and run your saved processes
 
 ## What it costs
 
