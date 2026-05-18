@@ -1,14 +1,38 @@
 // Agent library — global pool of agent .md files at ~/.project-companion/agents/.
 // Each project copies (and may diverge) library files into <project>/.claude/agents/.
 // Files-on-disk are the registry; no DB row (same shape as workflows).
+//
+// Reads go through `parseAgentFile`; writes go through `serializeAgentFile`
+// (round-trip-preserving) plus an atomic temp-file + rename. Callers see the
+// raw file text under `body` for backwards compat with the existing UI,
+// alongside the parsed `def` for code that wants the typed view.
 
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  copyFileSync,
+  renameSync,
+  unlinkSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { parseAgentFile, type AgentDef, type AgentParseError } from '@pc/domain';
+
 export interface AgentEntry {
   name: string;
+  /** Full file text as on disk (frontmatter + body). Preserved name for
+   *  backwards compat with the existing UI / API. */
   body: string;
+  /** Parsed typed view. Omitted when the file failed to parse. */
+  def?: AgentDef;
+  /** Markdown body below the closing `---`. Omitted when the file failed to parse. */
+  markdown?: string;
+  /** Structured parse error, when applicable. */
+  parseError?: AgentParseError;
 }
 
 export class AgentLibrary {
@@ -34,16 +58,13 @@ export class AgentLibrary {
     return readdirSync(this.libraryDir)
       .filter((f) => f.endsWith('.md'))
       .sort()
-      .map((f) => ({
-        name: f.replace(/\.md$/, ''),
-        body: readFileSync(join(this.libraryDir, f), 'utf-8'),
-      }));
+      .map((f) => toEntry(f.replace(/\.md$/, ''), readFileSync(join(this.libraryDir, f), 'utf-8')));
   }
 
   read(name: string): AgentEntry | null {
     const path = this.pathFor(name);
     if (!path || !existsSync(path)) return null;
-    return { name, body: readFileSync(path, 'utf-8') };
+    return toEntry(name, readFileSync(path, 'utf-8'));
   }
 
   /** Write a new library agent. Throws if the name is taken. */
@@ -52,8 +73,8 @@ export class AgentLibrary {
     const path = join(this.libraryDir, safe + '.md');
     if (existsSync(path)) throw new Error(`agent already exists: ${safe}`);
     mkdirSync(this.libraryDir, { recursive: true });
-    writeFileSync(path, body, 'utf-8');
-    return { name: safe, body };
+    atomicWriteFileSync(path, body);
+    return toEntry(safe, body);
   }
 
   /** Resolve a library agent name to its absolute path; null if name is unsafe. */
@@ -88,4 +109,31 @@ export function defaultLibraryDir(): string {
   return process.env.PC_AGENT_LIBRARY_DIR
     ? resolve(process.env.PC_AGENT_LIBRARY_DIR)
     : join(homedir(), '.project-companion', 'agents');
+}
+
+/** Build an AgentEntry from a name + raw file text. Parses for the typed
+ *  view; on parse error, surfaces `parseError` and leaves `def` unset. */
+export function toEntry(name: string, body: string): AgentEntry {
+  const parsed = parseAgentFile(body);
+  if (!parsed.ok) {
+    return { name, body, parseError: parsed };
+  }
+  return { name, body, def: parsed.def, markdown: parsed.body };
+}
+
+/** Atomic write — temp-file + rename. Avoids mid-write corruption if the
+ *  process crashes between open and close. */
+export function atomicWriteFileSync(path: string, contents: string): void {
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, contents, 'utf-8');
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
 }

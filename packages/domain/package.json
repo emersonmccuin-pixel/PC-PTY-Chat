@@ -11,6 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"
   },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",

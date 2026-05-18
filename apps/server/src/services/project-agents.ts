@@ -6,10 +6,16 @@
 // AgentLibrary owns the global pool at `~/.project-companion/agents/`; this
 // module owns the per-project surface only.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { type AgentEntry, AgentLibrary, safeAgentName } from './agent-library.ts';
+import {
+  type AgentEntry,
+  AgentLibrary,
+  atomicWriteFileSync,
+  safeAgentName,
+  toEntry,
+} from './agent-library.ts';
 
 function agentsDir(folderPath: string): string {
   return resolve(folderPath, '.claude', 'agents');
@@ -21,28 +27,26 @@ export function listProjectAgents(folderPath: string): AgentEntry[] {
   return readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
     .sort()
-    .map((f) => ({
-      name: f.replace(/\.md$/, ''),
-      body: readFileSync(join(dir, f), 'utf-8'),
-    }));
+    .map((f) => toEntry(f.replace(/\.md$/, ''), readFileSync(join(dir, f), 'utf-8')));
 }
 
 export function readProjectAgent(folderPath: string, name: string): AgentEntry | null {
   const safe = safeAgentName(name);
   const path = join(agentsDir(folderPath), `${safe}.md`);
   if (!existsSync(path)) return null;
-  return { name: safe, body: readFileSync(path, 'utf-8') };
+  return toEntry(safe, readFileSync(path, 'utf-8'));
 }
 
 /** Overwrite a project agent's body. Used by the "edit" path — the project
- *  copy diverges from the library version, which stays untouched. */
+ *  copy diverges from the library version, which stays untouched. Write is
+ *  atomic (temp-file + rename). */
 export function writeProjectAgent(folderPath: string, name: string, body: string): AgentEntry {
   const safe = safeAgentName(name);
   const dir = agentsDir(folderPath);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${safe}.md`);
-  writeFileSync(path, body, 'utf-8');
-  return { name: safe, body };
+  atomicWriteFileSync(path, body);
+  return toEntry(safe, body);
 }
 
 /** Copy a library agent into the project. Refuses if the project already has
@@ -61,6 +65,6 @@ export function copyLibraryAgentToProject(
   if (existsSync(dest)) {
     throw new Error(`project already has an agent named ${safe}`);
   }
-  writeFileSync(dest, source.body, 'utf-8');
-  return { name: safe, body: source.body };
+  atomicWriteFileSync(dest, source.body);
+  return toEntry(safe, source.body);
 }

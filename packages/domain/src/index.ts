@@ -42,3 +42,37 @@ export type {
 export type { ActivityPanelSettings, GlobalSettings } from './settings.ts';
 export { defaultGlobalSettings, withSettingsDefaults } from './settings.ts';
 export type { Worktree, WorktreeStatus } from './worktree.ts';
+export type {
+  AgentColor,
+  AgentDef,
+  AgentEffort,
+  AgentHookEntry,
+  AgentHooks,
+  AgentIsolation,
+  AgentMcpServerRef,
+  AgentMemoryScope,
+  AgentModel,
+  AgentModelShort,
+  AgentPermissionMode,
+  AgentValidationErr,
+  AgentValidationIssue,
+  AgentValidationOk,
+  AgentValidationResult,
+  InlineMcpServer,
+} from './agent.ts';
+export {
+  AGENT_COLORS,
+  AGENT_EFFORTS,
+  AGENT_MEMORY_SCOPES,
+  AGENT_MODEL_SHORTCUTS,
+  AGENT_PERMISSION_MODES,
+  validateAgentDef,
+} from './agent.ts';
+export type {
+  AgentParseError,
+  AgentParseOk,
+  AgentParseResult,
+  ParsedAgentFile,
+  SerializeAgentFileInput,
+} from './agent-file.ts';
+export { parseAgentFile, serializeAgentFile } from './agent-file.ts';
