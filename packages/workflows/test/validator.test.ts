@@ -380,3 +380,105 @@ test('validator: attach-to-work-item + bash on same node fails', () => {
   );
   assert.equal(result.ok, false);
 });
+
+// ── 4a.6 — human-review alias for approval ──────────────────────────────────
+
+test('validator: human-review: alias is accepted and normalized to approval:', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'gate',
+        'human-review': { message: 'OK to proceed?' },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const node = result.workflow!.nodes[0]!;
+  assert.equal(node.kind, 'approval');
+  assert.equal(
+    (node as { approval: { message: string } }).approval.message,
+    'OK to proceed?',
+  );
+});
+
+test('validator: legacy approval: still works (no churn for existing workflows)', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'gate', approval: { message: 'go?' } }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+});
+
+test('validator: both human-review: and approval: present → error', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'gate',
+        'human-review': { message: 'a' },
+        approval: { message: 'b' },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((e) => /both/.test(e.message)),
+    `expected an error about declaring both; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+// ── 4a.6 — orchestrator-review step kind ────────────────────────────────────
+
+test('validator: orchestrator-review happy path (prompt only)', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'orch',
+        'orchestrator-review': { prompt: 'Please check $researcher.output.summary' },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.workflow!.nodes[0]!.kind, 'orchestrator-review');
+});
+
+test('validator: orchestrator-review accepts artifact + on_revise', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'orch',
+        'orchestrator-review': {
+          prompt: 'Review this',
+          artifact: 'wi-$inputs.wiId',
+          on_revise: { prompt: 'Suggest changes here' },
+        },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('validator: orchestrator-review rejects missing prompt', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'orch', 'orchestrator-review': { artifact: 'x' } }]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /prompt/.test(e.path)));
+});
+
+test('validator: orchestrator-review rejects empty on_revise.prompt', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'orch',
+        'orchestrator-review': { prompt: 'x', on_revise: { prompt: '' } },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+});

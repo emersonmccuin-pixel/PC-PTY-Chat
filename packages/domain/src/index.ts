@@ -23,6 +23,7 @@ export type {
   HttpNode,
   LoopNode,
   NestedWorkflowNode,
+  OrchestratorReviewNode,
   ScriptNode,
   SubagentNode,
   TriggerRule,

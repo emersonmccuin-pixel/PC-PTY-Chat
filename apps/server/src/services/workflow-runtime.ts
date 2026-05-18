@@ -38,6 +38,7 @@ import type {
   NestedWorkflowNode,
   NodeOutput,
   NodeOutputStatus,
+  OrchestratorReviewNode,
   Project,
   ScriptNode,
   SubagentFailureCause,
@@ -75,6 +76,7 @@ import { runAttachToWorkItemStep } from './attach-to-work-item-step.ts';
 import { runCreateWorkItemStep } from './create-work-item-step.ts';
 import { runUpdateWorkItemStep } from './update-work-item-step.ts';
 import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
+import { runOrchestratorReviewStep } from './orchestrator-review-step.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { WorkItemService } from './work-item.ts';
@@ -206,7 +208,19 @@ export class WorkflowRuntime {
       'create-work-item': (ctx) => this.dispatchCreateWorkItem(ctx),
       'update-work-item': (ctx) => this.dispatchUpdateWorkItem(ctx),
       'write-to-worktree': (ctx) => this.dispatchWriteToWorktree(ctx),
+      'orchestrator-review': (ctx) => this.dispatchOrchestratorReview(ctx),
     };
+  }
+
+  private async dispatchOrchestratorReview(ctx: DispatchContext): Promise<DispatchResult> {
+    const result = await runOrchestratorReviewStep(ctx.node as OrchestratorReviewNode, ctx.run, {
+      workflow: ctx.workflow,
+      substituteOutputs: ctx.substituteOutputs,
+      postChannel: (body) => this.postChannel(body),
+      broadcast: (event) => this.broadcast(event),
+    });
+    if (result.kind === 'async') return { kind: 'async' };
+    return { kind: 'sync', output: result.output! };
   }
 
   private async dispatchAttachToWorkItem(ctx: DispatchContext): Promise<DispatchResult> {
@@ -1037,6 +1051,8 @@ export class WorkflowRuntime {
   private async dispatchApproval(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as ApprovalNode;
     const message = ctx.substituteOutputs(node.approval.message, ctx.run);
+    // Existing approval-required envelope kept for current chat UI consumers
+    // (ApprovalBubble). Section 7's inbox will switch to `review-pending`.
     this.broadcast({
       type: 'event',
       event: {
@@ -1046,6 +1062,19 @@ export class WorkflowRuntime {
         nodeId: node.id,
         message,
         on_reject_prompt: node.approval.on_reject?.prompt ?? null,
+      },
+    });
+    this.broadcast({
+      type: 'event',
+      event: {
+        kind: 'review-pending',
+        flavor: 'human',
+        ts: new Date().toISOString(),
+        workflowRunId: ctx.run.id,
+        nodeId: node.id,
+        prompt: message,
+        artifact: null,
+        on_revise_prompt: node.approval.on_reject?.prompt ?? null,
       },
     });
     return { kind: 'async' };
@@ -1261,7 +1290,15 @@ function recomputeRunStatus(workflow: Workflow, run: WorkflowRun): WorkflowRunSt
     status: run.nodeOutputs[n.id]?.status ?? 'pending',
   }));
 
-  if (triples.some((t) => t.kind === 'approval' && t.status === 'running')) return 'paused';
+  if (
+    triples.some(
+      (t) =>
+        (t.kind === 'approval' || t.kind === 'orchestrator-review') &&
+        t.status === 'running',
+    )
+  ) {
+    return 'paused';
+  }
 
   if (triples.some((t) => t.status === 'running' || t.status === 'pending')) return 'in-progress';
 

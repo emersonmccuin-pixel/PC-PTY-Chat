@@ -21,6 +21,7 @@ import type {
   HttpNode,
   LoopNode,
   NestedWorkflowNode,
+  OrchestratorReviewNode,
   ScriptNode,
   SubagentNode,
   TriggerRule,
@@ -66,6 +67,7 @@ const TYPE_BODY_FIELDS = [
   'create-work-item',
   'update-work-item',
   'write-to-worktree',
+  'orchestrator-review',
 ] as const;
 
 const HTTP_METHODS: ReadonlySet<HttpNode['http']['method']> = new Set([
@@ -270,6 +272,24 @@ function validateNode(
       delete raw.agent;
     }
   }
+  // 4a.6 / D23: `human-review:` is the canonical name for the existing
+  // approval step kind. `approval:` is the back-compat alias preserved for
+  // the seed workflows + any user YAML in flight. Same mutually-exclusive
+  // rule as `agent:` / `subagent:`. Normalize to `approval:` so the
+  // discriminator + dispatcher see one field name.
+  if (raw['human-review'] !== undefined || raw.approval !== undefined) {
+    if (raw['human-review'] !== undefined && raw.approval !== undefined) {
+      errors.push({
+        path,
+        message: 'declare either `human-review:` or `approval:`, not both',
+      });
+      return undefined;
+    }
+    if (raw['human-review'] !== undefined && raw.approval === undefined) {
+      raw = { ...raw, approval: raw['human-review'] };
+      delete raw['human-review'];
+    }
+  }
 
   // id
   if (typeof raw.id !== 'string' || !raw.id) {
@@ -378,6 +398,8 @@ function validateNode(
       return validateUpdateWorkItemBody(raw, base, path, errors);
     case 'write-to-worktree':
       return validateWriteToWorktreeBody(raw, base, path, errors);
+    case 'orchestrator-review':
+      return validateOrchestratorReviewBody(raw, base, path, errors);
   }
 }
 
@@ -835,6 +857,62 @@ function validateUpdateWorkItemBody(
       ...(typeof body.body === 'string' ? { body: body.body } : {}),
       ...(typeof body.stage === 'string' ? { stage: body.stage } : {}),
       ...(isObj(body.fields) ? { fields: body.fields as Record<string, unknown> } : {}),
+    },
+  };
+}
+
+function validateOrchestratorReviewBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): OrchestratorReviewNode | undefined {
+  const body = raw['orchestrator-review'];
+  if (!isObj(body)) {
+    errors.push({ path: `${path}.orchestrator-review`, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  if (typeof body.prompt !== 'string' || !body.prompt) {
+    errors.push({
+      path: `${path}.orchestrator-review.prompt`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (body.artifact !== undefined && (typeof body.artifact !== 'string' || !body.artifact)) {
+    errors.push({
+      path: `${path}.orchestrator-review.artifact`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  let onRevise: OrchestratorReviewNode['orchestrator-review']['on_revise'] | undefined;
+  if (body.on_revise !== undefined) {
+    if (!isObj(body.on_revise)) {
+      errors.push({
+        path: `${path}.orchestrator-review.on_revise`,
+        message: 'must be an object if provided',
+      });
+      ok = false;
+    } else if (typeof body.on_revise.prompt !== 'string' || !body.on_revise.prompt) {
+      errors.push({
+        path: `${path}.orchestrator-review.on_revise.prompt`,
+        message: 'must be a non-empty string',
+      });
+      ok = false;
+    } else {
+      onRevise = { prompt: body.on_revise.prompt };
+    }
+  }
+  if (!ok) return undefined;
+  return {
+    ...base,
+    kind: 'orchestrator-review',
+    'orchestrator-review': {
+      prompt: body.prompt as string,
+      ...(typeof body.artifact === 'string' ? { artifact: body.artifact } : {}),
+      ...(onRevise ? { on_revise: onRevise } : {}),
     },
   };
 }

@@ -120,6 +120,25 @@ export interface LoopNode extends BaseNode {
   };
 }
 
+/** 4a.6 review step. Pauses the run + posts a channel event to the orchestrator
+ *  with the review prompt. Orchestrator decides (approve / reject / revise)
+ *  and calls `pc_complete_node({ workflowRunId, nodeId, output: { decision,
+ *  notes? } })`. `on_revise.prompt` is guidance shown to the orchestrator
+ *  about how to suggest revisions; the workflow author handles the revise
+ *  decision via downstream `trigger_rule` / `depends_on`. */
+export interface OrchestratorReviewNode extends BaseNode {
+  kind: 'orchestrator-review';
+  'orchestrator-review': {
+    /** What the orchestrator should review. Supports substitution. */
+    prompt: string;
+    /** Optional artifact reference (e.g. work-item id, attachment id) included
+     *  in the channel body. Supports substitution. */
+    artifact?: string;
+    /** Optional revise-path guidance shown to the orchestrator. */
+    on_revise?: { prompt: string };
+  };
+}
+
 /** 4a.5 routing step. Attach an inline payload to a work item via the
  *  AttachmentService. Provenance fields (source='agent', agentName,
  *  workflowRunId, nodeId) are filled by the runtime from run context — the
@@ -203,7 +222,8 @@ export type DagNode =
   | AttachToWorkItemNode
   | CreateWorkItemNode
   | UpdateWorkItemNode
-  | WriteToWorktreeNode;
+  | WriteToWorktreeNode
+  | OrchestratorReviewNode;
 
 /** Trigger conditions for a workflow. */
 export interface WorkflowTriggers {
