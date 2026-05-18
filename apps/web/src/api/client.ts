@@ -283,6 +283,27 @@ export const api = {
     }
     return data.workItem;
   },
+  softDeleteWorkItem: async (projectId: ULID, wiId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/work-items/${wiId}`, {
+      method: 'DELETE',
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete → ${res.status}`);
+    }
+  },
+
+  restoreWorkItem: (projectId: ULID, wiId: ULID) =>
+    postJson<{ ok: true; workItem: WorkItem }>(
+      `/api/projects/${projectId}/work-items/${wiId}/restore`,
+      {},
+    ).then((r) => r.workItem),
+
+  listArchivedWorkItems: (projectId: ULID) =>
+    getJson<{ items: WorkItem[]; nextCursor: ULID | null }>(
+      `/api/projects/${projectId}/work-items?includeArchived=1&limit=500`,
+    ).then((r) => r.items),
+
   replaceStages: async (
     projectId: ULID,
     stages: Stage[],

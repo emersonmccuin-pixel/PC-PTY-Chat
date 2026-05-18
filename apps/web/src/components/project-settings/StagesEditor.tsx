@@ -6,9 +6,9 @@
 // 409 STAGE_HAS_ITEMS + orphan counts → inline prompt picks a fallback stage,
 // then the editor retries with `force: true`.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api, StageHasItemsError, type Project, type Stage } from '@/api/client';
+import { api, StageHasItemsError, type Project, type Stage, type WorkItem } from '@/api/client';
 
 interface DraftStage {
   rowId: string;
@@ -239,6 +239,153 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
         {err && <span className="text-xs text-destructive">{err}</span>}
         {saved && <span className="text-xs text-success">{saved}</span>}
       </div>
+
+      <ArchivedSection projectId={project.id} stages={project.stages} />
+    </div>
+  );
+}
+
+function ArchivedSection({
+  projectId,
+  stages,
+}: {
+  projectId: string;
+  stages: Stage[];
+}) {
+  const [show, setShow] = useState(false);
+  const [items, setItems] = useState<WorkItem[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api
+      .listArchivedWorkItems(projectId)
+      .then(setItems)
+      .catch((e: unknown) => setErr((e as Error).message));
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!show) return;
+    setItems(null);
+    setErr(null);
+    load();
+  }, [show, load]);
+
+  const byStage = useMemo(() => {
+    const map = new Map<string, WorkItem[]>();
+    for (const s of stages) map.set(s.id, []);
+    map.set('__unknown__', []);
+    for (const wi of items ?? []) {
+      (map.get(wi.stageId) ?? map.get('__unknown__'))!.push(wi);
+    }
+    return map;
+  }, [items, stages]);
+
+  async function restore(wiId: string) {
+    if (restoring) return;
+    setRestoring(wiId);
+    setErr(null);
+    try {
+      await api.restoreWorkItem(projectId, wiId);
+      setItems((prev) => prev?.filter((i) => i.id !== wiId) ?? null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setRestoring(null);
+    }
+  }
+
+  return (
+    <div className="border-t border-border pt-3">
+      <button
+        onClick={() => setShow((s) => !s)}
+        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <span aria-hidden>{show ? '▾' : '▸'}</span>
+        <span>Show archived</span>
+        {items && <span>· {items.length}</span>}
+      </button>
+      {show && (
+        <div className="mt-2 space-y-3">
+          {err && <p className="text-xs text-destructive">{err}</p>}
+          {items === null ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : items.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No archived work items.</p>
+          ) : (
+            <div className="space-y-2">
+              {[...stages]
+                .sort((a, b) => a.order - b.order)
+                .map((stage) => {
+                  const bucket = byStage.get(stage.id) ?? [];
+                  if (bucket.length === 0) return null;
+                  return (
+                    <StageBucket
+                      key={stage.id}
+                      label={stage.name}
+                      items={bucket}
+                      restoringId={restoring}
+                      onRestore={restore}
+                    />
+                  );
+                })}
+              {(byStage.get('__unknown__')?.length ?? 0) > 0 && (
+                <StageBucket
+                  label="(orphaned)"
+                  items={byStage.get('__unknown__')!}
+                  restoringId={restoring}
+                  onRestore={restore}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StageBucket({
+  label,
+  items,
+  restoringId,
+  onRestore,
+}: {
+  label: string;
+  items: WorkItem[];
+  restoringId: string | null;
+  onRestore: (wiId: string) => void;
+}) {
+  return (
+    <div>
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label} · {items.length}
+      </div>
+      <ul className="mt-1 border border-border">
+        {items.map((wi) => (
+          <li
+            key={wi.id}
+            className="flex items-center gap-2 border-b border-border px-2 py-1.5 text-xs last:border-b-0"
+          >
+            <span className="line-clamp-1 min-w-0 flex-1 break-words text-foreground">
+              {wi.title}
+            </span>
+            <span
+              className="shrink-0 text-[11px] text-muted-foreground"
+              title={wi.deletedAt ? new Date(wi.deletedAt).toLocaleString() : ''}
+            >
+              {wi.deletedAt ? new Date(wi.deletedAt).toLocaleDateString() : ''}
+            </span>
+            <button
+              onClick={() => onRestore(wi.id)}
+              disabled={restoringId === wi.id}
+              className="shrink-0 border border-border px-2 py-0.5 hover:bg-muted disabled:opacity-50"
+            >
+              {restoringId === wi.id ? 'Restoring…' : 'Restore'}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

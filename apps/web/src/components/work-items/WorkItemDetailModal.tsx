@@ -228,6 +228,23 @@ export function WorkItemDetailModal({
     setError(null);
   }
 
+  async function softDelete() {
+    if (busy) return;
+    const ok = window.confirm(
+      `Archive "${baseline.title}"?\n\nThe item is hidden but can be restored from Project settings → Stages → Show archived.`,
+    );
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.softDeleteWorkItem(project.id, baseline.id);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
   const parent = baseline.parentId
     ? items.find((i) => i.id === baseline.parentId) ?? null
     : null;
@@ -358,24 +375,34 @@ export function WorkItemDetailModal({
             />
           )}
           {tab === 'activity' && (
-            <StubPanel
-              label="Activity"
-              note="events.jsonl-derived timeline lands in phase 2i."
+            <ActivityTab
+              projectId={project.id}
+              workItem={baseline}
+              events={events}
+              stageNameById={stageNameById}
             />
           )}
         </div>
 
         <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <button
+            onClick={() => void softDelete()}
+            disabled={busy}
+            className="mr-auto border border-destructive/40 bg-background px-3 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            title="Archive this work item"
+          >
+            Archive
+          </button>
           {error && (
             <span
-              className="mr-auto truncate text-xs text-destructive"
+              className="mr-2 truncate text-xs text-destructive"
               title={error}
             >
               {error}
             </span>
           )}
           {!error && dirty && (
-            <span className="mr-auto text-xs text-muted-foreground">
+            <span className="mr-2 text-xs text-muted-foreground">
               unsaved changes
             </span>
           )}
@@ -906,11 +933,142 @@ function AttachmentBody({ attachment }: { attachment: Attachment }) {
   );
 }
 
-function StubPanel({ label, note }: { label: string; note: string }) {
+interface ActivityRow {
+  ts: number;
+  actor: string;
+  text: string;
+}
+
+function ActivityTab({
+  projectId,
+  workItem,
+  events,
+  stageNameById,
+}: {
+  projectId: string;
+  workItem: WorkItem;
+  events: WsEnvelope[];
+  stageNameById: Map<string, string>;
+}) {
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  const refetchAttachments = () => {
+    api
+      .listAttachments(projectId, workItem.id)
+      .then(setAttachments)
+      .catch((e) => setErr((e as Error).message));
+  };
+
+  useEffect(() => {
+    setAttachments([]);
+    setErr(null);
+    refetchAttachments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, workItem.id]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (!last) return;
+    if (last.type === 'attachment-changed' && last.workItemId === workItem.id) {
+      refetchAttachments();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, workItem.id]);
+
+  const rows = useMemo<ActivityRow[]>(() => {
+    const out: ActivityRow[] = [];
+    out.push({
+      ts: workItem.createdAt,
+      actor: 'system',
+      text: `Created in stage "${stageNameById.get(workItem.stageId) ?? workItem.stageId}"`,
+    });
+    if (workItem.updatedAt > workItem.createdAt) {
+      out.push({
+        ts: workItem.updatedAt,
+        actor: 'edit',
+        text: `Last updated · v${workItem.version} · stage "${stageNameById.get(workItem.stageId) ?? workItem.stageId}"`,
+      });
+    }
+    if (workItem.deletedAt) {
+      out.push({
+        ts: workItem.deletedAt,
+        actor: 'archive',
+        text: 'Archived',
+      });
+    }
+    for (const a of attachments) {
+      out.push({
+        ts: a.createdAt,
+        actor: a.runId
+          ? `run ${a.runId.slice(-8)}`
+          : a.createdBySessionId
+            ? `session ${a.createdBySessionId.slice(-8)}`
+            : 'chat',
+        text: `Attached ${a.name} (${a.kind})`,
+      });
+    }
+    // Live broadcasts captured this session that reference this work item.
+    for (const env of events) {
+      if (env.type === 'work-items-changed') {
+        const wi = (env as { workItem?: WorkItem }).workItem;
+        if (wi?.id === workItem.id) {
+          const change = (env as { change?: string }).change ?? 'updated';
+          if (change === 'created') continue; // already covered by createdAt row
+          out.push({
+            ts: wi.updatedAt,
+            actor: 'edit',
+            text: `${change} · v${wi.version}`,
+          });
+        }
+      }
+    }
+    // Newest first; dedupe by (ts + text).
+    out.sort((a, b) => b.ts - a.ts);
+    const seen = new Set<string>();
+    return out.filter((r) => {
+      const k = `${r.ts}:${r.text}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }, [workItem, attachments, events, stageNameById]);
+
+  if (err) {
+    return (
+      <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        {err}
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+        No activity yet.
+      </div>
+    );
+  }
   return (
-    <div className="flex flex-col gap-2 text-muted-foreground">
-      <div className="text-xs uppercase tracking-wider text-foreground">{label}</div>
-      <p className="text-sm">{note}</p>
-    </div>
+    <ul className="flex flex-col">
+      {rows.map((row, idx) => (
+        <li
+          key={`${row.ts}-${idx}`}
+          className="flex items-start gap-3 border-b border-border px-1 py-1.5 text-sm last:border-b-0"
+        >
+          <span
+            className="w-20 shrink-0 text-[11px] text-muted-foreground"
+            title={new Date(row.ts).toLocaleString()}
+          >
+            {formatRelative(row.ts)}
+          </span>
+          <span className="w-24 shrink-0 truncate text-[11px] uppercase tracking-wider text-muted-foreground">
+            {row.actor}
+          </span>
+          <span className="min-w-0 flex-1 break-words text-foreground">{row.text}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
+
