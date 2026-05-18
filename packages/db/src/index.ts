@@ -20,14 +20,33 @@ export type {
 
 export {
   applyRunOutcome,
+  countWorkItemsInStage,
   createWorkItem,
   getWorkItem,
+  getWorkItemIncludingArchived,
+  listArchivedWorkItems,
   listWorkItems,
   moveWorkItemStage,
+  patchWorkItem,
+  reassignStage,
+  restoreWorkItem,
+  softDeleteWorkItem,
   updateWorkItemFields,
   updateWorkItemStatus,
+  WorkItemVersionConflictError,
 } from './repos/work-items.ts';
-export type { CreateWorkItemInput } from './repos/work-items.ts';
+export type { CreateWorkItemInput, PatchWorkItemInput } from './repos/work-items.ts';
+
+export {
+  createAttachment,
+  deleteAttachment,
+  getAttachment,
+  listAttachmentsForWorkItem,
+} from './repos/attachments.ts';
+export type { CreateAttachmentInput } from './repos/attachments.ts';
+
+export { listFieldSchemas, replaceFieldSchemas } from './repos/field-schemas.ts';
+export type { ReplaceFieldSchemasInput } from './repos/field-schemas.ts';
 
 export {
   createRun,

@@ -1,8 +1,21 @@
-import { and, asc, eq, isNull, max } from 'drizzle-orm';
+import { and, asc, eq, isNull, isNotNull, max } from 'drizzle-orm';
 import type { ULID, WorkItem, WorkItemHistoryEntry, WorkItemStatus } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { workItems } from '../schema.ts';
+
+/** Optimistic-concurrency conflict. Server returns 409 + current row when this throws. */
+export class WorkItemVersionConflictError extends Error {
+  constructor(
+    public readonly id: ULID,
+    public readonly expected: number,
+    public readonly actual: number,
+    public readonly current: WorkItem,
+  ) {
+    super(`work item ${id} version conflict: expected ${expected}, got ${actual}`);
+    this.name = 'WorkItemVersionConflictError';
+  }
+}
 
 interface WorkItemRow {
   id: ULID;
@@ -182,6 +195,159 @@ export function updateWorkItemStatus(
   };
   getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
   return toDomain(updated);
+}
+
+export interface PatchWorkItemInput {
+  /** Optimistic-concurrency check. Mismatch throws WorkItemVersionConflictError. */
+  expectedVersion: number;
+  title?: string;
+  body?: string;
+  stageId?: string;
+  parentId?: ULID | null;
+  position?: number;
+  /** Replaces the fields map wholesale. Callers wanting merge semantics
+   *  should read first + spread. (validateFields is run at the service layer.) */
+  fields?: Record<string, unknown>;
+}
+
+/** Version-checked patch. Used by the WorkItemService for non-workflow mutations
+ *  (UI edits via the detail modal). Returns the updated WorkItem; throws
+ *  WorkItemVersionConflictError on version mismatch; returns null if the id
+ *  isn't found or is soft-deleted. */
+export function patchWorkItem(id: ULID, input: PatchWorkItemInput): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  if (row.version !== input.expectedVersion) {
+    throw new WorkItemVersionConflictError(id, input.expectedVersion, row.version, toDomain(row));
+  }
+  const updated: WorkItemRow = {
+    ...row,
+    title: input.title ?? row.title,
+    body: input.body ?? row.body,
+    stageId: input.stageId ?? row.stageId,
+    parentId: input.parentId === undefined ? row.parentId : input.parentId,
+    position: input.position ?? row.position,
+    fields: input.fields ?? row.fields,
+    version: row.version + 1,
+    updatedAt: Date.now(),
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}
+
+/** Soft-delete: set deletedAt + status='archived'. listWorkItems / getWorkItem
+ *  filter on `deletedAt IS NULL`, so the row stops appearing. Use
+ *  `getWorkItemIncludingArchived` / `listArchivedWorkItems` to see them. */
+export function softDeleteWorkItem(id: ULID): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  const now = Date.now();
+  const updated: WorkItemRow = {
+    ...row,
+    status: 'archived',
+    statusReason: null,
+    version: row.version + 1,
+    updatedAt: now,
+    deletedAt: now,
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}
+
+/** Restore a soft-deleted item. Resets status to 'pending' and clears deletedAt.
+ *  Returns null if the id isn't found OR isn't currently archived. */
+export function restoreWorkItem(id: ULID): WorkItem | null {
+  const row = getDb()
+    .select()
+    .from(workItems)
+    .where(and(eq(workItems.id, id), isNotNull(workItems.deletedAt)))
+    .get() as WorkItemRow | undefined;
+  if (!row) return null;
+  const updated: WorkItemRow = {
+    ...row,
+    status: 'pending',
+    statusReason: null,
+    version: row.version + 1,
+    updatedAt: Date.now(),
+    deletedAt: null,
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}
+
+/** Read a work item including soft-deleted rows. Used by restore + activity views. */
+export function getWorkItemIncludingArchived(id: ULID): WorkItem | null {
+  const row = getDb()
+    .select()
+    .from(workItems)
+    .where(eq(workItems.id, id))
+    .get() as WorkItemRow | undefined;
+  return row ? toDomain(row) : null;
+}
+
+/** List archived items for a project. Used by the "Show archived" toggle. */
+export function listArchivedWorkItems(projectId: ULID): WorkItem[] {
+  const rows = getDb()
+    .select()
+    .from(workItems)
+    .where(and(eq(workItems.projectId, projectId), isNotNull(workItems.deletedAt)))
+    .orderBy(asc(workItems.position), asc(workItems.createdAt))
+    .all() as WorkItemRow[];
+  return rows.map(toDomain);
+}
+
+/** Count items in a given stage (for stage-delete orphan check). */
+export function countWorkItemsInStage(projectId: ULID, stageId: string): number {
+  const items = getDb()
+    .select({ id: workItems.id })
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.projectId, projectId),
+        eq(workItems.stageId, stageId),
+        isNull(workItems.deletedAt),
+      ),
+    )
+    .all();
+  return items.length;
+}
+
+/** Bulk-move items from one stage to another. Used when a stage is deleted
+ *  with the `force` + `fallbackStageId` flags. Items keep their position
+ *  order within the new stage, but positions are renumbered to slot in
+ *  after any existing items in the fallback. */
+export function reassignStage(
+  projectId: ULID,
+  fromStage: string,
+  toStage: string,
+): number {
+  const rows = getDb()
+    .select()
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.projectId, projectId),
+        eq(workItems.stageId, fromStage),
+        isNull(workItems.deletedAt),
+      ),
+    )
+    .orderBy(asc(workItems.position), asc(workItems.createdAt))
+    .all() as WorkItemRow[];
+  if (rows.length === 0) return 0;
+  let basePosition = nextPosition(projectId, toStage, null);
+  const now = Date.now();
+  for (const row of rows) {
+    const updated: WorkItemRow = {
+      ...row,
+      stageId: toStage,
+      position: basePosition,
+      version: row.version + 1,
+      updatedAt: now,
+    };
+    getDb().update(workItems).set(updated).where(eq(workItems.id, row.id)).run();
+    basePosition += 1;
+  }
+  return rows.length;
 }
 
 /**
