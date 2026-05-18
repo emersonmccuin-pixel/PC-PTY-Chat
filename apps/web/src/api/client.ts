@@ -183,10 +183,15 @@ export const api = {
     getJson<{ ok: true; workItem: WorkItem }>(
       `/api/projects/${projectId}/work-items/${wiId}`,
     ).then((r) => r.workItem),
-  createWorkItem: (projectId: ULID, title: string, stageId: string, body?: string) =>
+  createWorkItem: (
+    projectId: ULID,
+    title: string,
+    stageId: string,
+    opts: { body?: string; parentId?: ULID | null } = {},
+  ) =>
     postJson<{ ok: true; workItem: WorkItem }>(
       `/api/projects/${projectId}/work-items/create`,
-      { title, stageId, body },
+      { title, stageId, ...opts },
     ),
   /** Version-checked PATCH. Throws WorkItemConflictError on 409 (carrying the
    *  current row so the caller can refetch + re-render). */

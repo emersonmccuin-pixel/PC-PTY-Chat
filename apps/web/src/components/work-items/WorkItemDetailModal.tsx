@@ -30,6 +30,10 @@ interface WorkItemDetailModalProps {
   items: WorkItem[];
   onClose: () => void;
   onSwitchItem: (id: string) => void;
+  /** Optimistic insert into the parent's items list. Used by "+ New child" so
+   *  switching to the freshly-created child doesn't unmount the modal in the
+   *  gap between create-response and WS-driven refetch. */
+  onItemCreated: (wi: WorkItem) => void;
 }
 
 interface Draft {
@@ -56,6 +60,7 @@ export function WorkItemDetailModal({
   items,
   onClose,
   onSwitchItem,
+  onItemCreated,
 }: WorkItemDetailModalProps) {
   const [tab, setTab] = useState<TabId>('overview');
   const [baseline, setBaseline] = useState<WorkItem>(workItem);
@@ -157,6 +162,18 @@ export function WorkItemDetailModal({
     () => [...project.stages].sort((a, b) => a.order - b.order),
     [project.stages],
   );
+  const children = useMemo(
+    () =>
+      items
+        .filter((i) => i.parentId === baseline.id)
+        .sort((a, b) => a.position - b.position),
+    [items, baseline.id],
+  );
+  const stageNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of project.stages) m.set(s.id, s.name);
+    return m;
+  }, [project.stages]);
 
   return (
     <div
@@ -201,13 +218,18 @@ export function WorkItemDetailModal({
               key={t.id}
               onClick={() => setTab(t.id)}
               className={
-                'border-b-2 px-3 py-1.5 text-sm transition-colors ' +
+                'flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-sm transition-colors ' +
                 (tab === t.id
                   ? 'border-primary text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground')
               }
             >
-              {t.label}
+              <span>{t.label}</span>
+              {t.id === 'children' && children.length > 0 && (
+                <span className="border border-border px-1 text-[10px] font-normal text-muted-foreground">
+                  {children.length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -241,9 +263,16 @@ export function WorkItemDetailModal({
             />
           )}
           {tab === 'children' && (
-            <StubPanel
-              label="Children"
-              note="Child list + '+ New child' form lands in phase 2e."
+            <ChildrenTab
+              projectId={project.id}
+              parent={baseline}
+              children={children}
+              stageNameById={stageNameById}
+              onSwitch={attemptSwitch}
+              onCreated={(child) => {
+                onItemCreated(child);
+                onSwitchItem(child.id);
+              }}
             />
           )}
           {tab === 'attachments' && (
@@ -478,6 +507,123 @@ function formatRelative(ts: number): string {
   else if (abs < week) value = `${Math.round(abs / day)}d`;
   else value = `${Math.round(abs / week)}w`;
   return future ? `in ${value}` : `${value} ago`;
+}
+
+function ChildrenTab({
+  projectId,
+  parent,
+  children,
+  stageNameById,
+  onSwitch,
+  onCreated,
+}: {
+  projectId: string;
+  parent: WorkItem;
+  children: WorkItem[];
+  stageNameById: Map<string, string>;
+  onSwitch: (id: string) => void;
+  onCreated: (child: WorkItem) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    const trimmed = title.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await api.createWorkItem(projectId, trimmed, parent.stageId, {
+        parentId: parent.id,
+      });
+      setTitle('');
+      setCreating(false);
+      onCreated(r.workItem);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {children.length === 0 ? (
+        <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+          No children yet.
+        </div>
+      ) : (
+        <div className="border border-border">
+          {children.map((child) => (
+            <button
+              key={child.id}
+              onClick={() => onSwitch(child.id)}
+              className="flex w-full items-center gap-3 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-muted"
+            >
+              <span className="line-clamp-1 min-w-0 flex-1 break-words text-sm text-foreground">
+                {child.title}
+              </span>
+              <span className="shrink-0 text-[11px] uppercase tracking-wider text-muted-foreground">
+                {stageNameById.get(child.stageId) ?? child.stageId}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {creating ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+          className="flex flex-col gap-2 border border-border p-2"
+        >
+          <input
+            autoFocus
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Child title"
+            className="border border-border bg-background px-2 py-1 text-sm"
+          />
+          {err && <div className="text-xs text-destructive">{err}</div>}
+          <div className="flex gap-1">
+            <button
+              type="submit"
+              disabled={busy || !title.trim()}
+              className="bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {busy ? 'Creating…' : 'Create'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCreating(false);
+                setTitle('');
+                setErr(null);
+              }}
+              className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Defaults to parent's stage ({stageNameById.get(parent.stageId) ?? parent.stageId}).
+          </p>
+        </form>
+      ) : (
+        <button
+          onClick={() => setCreating(true)}
+          className="self-start px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          + New child
+        </button>
+      )}
+    </div>
+  );
 }
 
 function StubPanel({ label, note }: { label: string; note: string }) {

@@ -197,6 +197,9 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
           items={items}
           onClose={() => setOpenItemId(null)}
           onSwitchItem={(id) => setOpenItemId(id)}
+          onItemCreated={(wi) =>
+            setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]))
+          }
         />
       )}
 
@@ -472,7 +475,7 @@ function AddCardForm({
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      const r = await api.createWorkItem(projectId, trimmed, stageId);
+      const r = await api.createWorkItem(projectId, trimmed, stageId, {});
       onCreated(r.workItem);
       setTitle('');
       setOpen(false);

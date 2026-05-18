@@ -709,20 +709,30 @@ app.post('/api/projects/:projectId/work-items/update', async (c) => {
   }
 });
 
-/** Legacy create endpoint. Delegates through workflowRuntime.createWorkItem,
- *  which is now a shim over WorkItemService.create — picks up stage assert +
- *  field validation automatically. */
+/** Create endpoint. Routes directly through WorkItemService so the UI can pass
+ *  parentId for child creation. Workflow-runtime's createWorkItem shim still
+ *  delegates to the same service for internal callers (no parentId there). */
 app.post('/api/projects/:projectId/work-items/create', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ title?: string; stageId?: string; body?: string }>();
+  const body = await c.req.json<{
+    title?: string;
+    stageId?: string;
+    body?: string;
+    parentId?: string | null;
+  }>();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
   try {
     // Service broadcasts 'created' internally; the route does not re-broadcast.
-    const workItem = runtime.workflowRuntime().createWorkItem(title, stageId, body.body);
+    const workItem = runtime.workItemService().create({
+      title,
+      stageId,
+      ...(body.body !== undefined ? { body: body.body } : {}),
+      ...(body.parentId !== undefined ? { parentId: body.parentId as ULID | null } : {}),
+    });
     return c.json({ ok: true, workItem });
   } catch (err) {
     if (err instanceof FieldValidationError) {
