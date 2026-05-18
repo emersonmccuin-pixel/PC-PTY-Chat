@@ -23,7 +23,7 @@ const RESEARCHER_MD = resolve(
   '..',
   '..',
   'templates',
-  '.claude',
+  '.project-companion',
   'agents',
   'researcher.md',
 );
@@ -53,7 +53,11 @@ test('round-trip: researcher.md parsed shape exposes expected fields', () => {
   assert.ok(Array.isArray(parsed.def.tools));
   assert.ok(parsed.def.tools!.includes('Read'));
   assert.ok(parsed.def.tools!.includes('mcp__pc-rig__pc_complete_node'));
-  assert.equal(parsed.def.model, 'inherit');
+  // Section 3 D2 default; see the build-queue table in buildout/subagents.md.
+  assert.equal(parsed.def.model, 'sonnet');
+  assert.equal(parsed.def.effort, 'medium');
+  assert.equal(parsed.def.maxTurns, 20);
+  assert.equal(parsed.def.color, 'cyan');
 });
 
 // --- round-trip with edits -------------------------------------------------

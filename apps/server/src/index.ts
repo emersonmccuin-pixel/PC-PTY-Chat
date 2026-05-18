@@ -46,8 +46,8 @@ import {
   writeMemoryFile,
 } from './services/memory-files.ts';
 import {
-  copyLibraryAgentToProject,
-  listProjectAgents,
+  deleteProjectAgent,
+  listResolvedAgents,
   readProjectAgent,
   writeProjectAgent,
 } from './services/project-agents.ts';
@@ -70,9 +70,14 @@ const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
 runMigrations();
 
-// Agent library — first-run seed from templates/.claude/agents/ into
-// ~/.project-companion/agents/. Per-project agent copies clone from here.
-const agentLibrary = new AgentLibrary(defaultLibraryDir(), resolve(TEMPLATES, '.claude', 'agents'));
+// Agent library — first-run seed from templates/.project-companion/agents/
+// into ~/.project-companion/agents/. Globals surface in every project's
+// agent list via listResolvedAgents; per-project files in `.claude/agents/`
+// shadow them by name. See Section 3 D2.
+const agentLibrary = new AgentLibrary(
+  defaultLibraryDir(),
+  resolve(TEMPLATES, '.project-companion', 'agents'),
+);
 agentLibrary.bootstrap();
 
 // Per-project WS subscriber map. P14 tags broadcasts with `projectId` so the UI
@@ -115,7 +120,7 @@ const projectScaffold = new ProjectScaffold({
   serverPort: PORT,
   channelPort: CHANNEL_PORT,
 });
-const projectCreate = new ProjectCreate(projectScaffold, agentLibrary, projectRegistry);
+const projectCreate = new ProjectCreate(projectScaffold, projectRegistry);
 
 // Multiplexed channel server on :8788. Per-project channel-stdio children
 // register via WS; external webhooks POST /channel/<slug>/<source>; we route
@@ -472,37 +477,22 @@ app.post('/api/agents', async (c) => {
   }
 });
 
-/** Per-project agent copies at `<folder>/.claude/agents/`. */
+/** Resolved per-project agent view per Section 3 D2: globals (live from the
+ *  library, no per-project file), overrides (per-project file shadowing a
+ *  global), and project-only (per-project file with no matching global).
+ *  Replaces the legacy `{ agents }` shape. */
 app.get('/api/projects/:projectId/agents', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ agents: listProjectAgents(runtime.folderPath) });
+  const resolved = listResolvedAgents(agentLibrary, runtime.folderPath);
+  return c.json({ ok: true, ...resolved });
 });
 
-/** Add an agent from the library into the project. Body: `{ name }`. 409 if
- *  the project already has a copy with that name. */
-app.post('/api/projects/:projectId/agents', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ name?: string }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-  try {
-    const agent = copyLibraryAgentToProject(agentLibrary, runtime.folderPath, name);
-    return c.json({ ok: true, agent }, 201);
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (/^library agent not found/.test(msg)) return c.json({ ok: false, error: msg }, 404);
-    if (/^project already has an agent/.test(msg)) return c.json({ ok: false, error: msg }, 409);
-    if (/^invalid agent name|^agent name required/.test(msg)) return c.json({ ok: false, error: msg }, 400);
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-/** Edit a project's agent copy. Library version is untouched. Body: `{ body }`.
- *  PATCH per the design spec — semantically a full-body replace. */
+/** Edit an agent in the context of a project. If the name matches a global,
+ *  this writes the per-project override file; the global stays untouched.
+ *  If not, it edits an existing project-only agent. Body: `{ body }`.
+ *  PATCH semantically a full-body replace. */
 app.patch('/api/projects/:projectId/agents/:name', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -512,8 +502,11 @@ app.patch('/api/projects/:projectId/agents/:name', async (c) => {
   if (typeof body.body !== 'string') {
     return c.json({ ok: false, error: 'body required' }, 400);
   }
-  if (!readProjectAgent(runtime.folderPath, name)) {
-    return c.json({ ok: false, error: `unknown project agent: ${name}` }, 404);
+  // Must match either an existing project file or a global by this name.
+  const isProjectFile = readProjectAgent(runtime.folderPath, name) !== null;
+  const isGlobal = agentLibrary.read(name) !== null;
+  if (!isProjectFile && !isGlobal) {
+    return c.json({ ok: false, error: `unknown agent: ${name}` }, 404);
   }
   try {
     const agent = writeProjectAgent(runtime.folderPath, name, body.body);
@@ -522,6 +515,36 @@ app.patch('/api/projects/:projectId/agents/:name', async (c) => {
     const msg = (err as Error).message;
     const is400 = /^invalid agent name|^agent name required/.test(msg);
     return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+/** Delete a project agent file. Two meanings depending on whether the name
+ *  matches a global:
+ *
+ *  - Override of a global → "reset to global". The global stays in the
+ *    library and surfaces unmodified on the next list call.
+ *  - Project-only agent → fully removes the agent from the project.
+ *
+ *  Response includes `kind: 'reset-to-global' | 'project-only'` so the UI
+ *  can phrase the confirmation correctly. */
+app.delete('/api/projects/:projectId/agents/:name', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const name = c.req.param('name');
+  const wasGlobal = agentLibrary.read(name) !== null;
+  try {
+    deleteProjectAgent(runtime.folderPath, name);
+    return c.json({ ok: true, kind: wasGlobal ? 'reset-to-global' : 'project-only' });
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (/^unknown project agent/.test(msg)) {
+      return c.json({ ok: false, error: msg }, 404);
+    }
+    if (/^invalid agent name|^agent name required/.test(msg)) {
+      return c.json({ ok: false, error: msg }, 400);
+    }
+    return c.json({ ok: false, error: msg }, 500);
   }
 });
 

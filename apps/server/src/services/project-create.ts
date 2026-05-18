@@ -10,25 +10,30 @@
 //   5. If `init-in-place` AND the folder had pre-existing files: commit them
 //      first as `Initial import` so the user can `git diff` the next commit
 //      to see exactly what PC added.
-//   6. Scaffold (templates rendered + agents copied from the user's library).
+//   6. Scaffold (templates rendered into the folder).
 //   7. Commit the scaffold as `Initial commit` (fresh folder) or
 //      `Add Project Companion scaffold` (in-place w/ pre-existing files).
 //   8. Insert the DB row with the pre-minted id.
 //   9. Register the runtime in the ProjectRegistry.
+//
+// Per Section 3 D2: the 5 global agents are NOT physically copied into the
+// project's `.claude/agents/` at create time. They surface live from the
+// library via `listResolvedAgents`. The per-project folder is created empty
+// and only fills as the user edits a global (creating an override) or
+// authors a new project-only agent.
 //
 // Failure modes left uncovered for the first cut: partial scaffolds when git
 // commit fails midway. The folder is left as-is; user can `rm -rf .git` and
 // retry. Atomic-rollback is a followup once the create flow has tests.
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { Project, Stage } from '@pc/domain';
 import { createProject, getProjectBySlug, newId } from '@pc/db';
 
-import type { AgentLibrary } from './agent-library.ts';
 import type { ProjectRegistry } from './project-registry.ts';
 import type { ProjectScaffold, ProjectScaffoldTarget } from './project-scaffold.ts';
 
@@ -52,7 +57,6 @@ const DEFAULT_STAGES: Stage[] = [
 export class ProjectCreate {
   constructor(
     private readonly scaffold: ProjectScaffold,
-    private readonly agentLibrary: AgentLibrary,
     private readonly registry: ProjectRegistry,
   ) {}
 
@@ -94,7 +98,6 @@ export class ProjectCreate {
       projectName: name,
     };
     this.scaffold.writeAll(target);
-    this.copyAgentsFromLibrary(folderPath);
 
     await exec('git', ['add', '.'], { cwd: folderPath });
     const scaffoldMsg = hadExistingFiles ? 'Add Project Companion scaffold' : 'Initial commit';
@@ -124,15 +127,6 @@ export class ProjectCreate {
     return candidate;
   }
 
-  /** Drop every library agent into `<folder>/.claude/agents/`. Default = all,
-   *  per docs/design/multi-tenancy.md §5. Per-project edits diverge from the library. */
-  private copyAgentsFromLibrary(folderPath: string): void {
-    const destDir = resolve(folderPath, '.claude', 'agents');
-    mkdirSync(destDir, { recursive: true });
-    for (const agent of this.agentLibrary.list()) {
-      writeFileSync(resolve(destDir, `${agent.name}.md`), agent.body, 'utf-8');
-    }
-  }
 }
 
 function slugify(name: string): string {

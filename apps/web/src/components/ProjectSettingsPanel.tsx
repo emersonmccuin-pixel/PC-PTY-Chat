@@ -9,9 +9,10 @@
 // matrix) and depends on shapes that don't exist on the trunk yet. This is
 // the minimal panel matching the trunk's endpoints.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { api, type AgentEntry, type Project } from '@/api/client';
+import { api, type AgentEntry, type Project, type ResolvedAgent } from '@/api/client';
+import { useProjectSettingsFocus } from '@/store/project-settings-focus';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
 import { StagesEditor } from './project-settings/StagesEditor';
 
@@ -26,6 +27,17 @@ export function ProjectSettingsPanel({
   onProjectUpdated,
   onProjectDeleted,
 }: ProjectSettingsPanelProps) {
+  const agentsRef = useRef<HTMLDivElement | null>(null);
+  const focusTarget = useProjectSettingsFocus((s) => s.target);
+  const clearFocus = useProjectSettingsFocus((s) => s.setTarget);
+
+  useEffect(() => {
+    if (focusTarget === 'agents' && agentsRef.current) {
+      agentsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      clearFocus(null);
+    }
+  }, [focusTarget, clearFocus]);
+
   return (
     <div className="h-full overflow-y-auto bg-background">
       <div className="mx-auto max-w-2xl space-y-6 p-6 text-sm">
@@ -48,9 +60,11 @@ export function ProjectSettingsPanel({
           <FieldSchemasEditor projectId={project.id} />
         </Section>
 
-        <Section title="Agents">
-          <AgentsSection projectId={project.id} />
-        </Section>
+        <div ref={agentsRef}>
+          <Section title="Agents">
+            <AgentsSection projectId={project.id} />
+          </Section>
+        </div>
 
         <Section title="Danger zone">
           <DangerZone project={project} onDeleted={onProjectDeleted} />
@@ -161,192 +175,197 @@ function ProjectInfoForm({
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
+//
+// Section 3 D2 model: globals always appear in every project. Editing a
+// global creates a per-project override. Project-only agents are authored
+// just for this project (form-editor authoring lands in 3d).
 
 function AgentsSection({ projectId }: { projectId: string }) {
-  const [library, setLibrary] = useState<AgentEntry[] | null>(null);
-  const [projectAgents, setProjectAgents] = useState<AgentEntry[] | null>(null);
+  const [list, setList] = useState<{
+    globals: ResolvedAgent[];
+    overrides: ResolvedAgent[];
+    projectOnly: ResolvedAgent[];
+  } | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
-  const [addBusy, setAddBusy] = useState(false);
-  const [addErr, setAddErr] = useState<string | null>(null);
-  const [pickerName, setPickerName] = useState('');
+
+  const refresh = () => {
+    setLoadErr(null);
+    return api
+      .listProjectAgents(projectId)
+      .then(setList)
+      .catch((e: unknown) => setLoadErr((e as Error).message));
+  };
 
   useEffect(() => {
-    setLibrary(null);
-    setProjectAgents(null);
-    setLoadErr(null);
+    setList(null);
     setEditingName(null);
-    setPickerName('');
-    Promise.all([api.listAgents(), api.listProjectAgents(projectId)])
-      .then(([lib, pa]) => {
-        setLibrary(lib);
-        setProjectAgents(pa);
-      })
-      .catch((e: unknown) => setLoadErr((e as Error).message));
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  async function addFromLibrary() {
-    if (!pickerName || addBusy) return;
-    setAddBusy(true);
-    setAddErr(null);
+  async function resetToGlobal(name: string) {
+    if (
+      !window.confirm(
+        `Reset "${name}" to the global version? Your local customizations will be deleted.`,
+      )
+    ) {
+      return;
+    }
     try {
-      const added = await api.addAgentFromLibrary(projectId, pickerName);
-      setProjectAgents((prev) => (prev ? [...prev, added].sort(byName) : [added]));
-      setPickerName('');
+      await api.deleteProjectAgent(projectId, name);
+      setEditingName(null);
+      await refresh();
     } catch (e) {
-      setAddErr((e as Error).message);
-    } finally {
-      setAddBusy(false);
+      setLoadErr((e as Error).message);
     }
   }
 
   if (loadErr) return <p className="text-xs text-destructive">{loadErr}</p>;
-  if (!library || !projectAgents) {
-    return <p className="text-xs text-muted-foreground">Loading…</p>;
-  }
+  if (!list) return <p className="text-xs text-muted-foreground">Loading…</p>;
 
-  const projectNames = new Set(projectAgents.map((a) => a.name));
-  const addable = library.filter((a) => !projectNames.has(a.name));
+  const sections: Array<{
+    title: string;
+    hint: string;
+    items: ResolvedAgent[];
+  }> = [
+    {
+      title: 'Customized globals',
+      hint: 'Project overrides of a global. Reset to drop the override and pick the global up again.',
+      items: list.overrides,
+    },
+    {
+      title: 'Project agents',
+      hint: 'Agents authored just for this project. Edit them like any global.',
+      items: list.projectOnly,
+    },
+    {
+      title: 'Globals',
+      hint: 'Shipped with PC and available in every project. Editing one creates a project override.',
+      items: list.globals,
+    },
+  ];
 
   return (
-    <div className="space-y-3">
-      {projectAgents.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          No agents in this project yet. Add one from the library below.
-        </p>
-      )}
-      <ul className="space-y-2">
-        {projectAgents.map((agent) => (
-          <li key={agent.name} className="border border-border bg-card">
-            {editingName === agent.name ? (
-              <AgentEditor
-                projectId={projectId}
-                agent={agent}
-                libraryHas={library.some((l) => l.name === agent.name)}
-                onClose={() => setEditingName(null)}
-                onAgentSaved={(next) =>
-                  setProjectAgents((prev) =>
-                    prev ? prev.map((a) => (a.name === next.name ? next : a)) : prev,
-                  )
-                }
-                onLibrarySaved={(next) =>
-                  setLibrary((prev) => (prev ? [...prev, next].sort(byName) : [next]))
-                }
-              />
-            ) : (
-              <div className="flex items-center justify-between gap-3 px-3 py-2">
-                <span className="truncate font-mono text-xs text-foreground">{agent.name}</span>
-                <button
-                  onClick={() => setEditingName(agent.name)}
-                  className="border border-border px-2 py-1 text-xs hover:bg-muted"
-                >
-                  Edit
-                </button>
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-
-      <div className="border-t border-border pt-3">
-        <div className="mb-1 text-xs text-muted-foreground">Add from library</div>
-        {addable.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            All library agents are already in this project.
-          </p>
-        ) : (
-          <div className="flex items-center gap-2">
-            <select
-              value={pickerName}
-              onChange={(e) => setPickerName(e.target.value)}
-              className="flex-1 border border-border bg-background px-2 py-1 text-xs"
-            >
-              <option value="">Select an agent…</option>
-              {addable.map((a) => (
-                <option key={a.name} value={a.name}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={addFromLibrary}
-              disabled={!pickerName || addBusy}
-              className="bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {addBusy ? 'Adding…' : 'Add'}
-            </button>
+    <div className="space-y-4">
+      {sections.map((section) => (
+        <div key={section.title}>
+          <div className="mb-1 flex items-baseline justify-between">
+            <span className="text-xs font-medium uppercase tracking-wide text-foreground">
+              {section.title}
+            </span>
+            <span className="text-[10px] text-muted-foreground">
+              {section.items.length === 0 ? 'none' : `${section.items.length}`}
+            </span>
           </div>
-        )}
-        {addErr && <p className="mt-1 text-xs text-destructive">{addErr}</p>}
-      </div>
+          <p className="mb-2 text-xs text-muted-foreground">{section.hint}</p>
+          {section.items.length === 0 ? null : (
+            <ul className="space-y-2">
+              {section.items.map((agent) => (
+                <li key={`${agent.kind}-${agent.name}`} className="border border-border bg-card">
+                  {editingName === agent.name ? (
+                    <AgentEditor
+                      projectId={projectId}
+                      agent={agent}
+                      onClose={() => setEditingName(null)}
+                      onSaved={() => {
+                        setEditingName(null);
+                        void refresh();
+                      }}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <KindBadge kind={agent.kind} />
+                        <span className="truncate font-mono text-xs text-foreground">
+                          {agent.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {agent.kind === 'override' && (
+                          <button
+                            onClick={() => void resetToGlobal(agent.name)}
+                            className="border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            Reset to global
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setEditingName(agent.name)}
+                          className="border border-border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
     </div>
+  );
+}
+
+function KindBadge({ kind }: { kind: ResolvedAgent['kind'] }) {
+  const map: Record<ResolvedAgent['kind'], { label: string; cls: string }> = {
+    global: { label: 'Global', cls: 'bg-muted text-muted-foreground' },
+    override: { label: 'Customized', cls: 'bg-warning/20 text-warning-foreground' },
+    project: { label: 'Project', cls: 'bg-primary/20 text-foreground' },
+  };
+  const { label, cls } = map[kind];
+  return (
+    <span className={`shrink-0 px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${cls}`}>
+      {label}
+    </span>
   );
 }
 
 function AgentEditor({
   projectId,
   agent,
-  libraryHas,
   onClose,
-  onAgentSaved,
-  onLibrarySaved,
+  onSaved,
 }: {
   projectId: string;
-  agent: AgentEntry;
-  libraryHas: boolean;
+  agent: ResolvedAgent;
   onClose: () => void;
-  onAgentSaved: (next: AgentEntry) => void;
-  onLibrarySaved: (next: AgentEntry) => void;
+  onSaved: (next: AgentEntry) => void;
 }) {
   const [body, setBody] = useState(agent.body);
-  const [libraryName, setLibraryName] = useState(`${agent.name}-edited`);
-  const [busy, setBusy] = useState<'save' | 'library' | null>(null);
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
 
   const dirty = body !== agent.body;
+  const saveLabel =
+    agent.kind === 'global' ? 'Save as project override' : 'Save project copy';
 
   async function save() {
     if (busy) return;
-    setBusy('save');
+    setBusy(true);
     setErr(null);
     setSavedNote(null);
     try {
       const next = await api.updateProjectAgent(projectId, agent.name, body);
-      onAgentSaved(next);
-      setSavedNote('Project copy updated.');
+      setSavedNote('Saved. Restart the orchestrator to pick up the change.');
+      onSaved(next);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
-      setBusy(null);
-    }
-  }
-
-  async function saveToLibrary() {
-    if (busy) return;
-    const name = libraryName.trim();
-    if (!name) {
-      setErr('library name required');
-      return;
-    }
-    setBusy('library');
-    setErr(null);
-    setSavedNote(null);
-    try {
-      const created = await api.createLibraryAgent(name, body);
-      onLibrarySaved(created);
-      setSavedNote(`Saved to library as "${created.name}".`);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
   return (
     <div className="p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-mono text-xs text-foreground">{agent.name}</span>
+        <div className="flex items-center gap-2">
+          <KindBadge kind={agent.kind} />
+          <span className="font-mono text-xs text-foreground">{agent.name}</span>
+        </div>
         <button
           onClick={onClose}
           className="text-xs text-muted-foreground hover:text-foreground"
@@ -363,46 +382,22 @@ function AgentEditor({
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           onClick={save}
-          disabled={busy !== null || !dirty}
+          disabled={busy || !dirty}
           className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          {busy === 'save' ? 'Saving…' : 'Save project copy'}
+          {busy ? 'Saving…' : saveLabel}
         </button>
-      </div>
-      <div className="mt-3 border-t border-border pt-2">
-        <div className="mb-1 text-xs text-muted-foreground">
-          Save edits to the library as a new agent
-          {libraryHas && (
-            <span className="ml-1 text-foreground/70">
-              (the library already has "{agent.name}" — pick a different name)
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={libraryName}
-            onChange={(e) => setLibraryName(e.target.value)}
-            placeholder="new-library-agent"
-            className="flex-1 border border-border bg-background px-2 py-1 font-mono text-xs"
-          />
-          <button
-            onClick={saveToLibrary}
-            disabled={busy !== null || !libraryName.trim()}
-            className="border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
-          >
-            {busy === 'library' ? 'Saving…' : 'Save as new library agent'}
-          </button>
-        </div>
+        {agent.kind === 'global' && (
+          <span className="text-xs text-muted-foreground">
+            Editing a global creates a project-only override. The global stays unchanged in other
+            projects.
+          </span>
+        )}
       </div>
       {err && <p className="mt-2 text-xs text-destructive">{err}</p>}
       {savedNote && <p className="mt-2 text-xs text-success">{savedNote}</p>}
     </div>
   );
-}
-
-function byName(a: AgentEntry, b: AgentEntry): number {
-  return a.name.localeCompare(b.name);
 }
 
 // ─── Danger zone ─────────────────────────────────────────────────────────────

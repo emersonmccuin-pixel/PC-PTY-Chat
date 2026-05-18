@@ -423,7 +423,12 @@ export const api = {
     return data.removed ?? [];
   },
 
-  // ── Agent library (Q11) ──────────────────────────────────────────────────
+  // ── Agents (Section 3 D2) ────────────────────────────────────────────────
+  // Globals live in the PC library and surface in every project. A project
+  // file with the same name as a global is an "override" — editing a global
+  // from inside a project creates one. Project-only entries are agents the
+  // user authored just for this project.
+
   listAgents: () =>
     getJson<{ agents: AgentEntry[] }>('/api/agents').then((r) => r.agents),
 
@@ -431,12 +436,16 @@ export const api = {
     postJson<{ ok: true; agent: AgentEntry }>('/api/agents', { name, body }).then((r) => r.agent),
 
   listProjectAgents: (projectId: ULID) =>
-    getJson<{ agents: AgentEntry[] }>(`/api/projects/${projectId}/agents`).then((r) => r.agents),
-
-  addAgentFromLibrary: (projectId: ULID, name: string) =>
-    postJson<{ ok: true; agent: AgentEntry }>(`/api/projects/${projectId}/agents`, { name }).then(
-      (r) => r.agent,
-    ),
+    getJson<{
+      ok: true;
+      globals: ResolvedAgent[];
+      overrides: ResolvedAgent[];
+      projectOnly: ResolvedAgent[];
+    }>(`/api/projects/${projectId}/agents`).then((r) => ({
+      globals: r.globals,
+      overrides: r.overrides,
+      projectOnly: r.projectOnly,
+    })),
 
   updateProjectAgent: (projectId: ULID, name: string, body: string) =>
     postJsonMethod<{ ok: true; agent: AgentEntry }>(
@@ -444,6 +453,24 @@ export const api = {
       { body },
       'PATCH',
     ).then((r) => r.agent),
+
+  /** Delete a project agent file. When the deleted file shadowed a global,
+   *  the global re-surfaces ("reset to global"). When the file was
+   *  project-only, the agent is fully removed. */
+  deleteProjectAgent: (projectId: ULID, name: string) =>
+    fetch(`/api/projects/${projectId}/agents/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }).then(async (res) => {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        kind?: 'reset-to-global' | 'project-only';
+        error?: string;
+      };
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error ?? `delete → ${res.status}`);
+      }
+      return data.kind ?? 'project-only';
+    }),
 
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
@@ -471,6 +498,15 @@ export const api = {
 export interface AgentEntry {
   name: string;
   body: string;
+}
+
+export type ResolvedAgentKind = 'global' | 'override' | 'project';
+
+export interface ResolvedAgent extends AgentEntry {
+  kind: ResolvedAgentKind;
+  /** Library version body when `kind === 'override'`. Lets the UI surface a
+   *  Reset action without a second roundtrip. */
+  globalBody?: string;
 }
 
 async function postJsonMethod<T>(path: string, body: unknown, method: 'POST' | 'PATCH'): Promise<T> {

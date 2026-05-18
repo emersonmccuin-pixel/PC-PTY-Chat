@@ -41,14 +41,19 @@ export class AgentLibrary {
     private readonly templateDir: string,
   ) {}
 
-  /** Copy seed agents from templates/ into the library dir if it is empty/missing. */
+  /** Copy seed agents from templates/ into the library dir. Merge-add: any
+   *  seed file NOT already in the library is copied in; existing files (which
+   *  may carry user customizations) are left untouched. New PC releases can
+   *  ship additional globals; users pick them up on next boot without losing
+   *  edits. To pick up upstream changes to a global the user already has,
+   *  delete that file from the library dir and re-bootstrap. */
   bootstrap(): void {
     mkdirSync(this.libraryDir, { recursive: true });
-    const existing = readdirSync(this.libraryDir).filter((f) => f.endsWith('.md'));
-    if (existing.length > 0) return;
     if (!existsSync(this.templateDir)) return;
+    const existing = new Set(readdirSync(this.libraryDir).filter((f) => f.endsWith('.md')));
     for (const f of readdirSync(this.templateDir)) {
       if (!f.endsWith('.md')) continue;
+      if (existing.has(f)) continue;
       copyFileSync(join(this.templateDir, f), join(this.libraryDir, f));
     }
   }
