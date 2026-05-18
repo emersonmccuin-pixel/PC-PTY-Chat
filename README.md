@@ -61,17 +61,6 @@ You answer in plain English. Companion writes the workflow. You run it. If somet
 
 The person who knows how the job should be done is finally the one operating the tool. No translator, no specialist, no waiting.
 
-## Inside the app
-
-The surfaces you'll see:
-
-- **Projects** — top-level switcher; click to jump between initiatives
-- **Project chat** — the persistent thread, anchored to the project, where you build and run
-- **Kanban board** — drag-and-drop cards through stages you define
-- **Pods tab** — your library of repeatable workflows-plus-context
-- **Agents** — manage your roster of specialists
-- **Workflows** — browse, edit, and run your saved processes
-
 ## What it costs
 
 Your existing Claude subscription. Companion uses it directly — same login, same plan, no extra billing.
