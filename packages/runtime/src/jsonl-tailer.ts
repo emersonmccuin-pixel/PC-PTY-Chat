@@ -26,6 +26,19 @@ export type JsonlEvent =
       isError: boolean;
     }
   | { kind: 'jsonl-turn-end'; text: string; stopReason: string | null }
+  | {
+      kind: 'jsonl-usage';
+      // Per-API-call token usage from the assistant message's `usage` field.
+      // Each assistant entry (mid-loop OR turn-end) carries one of these.
+      // Client sums across entries to get session totals — sidechain entries
+      // short-circuit before this fires, so subagent tokens don't pollute
+      // orchestrator totals.
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationTokens: number;
+      cacheReadTokens: number;
+      model: string | null;
+    }
   | { kind: 'jsonl-sidechain'; raw: unknown };
 
 export interface JsonlTailerOptions {
@@ -184,6 +197,22 @@ export class JsonlTailer extends EventEmitter {
             input: b.input ?? null,
           } satisfies JsonlEvent);
         }
+      }
+      // Usage block — Anthropic SDK response shape. Emit once per assistant
+      // entry (whether mid-loop or turn-end), client sums for the session.
+      const usage = message.usage;
+      if (usage && typeof usage === 'object') {
+        const u = usage as Record<string, unknown>;
+        this.emit('event', {
+          kind: 'jsonl-usage',
+          inputTokens: typeof u.input_tokens === 'number' ? u.input_tokens : 0,
+          outputTokens: typeof u.output_tokens === 'number' ? u.output_tokens : 0,
+          cacheCreationTokens:
+            typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : 0,
+          cacheReadTokens:
+            typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0,
+          model: typeof message.model === 'string' ? (message.model as string) : null,
+        } satisfies JsonlEvent);
       }
       // Turn-end fires for any stop_reason that means "model is no longer
       // working" — covers the four documented Stop-skip cases from CC's

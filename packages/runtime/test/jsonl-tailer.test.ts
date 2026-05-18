@@ -237,6 +237,141 @@ test('assistant message without stop_reason field → NO jsonl-turn-end', () => 
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Usage events (Section 1 Phase 2 — status bar)
+// ─────────────────────────────────────────────────────────────────────────
+
+test('assistant message with usage → jsonl-usage with all four token counts', () => {
+  const f = freshFile([
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'reply' }],
+        stop_reason: 'end_turn',
+        model: 'claude-opus-4-7',
+        usage: {
+          input_tokens: 12,
+          output_tokens: 34,
+          cache_creation_input_tokens: 56,
+          cache_read_input_tokens: 78,
+        },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  // Expect 2 events: jsonl-usage then jsonl-turn-end (order: usage emitted
+  // before turn-end so the client has totals when the turn closes).
+  assert.equal(events.length, 2);
+  assert.deepEqual(events[0], {
+    kind: 'jsonl-usage',
+    inputTokens: 12,
+    outputTokens: 34,
+    cacheCreationTokens: 56,
+    cacheReadTokens: 78,
+    model: 'claude-opus-4-7',
+  });
+  assert.equal(events[1]!.kind, 'jsonl-turn-end');
+});
+
+test('assistant message with usage on mid-loop tool_use → jsonl-usage but NO turn-end', () => {
+  const f = freshFile([
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: {} }],
+        stop_reason: 'tool_use',
+        model: 'claude-opus-4-7',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 5,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 50,
+        },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 2);
+  assert.equal(events[0]!.kind, 'jsonl-tool-call');
+  assert.deepEqual(events[1], {
+    kind: 'jsonl-usage',
+    inputTokens: 100,
+    outputTokens: 5,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 50,
+    model: 'claude-opus-4-7',
+  });
+});
+
+test('assistant message without usage field → NO jsonl-usage', () => {
+  const f = freshFile([
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'reply' }],
+        stop_reason: 'end_turn',
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  // Only the turn-end fires; no usage event.
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.kind, 'jsonl-turn-end');
+});
+
+test('sidechain assistant entry with usage → NO jsonl-usage (short-circuit)', () => {
+  // Subagent usage must NOT bleed into the orchestrator's session totals.
+  const f = freshFile([
+    {
+      type: 'assistant',
+      isSidechain: true,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'subagent reply' }],
+        stop_reason: 'end_turn',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 999, output_tokens: 999 },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.kind, 'jsonl-sidechain');
+});
+
+test('usage with partial fields → missing counts default to 0', () => {
+  const f = freshFile([
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'x' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 5, output_tokens: 2 },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const usage = events.find((e) => e.kind === 'jsonl-usage');
+  assert.ok(usage);
+  assert.deepEqual(usage, {
+    kind: 'jsonl-usage',
+    inputTokens: 5,
+    outputTokens: 2,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    model: null,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Queue events + sidechain + unknown types
 // ─────────────────────────────────────────────────────────────────────────
 
