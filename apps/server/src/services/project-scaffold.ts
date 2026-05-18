@@ -6,7 +6,7 @@
 //   <folder>/.claude/settings.json              (rendered)
 //   <folder>/.claude/hooks/*.cjs                (rendered)
 //   <folder>/.project-companion/workflows/*.yaml (plain copy)
-//   <folder>/.project-companion/CLAUDE.md       (rendered)
+//   <folder>/.project-companion/orchestrator-prompt.md (rendered)
 //   <folder>/README.md                          (rendered)
 //
 // Agent copies (`.claude/agents/`) come from the per-user library via
@@ -100,11 +100,13 @@ export class ProjectScaffold {
     }
   }
 
-  /** Render `<folder>/.project-companion/CLAUDE.md` from template. */
+  /** Render `<folder>/.project-companion/orchestrator-prompt.md` from template.
+   *  Loaded into the orchestrator's system prompt via `--append-system-prompt-file`
+   *  at PtySession spawn time. */
   writeOrchestratorPrompt(target: ProjectScaffoldTarget): void {
     this.writeFromTemplate(
-      resolve(this.deps.templatesDir, '.project-companion', 'CLAUDE.md'),
-      resolve(target.folderPath, '.project-companion', 'CLAUDE.md'),
+      resolve(this.deps.templatesDir, '.project-companion', 'orchestrator-prompt.md'),
+      resolve(target.folderPath, '.project-companion', 'orchestrator-prompt.md'),
       this.buildTokens(target),
     );
   }

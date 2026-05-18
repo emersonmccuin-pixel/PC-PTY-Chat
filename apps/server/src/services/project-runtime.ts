@@ -210,6 +210,11 @@ export class ProjectRuntime {
       jsonlPath: session.row.jsonlPath ?? undefined,
       jsonlStartLine: session.row.jsonlLineCursor,
       excludeJsonlPaths: priorJsonlPaths,
+      appendSystemPromptPath: resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'orchestrator-prompt.md',
+      ),
     });
     return this.pty;
   }
@@ -310,6 +315,25 @@ export class ProjectRuntime {
       if (existsSync(settingsSrc)) {
         const raw = readFileSync(settingsSrc, 'utf-8');
         writeFileSync(settingsDest, renderTemplate(raw, tokens), 'utf-8');
+      }
+      // Section 3 phase 3c: backfill the orchestrator PM prompt for projects
+      // scaffolded before this section. Write-if-missing only — preserves any
+      // per-project edits the user has made post-scaffold. Fresh projects get
+      // the file from ProjectScaffold.writeOrchestratorPrompt at create time.
+      const promptSrc = resolve(
+        this.opts.templatesDir,
+        '.project-companion',
+        'orchestrator-prompt.md',
+      );
+      const promptDest = resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'orchestrator-prompt.md',
+      );
+      if (existsSync(promptSrc) && !existsSync(promptDest)) {
+        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
+        const raw = readFileSync(promptSrc, 'utf-8');
+        writeFileSync(promptDest, renderTemplate(raw, tokens), 'utf-8');
       }
     } catch (err) {
       console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);

@@ -66,6 +66,12 @@ export interface PtySessionOptions {
    *  CC was still writing — without this guard the entire old conversation
    *  re-streams as live jsonl-* events and re-pops up in the chat panel. */
   excludeJsonlPaths?: readonly string[];
+  /** Absolute path to a markdown file appended to CC's built-in system prompt
+   *  via `--append-system-prompt-file`. PC uses this to mount the per-project
+   *  orchestrator PM identity (Section 3 D11). When unset (or the file is
+   *  missing), the flag is omitted and the orchestrator runs with CC's default
+   *  system prompt only. */
+  appendSystemPromptPath?: string;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -156,6 +162,13 @@ export class PtySession extends EventEmitter {
       '.mcp.json',
       '--strict-mcp-config',
     ];
+    // Section 3 D11: layer PC's PM identity on top of CC's built-in system
+    // prompt. Skip silently if the file is missing — fresh projects always
+    // have it scaffolded; pre-3c projects pick it up via the boot-time backfill
+    // in ProjectRuntime.refreshHooksIfStale.
+    if (opts.appendSystemPromptPath && existsSync(opts.appendSystemPromptPath)) {
+      args.push('--append-system-prompt-file', opts.appendSystemPromptPath);
+    }
     if (enableSessionFlags && opts.claudeSessionId) {
       if (opts.resume) {
         args.push('--resume', opts.claudeSessionId);
