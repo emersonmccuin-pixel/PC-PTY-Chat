@@ -40,6 +40,7 @@ import type {
   NodeOutputStatus,
   OrchestratorReviewNode,
   Project,
+  RetryCause,
   ScriptNode,
   SubagentFailureCause,
   SubagentFailureSignal,
@@ -77,6 +78,7 @@ import { runCreateWorkItemStep } from './create-work-item-step.ts';
 import { runUpdateWorkItemStep } from './update-work-item-step.ts';
 import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
 import { runOrchestratorReviewStep } from './orchestrator-review-step.ts';
+import { detectRetryCause, shouldRetry } from './retry-policy.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { WorkItemService } from './work-item.ts';
@@ -525,10 +527,12 @@ export class WorkflowRuntime {
 
       const startedAt = new Date().toISOString();
       for (const node of ready) {
+        const priorAttempt = run.nodeOutputs[node.id]?.attempt;
         run.nodeOutputs[node.id] = {
           ...run.nodeOutputs[node.id],
           status: 'running',
           startedAt,
+          ...(priorAttempt !== undefined ? { attempt: priorAttempt } : {}),
         };
       }
       const results = await Promise.all(ready.map((node) => this.dispatch(node, run, workflow)));
@@ -539,17 +543,39 @@ export class WorkflowRuntime {
         const node = ready[i]!;
         const result = results[i]!;
         if (result.kind === 'sync') {
-          run.nodeOutputs[node.id] = { ...result.output, startedAt };
-          if (!run.nodeOutputs[node.id]!.completedAt) {
-            run.nodeOutputs[node.id]!.completedAt = completedAt;
-          }
-          if (node.kind === 'subagent' && result.output.status === 'failed') {
-            this.broadcastSubagentFailure(
-              run,
-              node.id,
-              'dispatch-error',
-              result.output.error ?? 'subagent dispatch failed',
-            );
+          if (result.output.status === 'failed') {
+            const cause = detectRetryCause(result.output.error);
+            const retried = await this.tryRetry(run, node, cause);
+            if (retried) continue;
+            run.nodeOutputs[node.id] = {
+              ...result.output,
+              startedAt,
+              ...(run.nodeOutputs[node.id]?.attempt !== undefined
+                ? { attempt: run.nodeOutputs[node.id]!.attempt }
+                : {}),
+            };
+            if (!run.nodeOutputs[node.id]!.completedAt) {
+              run.nodeOutputs[node.id]!.completedAt = completedAt;
+            }
+            if (node.kind === 'subagent') {
+              this.broadcastSubagentFailure(
+                run,
+                node.id,
+                'dispatch-error',
+                result.output.error ?? 'subagent dispatch failed',
+              );
+            }
+          } else {
+            run.nodeOutputs[node.id] = {
+              ...result.output,
+              startedAt,
+              ...(run.nodeOutputs[node.id]?.attempt !== undefined
+                ? { attempt: run.nodeOutputs[node.id]!.attempt }
+                : {}),
+            };
+            if (!run.nodeOutputs[node.id]!.completedAt) {
+              run.nodeOutputs[node.id]!.completedAt = completedAt;
+            }
           }
         } else if (result.kind === 'cancel') {
           run.nodeOutputs[node.id] = {
@@ -659,6 +685,16 @@ export class WorkflowRuntime {
     if (current.status !== 'running') {
       return { ok: false, error: `nodeId "${nodeId}" is "${current.status}", not "running"` };
     }
+    const node = lookupNode(run, nodeId);
+    const cause = detectRetryCause(reason);
+    if (node) {
+      const retried = await this.tryRetry(run, node, cause);
+      if (retried) {
+        dbPersistRun(run);
+        await this.tick(runId);
+        return { ok: true };
+      }
+    }
     run.nodeOutputs[nodeId] = {
       ...current,
       status: 'failed',
@@ -685,7 +721,7 @@ export class WorkflowRuntime {
       workflowRunId: run.id,
       nodeId,
       agentName,
-      attemptNumber: 1,
+      attemptNumber: run.nodeOutputs[nodeId]?.attempt ?? 1,
       cause,
       surfaceError,
       transcriptPath: this.subagentTranscriptLookup() ?? null,
@@ -764,10 +800,19 @@ export class WorkflowRuntime {
       for (const nodeId of subagentNodeIds) {
         const out = run.nodeOutputs[nodeId];
         if (!out || out.status !== 'running') continue;
+        const reason = 'subagent returned without closing the node';
+        const node = lookupNode(run, nodeId);
+        if (node) {
+          const retried = await this.tryRetry(run, node, 'failed');
+          if (retried) {
+            runChanged = true;
+            continue;
+          }
+        }
         run.nodeOutputs[nodeId] = {
           ...out,
           status: 'failed',
-          error: 'subagent returned without closing the node',
+          error: reason,
           completedAt: new Date().toISOString(),
         };
         runChanged = true;
@@ -789,6 +834,29 @@ export class WorkflowRuntime {
     for (const run of dirtyRuns) {
       await this.tick(run.id);
     }
+  }
+
+  /** Reset a failed node back to pending + bumped attempt counter if its
+   *  retry policy allows it. Returns true when retry was scheduled. The
+   *  caller's tick (loop or subsequent call) re-discovers + re-dispatches the
+   *  node. */
+  private async tryRetry(
+    run: WorkflowRun,
+    node: DagNode,
+    cause: RetryCause,
+  ): Promise<boolean> {
+    const current = run.nodeOutputs[node.id];
+    const attempt = current?.attempt ?? 1;
+    if (!shouldRetry(node, attempt, cause)) return false;
+    run.nodeOutputs[node.id] = {
+      status: 'pending',
+      attempt: attempt + 1,
+    };
+    const delay = node.retry?.delay_ms ?? 0;
+    if (delay > 0) {
+      await new Promise((res) => setTimeout(res, delay));
+    }
+    return true;
   }
 
   // ── Dispatchers ──────────────────────────────────────────────────────────
@@ -1306,6 +1374,14 @@ function recomputeRunStatus(workflow: Workflow, run: WorkflowRun): WorkflowRunSt
     (t) => t.status === 'failed' || t.status === 'cancelled' || t.status === 'skipped',
   );
   return anyFailedOrBlocked ? 'failed' : 'complete';
+}
+
+/** Look up a node by id from the run's frozen YAML snapshot. Returns
+ *  undefined when the snapshot fails to reparse or the id isn't found. */
+function lookupNode(run: WorkflowRun, nodeId: string): DagNode | undefined {
+  const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
+  if (!parsed.ok || !parsed.workflow) return undefined;
+  return parsed.workflow.nodes.find((n) => n.id === nodeId);
 }
 
 function collectSubagentNodeIds(run: WorkflowRun): string[] {

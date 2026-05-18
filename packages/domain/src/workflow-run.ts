@@ -36,6 +36,10 @@ export interface NodeOutput {
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  /** Attempt counter (4a.7 / D17). 1 = first attempt. Only set when > 1 to
+   *  keep first-attempt outputs noise-free. Final-attempt value feeds D10's
+   *  SubagentFailureSignal.attemptNumber. */
+  attempt?: number;
 }
 
 export interface WorkflowRun {

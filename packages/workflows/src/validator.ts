@@ -22,6 +22,8 @@ import type {
   LoopNode,
   NestedWorkflowNode,
   OrchestratorReviewNode,
+  RetryCause,
+  RetryPolicy,
   ScriptNode,
   SubagentNode,
   TriggerRule,
@@ -345,6 +347,12 @@ function validateNode(
     }
   }
 
+  // retry (4a.7 / D17)
+  let retry: RetryPolicy | undefined;
+  if (raw.retry !== undefined) {
+    retry = validateRetry(raw.retry, `${path}.retry`, errors);
+  }
+
   // Discriminator: exactly one type-body field must be present.
   const present = TYPE_BODY_FIELDS.filter((f) => raw[f] !== undefined);
   if (present.length === 0) {
@@ -370,6 +378,7 @@ function validateNode(
     ...(triggerRule ? { trigger_rule: triggerRule } : {}),
     ...(doneWhen ? { done_when: doneWhen } : {}),
     ...(typeof raw.timeout === 'number' && raw.timeout > 0 ? { timeout: raw.timeout } : {}),
+    ...(retry ? { retry } : {}),
   };
 
   const kind = present[0]!;
@@ -963,6 +972,72 @@ function validateWriteToWorktreeBody(
       content: body.content as string,
       ...(body.mode === 'overwrite' || body.mode === 'append' ? { mode: body.mode } : {}),
     },
+  };
+}
+
+const RETRY_CAUSES: ReadonlySet<RetryCause> = new Set(['failed', 'timeout']);
+
+function validateRetry(
+  raw: unknown,
+  path: string,
+  errors: ValidationError[],
+): RetryPolicy | undefined {
+  if (!isObj(raw)) {
+    errors.push({ path, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  let maxAttempts: number | undefined;
+  if (
+    typeof raw.max_attempts !== 'number' ||
+    !Number.isInteger(raw.max_attempts) ||
+    raw.max_attempts < 1
+  ) {
+    errors.push({
+      path: `${path}.max_attempts`,
+      message: 'must be a positive integer (>= 1)',
+    });
+    ok = false;
+  } else {
+    maxAttempts = raw.max_attempts;
+  }
+  let on: RetryCause[] | undefined;
+  if (raw.on !== undefined) {
+    if (!Array.isArray(raw.on) || raw.on.length === 0) {
+      errors.push({
+        path: `${path}.on`,
+        message: 'must be a non-empty array of: failed, timeout',
+      });
+      ok = false;
+    } else {
+      const bad = raw.on.filter(
+        (c) => typeof c !== 'string' || !RETRY_CAUSES.has(c as RetryCause),
+      );
+      if (bad.length > 0) {
+        errors.push({
+          path: `${path}.on`,
+          message: `invalid cause(s): ${JSON.stringify(bad)}; allowed: failed, timeout`,
+        });
+        ok = false;
+      } else {
+        on = raw.on as RetryCause[];
+      }
+    }
+  }
+  if (raw.delay_ms !== undefined) {
+    if (typeof raw.delay_ms !== 'number' || !Number.isFinite(raw.delay_ms) || raw.delay_ms < 0) {
+      errors.push({
+        path: `${path}.delay_ms`,
+        message: 'must be a non-negative number (milliseconds) if provided',
+      });
+      ok = false;
+    }
+  }
+  if (!ok || maxAttempts === undefined) return undefined;
+  return {
+    max_attempts: maxAttempts,
+    ...(on ? { on } : {}),
+    ...(typeof raw.delay_ms === 'number' && raw.delay_ms >= 0 ? { delay_ms: raw.delay_ms } : {}),
   };
 }
 

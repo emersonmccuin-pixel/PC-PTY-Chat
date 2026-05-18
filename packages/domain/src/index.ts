@@ -24,6 +24,8 @@ export type {
   LoopNode,
   NestedWorkflowNode,
   OrchestratorReviewNode,
+  RetryCause,
+  RetryPolicy,
   ScriptNode,
   SubagentNode,
   TriggerRule,

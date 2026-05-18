@@ -33,6 +33,24 @@ export interface DoneWhen {
   'output-fields-non-empty'?: string[];
 }
 
+/** Per-node retry policy (4a.7 / D17). Plumbing ships, default is no retry —
+ *  `max_attempts: 1` (single attempt, fail-fast). Workflow author opts in per
+ *  step. `on` defaults to `['failed']` — both 'failed' and 'timeout' causes
+ *  flow through nodeOutput.status === 'failed', but dispatchers tag the
+ *  cause via the error string ("timeout (...)") so authors can opt into
+ *  retrying just timeouts. */
+export type RetryCause = 'failed' | 'timeout';
+
+export interface RetryPolicy {
+  /** Total attempts including the first one. Default 1. */
+  max_attempts: number;
+  /** Causes that trigger a retry. Default `['failed']` (covers both failed
+   *  and timeout when the policy is opted in). */
+  on?: RetryCause[];
+  /** Wait this many ms between attempts. Default 0. */
+  delay_ms?: number;
+}
+
 /** Fields shared by every node, regardless of `kind`. */
 export interface BaseNode {
   id: string;
@@ -43,6 +61,8 @@ export interface BaseNode {
   done_when?: DoneWhen;
   /** Hard ceiling in ms. Bash/script only in v1; ignored elsewhere. */
   timeout?: number;
+  /** Per-step retry policy. Omitted = no retry. */
+  retry?: RetryPolicy;
 }
 
 export interface SubagentNode extends BaseNode {

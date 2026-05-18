@@ -482,3 +482,74 @@ test('validator: orchestrator-review rejects empty on_revise.prompt', () => {
   );
   assert.equal(result.ok, false);
 });
+
+// ── 4a.7 — retry policy on base node ────────────────────────────────────────
+
+test('validator: retry happy path (max_attempts only)', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'b', bash: 'echo hi', retry: { max_attempts: 3 } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const node = result.workflow!.nodes[0]!;
+  assert.equal(node.retry?.max_attempts, 3);
+});
+
+test('validator: retry accepts on + delay_ms', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      {
+        id: 'b',
+        bash: 'echo hi',
+        retry: { max_attempts: 2, on: ['failed', 'timeout'], delay_ms: 500 },
+      },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const node = result.workflow!.nodes[0]!;
+  assert.deepEqual(node.retry?.on, ['failed', 'timeout']);
+  assert.equal(node.retry?.delay_ms, 500);
+});
+
+test('validator: retry rejects max_attempts: 0', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'b', bash: 'x', retry: { max_attempts: 0 } }]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /max_attempts/.test(e.path)));
+});
+
+test('validator: retry rejects unknown cause', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'b', bash: 'x', retry: { max_attempts: 2, on: ['exploded'] } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /on/.test(e.path) && /exploded/.test(e.message)));
+});
+
+test('validator: retry rejects negative delay_ms', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'b', bash: 'x', retry: { max_attempts: 2, delay_ms: -1 } },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /delay_ms/.test(e.path)));
+});
+
+test('validator: no retry block → field absent (no auto-retry default)', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'b', bash: 'echo hi' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.workflow!.nodes[0]!.retry, undefined);
+});
