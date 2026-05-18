@@ -184,6 +184,69 @@ const TOOLS = [
       required: ['name'],
     },
   },
+  {
+    name: 'pc_create_agent',
+    description:
+      'Create a NEW project-scoped agent. Used by the conversational Create Agent flow (3e). Accepts either { name, body } (raw file text — YAML frontmatter + markdown body) OR { name, def, markdown } (typed AgentDef + body). 409 if a project agent by this name already exists, or if the name matches a global (in which case the user should pick a different name or use the form editor to override the global). Broadcasts project-agents-changed on success.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'lowercase agent name (letters/numbers/dashes)' },
+        body: { type: 'string', description: 'raw file text — YAML frontmatter + markdown body' },
+        def: {
+          type: 'object',
+          description: 'typed AgentDef (name, description, model, tools, etc.). Used with markdown.',
+          additionalProperties: true,
+        },
+        markdown: { type: 'string', description: 'agent body markdown (used with def)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'pc_get_work_item',
+    description:
+      'Fetch the full work item by id — title, body, fields, stage, status, parent. Use this when an agent needs to read the work item it is operating on without filesystem digging. Returns { ok: true, workItem } or { ok: false, error } for unknown / archived ids.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'work item id (ULID)' },
+        includeArchived: {
+          type: 'boolean',
+          description: 'when true, also returns soft-deleted work items',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'pc_attach_to_work_item',
+    description:
+      'Attach a text/markdown/JSON payload to a work item. The default destination for agent output per Section 3 D13 (the "report I will read later" path). Server stamps provenance: source = "agent" + the passed agentName + nodeId + workflowRunId. Returns { ok: true, attachment } or { ok: false, error }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workItemId: { type: 'string', description: 'destination work item id (ULID)' },
+        name: { type: 'string', description: 'attachment display name' },
+        content: { type: 'string', description: 'attachment body (inline; no filesystem path variant)' },
+        kind: {
+          type: 'string',
+          description: 'free-form kind tag — known set: text / markdown / json. Defaults to "markdown".',
+        },
+        contentType: { type: 'string', description: 'optional MIME type' },
+        agentName: { type: 'string', description: 'name of the agent producing this attachment' },
+        workflowRunId: {
+          type: 'string',
+          description: 'workflow run id from the dispatch envelope ([workflowRunId: ...])',
+        },
+        nodeId: {
+          type: 'string',
+          description: 'workflow node id from the dispatch envelope ([nodeId: ...])',
+        },
+      },
+      required: ['workItemId', 'name', 'content'],
+    },
+  },
 ] as const;
 
 function projectPath(suffix: string): string {
@@ -527,6 +590,119 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_destroy_worktree failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_agent': {
+      const name = typeof args.name === 'string' ? args.name.trim() : '';
+      const rawBody = typeof args.body === 'string' ? args.body : undefined;
+      const def = args.def && typeof args.def === 'object' ? args.def : undefined;
+      const markdown = typeof args.markdown === 'string' ? args.markdown : undefined;
+      if (!name) {
+        return { content: [{ type: 'text', text: 'pc_create_agent: name required' }], isError: true };
+      }
+      if (!rawBody && !(def && markdown !== undefined)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_create_agent: either `body` (raw file text) or `{ def, markdown }` required',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const payload: Record<string, unknown> = { name };
+        if (rawBody !== undefined) payload.body = rawBody;
+        if (def !== undefined) payload.def = def;
+        if (markdown !== undefined) payload.markdown = markdown;
+        const res = await postServer(projectPath('agents'), payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_create_agent failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_create_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_get_work_item': {
+      const id = typeof args.id === 'string' ? args.id : '';
+      const includeArchived = args.includeArchived === true;
+      if (!id) {
+        return { content: [{ type: 'text', text: 'pc_get_work_item: id required' }], isError: true };
+      }
+      try {
+        const suffix = `work-items/${encodeURIComponent(id)}${includeArchived ? '?includeArchived=1' : ''}`;
+        const res = await getServer(projectPath(suffix));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_get_work_item failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_get_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_attach_to_work_item': {
+      const workItemId = typeof args.workItemId === 'string' ? args.workItemId : '';
+      const name = typeof args.name === 'string' ? args.name : '';
+      const content = typeof args.content === 'string' ? args.content : '';
+      const kind = typeof args.kind === 'string' && args.kind.trim() ? args.kind.trim() : 'markdown';
+      const contentType = typeof args.contentType === 'string' ? args.contentType : undefined;
+      const agentName = typeof args.agentName === 'string' ? args.agentName : undefined;
+      const workflowRunId = typeof args.workflowRunId === 'string' ? args.workflowRunId : undefined;
+      const nodeId = typeof args.nodeId === 'string' ? args.nodeId : undefined;
+      if (!workItemId || !name || !content) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_attach_to_work_item: workItemId, name, and content required' },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const payload: Record<string, unknown> = {
+          kind,
+          name,
+          content,
+          source: 'agent',
+        };
+        if (contentType !== undefined) payload.contentType = contentType;
+        if (agentName !== undefined) payload.agentName = agentName;
+        if (workflowRunId !== undefined) payload.runId = workflowRunId;
+        if (nodeId !== undefined) payload.nodeId = nodeId;
+        const res = await postServer(
+          projectPath(`work-items/${encodeURIComponent(workItemId)}/attachments`),
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_attach_to_work_item failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_attach_to_work_item failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

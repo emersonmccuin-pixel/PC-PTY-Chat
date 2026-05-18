@@ -243,6 +243,14 @@ export const attachments = sqliteTable(
     /** Workflow run that produced this attachment, or null for chat/user-created. */
     runId: text('run_id').$type<ULID | null>(),
     createdBySessionId: text('created_by_session_id').$type<ULID | null>(),
+    /** Provenance — who produced the attachment. 'user' = chat/UI/test;
+     *  'agent' = workflow subagent via the pc_attach_to_work_item MCP tool. */
+    source: text('source').notNull().default('user').$type<'agent' | 'user'>(),
+    /** When source === 'agent', the agent name. Null for user-created rows. */
+    agentName: text('agent_name'),
+    /** Workflow node id within `runId`. Null when the attachment was not produced
+     *  by a workflow node (chat or top-of-run). */
+    nodeId: text('node_id'),
     createdAt: integer('created_at').notNull(),
   },
   (t) => [index('attachments_work_item_idx').on(t.workItemId)],

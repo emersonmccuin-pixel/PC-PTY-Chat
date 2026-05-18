@@ -489,6 +489,66 @@ app.get('/api/projects/:projectId/agents', (c) => {
   return c.json({ ok: true, ...resolved });
 });
 
+/** Create a NEW project-scoped agent from scratch (3e — conversational
+ *  Create Agent path). Accepts the same shapes as PATCH: either raw `body`
+ *  or `{ def, markdown }`. 409 if a project file by that name already
+ *  exists; 409 with `kind: 'shadows-global'` when a global with that name
+ *  exists (the user should pick a different name or use Edit-on-global to
+ *  produce an override). Broadcasts `project-agents-changed` on success. */
+app.post('/api/projects/:projectId/agents', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const payload = await c.req.json<{
+    name?: string;
+    body?: string;
+    def?: AgentDef;
+    markdown?: string;
+  }>();
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
+
+  if (readProjectAgent(runtime.folderPath, name)) {
+    return c.json({ ok: false, error: `project agent already exists: ${name}` }, 409);
+  }
+  if (agentLibrary.read(name)) {
+    return c.json(
+      {
+        ok: false,
+        kind: 'shadows-global' as const,
+        error: `name "${name}" matches a global. Pick a different name or Edit the global to create a project override.`,
+      },
+      409,
+    );
+  }
+
+  let fileText: string;
+  if (typeof payload.body === 'string') {
+    fileText = payload.body;
+  } else if (payload.def && typeof payload.markdown === 'string') {
+    const validation = validateAgentDef(payload.def);
+    if (!validation.ok) {
+      return c.json({ ok: false, error: 'invalid agent', errors: validation.errors }, 400);
+    }
+    fileText = serializeAgentFile({ def: payload.def, body: payload.markdown });
+  } else {
+    return c.json(
+      { ok: false, error: 'either `body` or `{ def, markdown }` required' },
+      400,
+    );
+  }
+
+  try {
+    const agent = writeProjectAgent(runtime.folderPath, name, fileText);
+    broadcastTo(id, { type: 'project-agents-changed', change: 'created', name });
+    return c.json({ ok: true, agent }, 201);
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is400 = /^invalid agent name|^agent name required/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
 /** Edit an agent in the context of a project. If the name matches a global,
  *  this writes the per-project override file; the global stays untouched.
  *  If not, it edits an existing project-only agent.
@@ -1011,6 +1071,51 @@ app.delete('/api/projects/:projectId/work-items/:wiId/attachments/:aId', (c) => 
   try {
     runtime.attachmentService().delete(aId);
     return c.json({ ok: true });
+  } catch (err) {
+    if (err instanceof AttachmentNotInProjectError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Create an attachment on a work item. Body: `{ kind, name, content,
+ *  contentType?, runId?, source?, agentName?, nodeId? }`. Used by the MCP
+ *  `pc_attach_to_work_item` tool (subagent path) and any UI/test path that
+ *  needs to seed an attachment. Provenance defaults to `source: 'user'`. */
+app.post('/api/projects/:projectId/work-items/:wiId/attachments', async (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const payload = await c.req.json<{
+    kind?: string;
+    name?: string;
+    content?: string;
+    contentType?: string | null;
+    runId?: ULID | null;
+    source?: 'agent' | 'user';
+    agentName?: string | null;
+    nodeId?: string | null;
+  }>();
+  const kind = typeof payload.kind === 'string' && payload.kind.trim() ? payload.kind.trim() : 'text';
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  const content = typeof payload.content === 'string' ? payload.content : '';
+  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
+  if (!content) return c.json({ ok: false, error: 'content required' }, 400);
+  try {
+    const attachment = runtime.attachmentService().create({
+      workItemId: wiId,
+      kind,
+      name,
+      content,
+      contentType: payload.contentType ?? null,
+      runId: payload.runId ?? null,
+      source: payload.source === 'agent' ? 'agent' : 'user',
+      agentName: payload.agentName ?? null,
+      nodeId: payload.nodeId ?? null,
+    });
+    return c.json({ ok: true, attachment }, 201);
   } catch (err) {
     if (err instanceof AttachmentNotInProjectError) {
       return c.json({ ok: false, error: err.message }, 404);

@@ -6,7 +6,7 @@
 // We still expose `create` here so the workflow-runtime + MCP tool can call
 // through one consistent code path.
 
-import type { Attachment, ULID, WorkItem } from '@pc/domain';
+import type { Attachment, AttachmentSource, ULID, WorkItem } from '@pc/domain';
 import {
   createAttachment as dbCreateAttachment,
   deleteAttachment as dbDeleteAttachment,
@@ -37,6 +37,13 @@ export interface CreateAttachmentServiceInput {
   contentType?: string | null;
   runId?: ULID | null;
   createdBySessionId?: ULID | null;
+  /** Provenance — who produced this attachment. Defaults to 'user'. The MCP
+   *  `pc_attach_to_work_item` tool passes 'agent'. */
+  source?: AttachmentSource;
+  /** When `source === 'agent'`, the agent name. */
+  agentName?: string | null;
+  /** Workflow node id within `runId`. Null for non-workflow paths. */
+  nodeId?: string | null;
 }
 
 /** Attachment not in this project's work-item tree. Maps to HTTP 404. */

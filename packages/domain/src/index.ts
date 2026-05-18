@@ -1,6 +1,6 @@
 export type { ULID } from './ulid.ts';
 export type { WorkItem, WorkItemHistoryEntry, WorkItemStatus } from './work-item.ts';
-export type { Attachment } from './attachment.ts';
+export type { Attachment, AttachmentSource } from './attachment.ts';
 export type {
   FieldSchema,
   FieldSchemaType,

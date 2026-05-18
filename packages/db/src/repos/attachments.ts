@@ -1,5 +1,5 @@
 import { asc, eq } from 'drizzle-orm';
-import type { Attachment, ULID } from '@pc/domain';
+import type { Attachment, AttachmentSource, ULID } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { attachments } from '../schema.ts';
@@ -13,6 +13,9 @@ interface AttachmentRow {
   contentType: string | null;
   runId: ULID | null;
   createdBySessionId: ULID | null;
+  source: AttachmentSource;
+  agentName: string | null;
+  nodeId: string | null;
   createdAt: number;
 }
 
@@ -26,6 +29,9 @@ function toDomain(row: AttachmentRow): Attachment {
     contentType: row.contentType,
     runId: row.runId,
     createdBySessionId: row.createdBySessionId,
+    source: row.source,
+    agentName: row.agentName,
+    nodeId: row.nodeId,
     createdAt: row.createdAt,
   };
 }
@@ -38,6 +44,9 @@ export interface CreateAttachmentInput {
   contentType?: string | null;
   runId?: ULID | null;
   createdBySessionId?: ULID | null;
+  source?: AttachmentSource;
+  agentName?: string | null;
+  nodeId?: string | null;
 }
 
 export function createAttachment(input: CreateAttachmentInput): Attachment {
@@ -51,6 +60,9 @@ export function createAttachment(input: CreateAttachmentInput): Attachment {
     contentType: input.contentType ?? null,
     runId: input.runId ?? null,
     createdBySessionId: input.createdBySessionId ?? null,
+    source: input.source ?? 'user',
+    agentName: input.agentName ?? null,
+    nodeId: input.nodeId ?? null,
     createdAt: Date.now(),
   };
   getDb().insert(attachments).values(row).run();
