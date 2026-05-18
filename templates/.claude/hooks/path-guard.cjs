@@ -1,14 +1,19 @@
 // path-guard.cjs — multi-mode CC hook for worktree binding + enforcement.
 //
 // Argv: node path-guard.cjs <mode>
-//   bind     — PreToolUse on Agent|Task: scan tool_input.prompt for the
-//              "[worktree: <abs-path>]" token; write a binding to
-//              <project-data-dir>/current-task-binding.json keyed by tool_use_id.
-//   unbind   — PostToolUse on Agent|Task: drop that binding.
-//   enforce  — PreToolUse on Read|Write|Edit|Bash|Glob|Grep|NotebookEdit:
-//              if the call is inside a subagent turn (payload.agent_type set)
-//              and the latest binding has a worktreePath, deny any tool call
-//              that touches paths outside the worktree.
+//   gate-workflow — PreToolUse on Agent|Task: deny any Task call whose prompt
+//                   doesn't carry the "[workflowRunId: ...]" token (i.e., not a
+//                   workflow-runtime dispatch). Subagents are workflow-only
+//                   (Section 3 D1); the orchestrator must route through
+//                   pc_run_workflow. Runs BEFORE bind on the same matcher.
+//   bind          — PreToolUse on Agent|Task: scan tool_input.prompt for the
+//                   "[worktree: <abs-path>]" token; write a binding to
+//                   <project-data-dir>/current-task-binding.json keyed by tool_use_id.
+//   unbind        — PostToolUse on Agent|Task: drop that binding.
+//   enforce       — PreToolUse on Read|Write|Edit|Bash|Glob|Grep|NotebookEdit:
+//                   if the call is inside a subagent turn (payload.agent_type set)
+//                   and the latest binding has a worktreePath, deny any tool call
+//                   that touches paths outside the worktree.
 //
 // Bash enforcement is best-effort: a regex scan for absolute-looking paths in
 // the command string. Not a true sandbox.
@@ -23,7 +28,8 @@ const raw = readStdinSync();
 let payload = {};
 try { payload = JSON.parse(raw); } catch { /* keep empty */ }
 
-if (mode === 'bind') bind();
+if (mode === 'gate-workflow') gateWorkflow();
+else if (mode === 'bind') bind();
 else if (mode === 'unbind') unbind();
 else if (mode === 'enforce') enforce();
 process.exit(0);
@@ -57,6 +63,28 @@ function extractWorktree(prompt) {
   if (typeof prompt !== 'string') return null;
   const m = prompt.match(/\[worktree:\s*([^\]]+)\]/);
   return m ? resolve(m[1].trim()) : null;
+}
+
+function gateWorkflow() {
+  // Subagents are workflow-only (Section 3 D1). The workflow runtime emits a
+  // dispatch envelope containing "[workflowRunId: <id>]". Any Task call without
+  // that token is a direct orchestrator dispatch; deny it.
+  const prompt = payload.tool_input && payload.tool_input.prompt;
+  if (typeof prompt === 'string' && prompt.includes('[workflowRunId:')) return;
+  const reason =
+    'Direct Task() blocked. Subagents are workflow-only — call `pc_run_workflow` ' +
+    'instead. For one-off agent work without authoring a custom workflow, run the ' +
+    'built-in "generic-agent-runner" workflow.';
+  const out = {
+    decision: 'block',
+    reason,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+  process.stdout.write(JSON.stringify(out));
 }
 
 function bind() {

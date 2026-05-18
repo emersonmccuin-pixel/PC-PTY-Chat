@@ -39,6 +39,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/path-guard.cjs\" gate-workflow"
+          },
+          {
+            "type": "command",
             "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/path-guard.cjs\" bind"
           }
         ]
