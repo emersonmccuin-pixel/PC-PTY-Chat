@@ -25,6 +25,10 @@ import { renderTemplate } from './project-scaffold.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
 import { evaluateBoolean, substituteOutputs } from './output-substitution.ts';
+import { WorkItemService } from './work-item.ts';
+import { AttachmentService } from './attachment.ts';
+import { FieldSchemaService } from './field-schema.ts';
+import { getWorkItem, listFieldSchemas } from '@pc/db';
 
 export interface ProjectRuntimeOptions {
   /** Trunk data dir. Per-project subpaths derived from this. */
@@ -42,6 +46,9 @@ export class ProjectRuntime {
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
+  private workItemSvc: WorkItemService | null = null;
+  private attachmentSvc: AttachmentService | null = null;
+  private fieldSchemaSvc: FieldSchemaService | null = null;
   private hooksRefreshed = false;
 
   constructor(public project: Project, private readonly opts: ProjectRuntimeOptions) {}
@@ -78,7 +85,9 @@ export class ProjectRuntime {
 
   /** Refresh the cached `Project` after rename / settings change. Drops the
    *  cached WorktreeService when slug changes so the next access rebuilds with
-   *  the new baseDir. Rename → slug migration itself is a deferred followup. */
+   *  the new baseDir. Rename → slug migration itself is a deferred followup.
+   *  WorkItemService reads `this.project` via a closure so it picks up the
+   *  new stage list automatically without a rebuild. */
   refresh(project: Project): void {
     const slugChanged = project.slug !== this.project.slug;
     this.project = project;
@@ -118,9 +127,49 @@ export class ProjectRuntime {
         broadcast: this.opts.broadcast,
         registry: this.workflowRegistry(),
         worktrees: this.worktrees(),
+        workItemService: this.workItemService(),
       });
     }
     return this.workflow;
+  }
+
+  /** Lazy: WorkItemService — owns create/patch/move/softDelete/restore/list/get
+   *  with stage + field validation. workflow-runtime's createWorkItem shim
+   *  delegates here. */
+  workItemService(): WorkItemService {
+    if (!this.workItemSvc) {
+      this.workItemSvc = new WorkItemService({
+        projectId: this.project.id,
+        getProject: () => this.project,
+        getFieldSchemas: () => listFieldSchemas(this.project.id),
+        broadcast: this.opts.broadcast,
+      });
+    }
+    return this.workItemSvc;
+  }
+
+  /** Lazy: AttachmentService — project-scoped facade over the attachments repo,
+   *  asserts work-item ownership before any CRUD. */
+  attachmentService(): AttachmentService {
+    if (!this.attachmentSvc) {
+      this.attachmentSvc = new AttachmentService({
+        projectId: this.project.id,
+        getWorkItem,
+        broadcast: this.opts.broadcast,
+      });
+    }
+    return this.attachmentSvc;
+  }
+
+  /** Lazy: FieldSchemaService — list + bulk-replace per-project field schemas. */
+  fieldSchemaService(): FieldSchemaService {
+    if (!this.fieldSchemaSvc) {
+      this.fieldSchemaSvc = new FieldSchemaService({
+        projectId: this.project.id,
+        broadcast: this.opts.broadcast,
+      });
+    }
+    return this.fieldSchemaSvc;
   }
 
   /**
@@ -200,6 +249,9 @@ export class ProjectRuntime {
     this.workflow = null;
     this.worktreesSvc = null;
     this.registry = null;
+    this.workItemSvc = null;
+    this.attachmentSvc = null;
+    this.fieldSchemaSvc = null;
   }
 
   private resolveSessionForSpawn(): {

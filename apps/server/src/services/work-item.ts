@@ -1,0 +1,269 @@
+// WorkItemService — project-scoped facade for work-item mutations.
+//
+// Owns create / patch / move / softDelete / restore / list / get. Integrates
+// validateFields on create + patch, asserts stageId exists on the project's
+// stage list before touching the DB, version-checks PATCH + move via the repo's
+// WorkItemVersionConflictError.
+//
+// Does NOT fire workflows. The workflow-runtime keeps its on_enter trigger
+// flow; new UI routes that want both (version check + workflow firing) compose
+// service.move(...) + workflow-runtime atop. workflow-runtime.createWorkItem
+// becomes a shim that delegates here (per the 2b spec — single place that does
+// stage + field validation).
+//
+// Broadcasts: every successful mutation fires a `work-items-changed` envelope
+// via the provided broadcast fn so the UI's KanbanBoard stays in sync without
+// a refetch.
+
+import type {
+  FieldSchema,
+  Project,
+  ULID,
+  ValidateFieldsErrors,
+  WorkItem,
+} from '@pc/domain';
+import { validateFields } from '@pc/domain';
+import {
+  createWorkItem as dbCreateWorkItem,
+  getWorkItem as dbGetWorkItem,
+  getWorkItemIncludingArchived,
+  listArchivedWorkItems,
+  listWorkItems as dbListWorkItems,
+  moveWorkItemStage,
+  patchWorkItem as dbPatchWorkItem,
+  restoreWorkItem as dbRestoreWorkItem,
+  softDeleteWorkItem as dbSoftDeleteWorkItem,
+  WorkItemVersionConflictError,
+} from '@pc/db';
+
+export type WorkItemBroadcast = (event: {
+  type: 'work-items-changed';
+  change: 'created' | 'updated' | 'moved' | 'deleted' | 'restored';
+  workItem: WorkItem;
+}) => void;
+
+export interface WorkItemServiceOptions {
+  projectId: ULID;
+  /** Resolves the current Project (used for stage assertion). Callable each
+   *  time so stage edits in the same process take effect immediately. */
+  getProject: () => Project;
+  /** Resolves the current per-project field schemas. Called fresh on each
+   *  create/patch so a schema edit lands without service restart. */
+  getFieldSchemas: () => FieldSchema[];
+  broadcast: WorkItemBroadcast;
+}
+
+export interface CreateWorkItemServiceInput {
+  stageId: string;
+  title: string;
+  body?: string;
+  parentId?: ULID | null;
+  position?: number;
+  fields?: Record<string, unknown>;
+}
+
+export interface PatchWorkItemServiceInput {
+  expectedVersion: number;
+  title?: string;
+  body?: string;
+  stageId?: string;
+  parentId?: ULID | null;
+  position?: number;
+  fields?: Record<string, unknown>;
+}
+
+export interface MoveWorkItemServiceInput {
+  expectedVersion: number;
+  stageId: string;
+  position?: number;
+}
+
+export interface ListWorkItemsServiceOptions {
+  stage?: string;
+  parentId?: ULID | null;
+  /** Default false. When true, returns archived rows in place of live ones. */
+  includeArchived?: boolean;
+  cursor?: ULID;
+  /** Hard cap of 500 per the buildout. Default 200. */
+  limit?: number;
+}
+
+export interface ListWorkItemsServiceResult {
+  items: WorkItem[];
+  nextCursor: ULID | null;
+}
+
+const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 500;
+
+/** Service-level validation failure. Maps to HTTP 400 with the `errors` map. */
+export class FieldValidationError extends Error {
+  constructor(public readonly errors: Record<string, string>) {
+    super(`field validation failed: ${Object.keys(errors).join(', ')}`);
+    this.name = 'FieldValidationError';
+  }
+}
+
+/** Service-level stage assertion failure. Maps to HTTP 400. */
+export class UnknownStageError extends Error {
+  constructor(public readonly stageId: string) {
+    super(`unknown stage: ${stageId}`);
+    this.name = 'UnknownStageError';
+  }
+}
+
+export class WorkItemService {
+  constructor(private readonly opts: WorkItemServiceOptions) {}
+
+  list(opts: ListWorkItemsServiceOptions = {}): ListWorkItemsServiceResult {
+    const limit = Math.min(Math.max(opts.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
+    const all = opts.includeArchived
+      ? listArchivedWorkItems(this.opts.projectId)
+      : dbListWorkItems(this.opts.projectId);
+
+    const filtered = all.filter((wi) => {
+      if (opts.stage !== undefined && wi.stageId !== opts.stage) return false;
+      if (opts.parentId !== undefined) {
+        const wanted = opts.parentId;
+        if ((wi.parentId ?? null) !== (wanted ?? null)) return false;
+      }
+      return true;
+    });
+
+    // Cursor: ULID lexical compare. Repo already orders by (position,
+    // createdAt); for pagination we slice by id > cursor.
+    const sliced = opts.cursor
+      ? filtered.filter((wi) => wi.id > opts.cursor!)
+      : filtered;
+    const page = sliced.slice(0, limit);
+    const nextCursor = sliced.length > limit ? (page[page.length - 1]!.id as ULID) : null;
+    return { items: page, nextCursor };
+  }
+
+  get(id: ULID, opts: { includeArchived?: boolean } = {}): WorkItem | null {
+    return opts.includeArchived ? getWorkItemIncludingArchived(id) : dbGetWorkItem(id);
+  }
+
+  create(input: CreateWorkItemServiceInput): WorkItem {
+    const title = input.title.trim();
+    if (!title) throw new Error('title required');
+    this.assertStage(input.stageId);
+
+    const validated = validateFields(input.fields ?? {}, this.opts.getFieldSchemas(), {
+      mode: 'create',
+    });
+    if (!validated.ok) {
+      throw new FieldValidationError((validated as ValidateFieldsErrors).errors);
+    }
+
+    const workItem = dbCreateWorkItem({
+      projectId: this.opts.projectId,
+      title,
+      stageId: input.stageId,
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+      ...(input.position !== undefined ? { position: input.position } : {}),
+      fields: validated.value,
+    });
+    this.opts.broadcast({ type: 'work-items-changed', change: 'created', workItem });
+    return workItem;
+  }
+
+  /** Version-checked patch. Re-validates fields against current schemas in
+   *  patch mode (only the keys supplied are checked + coerced). Throws
+   *  WorkItemVersionConflictError on version mismatch; the route handler
+   *  maps that to HTTP 409 + the current row. */
+  patch(id: ULID, input: PatchWorkItemServiceInput): WorkItem {
+    if (input.stageId !== undefined) this.assertStage(input.stageId);
+
+    let fields: Record<string, unknown> | undefined;
+    if (input.fields !== undefined) {
+      const current = dbGetWorkItem(id);
+      const merged = { ...(current?.fields ?? {}), ...input.fields };
+      const validated = validateFields(merged, this.opts.getFieldSchemas(), { mode: 'patch' });
+      if (!validated.ok) {
+        throw new FieldValidationError((validated as ValidateFieldsErrors).errors);
+      }
+      fields = validated.value;
+    }
+
+    const patched = dbPatchWorkItem(id, {
+      expectedVersion: input.expectedVersion,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      ...(input.stageId !== undefined ? { stageId: input.stageId } : {}),
+      ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+      ...(input.position !== undefined ? { position: input.position } : {}),
+      ...(fields !== undefined ? { fields } : {}),
+    });
+    if (!patched) throw new Error(`unknown work item: ${id}`);
+    this.opts.broadcast({ type: 'work-items-changed', change: 'updated', workItem: patched });
+    return patched;
+  }
+
+  /** Version-checked stage move + optional explicit position. Does NOT fire
+   *  workflows — composed paths (workflow-runtime.moveWorkItem) wrap this
+   *  with worktree-ensure + trigger logic on top. */
+  move(id: ULID, input: MoveWorkItemServiceInput): WorkItem {
+    this.assertStage(input.stageId);
+    // Use the version-checked patch path; the repo's moveWorkItemStage doesn't
+    // do version checks (workflow path owns those externally), so we route
+    // version-checked UI moves through patch + the repo auto-bumps position
+    // on stage change when position isn't supplied.
+    const current = dbGetWorkItem(id);
+    if (!current) throw new Error(`unknown work item: ${id}`);
+    if (current.version !== input.expectedVersion) {
+      throw new WorkItemVersionConflictError(id, input.expectedVersion, current.version, current);
+    }
+    // If only position is changing (same stage), use patch with the new position.
+    // If stage is changing, delegate to moveWorkItemStage so history gets a
+    // 'move' entry, then optionally re-patch the position.
+    let result: WorkItem;
+    if (current.stageId === input.stageId) {
+      const patched = dbPatchWorkItem(id, {
+        expectedVersion: input.expectedVersion,
+        ...(input.position !== undefined ? { position: input.position } : {}),
+      });
+      if (!patched) throw new Error(`unknown work item: ${id}`);
+      result = patched;
+    } else {
+      const moved = moveWorkItemStage(id, input.stageId);
+      if (!moved) throw new Error(`unknown work item: ${id}`);
+      if (input.position !== undefined) {
+        const patched = dbPatchWorkItem(id, {
+          expectedVersion: moved.version,
+          position: input.position,
+        });
+        if (!patched) throw new Error(`unknown work item: ${id}`);
+        result = patched;
+      } else {
+        result = moved;
+      }
+    }
+    this.opts.broadcast({ type: 'work-items-changed', change: 'moved', workItem: result });
+    return result;
+  }
+
+  softDelete(id: ULID): WorkItem {
+    const deleted = dbSoftDeleteWorkItem(id);
+    if (!deleted) throw new Error(`unknown work item: ${id}`);
+    this.opts.broadcast({ type: 'work-items-changed', change: 'deleted', workItem: deleted });
+    return deleted;
+  }
+
+  restore(id: ULID): WorkItem {
+    const restored = dbRestoreWorkItem(id);
+    if (!restored) throw new Error(`unknown work item: ${id} (or not archived)`);
+    this.opts.broadcast({ type: 'work-items-changed', change: 'restored', workItem: restored });
+    return restored;
+  }
+
+  private assertStage(stageId: string): void {
+    const project = this.opts.getProject();
+    if (!project.stages.find((s) => s.id === stageId)) {
+      throw new UnknownStageError(stageId);
+    }
+  }
+}
+
+export { WorkItemVersionConflictError };

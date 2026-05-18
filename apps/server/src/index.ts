@@ -12,11 +12,13 @@ import { homedir } from 'node:os';
 import type { GlobalSettings, ULID } from '@pc/domain';
 import { withSettingsDefaults } from '@pc/domain';
 import {
+  countWorkItemsInStage,
   getActiveOrchestratorSession,
   getGlobalSettings,
   getProjectById,
   listOrchestratorSessionsForProject,
   listProjects,
+  reassignStage,
   runMigrations,
   setGlobalSettings,
   setOrchestratorSessionJsonlCursor,
@@ -24,11 +26,25 @@ import {
   setOrchestratorSessionTitle,
   softDeleteProject,
   updateProjectMeta,
+  updateProjectStages,
 } from '@pc/db';
+import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
+import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
+import { listCustomCommands } from './services/custom-commands.ts';
+import {
+  FieldValidationError,
+  UnknownStageError,
+  WorkItemVersionConflictError,
+} from './services/work-item.ts';
+import {
+  type MemoryScope,
+  readMemoryFile,
+  writeMemoryFile,
+} from './services/memory-files.ts';
 import {
   copyLibraryAgentToProject,
   listProjectAgents,
@@ -509,6 +525,46 @@ app.patch('/api/projects/:projectId/agents/:name', async (c) => {
   }
 });
 
+/** Custom commands for the Abilities tray. Scans `.claude/commands/*.md` in
+ *  both project and `~/.claude/commands/`. Project shadows user on name
+ *  collision (CC parity). */
+app.get('/api/projects/:projectId/commands', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ ok: true, commands: listCustomCommands(runtime.folderPath) });
+});
+
+/** Memory file (`CLAUDE.md`) read for one scope. `?scope=user|project|workspace`. */
+app.get('/api/projects/:projectId/memory/:scope', (c) => {
+  const id = c.req.param('projectId');
+  const scope = c.req.param('scope');
+  if (scope !== 'user' && scope !== 'project' && scope !== 'workspace') {
+    return c.json({ ok: false, error: `invalid scope: ${scope}` }, 400);
+  }
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ ok: true, file: readMemoryFile(scope as MemoryScope, runtime.folderPath) });
+});
+
+/** Memory file write. Body: `{ content: string }`. Creates parent dirs and the
+ *  file itself if missing. */
+app.put('/api/projects/:projectId/memory/:scope', async (c) => {
+  const id = c.req.param('projectId');
+  const scope = c.req.param('scope');
+  if (scope !== 'user' && scope !== 'project' && scope !== 'workspace') {
+    return c.json({ ok: false, error: `invalid scope: ${scope}` }, 400);
+  }
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ content?: string }>();
+  if (typeof body.content !== 'string') {
+    return c.json({ ok: false, error: 'content required' }, 400);
+  }
+  const file = writeMemoryFile(scope as MemoryScope, runtime.folderPath, body.content);
+  return c.json({ ok: true, file });
+});
+
 // ── Project-scoped endpoints ──────────────────────────────────────────────
 
 app.get('/api/projects/:projectId', (c) => {
@@ -573,13 +629,48 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
   return c.json({ ok: true, session });
 });
 
+/** List work items with optional filters + cursor pagination. Query params:
+ *    stage             — filter to a single stage id
+ *    parentId          — '' (string) means top-level (parentId === null); other = exact match
+ *    includeArchived   — '1' = return soft-deleted rows instead of live ones
+ *    cursor            — ULID; returns items where id > cursor
+ *    limit             — 1..500, default 200
+ *  Legacy callers that omit all params keep the prior `{ workItems: [...] }` shape. */
 app.get('/api/projects/:projectId/work-items', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json(runtime.workflowRuntime().readWorkItems());
+  const q = c.req.query();
+  const hasFilters =
+    q.stage !== undefined ||
+    q.parentId !== undefined ||
+    q.includeArchived !== undefined ||
+    q.cursor !== undefined ||
+    q.limit !== undefined;
+  if (!hasFilters) {
+    return c.json(runtime.workflowRuntime().readWorkItems());
+  }
+  const listOpts: {
+    stage?: string;
+    parentId?: ULID | null;
+    includeArchived?: boolean;
+    cursor?: ULID;
+    limit?: number;
+  } = {};
+  if (q.stage !== undefined) listOpts.stage = q.stage;
+  if (q.parentId !== undefined) listOpts.parentId = q.parentId === '' ? null : (q.parentId as ULID);
+  if (q.includeArchived === '1') listOpts.includeArchived = true;
+  if (q.cursor !== undefined) listOpts.cursor = q.cursor as ULID;
+  if (q.limit !== undefined) {
+    const n = Number(q.limit);
+    if (Number.isFinite(n)) listOpts.limit = n;
+  }
+  return c.json(runtime.workItemService().list(listOpts));
 });
 
+/** Legacy move endpoint. Delegates to workflowRuntime.moveWorkItem (workflow-
+ *  firing path). The new `/work-items/:wiId/move` is the version-checked UI
+ *  path; this one stays for MCP backwards-compat + workflow re-fire flows. */
 app.post('/api/projects/:projectId/work-items/move', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -599,6 +690,8 @@ app.post('/api/projects/:projectId/work-items/move', async (c) => {
   }
 });
 
+/** Legacy fields-merge endpoint. Used by MCP `pc_update_work_item`. The new
+ *  `PATCH /work-items/:wiId` is the version-checked UI path. */
 app.post('/api/projects/:projectId/work-items/update', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -616,6 +709,9 @@ app.post('/api/projects/:projectId/work-items/update', async (c) => {
   }
 });
 
+/** Legacy create endpoint. Delegates through workflowRuntime.createWorkItem,
+ *  which is now a shim over WorkItemService.create — picks up stage assert +
+ *  field validation automatically. */
 app.post('/api/projects/:projectId/work-items/create', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -625,13 +721,290 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
   try {
+    // Service broadcasts 'created' internally; the route does not re-broadcast.
     const workItem = runtime.workflowRuntime().createWorkItem(title, stageId, body.body);
-    broadcastTo(id as ULID, { type: 'work-items-changed', change: 'created', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
+    if (err instanceof FieldValidationError) {
+      return c.json({ ok: false, error: err.message, errors: err.errors }, 400);
+    }
+    if (err instanceof UnknownStageError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
     const msg = (err as Error).message;
     const is400 = /^unknown stage:|^title required$/.test(msg);
     return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+// ── Work item :wiId routes (new) ──────────────────────────────────────────
+
+/** Fetch a single work item by id. `?includeArchived=1` returns soft-deleted
+ *  rows too (used by restore flows). */
+app.get('/api/projects/:projectId/work-items/:wiId', (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const includeArchived = c.req.query('includeArchived') === '1';
+  const workItem = runtime.workItemService().get(wiId, { includeArchived });
+  if (!workItem) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+  if (workItem.projectId !== id) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+  return c.json({ ok: true, workItem });
+});
+
+/** Version-checked patch. Body: `{ version, title?, body?, stageId?, parentId?,
+ *  position?, fields? }`. 409 on version mismatch with the current row. */
+app.patch('/api/projects/:projectId/work-items/:wiId', async (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{
+    version?: number;
+    title?: string;
+    body?: string;
+    stageId?: string;
+    parentId?: string | null;
+    position?: number;
+    fields?: Record<string, unknown>;
+  }>();
+  if (typeof body.version !== 'number') {
+    return c.json({ ok: false, error: 'version required' }, 400);
+  }
+  try {
+    const input: Parameters<ReturnType<typeof runtime.workItemService>['patch']>[1] = {
+      expectedVersion: body.version,
+    };
+    if (body.title !== undefined) input.title = body.title;
+    if (body.body !== undefined) input.body = body.body;
+    if (body.stageId !== undefined) input.stageId = body.stageId;
+    if (body.parentId !== undefined) input.parentId = body.parentId as ULID | null;
+    if (body.position !== undefined) input.position = body.position;
+    if (body.fields !== undefined) input.fields = body.fields;
+    const workItem = runtime.workItemService().patch(wiId, input);
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    if (err instanceof WorkItemVersionConflictError) {
+      return c.json({ ok: false, error: err.message, current: err.current }, 409);
+    }
+    if (err instanceof FieldValidationError) {
+      return c.json({ ok: false, error: err.message, errors: err.errors }, 400);
+    }
+    if (err instanceof UnknownStageError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Version-checked stage move + optional position. Body: `{ version, stageId,
+ *  position? }`. Does NOT fire workflows in this slice — UI drag-and-drop
+ *  routes through this; workflow-firing routes (legacy /move) handle the
+ *  on_enter trigger path separately. */
+app.post('/api/projects/:projectId/work-items/:wiId/move', async (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ version?: number; stageId?: string; position?: number }>();
+  if (typeof body.version !== 'number') {
+    return c.json({ ok: false, error: 'version required' }, 400);
+  }
+  const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
+  if (!stageId) return c.json({ ok: false, error: 'stageId required' }, 400);
+  try {
+    const moveInput: Parameters<ReturnType<typeof runtime.workItemService>['move']>[1] = {
+      expectedVersion: body.version,
+      stageId,
+    };
+    if (body.position !== undefined) moveInput.position = body.position;
+    const workItem = runtime.workItemService().move(wiId, moveInput);
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    if (err instanceof WorkItemVersionConflictError) {
+      return c.json({ ok: false, error: err.message, current: err.current }, 409);
+    }
+    if (err instanceof UnknownStageError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Soft-delete a work item. Sets `deletedAt` + `status='archived'`. */
+app.delete('/api/projects/:projectId/work-items/:wiId', (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    runtime.workItemService().softDelete(wiId);
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 404);
+  }
+});
+
+/** Restore a soft-deleted work item. Clears `deletedAt`, resets status to
+ *  `pending`. 404 if the row isn't archived. */
+app.post('/api/projects/:projectId/work-items/:wiId/restore', (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    const workItem = runtime.workItemService().restore(wiId);
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 404);
+  }
+});
+
+// ── Attachments ───────────────────────────────────────────────────────────
+
+/** List a work item's attachments. */
+app.get('/api/projects/:projectId/work-items/:wiId/attachments', (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    return c.json({ ok: true, items: runtime.attachmentService().list(wiId) });
+  } catch (err) {
+    if (err instanceof AttachmentNotInProjectError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Fetch one attachment by id (includes inline content). */
+app.get('/api/projects/:projectId/work-items/:wiId/attachments/:aId', (c) => {
+  const id = c.req.param('projectId');
+  const aId = c.req.param('aId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    return c.json({ ok: true, attachment: runtime.attachmentService().get(aId) });
+  } catch (err) {
+    if (err instanceof AttachmentNotInProjectError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Hard-delete an attachment. */
+app.delete('/api/projects/:projectId/work-items/:wiId/attachments/:aId', (c) => {
+  const id = c.req.param('projectId');
+  const aId = c.req.param('aId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    runtime.attachmentService().delete(aId);
+    return c.json({ ok: true });
+  } catch (err) {
+    if (err instanceof AttachmentNotInProjectError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+// ── Stages editor (orphan-check on delete) ────────────────────────────────
+
+/** Bulk replace a project's stages. Body: `{ stages: Stage[], force?: boolean,
+ *  fallbackStageId?: string }`. If `force !== true`, removing a stage that has
+ *  live work items returns 409 `STAGE_HAS_ITEMS` with the item count. With
+ *  `force: true` + `fallbackStageId`, items in removed stages are reassigned. */
+app.patch('/api/projects/:projectId/stages', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{
+    stages?: Stage[];
+    force?: boolean;
+    fallbackStageId?: string;
+  }>();
+  if (!Array.isArray(body.stages)) {
+    return c.json({ ok: false, error: 'stages array required' }, 400);
+  }
+  const incoming = body.stages.map((s, idx) => ({
+    id: String(s.id ?? '').trim(),
+    name: String(s.name ?? '').trim(),
+    order: typeof s.order === 'number' ? s.order : idx,
+  }));
+  if (incoming.some((s) => !s.id || !s.name)) {
+    return c.json({ ok: false, error: 'each stage requires id + name' }, 400);
+  }
+  const ids = new Set(incoming.map((s) => s.id));
+  if (ids.size !== incoming.length) {
+    return c.json({ ok: false, error: 'duplicate stage id' }, 400);
+  }
+
+  const project = getProjectById(id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const removed = project.stages.filter((s) => !ids.has(s.id));
+  if (removed.length > 0 && body.force !== true) {
+    const orphans = removed.map((s) => ({ id: s.id, name: s.name, count: countWorkItemsInStage(id, s.id) }));
+    const totalCount = orphans.reduce((sum, o) => sum + o.count, 0);
+    if (totalCount > 0) {
+      return c.json(
+        {
+          ok: false,
+          error: 'STAGE_HAS_ITEMS',
+          orphans: orphans.filter((o) => o.count > 0),
+        },
+        409,
+      );
+    }
+  }
+
+  if (removed.length > 0 && body.force === true) {
+    const fallbackId = String(body.fallbackStageId ?? '').trim();
+    if (!fallbackId || !ids.has(fallbackId)) {
+      return c.json({ ok: false, error: 'fallbackStageId required + must reference a retained stage' }, 400);
+    }
+    for (const r of removed) {
+      reassignStage(id, r.id, fallbackId);
+    }
+  }
+
+  updateProjectStages(id, incoming);
+  const updated = getProjectById(id);
+  if (!updated) return c.json({ ok: false, error: 'project disappeared after stage update' }, 500);
+  projectRegistry.refresh(updated);
+  broadcastTo(id, { type: 'stages-changed', stages: updated.stages });
+  return c.json({ ok: true, project: updated });
+});
+
+// ── Field schemas ─────────────────────────────────────────────────────────
+
+app.get('/api/projects/:projectId/field-schemas', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ ok: true, items: runtime.fieldSchemaService().list() });
+});
+
+/** Bulk-replace field schemas. Body: `{ items: FieldSchema[] }`. Explicit ids
+ *  in the input are preserved (so edits keep stable identity); missing ids get
+ *  freshly minted ULIDs. */
+app.put('/api/projects/:projectId/field-schemas', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ items?: unknown }>();
+  if (!Array.isArray(body.items)) {
+    return c.json({ ok: false, error: 'items array required' }, 400);
+  }
+  try {
+    const items = runtime.fieldSchemaService().replace(body.items as Parameters<ReturnType<typeof runtime.fieldSchemaService>['replace']>[0]);
+    return c.json({ ok: true, items });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 

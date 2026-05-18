@@ -48,7 +48,6 @@ import type {
 import {
   applyRunOutcome,
   createRun as dbCreateRun,
-  createWorkItem as dbCreateWorkItem,
   getProjectById,
   getRun as dbGetRun,
   getWorkItem,
@@ -65,6 +64,7 @@ import {
 import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
 
 import type { WorktreeService } from './worktree.ts';
+import type { WorkItemService } from './work-item.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +95,11 @@ export interface WorkflowRuntimeOptions {
   registry?: WorkflowRegistry;
   /** Worktree provisioning for stage-move + orchestrator-call dispatch. */
   worktrees?: WorktreeService;
+  /** Optional WorkItemService — when present, createWorkItem delegates here so
+   *  stage + field validation runs in one place. Not required (older test
+   *  paths construct WorkflowRuntime directly without one); when missing the
+   *  legacy createWorkItem path runs against the repo directly. */
+  workItemService?: WorkItemService;
 }
 
 const MAX_NESTING_DEPTH = 10;
@@ -146,6 +151,7 @@ export class WorkflowRuntime {
   private readonly channelPort: number;
   private readonly registry: WorkflowRegistry | undefined;
   private readonly worktrees: WorktreeService | undefined;
+  private readonly workItemSvc: WorkItemService | undefined;
   private readonly projectId: ULID;
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
 
@@ -156,6 +162,7 @@ export class WorkflowRuntime {
     this.channelPort = opts.channelPort ?? 8788;
     this.registry = opts.registry;
     this.worktrees = opts.worktrees;
+    this.workItemSvc = opts.workItemService;
     this.projectId = opts.projectId;
     this.dispatchers = {
       subagent: (ctx) => this.dispatchSubagent(ctx),
@@ -251,18 +258,16 @@ export class WorkflowRuntime {
   }
 
   createWorkItem(title: string, stageId: string, body?: string): WorkItem {
-    const project = this.readProject();
-    if (!project.stages.find((s) => s.id === stageId)) {
-      throw new Error(`unknown stage: ${stageId}`);
+    if (this.workItemSvc) {
+      return this.workItemSvc.create({
+        title,
+        stageId,
+        ...(body !== undefined ? { body } : {}),
+      });
     }
-    const trimmed = title.trim();
-    if (!trimmed) throw new Error('title required');
-    return dbCreateWorkItem({
-      projectId: this.projectId,
-      title: trimmed,
-      stageId,
-      ...(body ? { body } : {}),
-    });
+    // Legacy fallback for tests that construct WorkflowRuntime directly
+    // without wiring a WorkItemService. Production paths always pass one.
+    throw new Error('createWorkItem requires a WorkItemService — wire one via WorkflowRuntimeOptions.workItemService');
   }
 
   // ── Workflow runs ────────────────────────────────────────────────────────
