@@ -79,3 +79,14 @@ export type {
   SerializeAgentFileInput,
 } from './agent-file.ts';
 export { parseAgentFile, serializeAgentFile } from './agent-file.ts';
+export type {
+  AgentBodyContext,
+  AgentBodyContextWorkItem,
+  AgentBodyTemplateIssue,
+} from './agent-body.ts';
+export {
+  AGENT_BODY_VARIABLES,
+  AgentBodyTemplateError,
+  EXAMPLE_AGENT_BODY_CONTEXT,
+  renderAgentBody,
+} from './agent-body.ts';

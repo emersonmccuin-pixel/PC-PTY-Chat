@@ -25,6 +25,11 @@ import {
   type AgentValidationIssue,
   type ResolvedAgent,
 } from '@/api/client';
+import {
+  AgentBodyTemplateError,
+  EXAMPLE_AGENT_BODY_CONTEXT,
+  renderAgentBody,
+} from '@/lib/agent-body';
 
 const COMMON_TOOLS: readonly string[] = [
   'Read',
@@ -388,7 +393,10 @@ function FormView({
         <ToolsPicker tools={def.tools ?? []} onChange={(t) => onPatch({ tools: t })} />
       </Field>
 
-      <Field label="System prompt (body)" hint="The agent's instructions. Markdown.">
+      <Field
+        label="System prompt (body)"
+        hint="The agent's instructions. Markdown. {{input}}, {{worktree}}, {{wi.title}}, etc. render at dispatch time."
+      >
         <textarea
           value={markdown}
           onChange={(e) => onMarkdownChange(e.target.value)}
@@ -396,6 +404,71 @@ function FormView({
           className="w-full border border-border bg-background px-2 py-1 font-mono text-xs"
         />
       </Field>
+
+      <BodyPreview markdown={markdown} />
+    </div>
+  );
+}
+
+function BodyPreview({ markdown }: { markdown: string }) {
+  const [open, setOpen] = useState(false);
+
+  const result = useMemo<{ kind: 'ok'; rendered: string } | { kind: 'err'; message: string }>(
+    () => {
+      try {
+        return { kind: 'ok', rendered: renderAgentBody(markdown, EXAMPLE_AGENT_BODY_CONTEXT) };
+      } catch (e) {
+        if (e instanceof AgentBodyTemplateError) {
+          return { kind: 'err', message: e.message };
+        }
+        return { kind: 'err', message: String(e) };
+      }
+    },
+    [markdown],
+  );
+
+  const hasPlaceholders = /\{\{[^{}]+\}\}/.test(markdown);
+
+  return (
+    <div className="border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between bg-muted/40 px-2 py-1 text-left text-[11px] hover:bg-muted"
+      >
+        <span className="font-medium">
+          Preview rendered body{' '}
+          <span className="text-muted-foreground">(sample workflow context)</span>
+        </span>
+        <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border px-2 py-2">
+          {!hasPlaceholders && (
+            <p className="text-[10px] text-muted-foreground">
+              No <code>{'{{var}}'}</code> placeholders found. The body renders verbatim.
+            </p>
+          )}
+          {hasPlaceholders && (
+            <p className="text-[10px] text-muted-foreground">
+              Substituted with example values (<code>input</code>,{' '}
+              <code>worktree</code>, <code>workflow.id</code>, <code>node.id</code>,{' '}
+              <code>project.*</code>, <code>wi.*</code>) — the real workflow run supplies
+              these at dispatch time.
+            </p>
+          )}
+          {result.kind === 'ok' && (
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-background px-2 py-1 font-mono text-[11px]">
+              {result.rendered}
+            </pre>
+          )}
+          {result.kind === 'err' && (
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap bg-destructive/10 px-2 py-1 font-mono text-[11px] text-destructive">
+              {result.message}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }
