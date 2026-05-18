@@ -41,13 +41,39 @@ interface WorkflowListProps {
   events: WsEnvelope[];
 }
 
-const STATUS_COLOR: Record<RunStatus, string> = {
-  pending: 'text-muted-foreground',
-  'in-progress': 'text-warning',
-  paused: 'text-info',
-  complete: 'text-success',
-  failed: 'text-destructive',
-  cancelled: 'text-muted-foreground',
+// 4a.10 / `feedback_ui_visible_feedback`. Bg-filled + glyph per status — text
+// color alone doesn't register at a glance.
+const STATUS_STYLES: Record<RunStatus, { bg: string; glyph: string; label: string }> = {
+  pending: {
+    bg: 'bg-muted text-muted-foreground',
+    glyph: '◯',
+    label: 'pending',
+  },
+  'in-progress': {
+    bg: 'bg-warning text-background',
+    glyph: '◐',
+    label: 'running',
+  },
+  paused: {
+    bg: 'bg-info text-background',
+    glyph: '⏸',
+    label: 'paused',
+  },
+  complete: {
+    bg: 'bg-success text-background',
+    glyph: '✓',
+    label: 'complete',
+  },
+  failed: {
+    bg: 'bg-destructive text-destructive-foreground',
+    glyph: '✕',
+    label: 'failed',
+  },
+  cancelled: {
+    bg: 'bg-muted text-muted-foreground',
+    glyph: '⊘',
+    label: 'cancelled',
+  },
 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -175,9 +201,15 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
           {registry?.invalid.map((wf) => (
             <div
               key={wf.fileName}
-              className="border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
+              className="border border-destructive bg-destructive/10 px-3 py-2 text-sm"
             >
-              <div className="font-medium text-destructive">{wf.fileName}</div>
+              <div className="mb-1 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 bg-destructive px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
+                  <span aria-hidden="true">✕</span>
+                  invalid yaml
+                </span>
+                <span className="font-medium text-foreground">{wf.fileName}</span>
+              </div>
               {wf.partialStageId && (
                 <div className="text-xs text-muted-foreground">
                   partial stage: {wf.partialStageId}
@@ -185,7 +217,7 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
               )}
               <ul className="mt-1 list-disc pl-5 text-xs text-destructive">
                 {wf.errors.map((err, i) => (
-                  <li key={i}>{err}</li>
+                  <li key={i} className="font-mono">{err}</li>
                 ))}
               </ul>
             </div>
@@ -329,6 +361,7 @@ function ApprovalRow({
 function RunRow({ run }: { run: WorkflowRun }) {
   const start = new Date(run.startedAt);
   const end = run.completedAt ? new Date(run.completedAt) : null;
+  const style = STATUS_STYLES[run.status];
   return (
     <div className="flex items-center justify-between gap-3 border border-border bg-card px-3 py-2 text-sm">
       <div className="min-w-0 flex-1">
@@ -342,9 +375,13 @@ function RunRow({ run }: { run: WorkflowRun }) {
         )}
       </div>
       <span
-        className={'shrink-0 text-[10px] uppercase tracking-wider ' + STATUS_COLOR[run.status]}
+        className={
+          'inline-flex shrink-0 items-center gap-1 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ' +
+          style.bg
+        }
       >
-        {run.status}
+        <span aria-hidden="true">{style.glyph}</span>
+        {style.label}
       </span>
     </div>
   );
