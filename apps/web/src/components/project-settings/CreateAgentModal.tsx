@@ -39,13 +39,18 @@ export function CreateAgentModal({ projectId, events, onClose }: CreateAgentModa
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-
-  // Boot the transient session on mount; tear it down on unmount.
+  // Tracks how many WS envelopes we've consumed. Hoisted above the boot
+  // effect so we can snap it to events.length on mount (skipping pre-mount
+  // envelopes from concurrent orchestrator activity).
+  const processedRef = useRef(0);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
   useEffect(() => {
     let cancelled = false;
     setBubbles([]);
     setState('spawning');
     setError(null);
+    processedRef.current = eventsRef.current.length;
     api
       .startAgentCreator(projectId)
       .then((s) => {
@@ -62,36 +67,40 @@ export function CreateAgentModal({ projectId, events, onClose }: CreateAgentModa
     };
   }, [projectId]);
 
-  // Subscribe to agent-creator-* envelopes from the parent WS stream.
+  // Subscribe to agent-creator-* envelopes from the parent WS stream. Walk
+  // every new envelope since the last render — checking only the latest would
+  // miss our state event when the orchestrator's concurrent state pings land
+  // on top of it. processedRef (declared above) tracks how many we've seen
+  // so we only pay for new arrivals; on MAX_BUFFERED wrap (rare in a modal
+  // lifetime) we re-scan from zero, and dedup in appendBubble keeps that
+  // idempotent.
   useEffect(() => {
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'agent-creator-state') {
-      const s = (last as { state?: string }).state;
-      if (s) setState(s as SessionState);
-      return;
-    }
-    if (last.type === 'agent-creator-event') {
-      const ev = (last as { event?: { kind?: string; text?: string; ts?: string } }).event;
-      if (!ev) return;
-      const ts = ev.ts ? Date.parse(ev.ts) : Date.now();
-      if (ev.kind === 'user' && typeof ev.text === 'string') {
-        appendBubble({ kind: 'user', text: ev.text, ts });
-      } else if (ev.kind === 'assistant' && typeof ev.text === 'string' && ev.text.trim()) {
-        appendBubble({ kind: 'assistant', text: ev.text, ts });
+    const start = events.length >= processedRef.current ? processedRef.current : 0;
+    const end = events.length;
+    processedRef.current = end;
+    for (let i = start; i < end; i++) {
+      const env = events[i];
+      if (!env) continue;
+      if (env.type === 'agent-creator-state') {
+        const s = (env as { state?: string }).state;
+        if (s) setState(s as SessionState);
+      } else if (env.type === 'agent-creator-event') {
+        const ev = (env as { event?: { kind?: string; text?: string; ts?: string } }).event;
+        if (!ev) continue;
+        const ts = ev.ts ? Date.parse(ev.ts) : Date.now();
+        if (ev.kind === 'user' && typeof ev.text === 'string') {
+          appendBubble({ kind: 'user', text: ev.text, ts });
+        } else if (ev.kind === 'assistant' && typeof ev.text === 'string' && ev.text.trim()) {
+          appendBubble({ kind: 'assistant', text: ev.text, ts });
+        }
+      } else if (env.type === 'agent-creator-exit') {
+        setState('exited');
+      } else if (env.type === 'project-agents-changed') {
+        // `project-agents-changed` arrives on the shared project WS, not an
+        // agent-creator-* envelope. Fires when pc_create_agent commits — close
+        // so the user sees the new entry in AgentsSection.
+        closeRef.current();
       }
-      return;
-    }
-    if (last.type === 'agent-creator-exit') {
-      setState('exited');
-      return;
-    }
-    // `project-agents-changed` arrives via the shared project WS, not an
-    // agent-creator-* envelope. When it fires, the agent-creator just
-    // committed — close the modal so the user sees the new agent in the list.
-    if (last.type === 'project-agents-changed') {
-      closeRef.current();
-      return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
