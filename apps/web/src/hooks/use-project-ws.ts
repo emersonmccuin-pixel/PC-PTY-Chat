@@ -110,6 +110,26 @@ export interface SubagentStopEvent extends ChatEventBase {
   kind: 'subagent-stop';
   subagent: string | null;
   result?: string | null;
+  /** Section 3 3g — CC's `transcript_path` from the SubagentStop hook payload.
+   *  Used by the failure bubble's transcript link to open the right JSONL. */
+  transcriptPath?: string | null;
+}
+
+/** Section 3 / D10 — emitted by the workflow runtime when a subagent node
+ *  terminates with a non-success status. Chat renders a red failure bubble. */
+export interface SubagentFailureEvent extends ChatEventBase {
+  kind: 'subagent-failure';
+  workflowRunId: string;
+  nodeId: string;
+  agentName: string;
+  attemptNumber: number;
+  cause:
+    | 'agent-self-failed'
+    | 'agent-returned-without-closing'
+    | 'dispatch-error'
+    | 'timeout';
+  surfaceError: string;
+  transcriptPath?: string | null;
 }
 
 // Section 0 phase 0c-followup — fired by CC's StopFailure hook when the
@@ -135,6 +155,7 @@ export type ChatEvent =
   | NotificationEvent
   | SessionEndEvent
   | SubagentStopEvent
+  | SubagentFailureEvent
   | StopFailureEvent
   | (ChatEventBase & Record<string, unknown>);
 

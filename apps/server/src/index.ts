@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
@@ -169,6 +169,7 @@ function attachPtyHandlers(
   });
   session.on('event', (event: unknown) => {
     maybeSetSessionTitle(projectId, event);
+    captureSubagentTranscriptPath(runtime, event);
     broadcastTo(projectId, { type: 'event', event });
   });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
@@ -208,6 +209,17 @@ function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   setOrchestratorSessionTitle(active.id, title);
   const updated = getActiveOrchestratorSession(projectId);
   if (updated) broadcastTo(projectId, { type: 'session-changed', session: updated });
+}
+
+/** Stash the transcript_path from each SubagentStop hook event on the project
+ *  runtime so the workflow runtime can attach it to D10 failure signals. */
+function captureSubagentTranscriptPath(runtime: ProjectRuntime, event: unknown): void {
+  if (!event || typeof event !== 'object') return;
+  const ev = event as { kind?: string; transcriptPath?: unknown };
+  if (ev.kind !== 'subagent-stop') return;
+  if (typeof ev.transcriptPath === 'string' && ev.transcriptPath) {
+    runtime.noteSubagentTranscript(ev.transcriptPath);
+  }
 }
 
 /** First non-empty line, collapsed whitespace, truncated to ~60 chars. */
@@ -1402,6 +1414,40 @@ app.get('/api/projects/:projectId/approvals', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   return c.json({ approvals: runtime.workflowRuntime().listPendingApprovals() });
+});
+
+/** Read a subagent transcript JSONL file, parse it, and return the per-line
+ *  events. Path is required and MUST live under `~/.claude/projects/` — any
+ *  attempt to escape (relative segments, paths outside the allowlist) returns
+ *  403. Pure read-only; Section 3 / 3g transcript viewer is the only caller. */
+app.get('/api/subagent-transcript', async (c) => {
+  const rawPath = c.req.query('path');
+  if (!rawPath || !isAbsolute(rawPath)) {
+    return c.json({ ok: false, error: 'absolute path query param required' }, 400);
+  }
+  const allowedRoot = resolve(homedir(), '.claude', 'projects');
+  const requested = resolve(rawPath);
+  const rel = relative(allowedRoot, requested);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    return c.json({ ok: false, error: 'path must live under ~/.claude/projects/' }, 403);
+  }
+  if (!existsSync(requested)) return c.json({ ok: false, error: 'transcript not found' }, 404);
+  try {
+    const text = await readFile(requested, 'utf-8');
+    const events: unknown[] = [];
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        events.push(JSON.parse(trimmed));
+      } catch {
+        // Skip malformed lines — JSONL tolerates partial writes mid-tail.
+      }
+    }
+    return c.json({ ok: true, path: requested, relPath: rel, events });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
 });
 
 app.post('/api/projects/:projectId/approval/respond', async (c) => {

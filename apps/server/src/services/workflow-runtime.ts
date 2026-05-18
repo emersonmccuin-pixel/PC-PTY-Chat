@@ -37,6 +37,8 @@ import type {
   NodeOutputStatus,
   Project,
   ScriptNode,
+  SubagentFailureCause,
+  SubagentFailureSignal,
   SubagentNode,
   ULID,
   WorkItem,
@@ -100,6 +102,10 @@ export interface WorkflowRuntimeOptions {
    *  paths construct WorkflowRuntime directly without one); when missing the
    *  legacy createWorkItem path runs against the repo directly. */
   workItemService?: WorkItemService;
+  /** Optional lookup for the latest subagent transcript JSONL path. Threaded
+   *  through ProjectRuntime — fed by the SubagentStop hook payload. Used to
+   *  decorate D10 failure signals with a clickable transcript link. */
+  subagentTranscriptLookup?: () => string | null;
 }
 
 const MAX_NESTING_DEPTH = 10;
@@ -153,6 +159,7 @@ export class WorkflowRuntime {
   private readonly worktrees: WorktreeService | undefined;
   private readonly workItemSvc: WorkItemService | undefined;
   private readonly projectId: ULID;
+  private readonly subagentTranscriptLookup: () => string | null;
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
 
   constructor(private readonly opts: WorkflowRuntimeOptions) {
@@ -164,6 +171,7 @@ export class WorkflowRuntime {
     this.worktrees = opts.worktrees;
     this.workItemSvc = opts.workItemService;
     this.projectId = opts.projectId;
+    this.subagentTranscriptLookup = opts.subagentTranscriptLookup ?? (() => null);
     this.dispatchers = {
       subagent: (ctx) => this.dispatchSubagent(ctx),
       bash: (ctx) => this.dispatchBash(ctx),
@@ -438,6 +446,14 @@ export class WorkflowRuntime {
           if (!run.nodeOutputs[node.id]!.completedAt) {
             run.nodeOutputs[node.id]!.completedAt = completedAt;
           }
+          if (node.kind === 'subagent' && result.output.status === 'failed') {
+            this.broadcastSubagentFailure(
+              run,
+              node.id,
+              'dispatch-error',
+              result.output.error ?? 'subagent dispatch failed',
+            );
+          }
         } else if (result.kind === 'cancel') {
           run.nodeOutputs[node.id] = {
             status: 'cancelled',
@@ -553,8 +569,38 @@ export class WorkflowRuntime {
       completedAt: new Date().toISOString(),
     };
     dbPersistRun(run);
+    this.broadcastSubagentFailure(run, nodeId, 'agent-self-failed', reason);
     await this.tick(runId);
     return { ok: true };
+  }
+
+  /** Build + broadcast a D10 SubagentFailureSignal. No-ops when the node isn't a
+   *  subagent (failure-surfacing today only targets agent nodes). */
+  private broadcastSubagentFailure(
+    run: WorkflowRun,
+    nodeId: string,
+    cause: SubagentFailureCause,
+    surfaceError: string,
+  ): void {
+    const agentName = lookupSubagentName(run, nodeId);
+    if (agentName === null) return;
+    const signal: SubagentFailureSignal = {
+      workflowRunId: run.id,
+      nodeId,
+      agentName,
+      attemptNumber: 1,
+      cause,
+      surfaceError,
+      transcriptPath: this.subagentTranscriptLookup() ?? null,
+    };
+    this.broadcast({
+      type: 'event',
+      event: {
+        kind: 'subagent-failure',
+        ts: new Date().toISOString(),
+        ...signal,
+      },
+    });
   }
 
   async respondToApproval(
@@ -612,7 +658,8 @@ export class WorkflowRuntime {
    * turn ends are marked failed.
    */
   async onTurnEnd(): Promise<void> {
-    const dirtyRunIds: string[] = [];
+    const dirtyRuns: WorkflowRun[] = [];
+    const failedNodes: Array<{ run: WorkflowRun; nodeId: string }> = [];
     for (const run of listActiveRuns()) {
       if (run.status !== 'in-progress') continue;
       const subagentNodeIds = collectSubagentNodeIds(run);
@@ -627,14 +674,23 @@ export class WorkflowRuntime {
           completedAt: new Date().toISOString(),
         };
         runChanged = true;
+        failedNodes.push({ run, nodeId });
       }
       if (runChanged) {
         dbPersistRun(run);
-        dirtyRunIds.push(run.id);
+        dirtyRuns.push(run);
       }
     }
-    for (const runId of dirtyRunIds) {
-      await this.tick(runId);
+    for (const { run, nodeId } of failedNodes) {
+      this.broadcastSubagentFailure(
+        run,
+        nodeId,
+        'agent-returned-without-closing',
+        'subagent returned without closing the node',
+      );
+    }
+    for (const run of dirtyRuns) {
+      await this.tick(run.id);
     }
   }
 
@@ -1122,6 +1178,16 @@ function collectSubagentNodeIds(run: WorkflowRun): string[] {
   const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
   if (!parsed.ok || !parsed.workflow) return [];
   return parsed.workflow.nodes.filter((n) => n.kind === 'subagent').map((n) => n.id);
+}
+
+/** Returns the `subagent:` field for a node, or null if the node isn't a
+ *  subagent node (or the YAML snapshot fails to reparse). */
+function lookupSubagentName(run: WorkflowRun, nodeId: string): string | null {
+  const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
+  if (!parsed.ok || !parsed.workflow) return null;
+  const node = parsed.workflow.nodes.find((n) => n.id === nodeId);
+  if (!node || node.kind !== 'subagent') return null;
+  return (node as SubagentNode).subagent;
 }
 
 function buildSubagentChannelBody(args: {

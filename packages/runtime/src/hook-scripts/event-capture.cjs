@@ -134,15 +134,18 @@ switch (eventType) {
     break;
   }
   case 'SubagentStop': {
-    // Section 0 phase 0e — supplemental signal. Section 2 (Subagents) decides
-    // how to render. For now, capture the data so the activity panel + future
-    // subagent UX has the history.
+    // Section 0 phase 0e captured this as supplemental signal. Section 3 3g
+    // promotes transcriptPath into the event so the workflow runtime can
+    // correlate failures with the per-run JSONL CC wrote.
     appendEvent({
       ts: now,
       kind: 'subagent-stop',
       subagent: payload.subagent_type ?? payload.agent_type ?? null,
       result: typeof payload.last_assistant_message === 'string'
         ? truncate(payload.last_assistant_message, 4000)
+        : null,
+      transcriptPath: typeof payload.transcript_path === 'string'
+        ? payload.transcript_path
         : null,
     });
     break;

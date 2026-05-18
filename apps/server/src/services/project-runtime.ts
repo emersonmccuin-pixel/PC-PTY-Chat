@@ -51,6 +51,21 @@ export class ProjectRuntime {
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
   private hooksRefreshed = false;
+  /** Per-project memory of the last SubagentStop's transcript_path. Index.ts
+   *  populates this from the hook event stream; WorkflowRuntime reads it via
+   *  `subagentTranscriptLookup` when emitting D10 failure signals so the chat
+   *  bubble has a transcript link to click. Single-slot (no per-node map) —
+   *  v1 dispatches subagents sequentially through the orchestrator channel, so
+   *  the latest SubagentStop is always the one that just closed. */
+  private lastSubagentTranscriptPath: string | null = null;
+
+  noteSubagentTranscript(path: string | null): void {
+    if (path && typeof path === 'string') this.lastSubagentTranscriptPath = path;
+  }
+
+  latestSubagentTranscriptPath(): string | null {
+    return this.lastSubagentTranscriptPath;
+  }
 
   constructor(public project: Project, private readonly opts: ProjectRuntimeOptions) {}
 
@@ -129,6 +144,7 @@ export class ProjectRuntime {
         registry: this.workflowRegistry(),
         worktrees: this.worktrees(),
         workItemService: this.workItemService(),
+        subagentTranscriptLookup: () => this.latestSubagentTranscriptPath(),
       });
     }
     return this.workflow;

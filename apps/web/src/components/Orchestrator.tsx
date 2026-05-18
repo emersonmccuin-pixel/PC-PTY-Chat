@@ -17,6 +17,7 @@ import type {
   ChatEvent,
   JsonlEvent,
   NotificationEvent,
+  SubagentFailureEvent,
   TaskEndEvent,
   TaskStartEvent,
   TodosEvent,
@@ -28,6 +29,7 @@ import type {
 } from '@/hooks/use-project-ws';
 import { useViewingSession } from '@/store/viewing-session';
 import { StatusBar, type UsageTotals } from '@/components/StatusBar';
+import { TranscriptViewer } from '@/components/TranscriptViewer';
 
 interface OrchestratorProps {
   project: Project;
@@ -859,6 +861,8 @@ function EventBubble({
       );
     case 'notification':
       return <NotificationBubble event={event as NotificationEvent} />;
+    case 'subagent-failure':
+      return <FailureBubble event={event as SubagentFailureEvent} />;
     // session-end renders as a footer notice on the chat panel (not inline);
     // subagent-stop is captured but not rendered in chat (Section 2 owns it).
     case 'session-end':
@@ -867,6 +871,58 @@ function EventBubble({
     default:
       return null;
   }
+}
+
+// ── Subagent failure bubble (Section 3 / D10) ─────────────────────────────
+
+const FAILURE_CAUSE_LABEL: Record<SubagentFailureEvent['cause'], string> = {
+  'agent-self-failed': 'Agent reported failure',
+  'agent-returned-without-closing': 'Agent did not close the node',
+  'dispatch-error': 'Dispatch failed',
+  timeout: 'Timed out',
+};
+
+function FailureBubble({ event }: { event: SubagentFailureEvent }) {
+  const [viewerOpen, setViewerOpen] = useState(false);
+  return (
+    <div className="self-start max-w-[85%] border border-destructive/60 bg-destructive/5 px-3 py-2 text-sm">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="bg-destructive px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
+          subagent failed
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">{event.agentName}</span>
+        <span className="text-[10px] text-muted-foreground">
+          {FAILURE_CAUSE_LABEL[event.cause] ?? event.cause}
+          {event.attemptNumber > 1 ? ` · attempt ${event.attemptNumber}` : ''}
+        </span>
+      </div>
+      <div className="mb-1.5 whitespace-pre-wrap break-words text-sm text-foreground">
+        {event.surfaceError || '(no surface error provided)'}
+      </div>
+      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+        <span className="font-mono">
+          run={event.workflowRunId.slice(0, 12)} · node={event.nodeId}
+        </span>
+        {event.transcriptPath ? (
+          <button
+            type="button"
+            onClick={() => setViewerOpen(true)}
+            className="border border-border px-2 py-0.5 text-[10px] hover:bg-muted"
+          >
+            View transcript
+          </button>
+        ) : (
+          <span className="italic">no transcript captured</span>
+        )}
+      </div>
+      {viewerOpen && event.transcriptPath && (
+        <TranscriptViewer
+          path={event.transcriptPath}
+          onClose={() => setViewerOpen(false)}
+        />
+      )}
+    </div>
+  );
 }
 
 function NotificationBubble({ event }: { event: NotificationEvent }) {

@@ -84,6 +84,7 @@ export type {
   AgentBodyContextWorkItem,
   AgentBodyTemplateIssue,
 } from './agent-body.ts';
+export type { SubagentFailureCause, SubagentFailureSignal } from './subagent-failure.ts';
 export {
   AGENT_BODY_VARIABLES,
   AgentBodyTemplateError,
