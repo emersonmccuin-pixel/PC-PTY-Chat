@@ -41,6 +41,25 @@ Four pieces. You build all of them by chatting.
 
 The board surfaces what's in flight. The chat is where you build and run.
 
+## Building a workflow
+
+You don't need to know n8n. You don't need to know Zapier. You don't need to map a node graph, write a YAML config, or learn what a webhook is.
+
+You have a conversation.
+
+The chat has an interview tool that walks you through it:
+
+- **What do you want it to do?**
+- **What triggers it?** Moves to a stage on the board, called manually, on a schedule.
+- **What has to happen?** The steps, in your words.
+- **What secrets does it need?** API keys, credentials, logins to anything it has to reach.
+- **What does review look like?** Draft for your approval, auto-send, file as a card, ping someone for sign-off.
+- **What's the expected output?** An email, a report, a Slack message, a row in a sheet, a new card on the board.
+
+You answer in plain English. Companion writes the workflow. You run it. If something needs to change, you tell it — same chat, same conversation — and it adjusts.
+
+The person who knows how the job should be done is finally the one operating the tool. No translator, no specialist, no waiting.
+
 ## What it costs
 
 Your existing Claude subscription. Companion uses it directly — same login, same plan, no extra billing.
