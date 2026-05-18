@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { OrchestratorSession, Project, ULID } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID, Workflow } from '@pc/domain';
 import {
   createOrchestratorSession,
   endOrchestratorSession,
@@ -58,6 +58,11 @@ export class ProjectRuntime {
    *  v1 dispatches subagents sequentially through the orchestrator channel, so
    *  the latest SubagentStop is always the one that just closed. */
   private lastSubagentTranscriptPath: string | null = null;
+  /** 4b.1: in-memory workflow-creator drafts keyed by transient PC_SESSION_ID.
+   *  Populated by `pc_update_workflow_draft` mid-interview; consumed by the
+   *  visualizer via the `workflow-creator-draft` WS envelope. Cleared on
+   *  session exit (4b.3's `endWorkflowCreator` plus a sweep in `shutdown()`). */
+  private readonly workflowCreatorDrafts: Map<string, Workflow> = new Map();
 
   noteSubagentTranscript(path: string | null): void {
     if (path && typeof path === 'string') this.lastSubagentTranscriptPath = path;
@@ -278,6 +283,7 @@ export class ProjectRuntime {
     this.workItemSvc = null;
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
+    this.workflowCreatorDrafts.clear();
   }
 
   /** Section 3 phase 3e.3: transient PtySession driving the conversational
@@ -324,6 +330,25 @@ export class ProjectRuntime {
     if (!this.agentCreator) return;
     try { this.agentCreator.kill(); } catch { /* best-effort */ }
     this.agentCreator = null;
+  }
+
+  /** 4b.1: stash the latest workflow-creator draft for a session. The MCP
+   *  tool `pc_update_workflow_draft` calls into this through the matching
+   *  HTTP endpoint. Index.ts handles the WS broadcast. */
+  setWorkflowCreatorDraft(sessionId: string, def: Workflow): void {
+    this.workflowCreatorDrafts.set(sessionId, def);
+  }
+
+  /** Lookup helper — currently unused beyond tests + a future "replay on
+   *  reconnect" pass. Returns undefined if no draft exists for the session. */
+  getWorkflowCreatorDraft(sessionId: string): Workflow | undefined {
+    return this.workflowCreatorDrafts.get(sessionId);
+  }
+
+  /** Drop draft state for a specific workflow-creator session. 4b.3 calls
+   *  this from `endWorkflowCreator`. */
+  clearWorkflowCreatorDraft(sessionId: string): void {
+    this.workflowCreatorDrafts.delete(sessionId);
   }
 
   private resolveSessionForSpawn(): {

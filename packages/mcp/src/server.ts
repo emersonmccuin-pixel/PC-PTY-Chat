@@ -220,6 +220,38 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_create_workflow',
+    description:
+      'Create a NEW project-scoped workflow YAML. Used by the conversational workflow-creator modal (4b). `def` is the typed workflow object (matches the on-disk YAML shape, minus the post-parse `kind:` discriminator). Server validates against the same parser the registry uses, serializes to YAML, writes to `<project>/.project-companion/workflows/<def.id>.yaml`, broadcasts project-workflows-changed. 409 on id collision. 400 on validation errors (returned with per-path messages).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        def: {
+          type: 'object',
+          description: 'typed workflow object: { id, triggers?, nodes: [...], ... }',
+          additionalProperties: true,
+        },
+      },
+      required: ['def'],
+    },
+  },
+  {
+    name: 'pc_update_workflow_draft',
+    description:
+      'Push an in-progress draft of the workflow currently being authored. Use this after each meaningful structural change during the conversational interview so the user can see the workflow forming in the visualizer. The draft is NOT written to disk — only `pc_create_workflow` does that. Server keys the draft by the transient PC_SESSION_ID env var (already set by the host); draft state clears automatically when the workflow-creator session ends. 400 on validation errors so you can self-correct mid-interview.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        def: {
+          type: 'object',
+          description: 'in-progress typed workflow object',
+          additionalProperties: true,
+        },
+      },
+      required: ['def'],
+    },
+  },
+  {
     name: 'pc_attach_to_work_item',
     description:
       'Attach a text/markdown/JSON payload to a work item. The default destination for agent output per Section 3 D13 (the "report I will read later" path). Server stamps provenance: source = "agent" + the passed agentName + nodeId + workflowRunId. Returns { ok: true, attachment } or { ok: false, error }.',
@@ -654,6 +686,67 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_get_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_workflow': {
+      const def = args.def && typeof args.def === 'object' ? args.def : null;
+      if (!def) {
+        return { content: [{ type: 'text', text: 'pc_create_workflow: def required' }], isError: true };
+      }
+      try {
+        const res = await postServer(projectPath('workflows'), { def });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_create_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_create_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_update_workflow_draft': {
+      const def = args.def && typeof args.def === 'object' ? args.def : null;
+      if (!def) {
+        return {
+          content: [{ type: 'text', text: 'pc_update_workflow_draft: def required' }],
+          isError: true,
+        };
+      }
+      const sessionId = process.env.PC_SESSION_ID ?? '';
+      if (!sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_update_workflow_draft: PC_SESSION_ID env not set (transient workflow-creator session is the only valid caller)',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(projectPath('workflow-creator/draft'), { sessionId, def });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_update_workflow_draft failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_update_workflow_draft failed: ${(err as Error).message}` },
+          ],
           isError: true,
         };
       }

@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -9,8 +9,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { homedir } from 'node:os';
 
-import type { AgentDef, GlobalSettings, ULID } from '@pc/domain';
+import type { AgentDef, GlobalSettings, ULID, Workflow } from '@pc/domain';
 import { parseAgentFile, serializeAgentFile, validateAgentDef, withSettingsDefaults } from '@pc/domain';
+import { serializeWorkflow, validateWorkflow } from '@pc/workflows';
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
@@ -1325,6 +1326,96 @@ app.get('/api/projects/:projectId/workflows', (c) => {
       errors: e.errors,
     })),
   });
+});
+
+/** 4b.1: create a new project-scoped workflow YAML from a typed `def`. Mirrors
+ *  the agent-creation path. `def` is the same shape parseWorkflowText would
+ *  produce, minus the post-parse `kind:` discriminator (which never appears
+ *  on disk). Server validates against the workflow parser, serializes via
+ *  serializeWorkflow, writes to `<project>/.project-companion/workflows/<id>.yaml`,
+ *  and broadcasts `project-workflows-changed`. 409 on id collision; 400 on
+ *  validation errors. */
+app.post('/api/projects/:projectId/workflows', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const payload = await c.req.json<{ def?: unknown }>();
+  if (!payload.def || typeof payload.def !== 'object') {
+    return c.json({ ok: false, error: 'def required' }, 400);
+  }
+  const rawDef = payload.def as Record<string, unknown>;
+  const wfId = typeof rawDef.id === 'string' ? rawDef.id : '';
+  if (!wfId) {
+    return c.json({ ok: false, error: 'def.id required' }, 400);
+  }
+
+  const validation = validateWorkflow(rawDef, { expectedId: wfId });
+  if (!validation.ok || !validation.workflow) {
+    return c.json(
+      { ok: false, error: 'invalid workflow', errors: validation.errors },
+      400,
+    );
+  }
+
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const filePath = resolve(dir, `${wfId}.yaml`);
+  if (existsSync(filePath)) {
+    return c.json(
+      { ok: false, error: `workflow already exists: ${wfId}` },
+      409,
+    );
+  }
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    const yamlText = serializeWorkflow(validation.workflow);
+    writeFileSync(filePath, yamlText, 'utf-8');
+    broadcastTo(id, { type: 'project-workflows-changed', change: 'created', id: wfId });
+    return c.json(
+      {
+        ok: true,
+        workflow: { id: wfId, fileName: `${wfId}.yaml`, path: filePath },
+      },
+      201,
+    );
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 4b.1: stash an in-progress draft from the workflow-creator interview.
+ *  Does NOT write to disk — only the final `pc_create_workflow` does that.
+ *  Broadcasts `workflow-creator-draft` so the modal's visualizer re-renders. */
+app.post('/api/projects/:projectId/workflow-creator/draft', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const payload = await c.req.json<{ sessionId?: string; def?: unknown }>();
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+  if (!sessionId) {
+    return c.json({ ok: false, error: 'sessionId required' }, 400);
+  }
+  if (!payload.def || typeof payload.def !== 'object') {
+    return c.json({ ok: false, error: 'def required' }, 400);
+  }
+  const rawDef = payload.def as Record<string, unknown>;
+  const wfId = typeof rawDef.id === 'string' && rawDef.id ? rawDef.id : '';
+  if (!wfId) {
+    return c.json({ ok: false, error: 'def.id required' }, 400);
+  }
+  // Validate so the visualizer never receives a broken draft. Errors flow
+  // back through the tool-call result so the model self-corrects mid-chat.
+  const validation = validateWorkflow(rawDef, { expectedId: wfId });
+  if (!validation.ok || !validation.workflow) {
+    return c.json(
+      { ok: false, error: 'invalid workflow draft', errors: validation.errors },
+      400,
+    );
+  }
+  const def: Workflow = validation.workflow;
+  runtime.setWorkflowCreatorDraft(sessionId, def);
+  broadcastTo(id, { type: 'workflow-creator-draft', sessionId, def });
+  return c.json({ ok: true });
 });
 
 app.get('/api/projects/:projectId/workflow-runs', (c) => {
