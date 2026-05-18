@@ -12,8 +12,10 @@ import { load as yamlLoad } from 'js-yaml';
 
 import type {
   ApprovalNode,
+  AttachToWorkItemNode,
   BashNode,
   CancelNode,
+  CreateWorkItemNode,
   DagNode,
   DoneWhen,
   HttpNode,
@@ -22,6 +24,8 @@ import type {
   ScriptNode,
   SubagentNode,
   TriggerRule,
+  UpdateWorkItemNode,
+  WriteToWorktreeNode,
   Workflow,
 } from '@pc/domain';
 
@@ -58,6 +62,10 @@ const TYPE_BODY_FIELDS = [
   'cancel',
   'workflow',
   'loop',
+  'attach-to-work-item',
+  'create-work-item',
+  'update-work-item',
+  'write-to-worktree',
 ] as const;
 
 const HTTP_METHODS: ReadonlySet<HttpNode['http']['method']> = new Set([
@@ -362,6 +370,14 @@ function validateNode(
       return validateNestedWorkflowBody(raw, base, path, errors);
     case 'loop':
       return validateLoopBody(raw, base, path, errors);
+    case 'attach-to-work-item':
+      return validateAttachToWorkItemBody(raw, base, path, errors);
+    case 'create-work-item':
+      return validateCreateWorkItemBody(raw, base, path, errors);
+    case 'update-work-item':
+      return validateUpdateWorkItemBody(raw, base, path, errors);
+    case 'write-to-worktree':
+      return validateWriteToWorktreeBody(raw, base, path, errors);
   }
 }
 
@@ -632,6 +648,242 @@ function validateLoopBody(
       body,
       until: loop.until as string,
       max_iterations: loop.max_iterations as number,
+    },
+  };
+}
+
+function validateAttachToWorkItemBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): AttachToWorkItemNode | undefined {
+  const body = raw['attach-to-work-item'];
+  if (!isObj(body)) {
+    errors.push({ path: `${path}.attach-to-work-item`, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  if (typeof body.workItemId !== 'string' || !body.workItemId) {
+    errors.push({
+      path: `${path}.attach-to-work-item.workItemId`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (typeof body.name !== 'string' || !body.name) {
+    errors.push({
+      path: `${path}.attach-to-work-item.name`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (typeof body.content !== 'string' || !body.content) {
+    errors.push({
+      path: `${path}.attach-to-work-item.content`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (body.kind !== undefined && (typeof body.kind !== 'string' || !body.kind)) {
+    errors.push({
+      path: `${path}.attach-to-work-item.kind`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  if (body.contentType !== undefined && (typeof body.contentType !== 'string' || !body.contentType)) {
+    errors.push({
+      path: `${path}.attach-to-work-item.contentType`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  if (!ok) return undefined;
+  return {
+    ...base,
+    kind: 'attach-to-work-item',
+    'attach-to-work-item': {
+      workItemId: body.workItemId as string,
+      name: body.name as string,
+      content: body.content as string,
+      ...(typeof body.kind === 'string' ? { kind: body.kind } : {}),
+      ...(typeof body.contentType === 'string' ? { contentType: body.contentType } : {}),
+    },
+  };
+}
+
+function validateCreateWorkItemBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): CreateWorkItemNode | undefined {
+  const body = raw['create-work-item'];
+  if (!isObj(body)) {
+    errors.push({ path: `${path}.create-work-item`, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  if (typeof body.title !== 'string' || !body.title) {
+    errors.push({
+      path: `${path}.create-work-item.title`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (body.body !== undefined && typeof body.body !== 'string') {
+    errors.push({
+      path: `${path}.create-work-item.body`,
+      message: 'must be a string if provided',
+    });
+    ok = false;
+  }
+  if (body.stage !== undefined && (typeof body.stage !== 'string' || !body.stage)) {
+    errors.push({
+      path: `${path}.create-work-item.stage`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  if (body.parentId !== undefined && (typeof body.parentId !== 'string' || !body.parentId)) {
+    errors.push({
+      path: `${path}.create-work-item.parentId`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  if (!ok) return undefined;
+  return {
+    ...base,
+    kind: 'create-work-item',
+    'create-work-item': {
+      title: body.title as string,
+      ...(typeof body.body === 'string' ? { body: body.body } : {}),
+      ...(typeof body.stage === 'string' ? { stage: body.stage } : {}),
+      ...(typeof body.parentId === 'string' ? { parentId: body.parentId } : {}),
+    },
+  };
+}
+
+function validateUpdateWorkItemBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): UpdateWorkItemNode | undefined {
+  const body = raw['update-work-item'];
+  if (!isObj(body)) {
+    errors.push({ path: `${path}.update-work-item`, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  if (typeof body.workItemId !== 'string' || !body.workItemId) {
+    errors.push({
+      path: `${path}.update-work-item.workItemId`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (body.title !== undefined && typeof body.title !== 'string') {
+    errors.push({
+      path: `${path}.update-work-item.title`,
+      message: 'must be a string if provided',
+    });
+    ok = false;
+  }
+  if (body.body !== undefined && typeof body.body !== 'string') {
+    errors.push({
+      path: `${path}.update-work-item.body`,
+      message: 'must be a string if provided',
+    });
+    ok = false;
+  }
+  if (body.stage !== undefined && (typeof body.stage !== 'string' || !body.stage)) {
+    errors.push({
+      path: `${path}.update-work-item.stage`,
+      message: 'must be a non-empty string if provided',
+    });
+    ok = false;
+  }
+  if (body.fields !== undefined && !isObj(body.fields)) {
+    errors.push({
+      path: `${path}.update-work-item.fields`,
+      message: 'must be an object if provided',
+    });
+    ok = false;
+  }
+  if (!ok) return undefined;
+  const hasAnyChange =
+    body.title !== undefined ||
+    body.body !== undefined ||
+    body.stage !== undefined ||
+    body.fields !== undefined;
+  if (!hasAnyChange) {
+    errors.push({
+      path: `${path}.update-work-item`,
+      message: 'must declare at least one of: title, body, stage, fields',
+    });
+    return undefined;
+  }
+  return {
+    ...base,
+    kind: 'update-work-item',
+    'update-work-item': {
+      workItemId: body.workItemId as string,
+      ...(typeof body.title === 'string' ? { title: body.title } : {}),
+      ...(typeof body.body === 'string' ? { body: body.body } : {}),
+      ...(typeof body.stage === 'string' ? { stage: body.stage } : {}),
+      ...(isObj(body.fields) ? { fields: body.fields as Record<string, unknown> } : {}),
+    },
+  };
+}
+
+function validateWriteToWorktreeBody(
+  raw: Record<string, unknown>,
+  base: BaseFields,
+  path: string,
+  errors: ValidationError[],
+): WriteToWorktreeNode | undefined {
+  const body = raw['write-to-worktree'];
+  if (!isObj(body)) {
+    errors.push({ path: `${path}.write-to-worktree`, message: 'must be an object' });
+    return undefined;
+  }
+  let ok = true;
+  if (typeof body.path !== 'string' || !body.path) {
+    errors.push({
+      path: `${path}.write-to-worktree.path`,
+      message: 'must be a non-empty string',
+    });
+    ok = false;
+  }
+  if (typeof body.content !== 'string') {
+    errors.push({
+      path: `${path}.write-to-worktree.content`,
+      message: 'must be a string',
+    });
+    ok = false;
+  }
+  if (
+    body.mode !== undefined &&
+    body.mode !== 'overwrite' &&
+    body.mode !== 'append'
+  ) {
+    errors.push({
+      path: `${path}.write-to-worktree.mode`,
+      message: 'must be "overwrite" or "append" if provided',
+    });
+    ok = false;
+  }
+  if (!ok) return undefined;
+  return {
+    ...base,
+    kind: 'write-to-worktree',
+    'write-to-worktree': {
+      path: body.path as string,
+      content: body.content as string,
+      ...(body.mode === 'overwrite' || body.mode === 'append' ? { mode: body.mode } : {}),
     },
   };
 }

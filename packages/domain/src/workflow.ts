@@ -120,6 +120,77 @@ export interface LoopNode extends BaseNode {
   };
 }
 
+/** 4a.5 routing step. Attach an inline payload to a work item via the
+ *  AttachmentService. Provenance fields (source='agent', agentName,
+ *  workflowRunId, nodeId) are filled by the runtime from run context — the
+ *  workflow author doesn't set them. agentName is derived by scanning
+ *  `depends_on` for the first subagent node; null when no subagent ancestor. */
+export interface AttachToWorkItemNode extends BaseNode {
+  kind: 'attach-to-work-item';
+  'attach-to-work-item': {
+    /** WI to attach onto. Supports `$inputs.*`, `$<stepId>.output.*`. */
+    workItemId: string;
+    /** Attachment name (filename-ish). Supports substitution. */
+    name: string;
+    /** Inline payload. Supports substitution. */
+    content: string;
+    /** Free-form kind tag (default `text`). */
+    kind?: string;
+    /** Optional MIME-ish content type. */
+    contentType?: string;
+  };
+}
+
+/** 4a.5 routing step. Create a new work item via WorkItemService.create.
+ *  Stage defaults to the project's first stage when unset. */
+export interface CreateWorkItemNode extends BaseNode {
+  kind: 'create-work-item';
+  'create-work-item': {
+    /** Title. Supports substitution. */
+    title: string;
+    /** Body. Supports substitution. */
+    body?: string;
+    /** Stage id. Defaults to the first stage on the project. */
+    stage?: string;
+    /** Parent WI id (string). Supports substitution. */
+    parentId?: string;
+  };
+}
+
+/** 4a.5 routing step. Patch an existing work item via WorkItemService.patch.
+ *  Reads current version, then applies the patch. `fields` is shallow-merged
+ *  into the WI's existing fields; pass an empty value to clear a key. */
+export interface UpdateWorkItemNode extends BaseNode {
+  kind: 'update-work-item';
+  'update-work-item': {
+    /** WI to patch. Supports substitution. */
+    workItemId: string;
+    /** Optional title replacement. */
+    title?: string;
+    /** Optional body replacement. */
+    body?: string;
+    /** Optional stage move. */
+    stage?: string;
+    /** Optional partial fields patch. */
+    fields?: Record<string, unknown>;
+  };
+}
+
+/** 4a.5 routing step. Write a file inside the run's worktree. Path must
+ *  resolve under `run.worktreePath`; escapes fail the step. No git side-
+ *  effect — pair with a follow-on `bash` step for `git add && commit`. */
+export interface WriteToWorktreeNode extends BaseNode {
+  kind: 'write-to-worktree';
+  'write-to-worktree': {
+    /** Worktree-relative path. Supports substitution. */
+    path: string;
+    /** Content. Supports substitution. */
+    content: string;
+    /** `overwrite` (default) replaces the file; `append` adds to the end. */
+    mode?: 'overwrite' | 'append';
+  };
+}
+
 export type DagNode =
   | SubagentNode
   | BashNode
@@ -128,7 +199,11 @@ export type DagNode =
   | ApprovalNode
   | CancelNode
   | NestedWorkflowNode
-  | LoopNode;
+  | LoopNode
+  | AttachToWorkItemNode
+  | CreateWorkItemNode
+  | UpdateWorkItemNode
+  | WriteToWorktreeNode;
 
 /** Trigger conditions for a workflow. */
 export interface WorkflowTriggers {

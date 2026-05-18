@@ -13,9 +13,11 @@ export { validateFields } from './field-schema.ts';
 export type { Project, Stage } from './project.ts';
 export type {
   ApprovalNode,
+  AttachToWorkItemNode,
   BashNode,
   BaseNode,
   CancelNode,
+  CreateWorkItemNode,
   DagNode,
   DoneWhen,
   HttpNode,
@@ -24,6 +26,8 @@ export type {
   ScriptNode,
   SubagentNode,
   TriggerRule,
+  UpdateWorkItemNode,
+  WriteToWorktreeNode,
   Workflow,
   WorkflowTriggers,
 } from './workflow.ts';

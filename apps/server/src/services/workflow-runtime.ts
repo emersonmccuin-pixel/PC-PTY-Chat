@@ -28,8 +28,10 @@ import { promisify } from 'node:util';
 
 import type {
   ApprovalNode,
+  AttachToWorkItemNode,
   BashNode,
   CancelNode,
+  CreateWorkItemNode,
   DagNode,
   HttpNode,
   LoopNode,
@@ -42,11 +44,13 @@ import type {
   SubagentFailureSignal,
   SubagentNode,
   ULID,
+  UpdateWorkItemNode,
   WorkItem,
   Workflow,
   WorkflowRun,
   WorkflowRunStatus,
   WorkflowRunTrigger,
+  WriteToWorktreeNode,
 } from '@pc/domain';
 import {
   applyRunOutcome,
@@ -67,6 +71,11 @@ import {
 import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
 
 import { runHttpStep } from './http-step.ts';
+import { runAttachToWorkItemStep } from './attach-to-work-item-step.ts';
+import { runCreateWorkItemStep } from './create-work-item-step.ts';
+import { runUpdateWorkItemStep } from './update-work-item-step.ts';
+import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
+import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { WorkItemService } from './work-item.ts';
 
@@ -104,6 +113,12 @@ export interface WorkflowRuntimeOptions {
    *  paths construct WorkflowRuntime directly without one); when missing the
    *  legacy createWorkItem path runs against the repo directly. */
   workItemService?: WorkItemService;
+  /** Optional AttachmentService — required for `attach-to-work-item` routing
+   *  steps (4a.5). Steps fail at dispatch with a clear error when missing. */
+  attachmentService?: AttachmentService;
+  /** Optional Project lookup — required for `create-work-item` routing steps
+   *  to default the stage to the project's first stage when unset. */
+  getProject?: () => Project;
   /** Optional lookup for the latest subagent transcript JSONL path. Threaded
    *  through ProjectRuntime — fed by the SubagentStop hook payload. Used to
    *  decorate D10 failure signals with a clickable transcript link. */
@@ -160,6 +175,8 @@ export class WorkflowRuntime {
   private readonly registry: WorkflowRegistry | undefined;
   private readonly worktrees: WorktreeService | undefined;
   private readonly workItemSvc: WorkItemService | undefined;
+  private readonly attachmentSvc: AttachmentService | undefined;
+  private readonly getProjectFn: (() => Project) | undefined;
   private readonly projectId: ULID;
   private readonly subagentTranscriptLookup: () => string | null;
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
@@ -172,6 +189,8 @@ export class WorkflowRuntime {
     this.registry = opts.registry;
     this.worktrees = opts.worktrees;
     this.workItemSvc = opts.workItemService;
+    this.attachmentSvc = opts.attachmentService;
+    this.getProjectFn = opts.getProject;
     this.projectId = opts.projectId;
     this.subagentTranscriptLookup = opts.subagentTranscriptLookup ?? (() => null);
     this.dispatchers = {
@@ -183,7 +202,64 @@ export class WorkflowRuntime {
       cancel: (ctx) => this.dispatchCancel(ctx),
       workflow: (ctx) => this.dispatchNestedWorkflow(ctx),
       loop: (ctx) => this.dispatchLoop(ctx),
+      'attach-to-work-item': (ctx) => this.dispatchAttachToWorkItem(ctx),
+      'create-work-item': (ctx) => this.dispatchCreateWorkItem(ctx),
+      'update-work-item': (ctx) => this.dispatchUpdateWorkItem(ctx),
+      'write-to-worktree': (ctx) => this.dispatchWriteToWorktree(ctx),
     };
+  }
+
+  private async dispatchAttachToWorkItem(ctx: DispatchContext): Promise<DispatchResult> {
+    if (!this.attachmentSvc) {
+      return failedSync(
+        `attach-to-work-item step requires an AttachmentService; runtime was not configured with one`,
+        new Date().toISOString(),
+      );
+    }
+    return runAttachToWorkItemStep(ctx.node as AttachToWorkItemNode, ctx.run, {
+      attachmentService: this.attachmentSvc,
+      workflow: ctx.workflow,
+      substituteOutputs: ctx.substituteOutputs,
+    });
+  }
+
+  private async dispatchCreateWorkItem(ctx: DispatchContext): Promise<DispatchResult> {
+    if (!this.workItemSvc) {
+      return failedSync(
+        `create-work-item step requires a WorkItemService; runtime was not configured with one`,
+        new Date().toISOString(),
+      );
+    }
+    if (!this.getProjectFn) {
+      return failedSync(
+        `create-work-item step requires a getProject() lookup; runtime was not configured with one`,
+        new Date().toISOString(),
+      );
+    }
+    return runCreateWorkItemStep(ctx.node as CreateWorkItemNode, ctx.run, {
+      workItemService: this.workItemSvc,
+      getProject: this.getProjectFn,
+      substituteOutputs: ctx.substituteOutputs,
+    });
+  }
+
+  private async dispatchUpdateWorkItem(ctx: DispatchContext): Promise<DispatchResult> {
+    if (!this.workItemSvc) {
+      return failedSync(
+        `update-work-item step requires a WorkItemService; runtime was not configured with one`,
+        new Date().toISOString(),
+      );
+    }
+    return runUpdateWorkItemStep(ctx.node as UpdateWorkItemNode, ctx.run, {
+      workItemService: this.workItemSvc,
+      substituteOutputs: ctx.substituteOutputs,
+    });
+  }
+
+  private async dispatchWriteToWorktree(ctx: DispatchContext): Promise<DispatchResult> {
+    return runWriteToWorktreeStep(ctx.node as WriteToWorktreeNode, ctx.run, {
+      substituteOutputs: ctx.substituteOutputs,
+    });
   }
 
   private async dispatchHttp(ctx: DispatchContext): Promise<DispatchResult> {

@@ -144,6 +144,8 @@ export class ProjectRuntime {
         registry: this.workflowRegistry(),
         worktrees: this.worktrees(),
         workItemService: this.workItemService(),
+        attachmentService: this.attachmentService(),
+        getProject: () => this.project,
         subagentTranscriptLookup: () => this.latestSubagentTranscriptPath(),
       });
     }

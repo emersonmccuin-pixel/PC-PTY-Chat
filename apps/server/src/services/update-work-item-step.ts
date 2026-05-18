@@ -1,0 +1,99 @@
+// update-work-item step dispatcher (4a.5). Reads the WI to get the current
+// version, then calls WorkItemService.patch with the substituted body fields.
+// `fields` is shallow-merged into the WI's existing fields by the service.
+//
+// Status changes (status / statusReason) are NOT part of this step's surface
+// because WorkItemService.patch doesn't expose them — they're driven by
+// workflow lifecycle (run terminal → service.applyRunOutcome). Add a
+// dedicated `set-status` step kind later if a workflow author needs it.
+
+import type {
+  NodeOutput,
+  UpdateWorkItemNode,
+  ULID,
+  WorkflowRun,
+} from '@pc/domain';
+
+import type { WorkItemService } from './work-item.ts';
+
+export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+
+export interface UpdateWorkItemStepResult {
+  kind: 'sync';
+  output: NodeOutput;
+}
+
+export interface UpdateWorkItemStepDeps {
+  workItemService: WorkItemService;
+  substituteOutputs: SubstituteOutputs;
+}
+
+export async function runUpdateWorkItemStep(
+  node: UpdateWorkItemNode,
+  run: WorkflowRun,
+  deps: UpdateWorkItemStepDeps,
+): Promise<UpdateWorkItemStepResult> {
+  const completedAt = () => new Date().toISOString();
+  const cfg = node['update-work-item'];
+  const workItemId = deps.substituteOutputs(cfg.workItemId, run).trim();
+  if (!workItemId) {
+    return failedSync(
+      `workItemId resolved to empty (raw: "${cfg.workItemId}")`,
+      completedAt(),
+    );
+  }
+
+  const current = deps.workItemService.get(workItemId as ULID);
+  if (!current) {
+    return failedSync(`unknown work item: ${workItemId}`, completedAt());
+  }
+
+  const patchInput: Parameters<WorkItemService['patch']>[1] = {
+    expectedVersion: current.version,
+  };
+  if (cfg.title !== undefined) {
+    patchInput.title = deps.substituteOutputs(cfg.title, run);
+  }
+  if (cfg.body !== undefined) {
+    patchInput.body = deps.substituteOutputs(cfg.body, run);
+  }
+  if (cfg.stage !== undefined) {
+    const stageId = deps.substituteOutputs(cfg.stage, run).trim();
+    if (!stageId) {
+      return failedSync(`stage resolved to empty (raw: "${cfg.stage}")`, completedAt());
+    }
+    patchInput.stageId = stageId;
+  }
+  if (cfg.fields !== undefined) {
+    const substituted: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(cfg.fields)) {
+      substituted[k] = typeof v === 'string' ? deps.substituteOutputs(v, run) : v;
+    }
+    patchInput.fields = substituted;
+  }
+
+  try {
+    const updated = deps.workItemService.patch(workItemId as ULID, patchInput);
+    return {
+      kind: 'sync',
+      output: {
+        status: 'complete',
+        output: {
+          id: updated.id,
+          version: updated.version,
+          stageId: updated.stageId,
+        },
+        completedAt: completedAt(),
+      },
+    };
+  } catch (err) {
+    return failedSync(`update failed: ${(err as Error).message}`, completedAt());
+  }
+}
+
+function failedSync(error: string, completedAt: string): UpdateWorkItemStepResult {
+  return {
+    kind: 'sync',
+    output: { status: 'failed', error, completedAt },
+  };
+}
