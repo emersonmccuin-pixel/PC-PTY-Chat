@@ -1,8 +1,8 @@
 // Bottom status bar for the chat panel (chat.md Phase 2 #9–10).
 //
 // Surfaces: active model · session token usage + est. API cost · MCP status
-// pill · cwd. Clicking the MCP pill expands a detail panel listing the alive
-// server + its tools, populated from `/api/mcp-status` (polled every 5s while
+// pill. Clicking the MCP pill expands a detail panel listing the alive server
+// + its tools, populated from `/api/mcp-status` (polled every 5s while
 // mounted).
 //
 // Cost is labeled "est." — user is on subscription billing, so the dollar
@@ -29,7 +29,6 @@ interface McpStatus {
 
 interface StatusBarProps {
   model: string | null;
-  cwd: string;
   usage: UsageTotals;
 }
 
@@ -63,7 +62,7 @@ function totalCost(u: UsageTotals): number {
   );
 }
 
-export function StatusBar({ model, cwd, usage }: StatusBarProps) {
+export function StatusBar({ model, usage }: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [showMcp, setShowMcp] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -171,12 +170,6 @@ export function StatusBar({ model, cwd, usage }: StatusBarProps) {
           </span>
         </button>
 
-        <span className="ml-auto min-w-0 flex items-center gap-1.5" title={cwd}>
-          <span className="text-foreground/50">cwd</span>
-          <span className="truncate font-mono text-foreground" style={{ maxWidth: '40ch' }}>
-            {cwd}
-          </span>
-        </span>
       </div>
 
       {showMcp && (

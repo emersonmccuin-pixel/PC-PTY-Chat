@@ -783,11 +783,6 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
           )}
         </div>
       </div>
-      <StatusBar
-        model={liveModel}
-        cwd={project.folderPath}
-        usage={sessionUsage}
-      />
       {!isViewingPast && sessionEnded && (
         <div className="border-t border-border bg-warning/10 px-4 py-2 text-center text-xs text-warning">
           This session ended. Click <span className="font-semibold">+ New session</span> above to start a fresh chat.
@@ -807,6 +802,7 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
           queuedPrompts={queuedPrompts}
         />
       )}
+      <StatusBar model={liveModel} usage={sessionUsage} />
     </div>
   );
 }
