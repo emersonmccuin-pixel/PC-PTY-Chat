@@ -4,7 +4,13 @@
 
 export type ULID = string;
 
-export type WorkItemStatus = 'pending' | 'in-progress' | 'blocked' | 'complete' | 'failed';
+export type WorkItemStatus =
+  | 'pending'
+  | 'in-progress'
+  | 'blocked'
+  | 'complete'
+  | 'failed'
+  | 'archived';
 
 export interface Stage {
   id: string;
@@ -22,14 +28,43 @@ export interface Project {
 }
 
 export interface WorkItem {
-  id: string;
+  id: ULID;
+  projectId: ULID;
+  parentId: ULID | null;
+  position: number;
   title: string;
-  body?: string;
+  body: string;
   stageId: string;
-  status?: WorkItemStatus;
-  statusReason?: string;
+  status: WorkItemStatus;
+  statusReason: string | null;
   fields: Record<string, unknown>;
-  history: unknown[];
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}
+
+export interface WorkItemPatch {
+  title?: string;
+  body?: string;
+  stageId?: string;
+  parentId?: ULID | null;
+  position?: number;
+  fields?: Record<string, unknown>;
+}
+
+export interface WorkItemMoveInput {
+  stageId: string;
+  position?: number;
+}
+
+export class WorkItemConflictError extends Error {
+  current: WorkItem;
+  constructor(current: WorkItem) {
+    super('work item version conflict');
+    this.name = 'WorkItemConflictError';
+    this.current = current;
+  }
 }
 
 async function getJson<T>(path: string): Promise<T> {
@@ -144,16 +179,62 @@ export const api = {
     getJson<{ workItems: WorkItem[] }>(`/api/projects/${projectId}/work-items`).then(
       (r) => r.workItems,
     ),
+  getWorkItem: (projectId: ULID, wiId: ULID) =>
+    getJson<{ ok: true; workItem: WorkItem }>(
+      `/api/projects/${projectId}/work-items/${wiId}`,
+    ).then((r) => r.workItem),
   createWorkItem: (projectId: ULID, title: string, stageId: string, body?: string) =>
     postJson<{ ok: true; workItem: WorkItem }>(
       `/api/projects/${projectId}/work-items/create`,
       { title, stageId, body },
     ),
-  moveWorkItem: (projectId: ULID, id: string, toStage: string) =>
-    postJson<{ ok: true; workItem: WorkItem }>(
-      `/api/projects/${projectId}/work-items/move`,
-      { id, toStage },
-    ),
+  /** Version-checked PATCH. Throws WorkItemConflictError on 409 (carrying the
+   *  current row so the caller can refetch + re-render). */
+  patchWorkItem: async (
+    projectId: ULID,
+    wiId: ULID,
+    version: number,
+    patch: WorkItemPatch,
+  ): Promise<WorkItem> => {
+    const res = await fetch(`/api/projects/${projectId}/work-items/${wiId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version, ...patch }),
+    });
+    const data = (await res.json()) as
+      | { ok: true; workItem: WorkItem }
+      | { ok: false; error: string; current?: WorkItem };
+    if (res.status === 409 && data.ok === false && data.current) {
+      throw new WorkItemConflictError(data.current);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `patch → ${res.status}`);
+    }
+    return data.workItem;
+  },
+  /** Version-checked move. Same 409 semantics as patchWorkItem. */
+  moveWorkItem: async (
+    projectId: ULID,
+    wiId: ULID,
+    version: number,
+    input: WorkItemMoveInput,
+  ): Promise<WorkItem> => {
+    const res = await fetch(`/api/projects/${projectId}/work-items/${wiId}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version, ...input }),
+    });
+    const data = (await res.json()) as
+      | { ok: true; workItem: WorkItem }
+      | { ok: false; error: string; current?: WorkItem };
+    if (res.status === 409 && data.ok === false && data.current) {
+      throw new WorkItemConflictError(data.current);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `move → ${res.status}`);
+    }
+    return data.workItem;
+  },
 
   getSettings: () =>
     getJson<{ ok: true; settings: GlobalSettings }>('/api/settings').then((r) => r.settings),

@@ -2,48 +2,54 @@
 // Source: apps/web/src/components/KanbanBoard.tsx
 // Adapted for Project Companion:
 //  - api calls keyed by projectId (ULID), not slug
-//  - dropped optimistic-concurrency version tracking (trunk WorkItem has no
-//    version field)
-//  - dropped StageWorkflowIndicator (Q9) and parent/child counts (no parentId
-//    on trunk WorkItem)
 //  - live updates via useProjectWs envelope hint, not EventSource
+//  - Section 2c: rebuilt card visual (no status chip, glyph + child-count
+//    badge), click-to-open WorkItemDetailModal, sortable within-column drag
+//    that PATCHes position, cross-column drag that POSTs to /move with version
+//    + position, horizontal scroll affordance (fade + chevrons on overflow).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
-  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 
 import {
   api,
+  WorkItemConflictError,
   type Project,
   type Stage,
   type WorkItem,
   type WorkItemStatus,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
 
 interface KanbanBoardProps {
   project: Project;
   events: WsEnvelope[];
 }
 
-const STATUS_COLOR: Record<WorkItemStatus, string> = {
-  pending: 'text-muted-foreground',
-  'in-progress': 'text-warning',
-  blocked: 'text-destructive',
-  complete: 'text-success',
-  failed: 'text-destructive',
+// Glyph-only status surface. Pending + complete read from the column itself
+// (kanban column = status); only the two exception states need attention.
+const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: string }>> = {
+  'in-progress': { glyph: '⟳', className: 'text-warning' },
+  blocked: { glyph: '⚠', className: 'text-destructive' },
+  failed: { glyph: '⚠', className: 'text-destructive' },
 };
 
 export function KanbanBoard({ project, events }: KanbanBoardProps) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [openItemId, setOpenItemId] = useState<string | null>(null);
 
   const refetch = useCallback(() => {
     api
@@ -58,7 +64,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   }, [refetch]);
 
   // Live-refresh on server-broadcast work-item changes. Server emits
-  // `work-items-changed` after create/move/update. We also pick up `event`
+  // `work-items-changed` after create/patch/move/delete. Also pick up `event`
   // envelopes that include workItemId (workflow lifecycle) as a cheap hint.
   useEffect(() => {
     if (events.length === 0) return;
@@ -71,41 +77,123 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
 
-  function handleDragEnd(event: DragEndEvent) {
-    const itemId = String(event.active.id);
-    const toStage = event.over?.id ? String(event.over.id) : undefined;
-    if (!toStage) return;
-    const item = items.find((i) => i.id === itemId);
-    if (!item || item.stageId === toStage) return;
+  const sortedStages = useMemo(
+    () => [...project.stages].sort((a, b) => a.order - b.order),
+    [project.stages],
+  );
 
-    // Optimistic update; server broadcast will reconcile.
-    setItems((prev) =>
-      prev.map((i) => (i.id === itemId ? { ...i, stageId: toStage } : i)),
-    );
+  // Pre-sort items by position within each stage. Stable across renders.
+  const itemsByStage = useMemo(() => {
+    const map = new Map<string, WorkItem[]>();
+    for (const stage of sortedStages) map.set(stage.id, []);
+    for (const item of items) {
+      const bucket = map.get(item.stageId);
+      if (bucket) bucket.push(item);
+    }
+    for (const bucket of map.values()) bucket.sort((a, b) => a.position - b.position);
+    return map;
+  }, [items, sortedStages]);
 
-    api
-      .moveWorkItem(project.id, itemId, toStage)
-      .catch((e) => {
-        setError((e as Error).message);
-        refetch();
-      });
+  const childCountByParent = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      if (item.parentId) counts.set(item.parentId, (counts.get(item.parentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [items]);
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveId(String(event.active.id));
   }
 
-  const sortedStages = [...project.stages].sort((a, b) => a.order - b.order);
+  async function handleDragEnd(event: DragEndEvent) {
+    setActiveId(null);
+    const activeWiId = String(event.active.id);
+    const overId = event.over?.id != null ? String(event.over.id) : null;
+    if (!overId) return;
+
+    const active = items.find((i) => i.id === activeWiId);
+    if (!active) return;
+
+    // Resolve drop target: another card (overId === some item.id) or a column
+    // (overId === some stage.id). Stage drop = end of that column.
+    const overItem = items.find((i) => i.id === overId);
+    const targetStageId = overItem?.stageId ?? overId;
+    const targetStage = sortedStages.find((s) => s.id === targetStageId);
+    if (!targetStage) return;
+
+    const sameStage = active.stageId === targetStage.id;
+    const targetBucket = (itemsByStage.get(targetStage.id) ?? []).filter(
+      (i) => i.id !== active.id,
+    );
+    const overIdx = overItem ? targetBucket.findIndex((i) => i.id === overItem.id) : targetBucket.length;
+    if (sameStage && overItem && active.id === overItem.id) return;
+
+    const newPosition = computePosition(targetBucket, overIdx);
+    if (newPosition == null) return;
+    if (sameStage && Math.abs(active.position - newPosition) < 1e-9) return;
+
+    // Optimistic local reorder; server broadcast will reconcile via refetch.
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === active.id ? { ...i, stageId: targetStage.id, position: newPosition } : i,
+      ),
+    );
+
+    try {
+      if (sameStage) {
+        await api.patchWorkItem(project.id, active.id, active.version, {
+          position: newPosition,
+        });
+      } else {
+        await api.moveWorkItem(project.id, active.id, active.version, {
+          stageId: targetStage.id,
+          position: newPosition,
+        });
+      }
+    } catch (e) {
+      if (e instanceof WorkItemConflictError) {
+        setError('This item changed elsewhere — refreshing.');
+      } else {
+        setError((e as Error).message);
+      }
+      refetch();
+    }
+  }
+
+  const draggedItem = activeId ? items.find((i) => i.id === activeId) ?? null : null;
+  const openItem = openItemId ? items.find((i) => i.id === openItemId) ?? null : null;
 
   return (
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-      <div className="flex h-full gap-4 overflow-x-auto p-4">
+    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <KanbanScrollContainer>
         {sortedStages.map((stage) => (
           <Column
             key={stage.id}
             stage={stage}
-            items={items.filter((i) => i.stageId === stage.id)}
+            items={itemsByStage.get(stage.id) ?? []}
             project={project}
+            childCounts={childCountByParent}
             onItemCreated={(wi) => setItems((prev) => [...prev, wi])}
+            onItemClick={(id) => setOpenItemId(id)}
           />
         ))}
-      </div>
+      </KanbanScrollContainer>
+
+      <DragOverlay>
+        {draggedItem ? (
+          <CardSurface
+            item={draggedItem}
+            childCount={childCountByParent.get(draggedItem.id) ?? 0}
+            dragging
+          />
+        ) : null}
+      </DragOverlay>
+
+      {openItem && (
+        <WorkItemDetailModal workItem={openItem} onClose={() => setOpenItemId(null)} />
+      )}
+
       {error && (
         <div className="fixed bottom-4 right-4 z-50 max-w-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}{' '}
@@ -118,41 +206,152 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   );
 }
 
+/** Compute a new `position` value such that the item lands at `targetIdx` in
+ *  `bucket` (bucket excludes the dragged item, sorted ascending by position).
+ *  Returns null when bucket is empty AND targetIdx is out of range (defensive
+ *  — shouldn't happen). */
+function computePosition(bucket: WorkItem[], targetIdx: number): number | null {
+  if (bucket.length === 0) return 1;
+  const clamped = Math.max(0, Math.min(targetIdx, bucket.length));
+  if (clamped === 0) return bucket[0]!.position - 1;
+  if (clamped >= bucket.length) return bucket[bucket.length - 1]!.position + 1;
+  const prev = bucket[clamped - 1]!.position;
+  const next = bucket[clamped]!.position;
+  return (prev + next) / 2;
+}
+
+/** Horizontal scroll affordance: fade overlays + chevron buttons that appear
+ *  when the row overflows. Refs tracked via a scroll/resize listener pair. */
+function KanbanScrollContainer({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(false);
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const overflow = el.scrollWidth > el.clientWidth + 1;
+    setCanLeft(overflow && el.scrollLeft > 1);
+    setCanRight(overflow && el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener('scroll', measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', measure);
+      ro.disconnect();
+    };
+  }, [measure]);
+
+  // Re-measure when children change (stages added / removed).
+  useLayoutEffect(() => {
+    measure();
+  });
+
+  function scrollByPage(direction: -1 | 1) {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * el.clientWidth * 0.8, behavior: 'smooth' });
+  }
+
+  return (
+    <div className="group relative h-full">
+      <div
+        ref={ref}
+        className="flex h-full gap-4 overflow-x-auto p-4 [scrollbar-gutter:stable]"
+      >
+        {children}
+      </div>
+
+      {/* Left fade + chevron */}
+      <div
+        aria-hidden
+        className={
+          'pointer-events-none absolute inset-y-0 left-0 w-12 bg-gradient-to-r from-background to-transparent transition-opacity ' +
+          (canLeft ? 'opacity-100' : 'opacity-0')
+        }
+      />
+      {canLeft && (
+        <button
+          type="button"
+          onClick={() => scrollByPage(-1)}
+          aria-label="Scroll columns left"
+          className="absolute left-2 top-1/2 z-10 -translate-y-1/2 border border-border bg-background/90 px-2 py-1 text-sm opacity-0 shadow-sm transition-opacity hover:bg-muted group-hover:opacity-100"
+        >
+          ‹
+        </button>
+      )}
+
+      {/* Right fade + chevron */}
+      <div
+        aria-hidden
+        className={
+          'pointer-events-none absolute inset-y-0 right-0 w-12 bg-gradient-to-l from-background to-transparent transition-opacity ' +
+          (canRight ? 'opacity-100' : 'opacity-0')
+        }
+      />
+      {canRight && (
+        <button
+          type="button"
+          onClick={() => scrollByPage(1)}
+          aria-label="Scroll columns right"
+          className="absolute right-2 top-1/2 z-10 -translate-y-1/2 border border-border bg-background/90 px-2 py-1 text-sm opacity-0 shadow-sm transition-opacity hover:bg-muted group-hover:opacity-100"
+        >
+          ›
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Column({
   stage,
   items,
   project,
+  childCounts,
   onItemCreated,
+  onItemClick,
 }: {
   stage: Stage;
   items: WorkItem[];
   project: Project;
+  childCounts: Map<string, number>;
   onItemCreated: (wi: WorkItem) => void;
+  onItemClick: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
+  const ids = useMemo(() => items.map((i) => i.id), [items]);
+
   return (
     <div
       ref={setNodeRef}
       data-stage-id={stage.id}
       className={
-        // Flex-1 columns share the available width evenly; min-w stops them
-        // shrinking past readability. Parent has overflow-x-auto, so projects
-        // with many stages still get a horizontal scrollbar instead of squish.
         'flex min-w-[14rem] flex-1 basis-0 flex-col border bg-card p-3 transition-colors ' +
         (isOver ? 'border-primary' : 'border-border')
       }
     >
       <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-foreground">
         <span>{stage.name}</span>
-        <span className="text-xs font-normal text-muted-foreground">
-          {items.length}
-        </span>
+        <span className="text-xs font-normal text-muted-foreground">{items.length}</span>
       </div>
-      <div className="flex flex-col gap-2">
-        {items.map((item) => (
-          <Card key={item.id} item={item} />
-        ))}
-      </div>
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        <div className="flex flex-col gap-2">
+          {items.map((item) => (
+            <SortableCard
+              key={item.id}
+              item={item}
+              childCount={childCounts.get(item.id) ?? 0}
+              onClick={() => onItemClick(item.id)}
+            />
+          ))}
+        </div>
+      </SortableContext>
       <AddCardForm
         projectId={project.id}
         stageId={stage.id}
@@ -162,33 +361,88 @@ function Column({
   );
 }
 
-function Card({ item }: { item: WorkItem }) {
-  const { setNodeRef, attributes, listeners, transform, isDragging } = useDraggable({
+function SortableCard({
+  item,
+  childCount,
+  onClick,
+}: {
+  item: WorkItem;
+  childCount: number;
+  onClick: () => void;
+}) {
+  const { setNodeRef, attributes, listeners, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
-  const style = transform
-    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
-    : undefined;
-  const status = item.status ?? 'pending';
+  const style = {
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0)`
+      : undefined,
+    transition,
+  };
   return (
     <div
       ref={setNodeRef}
       style={style}
       {...listeners}
       {...attributes}
+      onClick={onClick}
       className={
-        'cursor-grab border border-border bg-background p-2 text-sm text-foreground hover:border-primary/60 ' +
-        (isDragging ? 'opacity-50 cursor-grabbing' : '')
+        'cursor-grab select-none border border-border bg-background p-2 text-sm text-foreground hover:border-primary/60 ' +
+        (isDragging ? 'opacity-30' : '')
       }
     >
-      <div className="flex items-start gap-2">
-        <span className="min-w-0 flex-1 break-words">{item.title}</span>
-        <span
-          className={'shrink-0 text-[10px] uppercase tracking-wider ' + STATUS_COLOR[status]}
-          title={item.statusReason ?? status}
-        >
-          {status}
-        </span>
+      <CardContent item={item} childCount={childCount} />
+    </div>
+  );
+}
+
+/** Visual-only card body — shared between the live sortable card and the
+ *  DragOverlay clone. */
+function CardSurface({
+  item,
+  childCount,
+  dragging,
+}: {
+  item: WorkItem;
+  childCount: number;
+  dragging?: boolean;
+}) {
+  return (
+    <div
+      className={
+        'cursor-grabbing select-none border border-primary bg-background p-2 text-sm text-foreground shadow-md ' +
+        (dragging ? '' : '')
+      }
+    >
+      <CardContent item={item} childCount={childCount} />
+    </div>
+  );
+}
+
+function CardContent({ item, childCount }: { item: WorkItem; childCount: number }) {
+  const status = item.status ?? 'pending';
+  const glyph = STATUS_GLYPH[status];
+  return (
+    <div className="flex items-start gap-2">
+      <span className="line-clamp-2 min-w-0 flex-1 break-words">{item.title}</span>
+      <div className="flex shrink-0 items-center gap-1">
+        {childCount > 0 && (
+          <span
+            className="border border-border px-1 text-[10px] text-muted-foreground"
+            title={`${childCount} child${childCount === 1 ? '' : 'ren'}`}
+          >
+            ↳ {childCount}
+          </span>
+        )}
+        {glyph && (
+          <span
+            className={'text-sm leading-none ' + glyph.className}
+            title={item.statusReason ?? status}
+            aria-label={status}
+          >
+            {glyph.glyph}
+          </span>
+        )}
       </div>
     </div>
   );
