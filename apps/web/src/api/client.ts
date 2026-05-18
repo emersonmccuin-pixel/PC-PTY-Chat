@@ -530,6 +530,34 @@ export const api = {
     if (!res.ok) throw new Error(`stop agent-creator → ${res.status}`);
   },
 
+  // ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────
+  /** Spawn the per-project "+ New workflow" modal's transient PtySession.
+   *  Session is layered with `workflow-creator-prompt.md` and emits its
+   *  events on the `workflow-creator-*` WS envelope kinds. Returns the
+   *  initial state + transient sessionId — the visualizer keys on
+   *  sessionId to pick the right `workflow-creator-draft` broadcasts. */
+  startWorkflowCreator: (projectId: ULID) =>
+    postJson<{ ok: true; state: string; sessionId: string | null }>(
+      `/api/projects/${projectId}/workflow-creator/start`,
+      {},
+    ).then((r) => ({ state: r.state, sessionId: r.sessionId })),
+
+  /** Send a user prompt into the workflow-creator session. */
+  sendWorkflowCreator: (projectId: ULID, text: string) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-creator/send`, { text }),
+
+  /** Press Escape on the workflow-creator session. */
+  interruptWorkflowCreator: (projectId: ULID) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-creator/interrupt`, {}),
+
+  /** Kill the workflow-creator session + clear its draft state. Idempotent. */
+  stopWorkflowCreator: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/workflow-creator`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`stop workflow-creator → ${res.status}`);
+  },
+
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
     getJson<{ ok: true; session: OrchestratorSession | null }>(

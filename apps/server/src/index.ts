@@ -874,6 +874,85 @@ app.delete('/api/projects/:projectId/agent-creator', (c) => {
   return c.json({ ok: true });
 });
 
+// ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────────
+//
+// Mirror of the agent-creator wiring above. One-off PtySession per project
+// for the conversational "+ New workflow" modal. Layers
+// `workflow-creator-prompt.md` on top of CC's default system prompt; same
+// project cwd as the orchestrator so `.mcp.json` (pc-rig) is wired in.
+//
+// WS envelopes (distinct from the orchestrator + agent-creator streams):
+//   { type: 'workflow-creator-state', state }
+//   { type: 'workflow-creator-event', event }       — legacy hook events
+//   { type: 'workflow-creator-jsonl', event }       — JSONL tailer events
+//   { type: 'workflow-creator-exit', code, signal }
+//   { type: 'workflow-creator-draft', sessionId, def } — broadcast by the
+//     /workflow-creator/draft POST handler when pc_update_workflow_draft fires
+
+function attachWorkflowCreatorHandlers(
+  projectId: ULID,
+  session: ReturnType<ProjectRuntime['startWorkflowCreator']>,
+): void {
+  const flag = session as unknown as { __pcWorkflowCreatorAttached?: boolean };
+  if (flag.__pcWorkflowCreatorAttached) return;
+  session.on('state', (state: string) =>
+    broadcastTo(projectId, { type: 'workflow-creator-state', state }),
+  );
+  session.on('event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'workflow-creator-event', event }),
+  );
+  session.on('jsonl-event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'workflow-creator-jsonl', event }),
+  );
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'workflow-creator-exit', code, signal });
+  });
+  flag.__pcWorkflowCreatorAttached = true;
+}
+
+app.post('/api/projects/:projectId/workflow-creator/start', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.startWorkflowCreator();
+  attachWorkflowCreatorHandlers(id, session);
+  return c.json({
+    ok: true,
+    state: session.getState(),
+    sessionId: runtime.workflowCreatorSession(),
+  });
+});
+
+app.post('/api/projects/:projectId/workflow-creator/send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.workflowCreatorPty();
+  if (!session) return c.json({ ok: false, error: 'no workflow-creator session' }, 409);
+  const body = await c.req.json<{ text?: string }>();
+  if (typeof body.text !== 'string' || body.text === '') {
+    return c.json({ ok: false, error: 'text required' }, 400);
+  }
+  session.send(body.text);
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/workflow-creator/interrupt', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.workflowCreatorPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/projects/:projectId/workflow-creator', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.endWorkflowCreator();
+  return c.json({ ok: true });
+});
+
 /** List work items with optional filters + cursor pagination. Query params:
  *    stage             — filter to a single stage id
  *    parentId          — '' (string) means top-level (parentId === null); other = exact match

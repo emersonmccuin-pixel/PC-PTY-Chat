@@ -44,6 +44,10 @@ export interface ProjectRuntimeOptions {
 export class ProjectRuntime {
   private pty: PtySession | null = null;
   private agentCreator: PtySession | null = null;
+  private workflowCreator: PtySession | null = null;
+  /** Tracks the transient PC_SESSION_ID assigned to the current workflow-
+   *  creator. Used to scope draft-state cleanup on session exit. */
+  private workflowCreatorSessionId: string | null = null;
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
@@ -275,8 +279,11 @@ export class ProjectRuntime {
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
     try { this.agentCreator?.kill(); } catch { /* best-effort */ }
+    try { this.workflowCreator?.kill(); } catch { /* best-effort */ }
     this.pty = null;
     this.agentCreator = null;
+    this.workflowCreator = null;
+    this.workflowCreatorSessionId = null;
     this.workflow = null;
     this.worktreesSvc = null;
     this.registry = null;
@@ -349,6 +356,65 @@ export class ProjectRuntime {
    *  this from `endWorkflowCreator`. */
   clearWorkflowCreatorDraft(sessionId: string): void {
     this.workflowCreatorDrafts.delete(sessionId);
+  }
+
+  /** 4b.3: transient PtySession driving the conversational workflow-creator
+   *  modal. Mirrors `startAgentCreator`. One workflow-creator at a time per
+   *  project; calling `start` again kills the prior one. */
+  startWorkflowCreator(): PtySession {
+    if (this.workflowCreator) {
+      try { this.workflowCreator.kill(); } catch { /* best-effort */ }
+      this.workflowCreator = null;
+    }
+    if (this.workflowCreatorSessionId) {
+      this.clearWorkflowCreatorDraft(this.workflowCreatorSessionId);
+      this.workflowCreatorSessionId = null;
+    }
+    this.refreshHooksIfStale();
+    const transientId = `wc-${randomUUID()}`;
+    const sessionDir = this.sessionDataPath(transientId);
+    mkdirSync(sessionDir, { recursive: true });
+    this.workflowCreator = new PtySession({
+      workspaceDir: this.project.folderPath,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      extraEnv: { PC_SESSION_ID: transientId },
+      appendSystemPromptPath: resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'workflow-creator-prompt.md',
+      ),
+    });
+    this.workflowCreatorSessionId = transientId;
+    return this.workflowCreator;
+  }
+
+  /** Returns the live workflow-creator PtySession, or null if not started /
+   *  exited. */
+  workflowCreatorPty(): PtySession | null {
+    return this.workflowCreator && this.workflowCreator.getState() !== 'exited'
+      ? this.workflowCreator
+      : null;
+  }
+
+  /** The transient PC_SESSION_ID assigned to the current workflow-creator
+   *  PtySession (or the most-recently exited one). Used by the draft-state
+   *  endpoint to scope cleanup. */
+  workflowCreatorSession(): string | null {
+    return this.workflowCreatorSessionId;
+  }
+
+  /** Kill the workflow-creator session + clear its draft state. Idempotent. */
+  endWorkflowCreator(): void {
+    if (this.workflowCreator) {
+      try { this.workflowCreator.kill(); } catch { /* best-effort */ }
+      this.workflowCreator = null;
+    }
+    if (this.workflowCreatorSessionId) {
+      this.clearWorkflowCreatorDraft(this.workflowCreatorSessionId);
+      this.workflowCreatorSessionId = null;
+    }
   }
 
   private resolveSessionForSpawn(): {
@@ -465,6 +531,23 @@ export class ProjectRuntime {
         mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
         const raw = readFileSync(creatorSrc, 'utf-8');
         writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
+      }
+      // Section 4b phase 4b.3: backfill the workflow-creator prompt for the
+      // transient "+ New workflow" modal session. Same write-if-missing rule.
+      const wfCreatorSrc = resolve(
+        this.opts.templatesDir,
+        '.project-companion',
+        'workflow-creator-prompt.md',
+      );
+      const wfCreatorDest = resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'workflow-creator-prompt.md',
+      );
+      if (existsSync(wfCreatorSrc) && !existsSync(wfCreatorDest)) {
+        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
+        const raw = readFileSync(wfCreatorSrc, 'utf-8');
+        writeFileSync(wfCreatorDest, renderTemplate(raw, tokens), 'utf-8');
       }
       // Section 3 phase 3i: backfill any workflow YAMLs from templates that
       // don't yet exist in the project. Write-if-missing — user-edited copies
