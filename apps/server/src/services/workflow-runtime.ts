@@ -1024,10 +1024,24 @@ export class WorkflowRuntime {
   private async dispatchSubagent(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as SubagentNode;
     const rendered = ctx.substituteOutputs(node.prompt, ctx.run);
+    // 4a.2 / D16: agent name may be `$inputs.<key>` — resolve at dispatch.
+    // Empty / whitespace-only after substitution means the caller didn't
+    // pass the input the workflow declared; fail fast with a clear reason.
+    const resolvedAgent = ctx.substituteOutputs(node.subagent, ctx.run).trim();
+    if (!resolvedAgent) {
+      return {
+        kind: 'sync',
+        output: {
+          status: 'failed',
+          error: `agent name resolved to empty (raw: "${node.subagent}"; check the workflow's inputs and the caller's input map)`,
+          completedAt: new Date().toISOString(),
+        },
+      };
+    }
     const body = buildSubagentChannelBody({
       runId: ctx.run.id,
       nodeId: node.id,
-      subagent: node.subagent,
+      subagent: resolvedAgent,
       workflowId: ctx.workflow.id,
       worktreePath: ctx.run.worktreePath,
       prompt: rendered,

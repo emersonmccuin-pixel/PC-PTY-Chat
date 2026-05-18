@@ -1,0 +1,107 @@
+// Unit tests for the hand-rolled workflow validator. 4a.2 introduces:
+//   - `agent:` alias for the existing `subagent:` field (mutually exclusive)
+//   - `$inputs.<key>` accepted as a valid agent name string (resolved at dispatch)
+//   - `$<...>` rejected on nested-workflow `workflow:` (D16 — dynamic id
+//     limited to agent steps)
+// These tests pin those rules so the parser/validator contract is stable for
+// 4a.3 (generic-agent-runner goes functional) and the rest of the queue.
+//
+// Run via:  pnpm --filter @pc/workflows test
+// Or:       pnpm test:unit  (from repo root)
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { validateWorkflow } from '../src/validator.ts';
+
+function baseRoot(nodes: unknown[]): Record<string, unknown> {
+  return { id: 'wf-test', nodes };
+}
+
+const opts = { expectedId: 'wf-test' };
+
+// ── `agent:` alias ──────────────────────────────────────────────────────────
+
+test('validator: agent: alias is accepted and normalized to subagent:', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', agent: 'researcher', prompt: 'go' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  const node = result.workflow!.nodes[0]!;
+  assert.equal(node.kind, 'subagent');
+  // SubagentNode shape: stored as `subagent` field regardless of input alias.
+  assert.equal((node as { subagent: string }).subagent, 'researcher');
+});
+
+test('validator: static subagent: still works (no churn for existing workflows)', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', subagent: 'researcher', prompt: 'go' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  const node = result.workflow!.nodes[0]!;
+  assert.equal((node as { subagent: string }).subagent, 'researcher');
+});
+
+test('validator: both agent: and subagent: present → error', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', agent: 'a', subagent: 'b', prompt: 'go' }]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((e) => /both/.test(e.message)),
+    `expected an error about declaring both agent and subagent; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+// ── `$inputs.<key>` on the agent name ───────────────────────────────────────
+
+test('validator: $inputs.<key> accepted as agent name (resolved at dispatch)', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', agent: '$inputs.agent', prompt: '$inputs.prompt' }]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const node = result.workflow!.nodes[0]!;
+  assert.equal((node as { subagent: string }).subagent, '$inputs.agent');
+  assert.equal((node as { prompt: string }).prompt, '$inputs.prompt');
+});
+
+test('validator: $inputs.<key> accepted on legacy subagent: alias too', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', subagent: '$inputs.agent', prompt: 'go' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+});
+
+// ── D16: $inputs.* rejected on nested-workflow `workflow:` ──────────────────
+
+test('validator: nested-workflow workflow: rejects $inputs.* dynamic id', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', workflow: '$inputs.target' }]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  const err = result.errors.find((e) => e.path === 'nodes[0].workflow');
+  assert.ok(err, `expected an error on nodes[0].workflow; got ${JSON.stringify(result.errors)}`);
+  assert.ok(/D16|static workflow id|not allowed/.test(err!.message));
+});
+
+test('validator: nested-workflow workflow: rejects $<stepId>.output.* dynamic id', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', workflow: '$picker.output.name' }]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+});
+
+test('validator: nested-workflow workflow: static id still accepted', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', workflow: 'generic-agent-runner' }]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});

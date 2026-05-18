@@ -228,10 +228,30 @@ function validateNodeArray(
 }
 
 function validateNode(
-  raw: Record<string, unknown>,
+  rawIn: Record<string, unknown>,
   path: string,
   errors: ValidationError[],
 ): DagNode | undefined {
+  // Normalize `agent:` → `subagent:` so the discriminator + dispatcher only
+  // ever see one field name (4a.2 / D16). `agent:` is the canonical
+  // workflow-author-facing name going forward; `subagent:` is the legacy
+  // alias preserved for back-compat with the 6 example workflows + any
+  // user-authored YAML in flight.
+  let raw = rawIn;
+  if (raw.agent !== undefined || raw.subagent !== undefined) {
+    if (raw.agent !== undefined && raw.subagent !== undefined) {
+      errors.push({
+        path,
+        message: 'declare either `agent:` or `subagent:`, not both',
+      });
+      return undefined;
+    }
+    if (raw.agent !== undefined && raw.subagent === undefined) {
+      raw = { ...rawIn, subagent: rawIn.agent };
+      delete raw.agent;
+    }
+  }
+
   // id
   if (typeof raw.id !== 'string' || !raw.id) {
     errors.push({ path: `${path}.id`, message: 'must be a non-empty string' });
@@ -460,6 +480,16 @@ function validateNestedWorkflowBody(
 ): NestedWorkflowNode | undefined {
   if (typeof raw.workflow !== 'string' || !raw.workflow) {
     errors.push({ path: `${path}.workflow`, message: 'must be a non-empty string' });
+    return undefined;
+  }
+  // D16: dynamic-id substitution is limited to subagent `agent:`. Nested
+  // workflow `workflow:` references resolve a static workflow file at
+  // dispatch time — runtime expansion would defeat the cycle/depth guards.
+  if (raw.workflow.startsWith('$')) {
+    errors.push({
+      path: `${path}.workflow`,
+      message: 'must be a static workflow id; `$inputs.*` / `$<stepId>.output.*` not allowed here (D16)',
+    });
     return undefined;
   }
   const inputs = validateStringRecord(raw.inputs, `${path}.inputs`, errors);
