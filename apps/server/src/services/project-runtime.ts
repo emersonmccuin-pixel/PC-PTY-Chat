@@ -532,8 +532,10 @@ export class ProjectRuntime {
         const raw = readFileSync(creatorSrc, 'utf-8');
         writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
       }
-      // Section 4b phase 4b.3: backfill the workflow-creator prompt for the
-      // transient "+ New workflow" modal session. Same write-if-missing rule.
+      // Section 4b phase 4b.3: keep the workflow-creator prompt in lock-step
+      // with the trunk template. Unlike orchestrator-prompt.md (user-edited),
+      // this file backs a transient session that nobody hand-edits — always
+      // re-render so changes to the interview script land on next boot.
       const wfCreatorSrc = resolve(
         this.opts.templatesDir,
         '.project-companion',
@@ -544,7 +546,7 @@ export class ProjectRuntime {
         '.project-companion',
         'workflow-creator-prompt.md',
       );
-      if (existsSync(wfCreatorSrc) && !existsSync(wfCreatorDest)) {
+      if (existsSync(wfCreatorSrc)) {
         mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
         const raw = readFileSync(wfCreatorSrc, 'utf-8');
         writeFileSync(wfCreatorDest, renderTemplate(raw, tokens), 'utf-8');

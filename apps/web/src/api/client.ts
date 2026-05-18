@@ -729,3 +729,176 @@ async function postJsonMethod<T>(
   }
   return data;
 }
+
+// ── Workflows wire shapes ──────────────────────────────────────────────────
+// Mirror of packages/domain/src/workflow.ts (no @pc/domain dep on the browser
+// bundle — see 3d session-log finding #2 for the "web stays off @pc/domain"
+// policy). The shapes the server hands us via `workflow-creator-draft` and the
+// future GET-workflow endpoints arrive already validated, with each node
+// tagged via the `kind` discriminator the validator adds post-parse.
+
+export type WorkflowTriggerRule =
+  | 'all_success'
+  | 'one_success'
+  | 'all_done'
+  | 'none_failed_min_one_success';
+
+export type WorkflowRetryCause = 'failed' | 'timeout';
+
+export interface WorkflowRetryPolicy {
+  max_attempts: number;
+  on?: WorkflowRetryCause[];
+  delay_ms?: number;
+}
+
+export interface WorkflowDoneWhen {
+  'files-non-empty'?: string[];
+  'output-fields-non-empty'?: string[];
+}
+
+interface WfBaseNode {
+  id: string;
+  depends_on?: string[];
+  when?: string;
+  trigger_rule?: WorkflowTriggerRule;
+  done_when?: WorkflowDoneWhen;
+  timeout?: number;
+  retry?: WorkflowRetryPolicy;
+}
+
+export interface WfSubagentNode extends WfBaseNode {
+  kind: 'subagent';
+  subagent: string;
+  prompt: string;
+}
+
+export interface WfBashNode extends WfBaseNode {
+  kind: 'bash';
+  bash: string;
+}
+
+export interface WfHttpNode extends WfBaseNode {
+  kind: 'http';
+  http: {
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD';
+    url: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeout?: number;
+  };
+}
+
+export interface WfScriptNode extends WfBaseNode {
+  kind: 'script';
+  script: string;
+  runtime: 'node' | 'python';
+}
+
+export interface WfApprovalNode extends WfBaseNode {
+  kind: 'approval';
+  approval: {
+    message: string;
+    on_reject?: { prompt: string };
+  };
+}
+
+export interface WfCancelNode extends WfBaseNode {
+  kind: 'cancel';
+  cancel: string;
+}
+
+export interface WfNestedWorkflowNode extends WfBaseNode {
+  kind: 'workflow';
+  workflow: string;
+  inputs?: Record<string, string>;
+}
+
+export interface WfLoopNode extends WfBaseNode {
+  kind: 'loop';
+  loop: {
+    body: WfDagNode[];
+    until: string;
+    max_iterations: number;
+  };
+}
+
+export interface WfOrchestratorReviewNode extends WfBaseNode {
+  kind: 'orchestrator-review';
+  'orchestrator-review': {
+    prompt: string;
+    artifact?: string;
+    on_revise?: { prompt: string };
+  };
+}
+
+export interface WfAttachToWorkItemNode extends WfBaseNode {
+  kind: 'attach-to-work-item';
+  'attach-to-work-item': {
+    workItemId: string;
+    name: string;
+    content: string;
+    kind?: string;
+    contentType?: string;
+  };
+}
+
+export interface WfCreateWorkItemNode extends WfBaseNode {
+  kind: 'create-work-item';
+  'create-work-item': {
+    title: string;
+    body?: string;
+    stage?: string;
+    parentId?: string;
+  };
+}
+
+export interface WfUpdateWorkItemNode extends WfBaseNode {
+  kind: 'update-work-item';
+  'update-work-item': {
+    workItemId: string;
+    title?: string;
+    body?: string;
+    stage?: string;
+    fields?: Record<string, unknown>;
+  };
+}
+
+export interface WfWriteToWorktreeNode extends WfBaseNode {
+  kind: 'write-to-worktree';
+  'write-to-worktree': {
+    path: string;
+    content: string;
+    mode?: 'overwrite' | 'append';
+  };
+}
+
+export type WfDagNode =
+  | WfSubagentNode
+  | WfBashNode
+  | WfHttpNode
+  | WfScriptNode
+  | WfApprovalNode
+  | WfCancelNode
+  | WfNestedWorkflowNode
+  | WfLoopNode
+  | WfAttachToWorkItemNode
+  | WfCreateWorkItemNode
+  | WfUpdateWorkItemNode
+  | WfWriteToWorktreeNode
+  | WfOrchestratorReviewNode;
+
+export interface WorkflowTriggers {
+  on_enter?: { stage_id: string };
+  callable?: boolean;
+}
+
+export interface Workflow {
+  id: string;
+  description?: string;
+  triggers?: WorkflowTriggers;
+  inputs?: Record<string, string>;
+  outputs?: Record<string, string>;
+  worktree?: 'auto' | 'none';
+  scratch_cleanup?: 'auto' | 'keep';
+  nodes: WfDagNode[];
+}

@@ -159,7 +159,7 @@ function Center({
             clearWs={wsClear}
           />
         ) : tab === 'workflows' ? (
-          <WorkflowList project={activeProject} events={wsEvents} />
+          <WorkflowList project={activeProject} events={wsEvents} send={wsSend} />
         ) : tab === 'project-settings' ? (
           <ProjectSettingsPanel
             project={activeProject}

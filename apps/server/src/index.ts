@@ -254,13 +254,17 @@ app.get('/api/mcp-status', (c) => {
 });
 
 /**
- * Ask intercept. Hook scripts POST { projectId, toolName, toolUseId, toolInput }.
+ * Ask intercept. Hook scripts POST { projectId, sessionId?, toolName, toolUseId, toolInput }.
  * We broadcast the ask only to the originating project's WS subscribers, then
- * block until the user answers (or the 10-minute timeout fires).
+ * block until the user answers (or the 10-minute timeout fires). `sessionId`
+ * (forwarded from the hook's PC_SESSION_ID) lets transient-session modals
+ * (workflow-creator, agent-creator) filter to asks originating from their own
+ * claude.exe spawn; orchestrator UI ignores the field.
  */
 app.post('/api/ask', async (c) => {
   const body = await c.req.json<{
     projectId?: string;
+    sessionId?: string | null;
     toolName: string;
     toolUseId: string;
     toolInput: unknown;
@@ -268,8 +272,9 @@ app.post('/api/ask', async (c) => {
   const { toolName, toolUseId, toolInput } = body;
   const projectId = typeof body.projectId === 'string' ? (body.projectId as ULID) : null;
   if (!projectId) return c.json({ answer: '(no projectId on ask payload)' });
+  const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
 
-  broadcastTo(projectId, { type: 'ask', toolName, toolUseId, toolInput });
+  broadcastTo(projectId, { type: 'ask', sessionId, toolName, toolUseId, toolInput });
 
   const answer = await new Promise<string>((resolveAnswer) => {
     pendingAsks.set(toolUseId, resolveAnswer);

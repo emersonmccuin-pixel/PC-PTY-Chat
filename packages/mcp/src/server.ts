@@ -252,6 +252,30 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_list_stages',
+    description:
+      'List the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a workflow (or which stage a create/update-work-item step should target). Returns { ok: true, stages: [{ id, name, order }, ...] }. Stage `id` is what goes into `triggers.on_enter.stage_id` — never use the name. No arguments; PC_PROJECT_ID env is the implicit scope.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_list_agents',
+    description:
+      'List the agents available to this project (resolved across globals + per-project overrides). Use this BEFORE asking the user which agent a subagent step should call, or before authoring a subagent step. Returns { ok: true, globals: [...], overrides: [...], projectOnly: [...] }; each entry has { name, description?, ...}. The `name` is what goes into a subagent step\'s `subagent:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_list_workflows',
+    description:
+      'List workflows already authored in this project. Use this BEFORE asking the user which child workflow a nested `workflow:` step should call. Returns { valid: [{ id, fileName, ... }], invalid: [...] }; the `id` field is what goes into a nested-workflow step\'s `workflow:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_list_field_schemas',
+    description:
+      'List the project\'s custom work-item field schemas. Use this BEFORE authoring a create-work-item / update-work-item step that sets `fields`, so the keys are real (not invented). Returns { ok: true, schemas: [{ key, label, type, options?, required, ... }, ...] }. The `key` is what goes into the step\'s `fields` object. No arguments; PC_PROJECT_ID env is the implicit scope.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'pc_attach_to_work_item',
     description:
       'Attach a text/markdown/JSON payload to a work item. The default destination for agent output per Section 3 D13 (the "report I will read later" path). Server stamps provenance: source = "agent" + the passed agentName + nodeId + workflowRunId. Returns { ok: true, attachment } or { ok: false, error }.',
@@ -747,6 +771,87 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             { type: 'text', text: `pc_update_workflow_draft failed: ${(err as Error).message}` },
           ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_stages': {
+      try {
+        // GET /api/projects/:id (no suffix) — projectPath('') would leave a
+        // trailing slash that Hono's strict router doesn't match.
+        if (!PROJECT_ID) throw new Error('PC_PROJECT_ID required');
+        const res = await getServer(`/api/projects/${PROJECT_ID}`);
+        if (res.status >= 200 && res.status < 300) {
+          try {
+            const project = JSON.parse(res.body) as { stages?: Array<{ id: string; name: string; order: number }> };
+            const stages = (project.stages ?? []).map((s) => ({ id: s.id, name: s.name, order: s.order }));
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, stages }) }] };
+          } catch {
+            return { content: [{ type: 'text', text: `pc_list_stages parse error: ${res.body.slice(0, 200)}` }], isError: true };
+          }
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_stages failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_stages failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_agents': {
+      try {
+        const res = await getServer(projectPath('agents'));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_agents failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_agents failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_workflows': {
+      try {
+        const res = await getServer(projectPath('workflows'));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_workflows failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_workflows failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_field_schemas': {
+      try {
+        const res = await getServer(projectPath('field-schemas'));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_field_schemas failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_field_schemas failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

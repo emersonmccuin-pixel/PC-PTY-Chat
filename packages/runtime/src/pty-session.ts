@@ -201,14 +201,17 @@ export class PtySession extends EventEmitter {
 
       // Dev-channels confirmation prompt fires once at boot. Auto-press Enter
       // to accept the preselected "I am using this for local development".
-      // Pattern lifted from drive-t11.js.
+      // claude.exe v2+ renders banner text with `\x1b[1C` cursor-right escapes
+      // *in place of* literal spaces — once stripAnsi removes them, the words
+      // collide. All "Foo bar" matchers use `\s*` so they match both renderings
+      // (modern collided + legacy spaced).
       if (!this.channelConfirmSent) {
         const cleanAll = stripAnsi(this.rawBuffer);
         if (
-          /local development/i.test(cleanAll) ||
-          /Loading development channels/i.test(cleanAll) ||
-          /Enter to confirm/i.test(cleanAll) ||
-          /I am using this/i.test(cleanAll)
+          /local\s*development/i.test(cleanAll) ||
+          /Loading\s*development\s*channels/i.test(cleanAll) ||
+          /Enter\s*to\s*confirm/i.test(cleanAll) ||
+          /I\s*am\s*using\s*this/i.test(cleanAll)
         ) {
           this.channelConfirmSent = true;
           this.child.write('\r');
@@ -219,10 +222,10 @@ export class PtySession extends EventEmitter {
       if (!this.bannerSeen) {
         const cleanAll = stripAnsi(this.rawBuffer);
         if (
-          /Welcome back/i.test(cleanAll) ||
-          /Tips for getting started/i.test(cleanAll) ||
-          /What's new/i.test(cleanAll) ||
-          /Try "/i.test(cleanAll)
+          /Welcome\s*back/i.test(cleanAll) ||
+          /Tips\s*for\s*getting\s*started/i.test(cleanAll) ||
+          /What's\s*new/i.test(cleanAll) ||
+          /Try\s*"/i.test(cleanAll)
         ) {
           this.bannerSeen = true;
           this.setState('ready');

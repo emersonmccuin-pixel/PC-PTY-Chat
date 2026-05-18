@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type { Project, ULID } from '@/api/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { CreateWorkflowModal } from './CreateWorkflowModal';
 
 interface WorkflowList {
@@ -40,6 +40,7 @@ interface WorkflowRun {
 interface WorkflowListProps {
   project: Project;
   events: WsEnvelope[];
+  send: (msg: WsOutbound) => boolean;
 }
 
 // 4a.10 / `feedback_ui_visible_feedback`. Bg-filled + glyph per status — text
@@ -94,7 +95,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
-export function WorkflowList({ project, events }: WorkflowListProps) {
+export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const [registry, setRegistry] = useState<WorkflowList | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
@@ -248,6 +249,7 @@ export function WorkflowList({ project, events }: WorkflowListProps) {
         <CreateWorkflowModal
           projectId={project.id}
           events={events}
+          send={send}
           onClose={() => setCreateOpen(false)}
         />
       )}

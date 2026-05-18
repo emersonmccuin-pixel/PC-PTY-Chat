@@ -16,6 +16,11 @@ try { payload = JSON.parse(raw); } catch { /* keep empty */ }
 const toolName = payload.tool_name ?? 'Unknown';
 const toolUseId = payload.tool_use_id ?? `na-${Date.now()}`;
 const toolInput = payload.tool_input ?? {};
+// PC_SESSION_ID is set on every claude.exe spawn (orchestrator + agent-creator
+// + workflow-creator). Forwarding it lets the UI filter ask envelopes to the
+// session that asked — so a transient modal doesn't intercept the
+// orchestrator's asks (and vice versa).
+const sessionId = process.env.PC_SESSION_ID || null;
 
 // Hard kill: plan mode is disabled in PC. Auto-deny both entry and exit
 // so CC never enters the review-and-approve loop.
@@ -23,7 +28,7 @@ if (toolName === 'ExitPlanMode' || toolName === 'EnterPlanMode') {
   emitDenyAndExit('Plan mode is disabled here — proceed directly with the work, no plan-then-approve loop.');
 }
 
-const body = JSON.stringify({ projectId: PROJECT_ID, toolName, toolUseId, toolInput });
+const body = JSON.stringify({ projectId: PROJECT_ID, sessionId, toolName, toolUseId, toolInput });
 
 const req = request(
   {
