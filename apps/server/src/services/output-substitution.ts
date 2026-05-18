@@ -3,8 +3,9 @@
 // Two pure functions plugged into the WorkflowRuntime via constructor options:
 //
 //   substituteOutputs(text, run): string
-//     Replaces every `$<node-id>.output[.path]` token in `text` with the
-//     value found at run.nodeOutputs[id].output traversed by path. Strings
+//     Replaces every `$<node-id>.output[.path]` and `$inputs.<key>[.path]`
+//     token in `text` with the value resolved from `run`. Outputs read from
+//     run.nodeOutputs[id].output; inputs read from run.inputs[key]. Strings
 //     are inlined verbatim; numbers/booleans use String(); arrays/objects
 //     are JSON.stringify'd. Missing values resolve to the empty string.
 //
@@ -32,10 +33,20 @@
 
 import type { WorkflowRun } from '@pc/domain';
 
-const TOKEN_REGEX = /\$([a-zA-Z][a-zA-Z0-9_-]*)\.output((?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+// Inputs token must precede outputs in the alternation so `$inputs.foo`
+// doesn't get mis-tokenized as `$inputs` followed by `.foo` (it can't, since
+// outputs require literal `.output`, but the explicit ordering documents intent).
+const INPUTS_TOKEN = /\$inputs\.([a-zA-Z_][a-zA-Z0-9_]*)((?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+const OUTPUT_TOKEN = /\$([a-zA-Z][a-zA-Z0-9_-]*)\.output((?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
 
 export function substituteOutputs(text: string, run: WorkflowRun): string {
-  return text.replace(TOKEN_REGEX, (_match, id: string, path: string) => {
+  // Resolve $inputs.* first so a workflow author can't accidentally name a
+  // step `inputs` and have its `.output` collide with the inputs grammar.
+  const afterInputs = text.replace(INPUTS_TOKEN, (_match, key: string, path: string) => {
+    const value = resolveInputPath(run, key, path);
+    return stringifyValue(value);
+  });
+  return afterInputs.replace(OUTPUT_TOKEN, (_match, id: string, path: string) => {
     const value = resolveOutputPath(run, id, path);
     return stringifyValue(value);
   });
@@ -45,7 +56,18 @@ function resolveOutputPath(run: WorkflowRun, id: string, dottedPath: string): un
   const nodeOut = run.nodeOutputs[id];
   if (!nodeOut) return undefined;
   let cur: unknown = nodeOut.output;
-  if (!dottedPath) return cur;
+  return walkPath(cur, dottedPath);
+}
+
+function resolveInputPath(run: WorkflowRun, key: string, dottedPath: string): unknown {
+  const inputs = run.inputs;
+  if (!inputs || !(key in inputs)) return undefined;
+  return walkPath(inputs[key], dottedPath);
+}
+
+function walkPath(root: unknown, dottedPath: string): unknown {
+  if (!dottedPath) return root;
+  let cur = root;
   const segments = dottedPath.slice(1).split('.');
   for (const seg of segments) {
     if (cur === null || cur === undefined || typeof cur !== 'object') return undefined;
@@ -276,7 +298,23 @@ function evalAst(ast: Ast, run: WorkflowRun): unknown {
       return ast.value;
     case 'var': {
       const [head, ...rest] = ast.path;
-      let cur: unknown = run.nodeOutputs[head!];
+      let cur: unknown;
+      if (head === 'inputs') {
+        // `$inputs.<key>[.path]` — resolve through run.inputs. The first
+        // remaining segment is the input key; subsequent segments walk the
+        // value's object graph.
+        const [key, ...deeper] = rest;
+        if (!key) return undefined;
+        const inputs = run.inputs;
+        if (!inputs || !(key in inputs)) return undefined;
+        cur = inputs[key];
+        for (const s of deeper) {
+          if (cur === null || cur === undefined || typeof cur !== 'object') return undefined;
+          cur = (cur as Record<string, unknown>)[s];
+        }
+        return cur;
+      }
+      cur = run.nodeOutputs[head!];
       for (const s of rest) {
         if (cur === null || cur === undefined || typeof cur !== 'object') return undefined;
         cur = (cur as Record<string, unknown>)[s];
