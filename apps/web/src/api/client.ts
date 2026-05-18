@@ -447,12 +447,44 @@ export const api = {
       projectOnly: r.projectOnly,
     })),
 
-  updateProjectAgent: (projectId: ULID, name: string, body: string) =>
-    postJsonMethod<{ ok: true; agent: AgentEntry }>(
-      `/api/projects/${projectId}/agents/${encodeURIComponent(name)}`,
-      { body },
-      'PATCH',
-    ).then((r) => r.agent),
+  /** Update an agent in the context of a project. Accepts either the raw
+   *  full-file text (YAML-view path) or a typed `{ def, markdown }` payload
+   *  (form-view path). Server validates `def` and round-trips through the
+   *  existing file as basis so comments / unknown keys / node style survive. */
+  updateProjectAgent: (
+    projectId: ULID,
+    name: string,
+    payload: { body: string } | { def: AgentDef; markdown: string },
+  ) =>
+    fetch(`/api/projects/${projectId}/agents/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(async (res) => {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        agent?: AgentEntry;
+        error?: string;
+        errors?: AgentValidationIssue[];
+      };
+      if (!res.ok || data.ok === false) {
+        const err = new Error(data.error ?? `update agent → ${res.status}`) as Error & {
+          fieldErrors?: AgentValidationIssue[];
+        };
+        if (data.errors) err.fieldErrors = data.errors;
+        throw err;
+      }
+      return data.agent as AgentEntry;
+    }),
+
+  /** Promote a project agent to the global library. Server replaces the
+   *  global (if `name` matches one) or adds a new global; the project file
+   *  is then deleted so the entry surfaces as a Global. */
+  promoteAgentToGlobal: (projectId: ULID, name: string) =>
+    postJson<{ ok: true; kind: 'replaced-global' | 'added-global'; agent: AgentEntry }>(
+      `/api/projects/${projectId}/agents/${encodeURIComponent(name)}/promote-to-global`,
+      {},
+    ).then((r) => ({ kind: r.kind, agent: r.agent })),
 
   /** Delete a project agent file. When the deleted file shadowed a global,
    *  the global re-surfaces ("reset to global"). When the file was
@@ -493,11 +525,54 @@ export const api = {
     getJson<{ ok: true; events: unknown[] }>(
       `/api/projects/${projectId}/sessions/${sessionId}/events`,
     ).then((r) => r.events),
+
+  // ── Abilities / custom commands ────────────────────────────────────────
+  listCustomCommands: (projectId: ULID) =>
+    getJson<{ ok: true; commands: CustomCommand[] }>(
+      `/api/projects/${projectId}/commands`,
+    ).then((r) => r.commands),
+
+  // ── /memory drawer ─────────────────────────────────────────────────────
+  getMemoryFile: (projectId: ULID, scope: MemoryScope) =>
+    getJson<{ ok: true; file: MemoryFile }>(
+      `/api/projects/${projectId}/memory/${scope}`,
+    ).then((r) => r.file),
+
+  putMemoryFile: (projectId: ULID, scope: MemoryScope, content: string) =>
+    postJsonMethod<{ ok: true; file: MemoryFile }>(
+      `/api/projects/${projectId}/memory/${scope}`,
+      { content },
+      'PUT',
+    ).then((r) => r.file),
 };
+
+export type MemoryScope = 'user' | 'project' | 'workspace';
+
+export interface MemoryFile {
+  scope: MemoryScope;
+  path: string;
+  content: string;
+  exists: boolean;
+}
+
+export interface CustomCommand {
+  name: string;
+  body: string;
+  scope: 'project' | 'user';
+}
 
 export interface AgentEntry {
   name: string;
+  /** Full file text as on disk (frontmatter + body). */
   body: string;
+  /** Parsed typed view of the YAML frontmatter. Omitted when the file
+   *  failed to parse — UI should fall back to the raw `body`. */
+  def?: AgentDef;
+  /** Markdown body below the closing `---`. Omitted when the file failed to
+   *  parse. */
+  markdown?: string;
+  /** Structured parse error, when applicable. */
+  parseError?: { reason: string; message: string };
 }
 
 export type ResolvedAgentKind = 'global' | 'override' | 'project';
@@ -509,7 +584,86 @@ export interface ResolvedAgent extends AgentEntry {
   globalBody?: string;
 }
 
-async function postJsonMethod<T>(path: string, body: unknown, method: 'POST' | 'PATCH'): Promise<T> {
+// Mirror of @pc/domain's AgentDef shape. Kept inline so the web bundle
+// stays import-cycle-free with the server domain package.
+export type AgentColor =
+  | 'red'
+  | 'blue'
+  | 'green'
+  | 'yellow'
+  | 'purple'
+  | 'orange'
+  | 'pink'
+  | 'cyan';
+
+export const AGENT_COLORS: readonly AgentColor[] = [
+  'red',
+  'blue',
+  'green',
+  'yellow',
+  'purple',
+  'orange',
+  'pink',
+  'cyan',
+];
+
+export type AgentModelShort = 'haiku' | 'sonnet' | 'opus' | 'inherit';
+export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = [
+  'haiku',
+  'sonnet',
+  'opus',
+  'inherit',
+];
+
+export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const AGENT_EFFORTS: readonly AgentEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+export type AgentMemoryScope = 'user' | 'project' | 'local';
+
+export interface AgentHookEntry {
+  matcher?: string;
+  command: string;
+}
+export type AgentHooks = Record<string, AgentHookEntry[]>;
+
+export interface InlineMcpServer {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  extras?: Record<string, unknown>;
+}
+export type AgentMcpServerRef = string | InlineMcpServer;
+
+export interface AgentDef {
+  name: string;
+  description: string;
+  color?: AgentColor;
+  model?: string;
+  effort?: AgentEffort;
+  maxTurns?: number;
+  background?: boolean;
+  tools?: string[];
+  disallowedTools?: string[];
+  mcpServers?: AgentMcpServerRef[];
+  isolation?: 'worktree';
+  memory?: AgentMemoryScope;
+  hooks?: AgentHooks;
+  skills?: string[];
+  permissionMode?: string;
+  initialPrompt?: string;
+}
+
+export interface AgentValidationIssue {
+  field: string;
+  message: string;
+}
+
+async function postJsonMethod<T>(
+  path: string,
+  body: unknown,
+  method: 'POST' | 'PATCH' | 'PUT',
+): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },

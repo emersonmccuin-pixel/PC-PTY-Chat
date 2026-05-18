@@ -82,6 +82,20 @@ export class AgentLibrary {
     return toEntry(safe, body);
   }
 
+  /** Write-or-replace a library agent. Used by the "Save to global" path —
+   *  a project override of a global is promoted to replace that global, or
+   *  a project-only agent is promoted to a new global with no conflict.
+   *  Caller learns whether the write replaced an existing entry via the
+   *  return value's `replaced` flag. */
+  upsert(name: string, body: string): { entry: AgentEntry; replaced: boolean } {
+    const safe = this.safeName(name);
+    const path = join(this.libraryDir, safe + '.md');
+    const replaced = existsSync(path);
+    mkdirSync(this.libraryDir, { recursive: true });
+    atomicWriteFileSync(path, body);
+    return { entry: toEntry(safe, body), replaced };
+  }
+
   /** Resolve a library agent name to its absolute path; null if name is unsafe. */
   pathFor(name: string): string | null {
     const safe = this.safeName(name, { allowMissing: true });

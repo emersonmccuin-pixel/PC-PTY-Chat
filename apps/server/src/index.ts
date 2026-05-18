@@ -9,8 +9,8 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { homedir } from 'node:os';
 
-import type { GlobalSettings, ULID } from '@pc/domain';
-import { withSettingsDefaults } from '@pc/domain';
+import type { AgentDef, GlobalSettings, ULID } from '@pc/domain';
+import { parseAgentFile, serializeAgentFile, validateAgentDef, withSettingsDefaults } from '@pc/domain';
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
@@ -491,26 +491,100 @@ app.get('/api/projects/:projectId/agents', (c) => {
 
 /** Edit an agent in the context of a project. If the name matches a global,
  *  this writes the per-project override file; the global stays untouched.
- *  If not, it edits an existing project-only agent. Body: `{ body }`.
- *  PATCH semantically a full-body replace. */
+ *  If not, it edits an existing project-only agent.
+ *
+ *  Accepts EITHER:
+ *    - `{ body: string }` — raw full-file text (YAML-view save path).
+ *    - `{ def: AgentDef, markdown: string }` — typed view from the form
+ *      editor. Server validates `def`, then serializes via the round-trip
+ *      basis (the existing file text), so unknown frontmatter keys,
+ *      comments, and YAML node style survive. */
 app.patch('/api/projects/:projectId/agents/:name', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const name = c.req.param('name');
-  const body = await c.req.json<{ body?: string }>();
-  if (typeof body.body !== 'string') {
-    return c.json({ ok: false, error: 'body required' }, 400);
-  }
+  const payload = await c.req.json<{ body?: string; def?: AgentDef; markdown?: string }>();
+
   // Must match either an existing project file or a global by this name.
-  const isProjectFile = readProjectAgent(runtime.folderPath, name) !== null;
-  const isGlobal = agentLibrary.read(name) !== null;
-  if (!isProjectFile && !isGlobal) {
+  const projectEntry = readProjectAgent(runtime.folderPath, name);
+  const globalEntry = agentLibrary.read(name);
+  if (!projectEntry && !globalEntry) {
     return c.json({ ok: false, error: `unknown agent: ${name}` }, 404);
   }
+
+  let fileText: string;
+  if (typeof payload.body === 'string') {
+    fileText = payload.body;
+  } else if (payload.def && typeof payload.markdown === 'string') {
+    const validation = validateAgentDef(payload.def);
+    if (!validation.ok) {
+      return c.json({ ok: false, error: 'invalid agent', errors: validation.errors }, 400);
+    }
+    // Round-trip basis: existing project file if present, else the global
+    // we're about to shadow. Either way the parse-and-diff approach
+    // preserves comments / unknown keys / key order from the basis.
+    const basis = projectEntry?.body ?? globalEntry?.body;
+    fileText = serializeAgentFile({ def: payload.def, body: payload.markdown, original: basis });
+  } else {
+    return c.json(
+      { ok: false, error: 'either `body` or `{ def, markdown }` required' },
+      400,
+    );
+  }
+
   try {
-    const agent = writeProjectAgent(runtime.folderPath, name, body.body);
+    const agent = writeProjectAgent(runtime.folderPath, name, fileText);
     return c.json({ ok: true, agent });
+  } catch (err) {
+    const msg = (err as Error).message;
+    const is400 = /^invalid agent name|^agent name required/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+/** Promote a project agent to the global library. Two cases:
+ *
+ *  - The name matches an existing global → REPLACE the global. The project
+ *    file (which is the override) is deleted so this project picks up the
+ *    new global cleanly. `kind: 'replaced-global'`.
+ *  - The name does NOT match a global → ADD a new global. The project file
+ *    is deleted so this project (and all others) sees it as a Global entry.
+ *    `kind: 'added-global'`.
+ *
+ *  The promoted body is validated before write — a broken project agent
+ *  can't pollute the global library. */
+app.post('/api/projects/:projectId/agents/:name/promote-to-global', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const name = c.req.param('name');
+
+  const projectEntry = readProjectAgent(runtime.folderPath, name);
+  if (!projectEntry) {
+    return c.json({ ok: false, error: `no project agent named ${name}` }, 404);
+  }
+
+  const parsed = parseAgentFile(projectEntry.body);
+  if (!parsed.ok) {
+    return c.json({ ok: false, error: `cannot promote: ${parsed.message}` }, 400);
+  }
+  const validation = validateAgentDef(parsed.def);
+  if (!validation.ok) {
+    return c.json(
+      { ok: false, error: 'cannot promote: agent has validation errors', errors: validation.errors },
+      400,
+    );
+  }
+
+  try {
+    const { entry, replaced } = agentLibrary.upsert(name, projectEntry.body);
+    deleteProjectAgent(runtime.folderPath, name);
+    return c.json({
+      ok: true,
+      kind: replaced ? ('replaced-global' as const) : ('added-global' as const),
+      agent: entry,
+    });
   } catch (err) {
     const msg = (err as Error).message;
     const is400 = /^invalid agent name|^agent name required/.test(msg);

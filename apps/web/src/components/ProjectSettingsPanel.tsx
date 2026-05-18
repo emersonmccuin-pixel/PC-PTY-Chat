@@ -11,8 +11,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type AgentEntry, type Project, type ResolvedAgent } from '@/api/client';
+import { api, type Project, type ResolvedAgent } from '@/api/client';
 import { useProjectSettingsFocus } from '@/store/project-settings-focus';
+import { AgentEditor } from './project-settings/AgentEditor';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
 import { StagesEditor } from './project-settings/StagesEditor';
 
@@ -320,83 +321,6 @@ function KindBadge({ kind }: { kind: ResolvedAgent['kind'] }) {
     <span className={`shrink-0 px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${cls}`}>
       {label}
     </span>
-  );
-}
-
-function AgentEditor({
-  projectId,
-  agent,
-  onClose,
-  onSaved,
-}: {
-  projectId: string;
-  agent: ResolvedAgent;
-  onClose: () => void;
-  onSaved: (next: AgentEntry) => void;
-}) {
-  const [body, setBody] = useState(agent.body);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [savedNote, setSavedNote] = useState<string | null>(null);
-
-  const dirty = body !== agent.body;
-  const saveLabel =
-    agent.kind === 'global' ? 'Save as project override' : 'Save project copy';
-
-  async function save() {
-    if (busy) return;
-    setBusy(true);
-    setErr(null);
-    setSavedNote(null);
-    try {
-      const next = await api.updateProjectAgent(projectId, agent.name, body);
-      setSavedNote('Saved. Restart the orchestrator to pick up the change.');
-      onSaved(next);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <KindBadge kind={agent.kind} />
-          <span className="font-mono text-xs text-foreground">{agent.name}</span>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          Close
-        </button>
-      </div>
-      <textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        rows={14}
-        className="w-full border border-border bg-background px-2 py-1 font-mono text-xs"
-      />
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          onClick={save}
-          disabled={busy || !dirty}
-          className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {busy ? 'Saving…' : saveLabel}
-        </button>
-        {agent.kind === 'global' && (
-          <span className="text-xs text-muted-foreground">
-            Editing a global creates a project-only override. The global stays unchanged in other
-            projects.
-          </span>
-        )}
-      </div>
-      {err && <p className="mt-2 text-xs text-destructive">{err}</p>}
-      {savedNote && <p className="mt-2 text-xs text-success">{savedNote}</p>}
-    </div>
   );
 }
 
