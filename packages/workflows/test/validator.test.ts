@@ -553,3 +553,38 @@ test('validator: no retry block → field absent (no auto-retry default)', () =>
   assert.equal(result.ok, true);
   assert.equal(result.workflow!.nodes[0]!.retry, undefined);
 });
+
+// ── 4a.8 — scratch_cleanup on the workflow root ─────────────────────────────
+
+test('validator: scratch_cleanup accepts "auto" + "keep"', () => {
+  const auto = validateWorkflow(
+    { ...baseRoot([{ id: 'n1', bash: 'x' }]), scratch_cleanup: 'auto' },
+    opts,
+  );
+  assert.equal(auto.ok, true, JSON.stringify(auto.errors));
+  assert.equal(auto.workflow!.scratch_cleanup, 'auto');
+  const keep = validateWorkflow(
+    { ...baseRoot([{ id: 'n1', bash: 'x' }]), scratch_cleanup: 'keep' },
+    opts,
+  );
+  assert.equal(keep.ok, true);
+  assert.equal(keep.workflow!.scratch_cleanup, 'keep');
+});
+
+test('validator: scratch_cleanup rejects unknown value', () => {
+  const result = validateWorkflow(
+    { ...baseRoot([{ id: 'n1', bash: 'x' }]), scratch_cleanup: 'wipe' },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /scratch_cleanup/.test(e.path)));
+});
+
+test('validator: scratch_cleanup field absent when not declared', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', bash: 'x' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.workflow!.scratch_cleanup, undefined);
+});

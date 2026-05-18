@@ -132,6 +132,18 @@ export function validateWorkflow(
     });
   }
 
+  // scratch_cleanup (optional)
+  if (
+    obj.scratch_cleanup !== undefined &&
+    obj.scratch_cleanup !== 'auto' &&
+    obj.scratch_cleanup !== 'keep'
+  ) {
+    errors.push({
+      path: 'scratch_cleanup',
+      message: 'must be "auto" or "keep" if provided',
+    });
+  }
+
   // nodes (required)
   let nodes: DagNode[] | undefined;
   if (!Array.isArray(obj.nodes)) {
@@ -156,6 +168,9 @@ export function validateWorkflow(
   if (outputs) workflow.outputs = outputs;
   if (obj.worktree === 'auto' || obj.worktree === 'none') {
     workflow.worktree = obj.worktree;
+  }
+  if (obj.scratch_cleanup === 'auto' || obj.scratch_cleanup === 'keep') {
+    workflow.scratch_cleanup = obj.scratch_cleanup;
   }
 
   return { ok: true, workflow, errors: [], partialStageId };

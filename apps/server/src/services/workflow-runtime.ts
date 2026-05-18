@@ -197,6 +197,24 @@ export class WorkflowRuntime {
     this.getProjectFn = opts.getProject;
     this.projectId = opts.projectId;
     this.subagentTranscriptLookup = opts.subagentTranscriptLookup ?? (() => null);
+    // 4a.8 / D18. Fire-and-forget sweep of this project's stale scratch
+    // entries on construction. Runs once per WorkflowRuntime lifecycle —
+    // ProjectRuntime lazy-spawns the runtime on first work-item / workflow
+    // API call, so the sweep happens at that point (not at server boot for
+    // every project simultaneously).
+    if (this.worktrees) {
+      try {
+        const { removed } = this.worktrees.sweepStaleScratch();
+        if (removed.length > 0) {
+          console.log(
+            `[workflow-runtime] scratch sweep removed ${removed.length} stale entr${removed.length === 1 ? 'y' : 'ies'}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[workflow-runtime] scratch sweep failed: ${(err as Error).message}`);
+      }
+    }
+
     this.dispatchers = {
       subagent: (ctx) => this.dispatchSubagent(ctx),
       bash: (ctx) => this.dispatchBash(ctx),
@@ -600,6 +618,25 @@ export class WorkflowRuntime {
 
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.workItemId && !run.parentRunId) {
       this.unlockWorkItem(run);
+    }
+
+    // 4a.8 / D18. Per-run scratch cleanup. Runs only at the top-level
+    // terminal status — nested runs share the parent's worktree, so their
+    // scratch belongs to the parent's lifecycle.
+    if (
+      TERMINAL_RUN_STATUSES.has(run.status) &&
+      !run.parentRunId &&
+      run.worktreePath &&
+      workflow.scratch_cleanup === 'auto' &&
+      this.worktrees
+    ) {
+      try {
+        this.worktrees.wipeScratchDir(run.worktreePath);
+      } catch (err) {
+        console.warn(
+          `[workflow-runtime] wipeScratchDir(${run.worktreePath}) failed: ${(err as Error).message}`,
+        );
+      }
     }
 
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.parentRunId && run.parentNodeId) {
@@ -1096,6 +1133,16 @@ export class WorkflowRuntime {
       throw new Error('workflow runtime not configured with a WorktreeService');
     }
     const entry = await this.worktrees.ensureWorktree(name);
+    // 4a.8 / D18. Set up `scratch/` + `.gitignore` on first dispatch into
+    // this worktree. Idempotent — subsequent calls no-op the dir create and
+    // skip the .gitignore write.
+    try {
+      this.worktrees.ensureScratchDir(entry.path);
+    } catch (err) {
+      console.warn(
+        `[workflow-runtime] ensureScratchDir(${entry.path}) failed: ${(err as Error).message}`,
+      );
+    }
     return entry.path;
   }
 

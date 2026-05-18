@@ -263,5 +263,9 @@ export interface Workflow {
   outputs?: Record<string, string>;
   /** `auto` = runtime creates/reuses a worktree; `none` = no worktree binding. */
   worktree?: 'auto' | 'none';
+  /** 4a.8 / D18. `auto` = runtime wipes the worktree's `scratch/` dir on
+   *  workflow terminal status. `keep` (default) leaves it; the boot-time
+   *  sweep still removes entries older than the 14-day threshold. */
+  scratch_cleanup?: 'auto' | 'keep';
   nodes: DagNode[];
 }
