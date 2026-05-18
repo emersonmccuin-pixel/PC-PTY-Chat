@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, max } from 'drizzle-orm';
 import type { ULID, WorkItem, WorkItemHistoryEntry, WorkItemStatus } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
@@ -15,6 +15,7 @@ interface WorkItemRow {
   statusReason: string | null;
   fields: Record<string, unknown>;
   history: WorkItemHistoryEntry[];
+  position: number;
   version: number;
   createdAt: number;
   updatedAt: number;
@@ -22,17 +23,22 @@ interface WorkItemRow {
 }
 
 function toDomain(row: WorkItemRow): WorkItem {
-  const out: WorkItem = {
+  return {
     id: row.id,
+    projectId: row.projectId,
+    parentId: row.parentId,
+    position: row.position,
     title: row.title,
+    body: row.body,
     stageId: row.stageId,
+    status: row.status,
+    statusReason: row.statusReason,
     fields: row.fields,
-    history: row.history,
+    version: row.version,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt,
   };
-  if (row.body) out.body = row.body;
-  if (row.status !== 'pending') out.status = row.status;
-  if (row.statusReason) out.statusReason = row.statusReason;
-  return out;
 }
 
 export interface CreateWorkItemInput {
@@ -41,6 +47,7 @@ export interface CreateWorkItemInput {
   title: string;
   body?: string;
   parentId?: ULID | null;
+  position?: number;
   fields?: Record<string, unknown>;
   initialHistory?: WorkItemHistoryEntry[];
 }
@@ -50,7 +57,7 @@ export function listWorkItems(projectId: ULID): WorkItem[] {
     .select()
     .from(workItems)
     .where(and(eq(workItems.projectId, projectId), isNull(workItems.deletedAt)))
-    .orderBy(asc(workItems.createdAt))
+    .orderBy(asc(workItems.position), asc(workItems.createdAt))
     .all() as WorkItemRow[];
   return rows.map(toDomain);
 }
@@ -69,13 +76,31 @@ function getRowById(id: ULID): WorkItemRow | null {
   return row ?? null;
 }
 
+function nextPosition(projectId: ULID, stageId: string, parentId: ULID | null): number {
+  const row = getDb()
+    .select({ max: max(workItems.position) })
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.projectId, projectId),
+        eq(workItems.stageId, stageId),
+        parentId == null ? isNull(workItems.parentId) : eq(workItems.parentId, parentId),
+        isNull(workItems.deletedAt),
+      ),
+    )
+    .get() as { max: number | null } | undefined;
+  return (row?.max ?? -1) + 1;
+}
+
 export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   const now = Date.now();
   const id = newId();
+  const parentId = input.parentId ?? null;
+  const position = input.position ?? nextPosition(input.projectId, input.stageId, parentId);
   const row: WorkItemRow = {
     id,
     projectId: input.projectId,
-    parentId: input.parentId ?? null,
+    parentId,
     title: input.title,
     body: input.body ?? '',
     stageId: input.stageId,
@@ -83,6 +108,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     statusReason: null,
     fields: input.fields ?? {},
     history: input.initialHistory ?? [],
+    position,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -104,12 +130,14 @@ export function moveWorkItemStage(id: ULID, toStage: string): WorkItem | null {
     from,
     to: toStage,
   };
+  const position = nextPosition(row.projectId, toStage, row.parentId);
   const updated: WorkItemRow = {
     ...row,
     stageId: toStage,
     status: 'pending',
     statusReason: null,
     history: [...row.history, entry],
+    position,
     version: row.version + 1,
     updatedAt: Date.now(),
   };

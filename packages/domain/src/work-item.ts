@@ -1,33 +1,45 @@
 // WorkItem domain type. The unit of work that flows between project stages.
-// In the rig, persisted as an entry in data/work-items.json. In PC, a row in sqlite.
+// Persisted as a row in the sqlite `work_items` table.
 
-export type WorkItemStatus = 'pending' | 'in-progress' | 'blocked' | 'complete' | 'failed';
+import type { ULID } from './ulid.ts';
 
+export type WorkItemStatus =
+  | 'pending'
+  | 'in-progress'
+  | 'blocked'
+  | 'complete'
+  | 'failed'
+  | 'archived';
+
+export interface WorkItem {
+  id: ULID;
+  projectId: ULID;
+  parentId: ULID | null;
+  /** Sort key within (parentId, stageId). Stable across moves. */
+  position: number;
+  title: string;
+  body: string;
+  stageId: string;
+  status: WorkItemStatus;
+  /** Reason for the current status when not `pending` — surfaced in the UI. */
+  statusReason: string | null;
+  fields: Record<string, unknown>;
+  /** Optimistic-concurrency counter. Bumped on every mutation; client must echo it on PATCH. */
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+  /** Soft-delete timestamp. status='archived' is the user-facing concept. */
+  deletedAt: number | null;
+}
+
+/** Internal append-only event log written by mutation paths in the repo.
+ *  NOT surfaced via the public WorkItem shape — the Activity tab reads
+ *  events.jsonl, which is the source of truth. */
 export interface WorkItemHistoryEntry {
   ts: string;
-  /** 'move' for stage transitions, 'update' for field merges. */
   kind: 'move' | 'update';
   from?: string;
   to?: string;
   fields?: Record<string, unknown>;
-  /** Free-form note (e.g. workflow runtime annotations). */
   note?: string;
-}
-
-export interface WorkItem {
-  id: string;
-  title: string;
-  /**
-   * Free-form body text. PC has it; rig keeps it optional so existing seeds
-   * don't have to populate it. Slice 8b's input mappings can reference
-   * `workItem.body` once workflows start consuming it.
-   */
-  body?: string;
-  stageId: string;
-  /** Slice 6.5: in-progress while a workflow run is open; blocked on contract failure or safety-net hit. Default `pending`. */
-  status?: WorkItemStatus;
-  /** Reason for the current status when not `pending` — surfaced in the UI. */
-  statusReason?: string;
-  fields: Record<string, unknown>;
-  history: WorkItemHistoryEntry[];
 }

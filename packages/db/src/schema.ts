@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
+  FieldSchemaType,
   GlobalSettings,
   NodeOutput,
   ProviderId,
@@ -71,6 +72,8 @@ export const workItems = sqliteTable(
       .notNull()
       .default(sql`'[]'`)
       .$type<WorkItemHistoryEntry[]>(),
+    /** Sort key within (parentId, stageId). Stable across moves. */
+    position: integer('position').notNull().default(0),
     /** Optimistic-concurrency counter. */
     version: integer('version').notNull().default(1),
     createdAt: integer('created_at').notNull(),
@@ -220,6 +223,54 @@ export const orchestratorSessions = sqliteTable(
     uniqueIndex('orch_sessions_active_per_project_idx')
       .on(t.projectId)
       .where(sql`status = 'active' AND deleted_at IS NULL`),
+  ],
+);
+
+export const attachments = sqliteTable(
+  'attachments',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    workItemId: text('work_item_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => workItems.id),
+    /** Free-form kind tag — 'text' | 'markdown' | 'json' are the known set. */
+    kind: text('kind').notNull(),
+    name: text('name').notNull(),
+    /** Inline payload. No filesystem-path variant — content always lives in the DB. */
+    content: text('content').notNull(),
+    contentType: text('content_type'),
+    /** Workflow run that produced this attachment, or null for chat/user-created. */
+    runId: text('run_id').$type<ULID | null>(),
+    createdBySessionId: text('created_by_session_id').$type<ULID | null>(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('attachments_work_item_idx').on(t.workItemId)],
+);
+
+export const fieldSchemas = sqliteTable(
+  'field_schemas',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    type: text('type').notNull().$type<FieldSchemaType>(),
+    /** Options for `type === 'enum'`; ignored otherwise. */
+    options: text('options', { mode: 'json' }).$type<string[] | null>(),
+    /** Default applied on work-item create when the user didn't provide a value. */
+    default: text('default', { mode: 'json' }).$type<unknown>(),
+    required: integer('required', { mode: 'boolean' }).notNull().default(false),
+    description: text('description'),
+    /** Order within the editor (low → high). */
+    order: integer('order').notNull().default(0),
+  },
+  (t) => [
+    index('field_schemas_project_idx').on(t.projectId),
+    uniqueIndex('field_schemas_project_key_idx').on(t.projectId, t.key),
   ],
 );
 

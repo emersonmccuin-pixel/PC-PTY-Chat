@@ -29,6 +29,13 @@
       "when": 1779051497802,
       "tag": "0003_orchestrator_jsonl_state",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1779068129367,
+      "tag": "0004_work_items_position_attachments_field_schemas",
+      "breakpoints": true
     }
   ]
 }

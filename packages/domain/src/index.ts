@@ -1,5 +1,15 @@
 export type { ULID } from './ulid.ts';
 export type { WorkItem, WorkItemHistoryEntry, WorkItemStatus } from './work-item.ts';
+export type { Attachment } from './attachment.ts';
+export type {
+  FieldSchema,
+  FieldSchemaType,
+  ValidateFieldsOk,
+  ValidateFieldsErrors,
+  ValidateFieldsResult,
+  ValidateFieldsOptions,
+} from './field-schema.ts';
+export { validateFields } from './field-schema.ts';
 export type { Project, Stage } from './project.ts';
 export type {
   ApprovalNode,
