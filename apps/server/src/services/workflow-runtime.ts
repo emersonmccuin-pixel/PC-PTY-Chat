@@ -19,7 +19,7 @@
 // next turn.
 
 import { execFile } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { statSync, writeFileSync, unlinkSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -534,6 +534,23 @@ export class WorkflowRuntime {
             completedAt: new Date().toISOString(),
           };
           changed = true;
+          continue;
+        }
+        // 4a.9 fix #1. `when: false` short-circuit. Without this, the node
+        // stays 'pending' forever and downstream `all_done` trigger_rules
+        // never satisfy. Mark explicit skip so downstream knows the node is
+        // terminal-but-not-run.
+        if (
+          isDepsSatisfied(node, run.nodeOutputs) &&
+          node.when &&
+          !this.evaluateBoolean(node.when, run)
+        ) {
+          run.nodeOutputs[node.id] = {
+            status: 'skipped',
+            error: `when expression evaluated false: ${node.when}`,
+            completedAt: new Date().toISOString(),
+          };
+          changed = true;
         }
       }
 
@@ -594,6 +611,31 @@ export class WorkflowRuntime {
             if (!run.nodeOutputs[node.id]!.completedAt) {
               run.nodeOutputs[node.id]!.completedAt = completedAt;
             }
+            // 4a.9 fix #3. Enforce done_when on successful completion. If
+            // violated, flip the node to 'failed' so downstream trigger_rule
+            // sees the contract failure.
+            if (run.nodeOutputs[node.id]!.status === 'complete') {
+              const check = this.enforceDoneWhen(run, node);
+              if (!check.ok) {
+                const cause = detectRetryCause(check.error);
+                const retried = await this.tryRetry(run, node, cause);
+                if (retried) continue;
+                run.nodeOutputs[node.id] = {
+                  ...run.nodeOutputs[node.id]!,
+                  status: 'failed',
+                  error: check.error,
+                  completedAt: new Date().toISOString(),
+                };
+                if (node.kind === 'subagent') {
+                  this.broadcastSubagentFailure(
+                    run,
+                    node.id,
+                    'agent-self-failed',
+                    check.error ?? 'done_when violated',
+                  );
+                }
+              }
+            }
           }
         } else if (result.kind === 'cancel') {
           run.nodeOutputs[node.id] = {
@@ -613,6 +655,11 @@ export class WorkflowRuntime {
     run.status = recomputeRunStatus(workflow, run);
     if (TERMINAL_RUN_STATUSES.has(run.status)) {
       run.completedAt = run.completedAt ?? new Date().toISOString();
+      // 4a.9 fix #2. Populate `run.outputs` from declared `workflow.outputs`
+      // keys. Walks all nodes in declaration order, last-wins. Caller (a
+      // parent workflow's nested-workflow step, or `pc_run_workflow`'s
+      // return value) reads these via `$<step>.output` or `run.outputs`.
+      this.populateRunOutputs(workflow, run);
     }
     dbPersistRun(run);
 
@@ -642,7 +689,107 @@ export class WorkflowRuntime {
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.parentRunId && run.parentNodeId) {
       await this.propagateToParent(run);
     }
+
+    // 4a.9 fix #4. Terminated-workflow ping. Only on failure / cancellation
+    // for top-level runs — success doesn't need to interrupt the orchestrator,
+    // and nested runs' status flows up via propagateToParent. The orchestrator
+    // gets a channel event it can reflect on in its next reply; without this
+    // the chat goes silent after a workflow failure.
+    if (
+      TERMINAL_RUN_STATUSES.has(run.status) &&
+      !run.parentRunId &&
+      (run.status === 'failed' || run.status === 'cancelled')
+    ) {
+      void this.notifyOrchestratorTerminated(run, workflow).catch((err) => {
+        console.warn(
+          `[workflow-runtime] terminated-workflow ping failed: ${(err as Error).message}`,
+        );
+      });
+    }
     return run;
+  }
+
+  /** 4a.9 fix #2. Walk every node's output in declaration order and copy
+   *  keys declared in `workflow.outputs` into `run.outputs`. Later nodes
+   *  override earlier ones (matches "final step's output" semantic without
+   *  having to define which node is "final" in a branching DAG). */
+  private populateRunOutputs(workflow: Workflow, run: WorkflowRun): void {
+    if (!workflow.outputs) return;
+    const keys = Object.keys(workflow.outputs);
+    if (keys.length === 0) return;
+    const captured: Record<string, unknown> = {};
+    for (const node of workflow.nodes) {
+      const out = run.nodeOutputs[node.id]?.output;
+      if (!out || typeof out !== 'object' || Array.isArray(out)) continue;
+      const obj = out as Record<string, unknown>;
+      for (const key of keys) {
+        if (key in obj) captured[key] = obj[key];
+      }
+    }
+    if (Object.keys(captured).length > 0) {
+      run.outputs = captured;
+    }
+  }
+
+  /** 4a.9 fix #4. POST a terminated-workflow notification to the channel so
+   *  the orchestrator can reflect on it in its next reply. */
+  private async notifyOrchestratorTerminated(
+    run: WorkflowRun,
+    workflow: Workflow,
+  ): Promise<void> {
+    const body = [
+      `Workflow run terminated: workflow="${workflow.id}" status="${run.status}".`,
+      run.lastReason ? `Reason: ${run.lastReason}` : '',
+      `[workflowRunId: ${run.id}]`,
+      ``,
+      `The workflow won't resume on its own. Reflect this in your reply to the user; if action is needed (retry, adjust inputs, file a bug), surface it now.`,
+    ]
+      .filter((line) => line !== '')
+      .join('\n');
+    await this.postChannel(body);
+  }
+
+  /** 4a.9 fix #3. Strict `done_when` enforcement. Returns ok=true when the
+   *  contract is satisfied; ok=false + error when not. Callers flip the node
+   *  status from 'complete' to 'failed' on violation. */
+  private enforceDoneWhen(
+    run: WorkflowRun,
+    node: DagNode,
+  ): { ok: boolean; error?: string } {
+    if (!node.done_when) return { ok: true };
+    const wt = run.worktreePath ?? this.opts.workspaceDir;
+    for (const rel of node.done_when['files-non-empty'] ?? []) {
+      let ok = false;
+      try {
+        const stat = statSync(resolve(wt, rel));
+        ok = stat.isFile() && stat.size > 0;
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        return {
+          ok: false,
+          error: `done_when violated: file missing or empty: ${rel}`,
+        };
+      }
+    }
+    const fields = node.done_when['output-fields-non-empty'] ?? [];
+    if (fields.length > 0) {
+      const out = run.nodeOutputs[node.id]?.output;
+      const obj = out && typeof out === 'object' && !Array.isArray(out)
+        ? (out as Record<string, unknown>)
+        : null;
+      for (const key of fields) {
+        const value = obj?.[key];
+        if (isEmptyValue(value)) {
+          return {
+            ok: false,
+            error: `done_when violated: output field empty: ${key}`,
+          };
+        }
+      }
+    }
+    return { ok: true };
   }
 
   /**
@@ -709,6 +856,39 @@ export class WorkflowRuntime {
       output,
       completedAt: new Date().toISOString(),
     };
+    // 4a.9 fix #3. Enforce done_when on async complete too. Subagents call
+    // pc_complete_node when they think they're done; the contract still has
+    // to hold.
+    const node = lookupNode(run, nodeId);
+    if (node) {
+      const check = this.enforceDoneWhen(run, node);
+      if (!check.ok) {
+        const cause = detectRetryCause(check.error);
+        const retried = await this.tryRetry(run, node, cause);
+        if (retried) {
+          dbPersistRun(run);
+          await this.tick(runId);
+          return { ok: true };
+        }
+        run.nodeOutputs[nodeId] = {
+          ...run.nodeOutputs[nodeId]!,
+          status: 'failed',
+          error: check.error,
+          completedAt: new Date().toISOString(),
+        };
+        dbPersistRun(run);
+        if (node.kind === 'subagent') {
+          this.broadcastSubagentFailure(
+            run,
+            nodeId,
+            'agent-self-failed',
+            check.error ?? 'done_when violated',
+          );
+        }
+        await this.tick(runId);
+        return { ok: true };
+      }
+    }
     dbPersistRun(run);
     await this.tick(runId);
     return { ok: true };
@@ -1429,6 +1609,16 @@ function lookupNode(run: WorkflowRun, nodeId: string): DagNode | undefined {
   const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
   if (!parsed.ok || !parsed.workflow) return undefined;
   return parsed.workflow.nodes.find((n) => n.id === nodeId);
+}
+
+/** "Empty" per the DoneWhen output-fields-non-empty spec: null/undefined,
+ *  trimmed-empty string, [], {}. `0` and `false` pass. */
+function isEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return value.trim().length === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === 'object') return Object.keys(value).length === 0;
+  return false;
 }
 
 function collectSubagentNodeIds(run: WorkflowRun): string[] {
