@@ -236,6 +236,27 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_edit_workflow',
+    description:
+      'Edit an EXISTING project-scoped workflow YAML in place. Companion to `pc_create_workflow`; same `def` shape (typed workflow object). Server runs the same validator + serializer the create path uses — comments + key order survive on round-trip — then writes to `<project>/.project-companion/workflows/<def.id>.yaml` and broadcasts project-workflows-changed. 400 if `def.id` does not match the URL workflow id (renames are a duplicate + delete operation, not an edit). 400 on validation errors with per-path messages. Use this when the workflow-creator session opened in edit mode (initial user message includes `[edit-mode workflowId="..."]`); use `pc_create_workflow` otherwise.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: {
+          type: 'string',
+          description:
+            'id of the workflow to edit (the URL slug; must match def.id since renames are not supported via edit)',
+        },
+        def: {
+          type: 'object',
+          description: 'typed workflow object: { id, triggers?, nodes: [...], ... }',
+          additionalProperties: true,
+        },
+      },
+      required: ['workflowId', 'def'],
+    },
+  },
+  {
     name: 'pc_update_workflow_draft',
     description:
       'Push an in-progress draft of the workflow currently being authored. Use this after each meaningful structural change during the conversational interview so the user can see the workflow forming in the visualizer. The draft is NOT written to disk — only `pc_create_workflow` does that. Server keys the draft by the transient PC_SESSION_ID env var (already set by the host); draft state clears automatically when the workflow-creator session ends. 400 on validation errors so you can self-correct mid-interview.',
@@ -321,6 +342,37 @@ async function postServer(
         host: '127.0.0.1',
         port: SERVER_PORT,
         method: 'POST',
+        path,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (r) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c) => chunks.push(c as Buffer));
+        r.on('end', () =>
+          res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
+        );
+      },
+    );
+    req.on('error', rej);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function putServer(
+  path: string,
+  body: unknown,
+): Promise<{ status: number; body: string }> {
+  const payload = JSON.stringify(body);
+  return new Promise((res, rej) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: SERVER_PORT,
+        method: 'PUT',
         path,
         headers: {
           'Content-Type': 'application/json',
@@ -732,6 +784,41 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_create_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_edit_workflow': {
+      const workflowId = typeof args.workflowId === 'string' ? args.workflowId : '';
+      const def = args.def && typeof args.def === 'object' ? args.def : null;
+      if (!workflowId) {
+        return {
+          content: [{ type: 'text', text: 'pc_edit_workflow: workflowId required' }],
+          isError: true,
+        };
+      }
+      if (!def) {
+        return {
+          content: [{ type: 'text', text: 'pc_edit_workflow: def required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await putServer(
+          projectPath(`workflows/${encodeURIComponent(workflowId)}`),
+          { def },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_edit_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_edit_workflow failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

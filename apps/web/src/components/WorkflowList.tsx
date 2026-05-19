@@ -8,14 +8,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { AttachedToWorkItem, Project, ULID } from '@/api/client';
+import type { AttachedToWorkItem, Project, ULID, Workflow } from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
 import { CreateWorkflowModal } from './CreateWorkflowModal';
 import { DeleteWorkflowDialog } from './workflows/DeleteWorkflowDialog';
 import { DuplicateWorkflowModal } from './workflows/DuplicateWorkflowModal';
-import { EditWorkflowModal } from './workflows/EditWorkflowModal';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
 interface WorkflowSummary {
@@ -89,7 +88,11 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<
+    | { id: string; def: Workflow; yamlText: string }
+    | null
+  >(null);
+  const [editLoadErr, setEditLoadErr] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [toggleErr, setToggleErr] = useState<string | null>(null);
@@ -153,6 +156,16 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
     }
   }
 
+  async function openEditModal(wfId: string) {
+    setEditLoadErr(null);
+    try {
+      const { workflow, yamlText } = await api.getWorkflow(project.id, wfId);
+      setEditing({ id: wfId, def: workflow, yamlText });
+    } catch (e) {
+      setEditLoadErr(`${wfId}: ${(e as Error).message}`);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4">
@@ -168,6 +181,14 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {toggleErr}
             <button onClick={() => setToggleErr(null)} className="ml-2 underline">
+              dismiss
+            </button>
+          </div>
+        )}
+        {editLoadErr && (
+          <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            failed to open edit modal: {editLoadErr}
+            <button onClick={() => setEditLoadErr(null)} className="ml-2 underline">
               dismiss
             </button>
           </div>
@@ -203,7 +224,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
               key={wf.fileName}
               wf={wf}
               runs={runs}
-              onEdit={() => setEditingId(wf.id)}
+              onEdit={() => void openEditModal(wf.id)}
               onDuplicate={() => setDuplicatingId(wf.id)}
               onDelete={() => setDeletingId(wf.id)}
               onToggleDisabled={() => void toggleDisabled(wf)}
@@ -246,15 +267,13 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           onClose={() => setCreateOpen(false)}
         />
       )}
-      {editingId && (
-        <EditWorkflowModal
+      {editing && (
+        <CreateWorkflowModal
           projectId={project.id}
-          workflowId={editingId}
-          onClose={() => setEditingId(null)}
-          onSaved={() => {
-            setEditingId(null);
-            void refetch(project.id);
-          }}
+          events={events}
+          send={send}
+          onClose={() => setEditing(null)}
+          editingWorkflow={editing}
         />
       )}
       {duplicatingId && (
@@ -267,7 +286,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
             void refetch(project.id);
             // Per D63: open the new (force-disabled) duplicate in the edit
             // modal so the user can review + adjust before enabling.
-            setEditingId(newId);
+            void openEditModal(newId);
           }}
         />
       )}
