@@ -6,7 +6,7 @@
 // shared with future affordances (Q5). Active-slug comes from a zustand
 // store, not props. Right-click context menu built out per D86 (5.4).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { api, type Project } from '@/api/client';
 import { useActiveProject } from '@/store/active-project';
@@ -43,6 +43,14 @@ export function ProjectRail({
   const [menu, setMenu] = useState<MenuPos | null>(null);
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+
+  // 5+.3 (D89): rail-local, transient, name-only substring filter.
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => p.name.toLowerCase().includes(q));
+  }, [projects, filter]);
 
   useEffect(() => {
     if (!menu) return;
@@ -116,11 +124,24 @@ export function ProjectRail({
       <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         Projects
       </div>
+      {projects.length > 0 && (
+        <div className="border-b border-border px-2 py-1.5">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter projects…"
+            className="w-full px-2 py-1 text-xs"
+          />
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto">
         {projects.length === 0 ? (
           <div className="px-3 py-3 text-xs text-muted-foreground">No projects yet.</div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No matches.</div>
         ) : (
-          projects.map((p) => {
+          filtered.map((p) => {
             const isActive = p.slug === activeSlug;
             return (
               <button
