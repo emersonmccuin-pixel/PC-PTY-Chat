@@ -114,7 +114,18 @@ export interface WorkflowRuntimeOptions {
   channelPort?: number;
   evaluateBoolean?: EvaluateBoolean;
   substituteOutputs?: SubstituteOutputs;
-  /** WS broadcast — used by the approval dispatcher to push `approval-required` UI events. */
+  /** WS broadcast. Used by:
+   *
+   *  - the approval dispatcher → `approval-required` / `review-pending` envelopes;
+   *  - the subagent failure path → `event` wrappers around D10 SubagentFailureSignals;
+   *  - the work-items mirror → `work-items-changed` on stage moves;
+   *  - **Section 4e.3 / D52** — every run-state transition fires
+   *    `{ type: 'workflow-run-changed', projectId, workflowId, runId, status, nodeOutputs }`.
+   *    Invariant: broadcast immediately AFTER each `dbPersistRun(run)` call inside this
+   *    class (use `persistAndBroadcast`) so subscribers only ever see envelopes that
+   *    reflect the row as-persisted. The runs drawer (4e.5) subscribes on open and
+   *    filters by workflowId; the envelope carries enough state to merge into the
+   *    list / detail views without a refetch. */
   broadcast?: BroadcastFn;
   /** Registry for looking up workflows by id (nested-workflow nodes + M14 triggers). */
   registry?: WorkflowRegistry;
@@ -265,6 +276,34 @@ export class WorkflowRuntime {
       'write-to-worktree': (ctx) => this.dispatchWriteToWorktree(ctx),
       'orchestrator-review': (ctx) => this.dispatchOrchestratorReview(ctx),
     };
+  }
+
+  /** Section 4e.3 / D52. Persist run state, then fire the
+   *  `workflow-run-changed` envelope. ALL in-class persistence of a run goes
+   *  through here — direct `dbPersistRun(run)` calls would silently skip the
+   *  broadcast and leave the drawer (4e.5) stale until a refetch. The
+   *  envelope is fire-and-forget; broadcast failures must not unwind the
+   *  persisted state. */
+  private persistAndBroadcast(run: WorkflowRun): void {
+    dbPersistRun(run);
+    this.broadcastRunChanged(run);
+  }
+
+  private broadcastRunChanged(run: WorkflowRun): void {
+    try {
+      this.broadcast({
+        type: 'workflow-run-changed',
+        projectId: this.projectId,
+        workflowId: run.workflowId,
+        runId: run.id,
+        status: run.status,
+        nodeOutputs: run.nodeOutputs,
+      });
+    } catch (err) {
+      console.warn(
+        `[workflow-runtime] workflow-run-changed broadcast failed for ${run.id}: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async dispatchOrchestratorReview(ctx: DispatchContext): Promise<DispatchResult> {
@@ -518,7 +557,7 @@ export class WorkflowRuntime {
       nodeOutputs[node.id] = seededOutputs?.[node.id] ?? { status: 'pending' };
     }
     const id = (args.id ?? newId()) as ULID;
-    return dbCreateRun({
+    const run = dbCreateRun({
       id,
       workflowId: args.workflow.id,
       workflowName: args.workflow.id,
@@ -534,6 +573,10 @@ export class WorkflowRuntime {
       nodeOutputs,
       ...(args.metadata ? { metadata: args.metadata } : {}),
     });
+    // 4e.3 / D52. Initial-state envelope so the runs drawer sees the new
+    // row appear in real time without waiting on the first tick to land.
+    this.broadcastRunChanged(run);
+    return run;
   }
 
   /** Read all workflow runs — used by the UI's run history pane (when it lands). */
@@ -655,7 +698,7 @@ export class WorkflowRuntime {
       refreshedPrior.lastReason = existing.includes(lineageSuffix)
         ? existing
         : `${existing}${lineageSuffix}`;
-      dbPersistRun(refreshedPrior);
+      this.persistAndBroadcast(refreshedPrior);
     }
 
     setImmediate(() => {
@@ -737,7 +780,7 @@ export class WorkflowRuntime {
       run.lastReason = `frozen YAML snapshot failed to parse: ${parsed.errors
         .map((e) => `${e.path}: ${e.message}`)
         .join('; ')}`;
-      dbPersistRun(run);
+      this.persistAndBroadcast(run);
       return run;
     }
     const workflow = parsed.workflow;
@@ -883,7 +926,7 @@ export class WorkflowRuntime {
       // return value) reads these via `$<step>.output` or `run.outputs`.
       this.populateRunOutputs(workflow, run);
     }
-    dbPersistRun(run);
+    this.persistAndBroadcast(run);
 
     if (TERMINAL_RUN_STATUSES.has(run.status) && run.workItemId && !run.parentRunId) {
       this.unlockWorkItem(run);
@@ -1056,7 +1099,7 @@ export class WorkflowRuntime {
         completedAt: new Date().toISOString(),
       };
     }
-    dbPersistRun(parent);
+    this.persistAndBroadcast(parent);
     await this.tick(parent.id);
   }
 
@@ -1086,7 +1129,7 @@ export class WorkflowRuntime {
         const cause = detectRetryCause(check.error);
         const retried = await this.tryRetry(run, node, cause);
         if (retried) {
-          dbPersistRun(run);
+          this.persistAndBroadcast(run);
           await this.tick(runId);
           return { ok: true };
         }
@@ -1096,7 +1139,7 @@ export class WorkflowRuntime {
           error: check.error,
           completedAt: new Date().toISOString(),
         };
-        dbPersistRun(run);
+        this.persistAndBroadcast(run);
         if (node.kind === 'subagent') {
           this.broadcastSubagentFailure(
             run,
@@ -1109,7 +1152,7 @@ export class WorkflowRuntime {
         return { ok: true };
       }
     }
-    dbPersistRun(run);
+    this.persistAndBroadcast(run);
     await this.tick(runId);
     return { ok: true };
   }
@@ -1127,7 +1170,7 @@ export class WorkflowRuntime {
     if (node) {
       const retried = await this.tryRetry(run, node, cause);
       if (retried) {
-        dbPersistRun(run);
+        this.persistAndBroadcast(run);
         await this.tick(runId);
         return { ok: true };
       }
@@ -1138,7 +1181,7 @@ export class WorkflowRuntime {
       error: reason,
       completedAt: new Date().toISOString(),
     };
-    dbPersistRun(run);
+    this.persistAndBroadcast(run);
     this.broadcastSubagentFailure(run, nodeId, 'agent-self-failed', reason);
     await this.tick(runId);
     return { ok: true };
@@ -1197,7 +1240,7 @@ export class WorkflowRuntime {
       output: { approved, response },
       completedAt: new Date().toISOString(),
     };
-    dbPersistRun(run);
+    this.persistAndBroadcast(run);
     await this.tick(runId);
     return { ok: true };
   }
@@ -1733,7 +1776,7 @@ export class WorkflowRuntime {
             const cur = current.nodeOutputs[nodeId];
             if (cur) {
               current.nodeOutputs[nodeId] = { ...cur, transcriptPath: finalJsonl };
-              dbPersistRun(current);
+              this.persistAndBroadcast(current);
             }
           }
 

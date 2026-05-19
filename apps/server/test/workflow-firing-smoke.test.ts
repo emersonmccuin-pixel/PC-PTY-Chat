@@ -171,6 +171,9 @@ interface FixtureOptions {
    *  subagent dispatch pass a fake that synthesizes results without booting
    *  a real claude.exe. */
   subagentSpawner?: (req: SubagentSpawnRequest) => SubagentSpawnHandle;
+  /** Capture every envelope the runtime broadcasts. 4e.3 tests inspect for
+   *  `workflow-run-changed`. Defaults to a no-op when omitted. */
+  onBroadcast?: (event: unknown) => void;
 }
 
 async function mkFixture(
@@ -194,7 +197,7 @@ async function mkFixture(
   const registry = new WorkflowRegistry(workflowsDir);
   registry.reload();
 
-  const broadcast = () => {};
+  const broadcast = fopts.onBroadcast ?? (() => {});
   const worktreeSvc = {
     async ensureWorktree(name: string) {
       return { path: resolve(folder, 'worktrees', name) };
@@ -663,5 +666,188 @@ test('4e.1: readRunForProject returns null for cross-project run ids (no info le
   } finally {
     a.cleanup();
     b.cleanup();
+  }
+});
+
+interface RunChangedEnvelope {
+  type: 'workflow-run-changed';
+  projectId: string;
+  workflowId: string;
+  runId: string;
+  status: string;
+  nodeOutputs: Record<string, { status: string }>;
+}
+
+function pickRunChanged(captured: unknown[]): RunChangedEnvelope[] {
+  return captured.filter(
+    (e): e is RunChangedEnvelope =>
+      !!e &&
+      typeof e === 'object' &&
+      (e as { type?: unknown }).type === 'workflow-run-changed',
+  );
+}
+
+test('4e.3 / D52: workflow-run-changed envelope fires on lifecycle transitions (create, dispatch, complete)', async () => {
+  const captured: unknown[] = [];
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve({
+      kind: 'success',
+      lastAssistantText: 'done',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    } as SubagentSpawnResult),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner, onBroadcast: (e) => captured.push(e) },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+
+    // Wait for the run to settle.
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    const envelopes = pickRunChanged(captured).filter((e) => e.runId === run.id);
+    assert.ok(
+      envelopes.length >= 2,
+      `expected at least 2 workflow-run-changed envelopes (create + complete); got ${envelopes.length}`,
+    );
+
+    // Initial envelope: created with the node at `pending`.
+    const first = envelopes[0]!;
+    assert.equal(first.type, 'workflow-run-changed');
+    assert.equal(first.projectId, f.project.id);
+    assert.equal(first.workflowId, 'smoke-subagent');
+    assert.equal(first.nodeOutputs['investigate']?.status, 'pending');
+
+    // Terminal envelope: run + node both complete.
+    const last = envelopes[envelopes.length - 1]!;
+    assert.equal(last.status, 'complete');
+    assert.equal(last.nodeOutputs['investigate']?.status, 'complete');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4e.3 / D52: retry-from-failed fires envelopes for both the prior lineage append AND the new run', async () => {
+  const captured: unknown[] = [];
+  const results: SubagentSpawnResult[] = [
+    {
+      kind: 'success',
+      lastAssistantText: 'first ok',
+      pcCompletePayload: null,
+      transcriptPath: '/tmp/first.log',
+      jsonlPath: null,
+    },
+    {
+      kind: 'failure',
+      cause: 'idle-timeout',
+      message: 'second step timed out',
+      transcriptPath: '/tmp/second.log',
+      jsonlPath: null,
+      partialAssistantText: '',
+    },
+  ];
+  let idx = 0;
+  const stagedSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve(results[idx++] ?? results[results.length - 1]!),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-two-step', yaml: TWO_STEP_SUBAGENT_YAML }],
+    { subagentSpawner: stagedSpawner, onBroadcast: (e) => captured.push(e) },
+  );
+  try {
+    const priorRun = await f.runtime.runWorkflow('smoke-two-step');
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, priorRun.id);
+      if (fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    // Stage a successful retry attempt for `second`.
+    results.push({
+      kind: 'success',
+      lastAssistantText: 'second-retry ok',
+      pcCompletePayload: null,
+      transcriptPath: '/tmp/second-retry.log',
+      jsonlPath: null,
+    });
+
+    const capturedBeforeRetry = captured.length;
+    const retry = await f.runtime.retryFromFailedNode(priorRun.id, 'second');
+    assert.ok(retry.ok, 'retry-from must succeed');
+    const newRunId = retry.ok ? retry.runId : '';
+
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, newRunId);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    const sinceRetry = pickRunChanged(captured.slice(capturedBeforeRetry));
+
+    const newRunEnvs = sinceRetry.filter((e) => e.runId === newRunId);
+    assert.ok(
+      newRunEnvs.some((e) => e.status === 'complete'),
+      'new run should fire a terminal `complete` envelope',
+    );
+
+    const priorRunEnvs = sinceRetry.filter((e) => e.runId === priorRun.id);
+    assert.ok(
+      priorRunEnvs.length >= 1,
+      'retry-from must broadcast the prior run after appending the lineage suffix',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4e.3: nodeFailed broadcasts the failed envelope', async () => {
+  const captured: unknown[] = [];
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve({
+      kind: 'failure',
+      cause: 'wall-clock-timeout',
+      message: 'helper timed out (wall-clock)',
+      transcriptPath: '/dev/null',
+      jsonlPath: null,
+      partialAssistantText: '',
+    } as SubagentSpawnResult),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner, onBroadcast: (e) => captured.push(e) },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    const envelopes = pickRunChanged(captured).filter((e) => e.runId === run.id);
+    const last = envelopes[envelopes.length - 1]!;
+    assert.equal(last.status, 'failed');
+    assert.equal(last.nodeOutputs['investigate']?.status, 'failed');
+  } finally {
+    f.cleanup();
   }
 });
