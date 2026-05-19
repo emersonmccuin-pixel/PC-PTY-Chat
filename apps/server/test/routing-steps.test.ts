@@ -35,6 +35,7 @@ import { runCreateWorkItemStep } from '../src/services/create-work-item-step.ts'
 import { runUpdateWorkItemStep } from '../src/services/update-work-item-step.ts';
 import { runWriteToWorktreeStep } from '../src/services/write-to-worktree-step.ts';
 import { substituteOutputs } from '../src/services/output-substitution.ts';
+import type { SubstituteTemplate } from '../src/services/typed-substitution.ts';
 import type { AttachmentService, CreateAttachmentServiceInput } from '../src/services/attachment.ts';
 import type {
   PatchWorkItemServiceInput,
@@ -42,6 +43,15 @@ import type {
 } from '../src/services/work-item.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/** Test-only: adapt the legacy regex substituter to the post-4h.9
+ *  SubstituteTemplate signature. The runtime path uses typed-edge wires
+ *  (`{{ name }}` + `wire:`) at dispatch time; tests retain the legacy
+ *  $X.Y grammar because it's the cheapest way to assert resolution
+ *  correctness without rebuilding edge fixtures per case. */
+function legacyTmpl(run: WorkflowRun): SubstituteTemplate {
+  return (text) => substituteOutputs(text, run);
+}
 
 function mkRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -220,7 +230,7 @@ test('runAttachToWorkItemStep: happy path passes substituted fields + agent prov
   const result = await runAttachToWorkItemStep(node, run, {
     attachmentService: svc,
     workflow: wf,
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'complete');
   assert.equal(calls.length, 1);
@@ -245,10 +255,11 @@ test('runAttachToWorkItemStep: empty workItemId after substitution fails fast', 
       content: 'y',
     },
   };
-  const result = await runAttachToWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runAttachToWorkItemStep(node, run, {
     attachmentService: svc,
     workflow: mkWorkflow({ nodes: [node] }),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /workItemId resolved to empty/);
@@ -262,10 +273,11 @@ test('runAttachToWorkItemStep: no subagent ancestor → agentName null', async (
     kind: 'attach-to-work-item',
     'attach-to-work-item': { workItemId: 'wi-1', name: 'x', content: 'y' },
   };
-  const result = await runAttachToWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runAttachToWorkItemStep(node, run, {
     attachmentService: svc,
     workflow: mkWorkflow({ nodes: [node] }),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'complete');
   assert.equal(calls[0]!.agentName, null);
@@ -282,10 +294,11 @@ test('runAttachToWorkItemStep: service throw → step fails with reason', async 
     kind: 'attach-to-work-item',
     'attach-to-work-item': { workItemId: 'wi-1', name: 'x', content: 'y' },
   };
-  const result = await runAttachToWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runAttachToWorkItemStep(node, run, {
     attachmentService: svc,
     workflow: mkWorkflow({ nodes: [node] }),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /attach failed: attachment service exploded/);
@@ -300,10 +313,11 @@ test('runCreateWorkItemStep: defaults to project first stage when unset', async 
     kind: 'create-work-item',
     'create-work-item': { title: '$inputs.title' },
   };
-  const result = await runCreateWorkItemStep(node, mkRun({ inputs: { title: 'New work' } }), {
+  const run = mkRun({ inputs: { title: 'New work' } });
+  const result = await runCreateWorkItemStep(node, run, {
     workItemService: svc,
     getProject: () => mkProject(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'complete');
   assert.equal(createCalls[0]!.title, 'New work');
@@ -321,13 +335,14 @@ test('runCreateWorkItemStep: explicit stage substitutes from inputs', async () =
       body: '$inputs.body',
     },
   };
+  const run = mkRun({ inputs: { targetStage: 'done', body: 'detail' } });
   await runCreateWorkItemStep(
     node,
-    mkRun({ inputs: { targetStage: 'done', body: 'detail' } }),
+    run,
     {
       workItemService: svc,
       getProject: () => mkProject(),
-      substituteOutputs,
+      substituteTemplate: legacyTmpl(run),
     },
   );
   assert.equal(createCalls[0]!.stageId, 'done');
@@ -341,10 +356,11 @@ test('runCreateWorkItemStep: service throw → step fails', async () => {
     kind: 'create-work-item',
     'create-work-item': { title: 'x' },
   };
-  const result = await runCreateWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runCreateWorkItemStep(node, run, {
     workItemService: svc,
     getProject: () => mkProject(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /create failed/);
@@ -379,9 +395,10 @@ test('runUpdateWorkItemStep: reads version + sends only changed keys', async () 
       fields: { reviewer: 'bob' },
     },
   };
-  const result = await runUpdateWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runUpdateWorkItemStep(node, run, {
     workItemService: svc,
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'complete');
   assert.equal(patchCalls.length, 1);
@@ -401,9 +418,10 @@ test('runUpdateWorkItemStep: unknown work item → step fails', async () => {
     kind: 'update-work-item',
     'update-work-item': { workItemId: 'wi-missing', title: 'x' },
   };
-  const result = await runUpdateWorkItemStep(node, mkRun(), {
+  const run = mkRun();
+  const result = await runUpdateWorkItemStep(node, run, {
     workItemService: svc,
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /unknown work item: wi-missing/);
@@ -422,10 +440,11 @@ test('runWriteToWorktreeStep: writes file inside worktree', async () => {
       content: '$inputs.body',
     },
   };
+  const run = mkRun({ worktreePath: dir, inputs: { body: '# hello' } });
   const result = await runWriteToWorktreeStep(
     node,
-    mkRun({ worktreePath: dir, inputs: { body: '# hello' } }),
-    { substituteOutputs },
+    run,
+    { substituteTemplate: legacyTmpl(run) },
   );
   assert.equal(result.output.status, 'complete');
   const written = readFileSync(resolve(dir, 'docs', 'result.md'), 'utf-8');
@@ -441,8 +460,9 @@ test('runWriteToWorktreeStep: append mode adds to existing file', async () => {
     kind: 'write-to-worktree',
     'write-to-worktree': { path: 'log.txt', content: 'line2\n', mode: 'append' },
   };
-  const result = await runWriteToWorktreeStep(node, mkRun({ worktreePath: dir }), {
-    substituteOutputs,
+  const run = mkRun({ worktreePath: dir });
+  const result = await runWriteToWorktreeStep(node, run, {
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'complete');
   assert.equal(readFileSync(target, 'utf-8'), 'line1\nline2\n');
@@ -455,8 +475,9 @@ test('runWriteToWorktreeStep: path escaping fails', async () => {
     kind: 'write-to-worktree',
     'write-to-worktree': { path: `..${sep}escape.txt`, content: 'no' },
   };
-  const result = await runWriteToWorktreeStep(node, mkRun({ worktreePath: dir }), {
-    substituteOutputs,
+  const run = mkRun({ worktreePath: dir });
+  const result = await runWriteToWorktreeStep(node, run, {
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /escapes worktree root/);
@@ -469,8 +490,9 @@ test('runWriteToWorktreeStep: absolute path fails', async () => {
     kind: 'write-to-worktree',
     'write-to-worktree': { path: resolve(dir, 'absolute.txt'), content: 'no' },
   };
-  const result = await runWriteToWorktreeStep(node, mkRun({ worktreePath: dir }), {
-    substituteOutputs,
+  const run = mkRun({ worktreePath: dir });
+  const result = await runWriteToWorktreeStep(node, run, {
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /must be relative to the worktree/);
@@ -482,8 +504,9 @@ test('runWriteToWorktreeStep: missing worktreePath fails', async () => {
     kind: 'write-to-worktree',
     'write-to-worktree': { path: 'x.txt', content: 'y' },
   };
-  const result = await runWriteToWorktreeStep(node, mkRun({ worktreePath: null }), {
-    substituteOutputs,
+  const run = mkRun({ worktreePath: null });
+  const result = await runWriteToWorktreeStep(node, run, {
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /requires the workflow to declare a worktree/);
@@ -497,8 +520,9 @@ test('runWriteToWorktreeStep: refuses to overwrite a directory', async () => {
     kind: 'write-to-worktree',
     'write-to-worktree': { path: 'imadir', content: 'x' },
   };
-  const result = await runWriteToWorktreeStep(node, mkRun({ worktreePath: dir }), {
-    substituteOutputs,
+  const run = mkRun({ worktreePath: dir });
+  const result = await runWriteToWorktreeStep(node, run, {
+    substituteTemplate: legacyTmpl(run),
   });
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /is a directory/);

@@ -13,7 +13,7 @@ import type {
 
 import type { WorkItemService } from './work-item.ts';
 
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
 export interface CreateWorkItemStepResult {
   kind: 'sync';
@@ -23,24 +23,24 @@ export interface CreateWorkItemStepResult {
 export interface CreateWorkItemStepDeps {
   workItemService: WorkItemService;
   getProject: () => Project;
-  substituteOutputs: SubstituteOutputs;
+  substituteTemplate: SubstituteTemplate;
 }
 
 export async function runCreateWorkItemStep(
   node: CreateWorkItemNode,
-  run: WorkflowRun,
+  _run: WorkflowRun,
   deps: CreateWorkItemStepDeps,
 ): Promise<CreateWorkItemStepResult> {
   const completedAt = () => new Date().toISOString();
   const cfg = node['create-work-item'];
-  const title = deps.substituteOutputs(cfg.title, run).trim();
+  const title = deps.substituteTemplate(cfg.title).trim();
   if (!title) {
     return failedSync(`title resolved to empty (raw: "${cfg.title}")`, completedAt());
   }
 
   let stageId: string;
   if (cfg.stage) {
-    stageId = deps.substituteOutputs(cfg.stage, run).trim();
+    stageId = deps.substituteTemplate(cfg.stage).trim();
     if (!stageId) {
       return failedSync(`stage resolved to empty (raw: "${cfg.stage}")`, completedAt());
     }
@@ -52,10 +52,10 @@ export async function runCreateWorkItemStep(
     stageId = firstStage;
   }
 
-  const body = cfg.body !== undefined ? deps.substituteOutputs(cfg.body, run) : undefined;
+  const body = cfg.body !== undefined ? deps.substituteTemplate(cfg.body) : undefined;
   let parentId: ULID | undefined;
   if (cfg.parentId) {
-    const raw = deps.substituteOutputs(cfg.parentId, run).trim();
+    const raw = deps.substituteTemplate(cfg.parentId).trim();
     if (!raw) {
       return failedSync(
         `parentId resolved to empty (raw: "${cfg.parentId}")`,

@@ -11,7 +11,7 @@ import { dirname, isAbsolute, resolve, sep } from 'node:path';
 
 import type { NodeOutput, WorkflowRun, WriteToWorktreeNode } from '@pc/domain';
 
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
 export interface WriteToWorktreeStepResult {
   kind: 'sync';
@@ -19,7 +19,7 @@ export interface WriteToWorktreeStepResult {
 }
 
 export interface WriteToWorktreeStepDeps {
-  substituteOutputs: SubstituteOutputs;
+  substituteTemplate: SubstituteTemplate;
 }
 
 export async function runWriteToWorktreeStep(
@@ -37,7 +37,7 @@ export async function runWriteToWorktreeStep(
     );
   }
 
-  const relPath = deps.substituteOutputs(cfg.path, run).trim();
+  const relPath = deps.substituteTemplate(cfg.path).trim();
   if (!relPath) {
     return failedSync(`path resolved to empty (raw: "${cfg.path}")`, completedAt());
   }
@@ -68,7 +68,7 @@ export async function runWriteToWorktreeStep(
     /* file doesn't exist — fine */
   }
 
-  const content = deps.substituteOutputs(cfg.content, run);
+  const content = deps.substituteTemplate(cfg.content);
   const mode = cfg.mode ?? 'overwrite';
 
   try {

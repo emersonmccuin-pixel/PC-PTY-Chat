@@ -94,7 +94,8 @@ import { detectRetryCause, shouldRetry } from './retry-policy.ts';
 import { buildWorkflowEventHeader } from './workflow-event-header.ts';
 import {
   applyTypedPortEdges,
-  makeNodeBoundSubstituter,
+  makeTemplateSubstituter,
+  type SubstituteTemplate,
   type TypedRefContext,
 } from './typed-substitution.ts';
 import { validateSubagentOutput } from './subagent-output-validation.ts';
@@ -110,11 +111,9 @@ export interface WorkItemsResponse {
 }
 
 export type EvaluateBoolean = (expression: string, run: WorkflowRun) => boolean;
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
 export type BroadcastFn = (event: unknown) => void;
 
 const defaultEvaluateBoolean: EvaluateBoolean = () => true;
-const defaultSubstituteOutputs: SubstituteOutputs = (text) => text;
 const defaultBroadcast: BroadcastFn = () => {};
 
 export interface WorkflowRuntimeOptions {
@@ -124,7 +123,6 @@ export interface WorkflowRuntimeOptions {
   /** Webhook channel port (apps/server's `/api/channel-send` proxies here too). */
   channelPort?: number;
   evaluateBoolean?: EvaluateBoolean;
-  substituteOutputs?: SubstituteOutputs;
   /** WS broadcast. Used by:
    *
    *  - the approval dispatcher → `approval-required` / `review-pending` envelopes;
@@ -206,10 +204,10 @@ interface DispatchContext {
    *  per the typed parser's recursive walk). */
   edges: Readonly<Record<string, NodeEdges>>;
   evaluateBoolean: EvaluateBoolean;
-  /** Node-bound substituter (4h.5). `{{ name }}` placeholders resolve from
-   *  this node's `wire:` block; legacy `$X.Y` patterns fall through to the
-   *  raw substituter until 4h.9 drops the latter. */
-  substituteOutputs: SubstituteOutputs;
+  /** Node-bound template substituter (4h.5/4h.9). Replaces `{{ name }}`
+   *  placeholders in template-text fields via this node's `wire:` block.
+   *  Identity when the node has no wire block. */
+  substituteTemplate: SubstituteTemplate;
 }
 
 type Dispatcher = (ctx: DispatchContext) => Promise<DispatchResult>;
@@ -221,7 +219,6 @@ export interface NodeUpdateResult {
 
 export class WorkflowRuntime {
   private readonly evaluateBoolean: EvaluateBoolean;
-  private readonly substituteOutputs: SubstituteOutputs;
   private readonly broadcast: BroadcastFn;
   private readonly channelPort: number;
   private readonly registry: WorkflowRegistry | undefined;
@@ -249,7 +246,6 @@ export class WorkflowRuntime {
 
   constructor(private readonly opts: WorkflowRuntimeOptions) {
     this.evaluateBoolean = opts.evaluateBoolean ?? defaultEvaluateBoolean;
-    this.substituteOutputs = opts.substituteOutputs ?? defaultSubstituteOutputs;
     this.broadcast = opts.broadcast ?? defaultBroadcast;
     this.channelPort = opts.channelPort ?? 8788;
     this.registry = opts.registry;
@@ -327,7 +323,7 @@ export class WorkflowRuntime {
   private async dispatchOrchestratorReview(ctx: DispatchContext): Promise<DispatchResult> {
     const result = await runOrchestratorReviewStep(ctx.node as OrchestratorReviewNode, ctx.run, {
       workflow: ctx.workflow,
-      substituteOutputs: ctx.substituteOutputs,
+      substituteTemplate: ctx.substituteTemplate,
       postChannel: (body) => this.postChannel(body),
       broadcast: (event) => this.broadcast(event),
     });
@@ -345,7 +341,7 @@ export class WorkflowRuntime {
     return runAttachToWorkItemStep(ctx.node as AttachToWorkItemNode, ctx.run, {
       attachmentService: this.attachmentSvc,
       workflow: ctx.workflow,
-      substituteOutputs: ctx.substituteOutputs,
+      substituteTemplate: ctx.substituteTemplate,
     });
   }
 
@@ -365,7 +361,7 @@ export class WorkflowRuntime {
     return runCreateWorkItemStep(ctx.node as CreateWorkItemNode, ctx.run, {
       workItemService: this.workItemSvc,
       getProject: this.getProjectFn,
-      substituteOutputs: ctx.substituteOutputs,
+      substituteTemplate: ctx.substituteTemplate,
     });
   }
 
@@ -378,18 +374,18 @@ export class WorkflowRuntime {
     }
     return runUpdateWorkItemStep(ctx.node as UpdateWorkItemNode, ctx.run, {
       workItemService: this.workItemSvc,
-      substituteOutputs: ctx.substituteOutputs,
+      substituteTemplate: ctx.substituteTemplate,
     });
   }
 
   private async dispatchWriteToWorktree(ctx: DispatchContext): Promise<DispatchResult> {
     return runWriteToWorktreeStep(ctx.node as WriteToWorktreeNode, ctx.run, {
-      substituteOutputs: ctx.substituteOutputs,
+      substituteTemplate: ctx.substituteTemplate,
     });
   }
 
   private async dispatchHttp(ctx: DispatchContext): Promise<DispatchResult> {
-    return runHttpStep(ctx.node as HttpNode, ctx.run, ctx.substituteOutputs);
+    return runHttpStep(ctx.node as HttpNode, ctx.run, ctx.substituteTemplate);
   }
 
   // ── Project / work items ─────────────────────────────────────────────────
@@ -1490,15 +1486,18 @@ export class WorkflowRuntime {
     const out: PendingApproval[] = [];
     for (const run of listActiveRuns()) {
       if (run.status !== 'paused') continue;
-      const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
+      const parsed = parseTypedWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
       if (!parsed.ok || !parsed.workflow) continue;
+      const edges = parsed.edges ?? {};
       for (const node of parsed.workflow.nodes) {
         if (node.kind !== 'approval') continue;
         if (run.nodeOutputs[node.id]?.status !== 'running') continue;
+        const ctx: TypedRefContext = { run, projectId: this.projectId, edges };
+        const substituteTemplate = makeTemplateSubstituter(node.id, ctx);
         out.push({
           workflowRunId: run.id,
           nodeId: node.id,
-          message: this.substituteOutputs(node.approval.message, run),
+          message: substituteTemplate(node.approval.message),
           onRejectPrompt: node.approval.on_reject?.prompt ?? null,
         });
       }
@@ -1556,14 +1555,10 @@ export class WorkflowRuntime {
   ): Promise<DispatchResult> {
     // 4h.5 — apply typed-port edges + bind the template substituter for
     // this node. Both calls short-circuit cheaply when the node has no
-    // edges registered (un-migrated YAML path).
+    // edges registered (no-substitution YAMLs hit the identity path).
     const ctx: TypedRefContext = { run, projectId: this.projectId, edges };
     const effectiveNode = applyTypedPortEdges(node, ctx);
-    const boundSubstitute = makeNodeBoundSubstituter(
-      node.id,
-      ctx,
-      this.substituteOutputs,
-    );
+    const substituteTemplate = makeTemplateSubstituter(node.id, ctx);
     const dispatcher = this.dispatchers[node.kind];
     return dispatcher({
       node: effectiveNode,
@@ -1571,13 +1566,13 @@ export class WorkflowRuntime {
       workflow,
       edges,
       evaluateBoolean: this.evaluateBoolean,
-      substituteOutputs: boundSubstitute,
+      substituteTemplate,
     });
   }
 
   private async dispatchBash(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as BashNode;
-    const rendered = ctx.substituteOutputs(node.bash, ctx.run);
+    const rendered = ctx.substituteTemplate(node.bash);
     const cwd = ctx.run.worktreePath ?? this.opts.workspaceDir;
     const completedAt = () => new Date().toISOString();
 
@@ -1769,7 +1764,7 @@ export class WorkflowRuntime {
 
     const inputs: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node.inputs ?? {})) {
-      inputs[k] = ctx.substituteOutputs(v, ctx.run);
+      inputs[k] = ctx.substituteTemplate(v);
     }
 
     const child = this.createRun({
@@ -1821,13 +1816,13 @@ export class WorkflowRuntime {
 
   private async dispatchCancel(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as CancelNode;
-    const reason = ctx.substituteOutputs(node.cancel, ctx.run);
+    const reason = ctx.substituteTemplate(node.cancel);
     return { kind: 'cancel', reason };
   }
 
   private async dispatchApproval(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as ApprovalNode;
-    const message = ctx.substituteOutputs(node.approval.message, ctx.run);
+    const message = ctx.substituteTemplate(node.approval.message);
     // Existing approval-required envelope kept for current chat UI consumers
     // (ApprovalBubble). Section 7's inbox will switch to `review-pending`.
     this.broadcast({
@@ -1859,7 +1854,7 @@ export class WorkflowRuntime {
 
   private async dispatchScript(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as ScriptNode;
-    const rendered = ctx.substituteOutputs(node.script, ctx.run);
+    const rendered = ctx.substituteTemplate(node.script);
     const cwd = ctx.run.worktreePath ?? this.opts.workspaceDir;
     const ext = node.runtime === 'node' ? '.js' : '.py';
     const runner = node.runtime === 'node' ? 'node' : 'python';
@@ -1918,11 +1913,13 @@ export class WorkflowRuntime {
    *  below — this method just kicks the spawn and returns `async`. */
   private async dispatchSubagent(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as SubagentNode;
-    const rendered = ctx.substituteOutputs(node.prompt, ctx.run);
-    // 4a.2 / D16: agent name may be `$inputs.<key>` — resolve at dispatch.
-    // Empty / whitespace-only after substitution means the caller didn't
-    // pass the input the workflow declared; fail fast with a clear reason.
-    const resolvedAgent = ctx.substituteOutputs(node.subagent, ctx.run).trim();
+    const rendered = ctx.substituteTemplate(node.prompt);
+    // 4h.5: node.subagent comes through applyTypedPortEdges already-resolved
+    // when wired (e.g. `subagent: '@trigger.someAgent'`); otherwise it's a
+    // literal string. Either way trim it. Empty after typed-edge resolution
+    // means the wired source produced nothing — fail fast.
+    const resolvedAgent =
+      typeof node.subagent === 'string' ? node.subagent.trim() : '';
     if (!resolvedAgent) {
       return failedSync(
         `agent name resolved to empty (raw: "${node.subagent}"; check the workflow's inputs and the caller's input map)`,

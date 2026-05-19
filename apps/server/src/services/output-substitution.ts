@@ -1,17 +1,26 @@
-// Output substitution + expression evaluator (Slice 9 M6).
+// Expression evaluator + legacy substitution helper.
 //
-// Two pure functions plugged into the WorkflowRuntime via constructor options:
-//
-//   substituteOutputs(text, run): string
-//     Replaces every `$<node-id>.output[.path]`, `$inputs.<key>[.path]`, and
-//     `$ENV.<NAME>` token in `text` with the resolved value. Outputs read
-//     from run.nodeOutputs[id].output; inputs read from run.inputs[key]; env
-//     reads from process.env[NAME] (no dotted-path traversal — env values
-//     are strings). Strings are inlined verbatim; numbers/booleans use
-//     String(); arrays/objects are JSON.stringify'd. Missing values resolve
-//     to the empty string.
+// Production exports (consumed by the runtime):
 //
 //   evaluateBoolean(expression, run): boolean
+//     Evaluates `when:` / `until:` / cancel-guard expressions on the run's
+//     nodeOutputs + inputs. The grammar still uses `$X.Y` legacy refs; this
+//     is intentional — expressions are a separate code path from text
+//     substitution (4h.9 dropped the latter from the runtime).
+//
+// Test-only export (post-4h.9):
+//
+//   substituteOutputs(text, run): string
+//     The pre-4h.9 regex substituter — `$<node-id>.output[.path]`,
+//     `$inputs.<key>[.path]`, `$ENV.<NAME>` → resolved value via run
+//     state. No production path imports this anymore. Step-level test
+//     suites adapt it through `legacyTmpl(run): SubstituteTemplate` so
+//     they can keep $-grammar fixtures without rebuilding typed-edge
+//     maps per case. Remove when those test suites migrate to the
+//     typed path (no scheduled date).
+//
+// Original docstring for context (still accurate for the function's
+// behaviour, just no longer load-bearing in the runtime path):
 //     Evaluates a tiny JS-ish expression. Grammar:
 //       expr    : or
 //       or      : and ( '||' and )*

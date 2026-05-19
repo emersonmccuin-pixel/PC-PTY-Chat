@@ -9,10 +9,9 @@
 //   - applyTypedPortEdges: clones the node, rewrites wired port values to
 //     resolved EdgeRef results (string/object/primitive), no-ops when the
 //     node has no edges registered.
-//   - makeNodeBoundSubstituter: replaces `{{ name }}` placeholders from the
-//     wire block, then defers to the legacy substituter for remaining
-//     `$X.Y` patterns. Returns the legacy substituter directly when the
-//     node has no wire block (fast path).
+//   - makeTemplateSubstituter: replaces `{{ name }}` placeholders from the
+//     wire block (4h.9 path; legacy `$X.Y` chain was removed). Identity
+//     fast-path when the node has no wire block.
 //
 // Run via:  pnpm --filter @pc/server test
 // Or:       pnpm test:unit  (from repo root)
@@ -31,7 +30,7 @@ import type {
 
 import {
   applyTypedPortEdges,
-  makeNodeBoundSubstituter,
+  makeTemplateSubstituter,
   resolveEdgeRef,
   resolveTriggerValue,
   type TypedRefContext,
@@ -284,16 +283,16 @@ test('applyTypedPortEdges: returns a clone — input node is not mutated', () =>
   );
 });
 
-// ── makeNodeBoundSubstituter ────────────────────────────────────────────────
+// ── makeTemplateSubstituter ────────────────────────────────────────────────
 
-test('makeNodeBoundSubstituter: no wire block → returns legacy directly', () => {
+test('makeTemplateSubstituter: no wire block → identity', () => {
   const ctx = mkCtx(mkRun());
-  const legacy = (text: string) => text + '!';
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
-  assert.equal(bound, legacy);
+  const bound = makeTemplateSubstituter('n1', ctx);
+  assert.equal(bound('hello world'), 'hello world');
+  assert.equal(bound('{{ unknown }}'), '{{ unknown }}', 'no wire → placeholders are literal');
 });
 
-test('makeNodeBoundSubstituter: {{ name }} placeholder replaced from wire block', () => {
+test('makeTemplateSubstituter: {{ name }} placeholder replaced from wire block', () => {
   const edges: Record<string, NodeEdges> = {
     n1: {
       wire: { summary: { kind: 'node', nodeId: 'explore', output: 'summary' } as EdgeRef },
@@ -303,42 +302,23 @@ test('makeNodeBoundSubstituter: {{ name }} placeholder replaced from wire block'
     nodeOutputs: { explore: { status: 'complete', output: { summary: 'short story' } } },
   });
   const ctx = mkCtx(run, edges);
-  const legacy = (text: string) => text; // identity — focus on wire substitution
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
+  const bound = makeTemplateSubstituter('n1', ctx);
   assert.equal(
-    bound('Use this: {{ summary }} — done.', run),
+    bound('Use this: {{ summary }} — done.'),
     'Use this: short story — done.',
   );
 });
 
-test('makeNodeBoundSubstituter: legacy $X.Y still runs after wire substitution', () => {
-  const edges: Record<string, NodeEdges> = {
-    n1: { wire: { summary: { kind: 'trigger', output: 'workItemId' } as EdgeRef } },
-  };
-  const run = mkRun({
-    workItemId: 'wi-7',
-    nodeOutputs: { researcher: { status: 'complete', output: 'OLD' } },
-  });
-  const ctx = mkCtx(run, edges);
-  const legacy = (text: string): string => text.replace(/\$researcher\.output/g, 'OLD');
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
-  assert.equal(
-    bound('New: {{ summary }} | Old: $researcher.output', run),
-    'New: wi-7 | Old: OLD',
-  );
-});
-
-test('makeNodeBoundSubstituter: unknown placeholder name → empty string', () => {
+test('makeTemplateSubstituter: unknown placeholder name → empty string', () => {
   const edges: Record<string, NodeEdges> = {
     n1: { wire: { known: { kind: 'trigger', output: 'workItemId' } as EdgeRef } },
   };
   const ctx = mkCtx(mkRun({ workItemId: 'wi-5' }), edges);
-  const legacy = (text: string) => text;
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
-  assert.equal(bound('a={{ known }} b={{ unknown }}', mkRun()), 'a=wi-5 b=');
+  const bound = makeTemplateSubstituter('n1', ctx);
+  assert.equal(bound('a={{ known }} b={{ unknown }}'), 'a=wi-5 b=');
 });
 
-test('makeNodeBoundSubstituter: stringifies object/number/boolean wire values', () => {
+test('makeTemplateSubstituter: stringifies object/number/boolean wire values', () => {
   const edges: Record<string, NodeEdges> = {
     n1: {
       wire: {
@@ -357,20 +337,18 @@ test('makeNodeBoundSubstituter: stringifies object/number/boolean wire values', 
     },
   });
   const ctx = mkCtx(run, edges);
-  const legacy = (text: string) => text;
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
+  const bound = makeTemplateSubstituter('n1', ctx);
   assert.equal(
-    bound('n={{ n }} b={{ b }} o={{ o }}', run),
+    bound('n={{ n }} b={{ b }} o={{ o }}'),
     'n=42 b=true o={"a":1}',
   );
 });
 
-test('makeNodeBoundSubstituter: whitespace inside {{ … }} tolerated', () => {
+test('makeTemplateSubstituter: whitespace inside {{ … }} tolerated', () => {
   const edges: Record<string, NodeEdges> = {
     n1: { wire: { x: { kind: 'trigger', output: 'workItemId' } as EdgeRef } },
   };
   const ctx = mkCtx(mkRun({ workItemId: 'wi-9' }), edges);
-  const legacy = (text: string) => text;
-  const bound = makeNodeBoundSubstituter('n1', ctx, legacy);
-  assert.equal(bound('a={{x}} b={{  x  }} c={{ x }}', mkRun()), 'a=wi-9 b=wi-9 c=wi-9');
+  const bound = makeTemplateSubstituter('n1', ctx);
+  assert.equal(bound('a={{x}} b={{  x  }} c={{ x }}'), 'a=wi-9 b=wi-9 c=wi-9');
 });

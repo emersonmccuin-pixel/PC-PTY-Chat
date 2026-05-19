@@ -38,9 +38,12 @@ import type {
   WorkflowRun,
 } from '@pc/domain';
 
-/** Same shape `output-substitution.ts:substituteOutputs` exports — duplicated
- *  inline to avoid coupling on the legacy module right before 4h.9 drops it. */
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+/** Node-bound template substituter. Takes the text content of a template
+ *  field (subagent prompt, bash body, HTTP body, …) and returns the same
+ *  text with every `{{ name }}` placeholder replaced via this node's
+ *  `wire:` block. Identity when the node has no wire block (legacy YAMLs
+ *  post-migration). */
+export type SubstituteTemplate = (text: string) => string;
 
 /** YAML body field name per kind. Mirrors `KIND_BODY_FIELD` inside the typed
  *  parser (kept in sync intentionally — a kind whose body lives at the top
@@ -186,33 +189,29 @@ export function applyTypedPortEdges<N extends DagNode>(
   return clone as unknown as N;
 }
 
-/** Build a `SubstituteOutputs`-compatible function bound to this node's
- *  template-field wire map. Replaces `{{ name }}` placeholders from the
- *  wire block first; then defers to the legacy substituter for any
- *  remaining `$X.Y` patterns. The legacy pass keeps un-migrated YAMLs
- *  working until 4h.7/8 boot-migration lands; 4h.9 strips it.
+/** Build a node-bound template substituter. Replaces every `{{ name }}`
+ *  placeholder in the input text with the value of this node's `wire:`
+ *  block entry for that name. Identity when the node has no wire block
+ *  (legacy YAMLs post-migration; nothing to expand).
  *
  *  Why bind per-node: the wire-name → EdgeRef map is a per-node thing.
  *  Without binding, every dispatcher would have to pass `(text, nodeId)`
- *  through the step-file boundary, churning every call site. */
-export function makeNodeBoundSubstituter(
+ *  through the step-file boundary. */
+export function makeTemplateSubstituter(
   nodeId: string,
   ctx: TypedRefContext,
-  legacy: SubstituteOutputs,
-): SubstituteOutputs {
+): SubstituteTemplate {
   const wire = ctx.edges[nodeId]?.wire;
   if (!wire) {
-    // Fast path — no wire block for this node. Legacy passes through
-    // unchanged so un-migrated YAMLs short-circuit with zero overhead.
-    return legacy;
+    return identityTemplate;
   }
 
-  return (text: string, run: WorkflowRun): string => {
-    const afterWire = text.replace(PLACEHOLDER_RE, (_match: string, name: string) => {
+  return (text: string): string =>
+    text.replace(PLACEHOLDER_RE, (_match: string, name: string) => {
       const ref = wire[name];
       if (!ref) return '';
       return stringifyValue(resolveEdgeRef(ref, ctx));
     });
-    return legacy(afterWire, run);
-  };
 }
+
+const identityTemplate: SubstituteTemplate = (text) => text;

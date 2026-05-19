@@ -15,6 +15,11 @@ import {
   buildOrchestratorReviewChannelBody,
 } from '../src/services/orchestrator-review-step.ts';
 import { substituteOutputs } from '../src/services/output-substitution.ts';
+import type { SubstituteTemplate } from '../src/services/typed-substitution.ts';
+
+function legacyTmpl(run: WorkflowRun): SubstituteTemplate {
+  return (text) => substituteOutputs(text, run);
+}
 
 function mkRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -53,7 +58,7 @@ test('runOrchestratorReviewStep: happy path POSTs to channel + emits review-pend
   });
   const result = await runOrchestratorReviewStep(node, run, {
     workflow: mkWorkflow(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run),
     postChannel: async (body) => {
       posted.push(body);
     },
@@ -90,9 +95,10 @@ test('runOrchestratorReviewStep: includes on_revise.prompt when set', async () =
       on_revise: { prompt: 'For revisions, edit src/foo.ts' },
     },
   };
-  await runOrchestratorReviewStep(node, mkRun(), {
+  const run2 = mkRun();
+  await runOrchestratorReviewStep(node, run2, {
     workflow: mkWorkflow(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run2),
     postChannel: async (b) => {
       posted.push(b);
     },
@@ -110,9 +116,10 @@ test('runOrchestratorReviewStep: postChannel throw → step fails sync (no broad
     kind: 'orchestrator-review',
     'orchestrator-review': { prompt: 'x' },
   };
-  const result = await runOrchestratorReviewStep(node, mkRun(), {
+  const run3 = mkRun();
+  const result = await runOrchestratorReviewStep(node, run3, {
     workflow: mkWorkflow(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run3),
     postChannel: async () => {
       throw new Error('channel down');
     },
@@ -131,9 +138,10 @@ test('runOrchestratorReviewStep: artifact omitted → no Artifact line in body',
     kind: 'orchestrator-review',
     'orchestrator-review': { prompt: 'just a prompt' },
   };
-  await runOrchestratorReviewStep(node, mkRun(), {
+  const run4 = mkRun();
+  await runOrchestratorReviewStep(node, run4, {
     workflow: mkWorkflow(),
-    substituteOutputs,
+    substituteTemplate: legacyTmpl(run4),
     postChannel: async (b) => {
       posted.push(b);
     },

@@ -24,7 +24,7 @@ import { WorkflowRegistry } from '@pc/workflows';
 import { renderTemplate } from './project-scaffold.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
-import { evaluateBoolean, substituteOutputs } from './output-substitution.ts';
+import { evaluateBoolean } from './output-substitution.ts';
 import { migrateWorkflowsInPlace } from './workflow-boot-migration.ts';
 import { WorkItemService } from './work-item.ts';
 import { AttachmentService } from './attachment.ts';
@@ -160,7 +160,6 @@ export class ProjectRuntime {
         projectId: this.project.id,
         channelPort: this.opts.channelPort,
         evaluateBoolean,
-        substituteOutputs,
         broadcast: this.opts.broadcast,
         registry: this.workflowRegistry(),
         worktrees: this.worktrees(),

@@ -15,7 +15,7 @@ import { request as httpsRequest } from 'node:https';
 
 import type { HttpNode, NodeOutput, WorkflowRun } from '@pc/domain';
 
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
 export interface HttpStepResult {
   kind: 'sync';
@@ -32,11 +32,15 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export async function runHttpStep(
   node: HttpNode,
-  run: WorkflowRun,
-  substituteOutputs: SubstituteOutputs,
+  _run: WorkflowRun,
+  substituteTemplate: SubstituteTemplate,
 ): Promise<HttpStepResult> {
   const completedAt = () => new Date().toISOString();
-  const url = substituteOutputs(node.http.url, run).trim();
+  // url is a typed-port single-value field (already resolved by
+  // applyTypedPortEdges); the template substituter is identity for non-
+  // template ports but we still pass through it for {{ }} placeholder
+  // support in mixed strings authors might write.
+  const url = substituteTemplate(node.http.url).trim();
   if (!url) {
     return {
       kind: 'sync',
@@ -75,12 +79,12 @@ export async function runHttpStep(
   const headers: Record<string, string> = {};
   if (node.http.headers) {
     for (const [name, raw] of Object.entries(node.http.headers)) {
-      headers[name] = substituteOutputs(raw, run);
+      headers[name] = substituteTemplate(raw);
     }
   }
 
   const bodyText =
-    node.http.body !== undefined ? substituteOutputs(node.http.body, run) : undefined;
+    node.http.body !== undefined ? substituteTemplate(node.http.body) : undefined;
   if (bodyText !== undefined && !('content-length' in headersLower(headers))) {
     headers['Content-Length'] = String(Buffer.byteLength(bodyText));
   }

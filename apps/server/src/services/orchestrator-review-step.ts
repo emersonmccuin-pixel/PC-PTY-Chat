@@ -15,8 +15,8 @@ import type {
 } from '@pc/domain';
 
 import { buildWorkflowEventHeader } from './workflow-event-header.ts';
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
 export type PostChannel = (body: string) => Promise<void>;
 export type BroadcastFn = (event: unknown) => void;
 
@@ -27,7 +27,7 @@ export interface OrchestratorReviewStepResult {
 
 export interface OrchestratorReviewStepDeps {
   workflow: Workflow;
-  substituteOutputs: SubstituteOutputs;
+  substituteTemplate: SubstituteTemplate;
   postChannel: PostChannel;
   broadcast: BroadcastFn;
 }
@@ -38,8 +38,8 @@ export async function runOrchestratorReviewStep(
   deps: OrchestratorReviewStepDeps,
 ): Promise<OrchestratorReviewStepResult> {
   const cfg = node['orchestrator-review'];
-  const prompt = deps.substituteOutputs(cfg.prompt, run);
-  const artifact = cfg.artifact ? deps.substituteOutputs(cfg.artifact, run) : null;
+  const prompt = deps.substituteTemplate(cfg.prompt);
+  const artifact = cfg.artifact ? deps.substituteTemplate(cfg.artifact) : null;
   const onRevisePrompt = cfg.on_revise?.prompt ?? null;
   const body = buildOrchestratorReviewChannelBody({
     runId: run.id,

@@ -15,8 +15,7 @@ import type {
 } from '@pc/domain';
 
 import type { WorkItemService } from './work-item.ts';
-
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
 export interface UpdateWorkItemStepResult {
   kind: 'sync';
@@ -25,17 +24,17 @@ export interface UpdateWorkItemStepResult {
 
 export interface UpdateWorkItemStepDeps {
   workItemService: WorkItemService;
-  substituteOutputs: SubstituteOutputs;
+  substituteTemplate: SubstituteTemplate;
 }
 
 export async function runUpdateWorkItemStep(
   node: UpdateWorkItemNode,
-  run: WorkflowRun,
+  _run: WorkflowRun,
   deps: UpdateWorkItemStepDeps,
 ): Promise<UpdateWorkItemStepResult> {
   const completedAt = () => new Date().toISOString();
   const cfg = node['update-work-item'];
-  const workItemId = deps.substituteOutputs(cfg.workItemId, run).trim();
+  const workItemId = deps.substituteTemplate(cfg.workItemId).trim();
   if (!workItemId) {
     return failedSync(
       `workItemId resolved to empty (raw: "${cfg.workItemId}")`,
@@ -52,13 +51,13 @@ export async function runUpdateWorkItemStep(
     expectedVersion: current.version,
   };
   if (cfg.title !== undefined) {
-    patchInput.title = deps.substituteOutputs(cfg.title, run);
+    patchInput.title = deps.substituteTemplate(cfg.title);
   }
   if (cfg.body !== undefined) {
-    patchInput.body = deps.substituteOutputs(cfg.body, run);
+    patchInput.body = deps.substituteTemplate(cfg.body);
   }
   if (cfg.stage !== undefined) {
-    const stageId = deps.substituteOutputs(cfg.stage, run).trim();
+    const stageId = deps.substituteTemplate(cfg.stage).trim();
     if (!stageId) {
       return failedSync(`stage resolved to empty (raw: "${cfg.stage}")`, completedAt());
     }
@@ -67,7 +66,7 @@ export async function runUpdateWorkItemStep(
   if (cfg.fields !== undefined) {
     const substituted: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(cfg.fields)) {
-      substituted[k] = typeof v === 'string' ? deps.substituteOutputs(v, run) : v;
+      substituted[k] = typeof v === 'string' ? deps.substituteTemplate(v) : v;
     }
     patchInput.fields = substituted;
   }

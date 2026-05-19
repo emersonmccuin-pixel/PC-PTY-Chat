@@ -19,8 +19,7 @@ import type {
 } from '@pc/domain';
 
 import type { AttachmentService } from './attachment.ts';
-
-export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
+import type { SubstituteTemplate } from './typed-substitution.ts';
 
 export interface AttachToWorkItemStepResult {
   kind: 'sync';
@@ -30,7 +29,7 @@ export interface AttachToWorkItemStepResult {
 export interface AttachToWorkItemStepDeps {
   attachmentService: AttachmentService;
   workflow: Workflow;
-  substituteOutputs: SubstituteOutputs;
+  substituteTemplate: SubstituteTemplate;
 }
 
 export async function runAttachToWorkItemStep(
@@ -40,27 +39,30 @@ export async function runAttachToWorkItemStep(
 ): Promise<AttachToWorkItemStepResult> {
   const completedAt = () => new Date().toISOString();
   const cfg = node['attach-to-work-item'];
-  const workItemId = deps.substituteOutputs(cfg.workItemId, run).trim();
+  // workItemId + name are typed-port single-value fields (already resolved
+  // by applyTypedPortEdges); template substituter is identity for those but
+  // we pass through it for {{ }} placeholder support in mixed strings.
+  const workItemId = deps.substituteTemplate(cfg.workItemId).trim();
   if (!workItemId) {
     return failedSync(
       `workItemId resolved to empty (raw: "${cfg.workItemId}")`,
       completedAt(),
     );
   }
-  const name = deps.substituteOutputs(cfg.name, run).trim();
+  const name = deps.substituteTemplate(cfg.name).trim();
   if (!name) {
     return failedSync(`name resolved to empty (raw: "${cfg.name}")`, completedAt());
   }
-  const content = deps.substituteOutputs(cfg.content, run);
+  const content = deps.substituteTemplate(cfg.content);
   if (!content) {
     return failedSync(
       `content resolved to empty (raw: "${cfg.content}")`,
       completedAt(),
     );
   }
-  const kind = cfg.kind ? deps.substituteOutputs(cfg.kind, run).trim() || 'text' : 'text';
+  const kind = cfg.kind ? deps.substituteTemplate(cfg.kind).trim() || 'text' : 'text';
   const contentType = cfg.contentType
-    ? deps.substituteOutputs(cfg.contentType, run).trim() || null
+    ? deps.substituteTemplate(cfg.contentType).trim() || null
     : null;
 
   const agentName = findUpstreamSubagentName(node, deps.workflow);

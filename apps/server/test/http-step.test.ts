@@ -19,6 +19,14 @@ import type { HttpNode, WorkflowRun } from '@pc/domain';
 
 import { runHttpStep } from '../src/services/http-step.ts';
 import { substituteOutputs } from '../src/services/output-substitution.ts';
+import type { SubstituteTemplate } from '../src/services/typed-substitution.ts';
+
+/** Test-only: adapt the legacy regex substituter to the post-4h.9
+ *  SubstituteTemplate signature so we can keep the $X.Y test fixtures
+ *  without rebuilding edge maps per case. */
+function legacyTmpl(run: WorkflowRun): SubstituteTemplate {
+  return (text) => substituteOutputs(text, run);
+}
 
 interface Capture {
   method?: string;
@@ -76,7 +84,7 @@ test('runHttpStep: 200 OK with JSON-shaped body returns body + status', async ()
   });
   try {
     const node = mkHttp({ method: 'GET', url: `http://127.0.0.1:${port}/x` });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'complete');
     const out = result.output.output as { status: number; body: string };
     assert.equal(out.status, 200);
@@ -93,7 +101,7 @@ test('runHttpStep: 404 does NOT auto-fail (status:complete, downstream decides)'
   });
   try {
     const node = mkHttp({ method: 'GET', url: `http://127.0.0.1:${port}/missing` });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'complete', 'step succeeded; response is the artifact');
     const out = result.output.output as { status: number; body: string };
     assert.equal(out.status, 404);
@@ -110,7 +118,7 @@ test('runHttpStep: 500 does NOT auto-fail', async () => {
   });
   try {
     const node = mkHttp({ method: 'GET', url: `http://127.0.0.1:${port}/break` });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'complete');
     const out = result.output.output as { status: number };
     assert.equal(out.status, 500);
@@ -132,7 +140,7 @@ test('runHttpStep: timeout aborts and step fails', async () => {
       url: `http://127.0.0.1:${port}/slow`,
       timeout: 75,
     });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'failed');
     assert.match(result.output.error ?? '', /timeout/i);
     assert.equal(serverSawRequest, true, 'request reached the server before we timed out');
@@ -144,7 +152,7 @@ test('runHttpStep: timeout aborts and step fails', async () => {
 test('runHttpStep: connection refused → step fails', async () => {
   // No server on this port (well, very unlikely on 127.0.0.1:1).
   const node = mkHttp({ method: 'GET', url: 'http://127.0.0.1:1/' });
-  const result = await runHttpStep(node, mkRun(), substituteOutputs);
+  const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
   assert.equal(result.output.status, 'failed');
 });
 
@@ -169,7 +177,7 @@ test('runHttpStep: $ENV.* interpolation in headers + url', async () => {
       url: `http://127.0.0.1:${port}/api/$ENV.${PATH_KEY}`,
       headers: { Authorization: `Bearer $ENV.${TOKEN_KEY}` },
     });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'complete');
     assert.equal(captured.url, '/api/items');
     assert.equal(captured.headers!.authorization, 'Bearer sek-123');
@@ -196,7 +204,7 @@ test('runHttpStep: $inputs.* interpolation in url + body', async () => {
       body: '{"name":"$inputs.name"}',
     });
     const run = mkRun({ inputs: { tenant: 'acme', name: 'gizmo' } });
-    const result = await runHttpStep(node, run, substituteOutputs);
+    const result = await runHttpStep(node, run, legacyTmpl(run));
     assert.equal(result.output.status, 'complete');
     assert.equal(captured.url, '/widgets/acme');
     assert.equal(captured.body, '{"name":"gizmo"}');
@@ -219,7 +227,7 @@ test('runHttpStep: POST body sets Content-Length when not supplied', async () =>
       url: `http://127.0.0.1:${port}/`,
       body: 'hello',
     });
-    const result = await runHttpStep(node, mkRun(), substituteOutputs);
+    const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
     assert.equal(result.output.status, 'complete');
     assert.equal(captured.headers!['content-length'], '5');
     assert.equal(captured.body, 'hello');
@@ -230,7 +238,7 @@ test('runHttpStep: POST body sets Content-Length when not supplied', async () =>
 
 test('runHttpStep: unsupported protocol fails fast (no network)', async () => {
   const node = mkHttp({ method: 'GET', url: 'file:///etc/passwd' });
-  const result = await runHttpStep(node, mkRun(), substituteOutputs);
+  const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /protocol/i);
 });
@@ -238,7 +246,7 @@ test('runHttpStep: unsupported protocol fails fast (no network)', async () => {
 test('runHttpStep: empty-resolved url fails fast', async () => {
   const node = mkHttp({ method: 'GET', url: '$inputs.endpoint' });
   // No `endpoint` in inputs.
-  const result = await runHttpStep(node, mkRun(), substituteOutputs);
+  const result = await runHttpStep(node, mkRun(), legacyTmpl(mkRun()));
   assert.equal(result.output.status, 'failed');
   assert.match(result.output.error ?? '', /url resolved to empty/i);
 });
