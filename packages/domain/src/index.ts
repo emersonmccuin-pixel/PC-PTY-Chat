@@ -13,6 +13,7 @@ export { validateFields } from './field-schema.ts';
 export type { Project, Stage } from './project.ts';
 export type {
   ApprovalNode,
+  AttachedToWorkItem,
   AttachToWorkItemNode,
   BashNode,
   BaseNode,

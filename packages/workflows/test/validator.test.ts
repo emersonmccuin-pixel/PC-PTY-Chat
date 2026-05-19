@@ -15,7 +15,10 @@ import assert from 'node:assert/strict';
 import { validateWorkflow } from '../src/validator.ts';
 
 function baseRoot(nodes: unknown[]): Record<string, unknown> {
-  return { id: 'wf-test', nodes };
+  // 4f / D70 #1 — every workflow needs at least one trigger to save. Tests
+  // here exercise per-node validator behavior; declaring callable keeps the
+  // root-level savability check satisfied so test intent is preserved.
+  return { id: 'wf-test', triggers: { callable: true }, nodes };
 }
 
 const opts = { expectedId: 'wf-test' };
@@ -587,4 +590,280 @@ test('validator: scratch_cleanup field absent when not declared', () => {
   );
   assert.equal(result.ok, true);
   assert.equal(result.workflow!.scratch_cleanup, undefined);
+});
+
+// ── 4f / D62 — disabled flag ────────────────────────────────────────────────
+
+test('validator: disabled: true parses + retains on workflow', () => {
+  const result = validateWorkflow(
+    { ...baseRoot([{ id: 'n1', bash: 'x' }]), disabled: true },
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.equal(result.workflow!.disabled, true);
+});
+
+test('validator: disabled: false is the default; field absent on workflow', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', bash: 'x' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.workflow!.disabled, undefined);
+});
+
+test('validator: disabled: non-boolean → error', () => {
+  const result = validateWorkflow(
+    { ...baseRoot([{ id: 'n1', bash: 'x' }]), disabled: 'yes' },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'disabled'));
+});
+
+// ── 4f / D67 — attached_to_work_item ────────────────────────────────────────
+
+test('validator: attached_to_work_item accepts each enum value', () => {
+  for (const v of ['required', 'optional', 'forbidden']) {
+    const result = validateWorkflow(
+      { ...baseRoot([{ id: 'n1', bash: 'x' }]), attached_to_work_item: v },
+      opts,
+    );
+    assert.equal(result.ok, true, `${v}: ${JSON.stringify(result.errors)}`);
+    assert.equal(result.workflow!.attached_to_work_item, v);
+  }
+});
+
+test('validator: attached_to_work_item rejects unknown value', () => {
+  const result = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'n1', bash: 'x' }]),
+      attached_to_work_item: 'maybe',
+    },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.path === 'attached_to_work_item'));
+});
+
+test('validator: attached_to_work_item field absent when not declared', () => {
+  const result = validateWorkflow(
+    baseRoot([{ id: 'n1', bash: 'x' }]),
+    opts,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.workflow!.attached_to_work_item, undefined);
+});
+
+// ── 4f / D69 — cross-cuts ───────────────────────────────────────────────────
+
+test('validator: D69 — on_enter + attached_to_work_item: forbidden → rejected', () => {
+  const result = validateWorkflow(
+    {
+      id: 'wf-test',
+      triggers: { on_enter: { stage_id: 'review' } },
+      attached_to_work_item: 'forbidden',
+      nodes: [{ id: 'n1', bash: 'x' }],
+    },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) =>
+        e.path === 'attached_to_work_item' && /on_enter/.test(e.message),
+    ),
+    `expected on_enter+forbidden cross-cut error; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('validator: D69 — on_enter + attached_to_work_item: required → accepted', () => {
+  const result = validateWorkflow(
+    {
+      id: 'wf-test',
+      triggers: { on_enter: { stage_id: 'review' } },
+      attached_to_work_item: 'required',
+      nodes: [{ id: 'n1', bash: 'x' }],
+    },
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('validator: D69 — on_enter + attached_to_work_item: optional → accepted', () => {
+  const result = validateWorkflow(
+    {
+      id: 'wf-test',
+      triggers: { on_enter: { stage_id: 'review' } },
+      attached_to_work_item: 'optional',
+      nodes: [{ id: 'n1', bash: 'x' }],
+    },
+    opts,
+  );
+  assert.equal(result.ok, true);
+});
+
+// ── 4f / D70 — savability ───────────────────────────────────────────────────
+
+test('validator: D70 #1 — workflow with no trigger → rejected', () => {
+  const result = validateWorkflow(
+    { id: 'wf-test', nodes: [{ id: 'n1', bash: 'x' }] },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) => e.path === 'triggers' && /at least one trigger/.test(e.message),
+    ),
+    `expected trigger-required error; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('validator: D70 #1 — empty triggers object → rejected', () => {
+  const result = validateWorkflow(
+    { id: 'wf-test', triggers: {}, nodes: [{ id: 'n1', bash: 'x' }] },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((e) => e.path === 'triggers'),
+  );
+});
+
+test('validator: D70 #1 — callable: false alone → rejected (no truthy trigger)', () => {
+  const result = validateWorkflow(
+    {
+      id: 'wf-test',
+      triggers: { callable: false },
+      nodes: [{ id: 'n1', bash: 'x' }],
+    },
+    opts,
+  );
+  assert.equal(result.ok, false);
+});
+
+test('validator: D70 #2 — orphan subgraph → rejected', () => {
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'a', bash: 'echo a' },
+      // `b` depends on `a` — reachable from entry.
+      { id: 'b', depends_on: ['a'], bash: 'echo b' },
+      // `c` and `d` form an isolated cycle-free subgraph; neither is an entry
+      // node because each declares depends_on against the other-side node.
+      { id: 'c', depends_on: ['d'], bash: 'echo c' },
+      { id: 'd', depends_on: ['c'], bash: 'echo d' },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+  // The dep-cycle check fires first (c↔d), which is fine — the orphan check
+  // is one way these graphs surface. Just confirm one of the two flagged it.
+  assert.ok(
+    result.errors.some(
+      (e) =>
+        /unreachable from any entry node/.test(e.message) ||
+        /dependency cycle/.test(e.message),
+    ),
+    `expected unreachable or cycle error; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('validator: D70 #2 — orphan node (no deps but never depended on) is still reachable as its own entry', () => {
+  // A node with no depends_on is itself an entry — it should be reached.
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'a', bash: 'echo a' },
+      { id: 'orphan', bash: 'echo o' },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('validator: D70 #2 — every-node-has-deps → no entry → rejected', () => {
+  // Pathological: every node depends on something. The cycle detector also
+  // catches this; both flagging counts as one of the savability rules
+  // firing.
+  const result = validateWorkflow(
+    baseRoot([
+      { id: 'a', depends_on: ['b'], bash: 'x' },
+      { id: 'b', depends_on: ['a'], bash: 'x' },
+    ]),
+    opts,
+  );
+  assert.equal(result.ok, false);
+});
+
+test('validator: D70 #3 — outputs reference an unknown node → rejected', () => {
+  const result = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'n1', bash: 'x' }]),
+      outputs: { summary: '$does_not_exist.output.text' },
+    },
+    opts,
+  );
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some(
+      (e) =>
+        e.path === 'outputs.summary' &&
+        /unknown node "does_not_exist"/.test(e.message),
+    ),
+    `expected outputs.summary error; got ${JSON.stringify(result.errors)}`,
+  );
+});
+
+test('validator: D70 #3 — outputs reference a real node → accepted', () => {
+  const result = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'reader', bash: 'echo' }]),
+      outputs: { summary: '$reader.output.text' },
+    },
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('validator: D70 #3 — outputs type-string-only (no `$` ref) → accepted (docs-only)', () => {
+  const result = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'reader', bash: 'echo' }]),
+      outputs: { result: 'string' },
+    },
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+});
+
+test('validator: D70 #3 — outputs ${nodeId...} braced ref → resolved', () => {
+  const ok = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'reader', bash: 'echo' }]),
+      outputs: { summary: '${reader.output.text}' },
+    },
+    opts,
+  );
+  assert.equal(ok.ok, true, JSON.stringify(ok.errors));
+  const bad = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'reader', bash: 'echo' }]),
+      outputs: { summary: '${ghost.output.text}' },
+    },
+    opts,
+  );
+  assert.equal(bad.ok, false);
+});
+
+test('validator: D70 #3 — $inputs.* and $ENV.* refs in outputs are NOT treated as node refs', () => {
+  const result = validateWorkflow(
+    {
+      ...baseRoot([{ id: 'reader', bash: 'echo' }]),
+      outputs: {
+        passthrough: '$inputs.x',
+        env: '$ENV.HOME',
+      },
+    },
+    opts,
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
 });

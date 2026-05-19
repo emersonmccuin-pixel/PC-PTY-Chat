@@ -28,6 +28,7 @@ function roundtrip(wf: Workflow): Workflow {
 test('serializer: minimal subagent workflow roundtrips', () => {
   const wf: Workflow = {
     id: 'minimal',
+    triggers: { callable: true },
     nodes: [{ kind: 'subagent', id: 'n1', subagent: 'researcher', prompt: 'go' }],
   };
   const out = roundtrip(wf);
@@ -60,6 +61,7 @@ test('serializer: emits stable key order (id → description → triggers → no
 test('serializer: never emits the `kind:` discriminator', () => {
   const wf: Workflow = {
     id: 'no-kind',
+    triggers: { callable: true },
     nodes: [
       { kind: 'subagent', id: 'a', subagent: 'r', prompt: 'p' },
       { kind: 'bash', id: 'b', bash: 'ls' },
@@ -96,6 +98,7 @@ test('serializer: callable trigger roundtrips', () => {
 test('serializer: inputs + outputs + worktree + scratch_cleanup roundtrip', () => {
   const wf: Workflow = {
     id: 'all-meta',
+    triggers: { callable: true },
     inputs: { agent: 'string', payload: 'string' },
     outputs: { result: 'string' },
     worktree: 'auto',
@@ -114,6 +117,7 @@ test('serializer: inputs + outputs + worktree + scratch_cleanup roundtrip', () =
 test('serializer: http step roundtrips with headers + body', () => {
   const wf: Workflow = {
     id: 'http-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'http',
@@ -140,6 +144,7 @@ test('serializer: http step roundtrips with headers + body', () => {
 test('serializer: human-review (approval) step roundtrips', () => {
   const wf: Workflow = {
     id: 'review-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'approval',
@@ -157,6 +162,7 @@ test('serializer: human-review (approval) step roundtrips', () => {
 test('serializer: orchestrator-review step roundtrips', () => {
   const wf: Workflow = {
     id: 'orc-review-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'orchestrator-review',
@@ -179,6 +185,7 @@ test('serializer: orchestrator-review step roundtrips', () => {
 test('serializer: routing kinds (attach / create / update / write) roundtrip', () => {
   const wf: Workflow = {
     id: 'routing-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'attach-to-work-item',
@@ -228,6 +235,7 @@ test('serializer: routing kinds (attach / create / update / write) roundtrip', (
 test('serializer: nested workflow step roundtrips', () => {
   const wf: Workflow = {
     id: 'parent-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'workflow',
@@ -246,6 +254,7 @@ test('serializer: nested workflow step roundtrips', () => {
 test('serializer: loop step roundtrips + recursively strips kind: from body nodes', () => {
   const wf: Workflow = {
     id: 'loop-wf',
+    triggers: { callable: true },
     nodes: [
       {
         kind: 'loop',
@@ -275,6 +284,7 @@ test('serializer: loop step roundtrips + recursively strips kind: from body node
 test('serializer: script + cancel steps roundtrip', () => {
   const wf: Workflow = {
     id: 'misc-wf',
+    triggers: { callable: true },
     nodes: [
       { kind: 'script', id: 's', script: 'print("hi")', runtime: 'python' },
       { kind: 'cancel', id: 'x', cancel: 'aborted via flag' },
@@ -293,6 +303,7 @@ test('serializer: script + cancel steps roundtrip', () => {
 test('serializer: depends_on + when + trigger_rule + done_when + timeout + retry roundtrip', () => {
   const wf: Workflow = {
     id: 'base-fields',
+    triggers: { callable: true },
     nodes: [
       { kind: 'bash', id: 'a', bash: 'echo a' },
       {
@@ -329,16 +340,79 @@ test('serializer: depends_on + when + trigger_rule + done_when + timeout + retry
 
 // ── undefined-field omission ──────────────────────────────────────────────
 
+// ── 4f / D62 + D67 — disabled + attached_to_work_item ─────────────────────
+
+test('serializer: disabled: true roundtrips', () => {
+  const wf: Workflow = {
+    id: 'paused',
+    triggers: { callable: true },
+    disabled: true,
+    nodes: [{ kind: 'bash', id: 'n1', bash: 'echo' }],
+  };
+  const out = roundtrip(wf);
+  assert.equal(out.disabled, true);
+});
+
+test('serializer: disabled: false is omitted (semantic identity with absent)', () => {
+  const wf: Workflow = {
+    id: 'live',
+    triggers: { callable: true },
+    disabled: false,
+    nodes: [{ kind: 'bash', id: 'n1', bash: 'echo' }],
+  };
+  const yaml = serializeWorkflow(wf);
+  assert.ok(!/^disabled:/m.test(yaml), `disabled should be omitted when false: ${yaml}`);
+});
+
+test('serializer: attached_to_work_item roundtrips for each value', () => {
+  for (const v of ['required', 'optional', 'forbidden'] as const) {
+    const wf: Workflow = {
+      id: `wc-${v}`,
+      triggers: { callable: true },
+      attached_to_work_item: v,
+      nodes: [{ kind: 'bash', id: 'n1', bash: 'echo' }],
+    };
+    const out = roundtrip(wf);
+    assert.equal(out.attached_to_work_item, v, `${v} did not roundtrip`);
+  }
+});
+
+test('serializer: key order keeps disabled + attached_to_work_item between triggers and inputs', () => {
+  const wf: Workflow = {
+    id: 'ordered-4f',
+    triggers: { callable: true },
+    disabled: true,
+    attached_to_work_item: 'required',
+    inputs: { workItemId: 'string' },
+    nodes: [{ kind: 'bash', id: 'n1', bash: 'echo' }],
+  };
+  const yaml = serializeWorkflow(wf);
+  const trigIdx = yaml.indexOf('triggers:');
+  const disIdx = yaml.indexOf('disabled:');
+  const attIdx = yaml.indexOf('attached_to_work_item:');
+  const inIdx = yaml.indexOf('inputs:');
+  assert.ok(
+    trigIdx < disIdx && disIdx < attIdx && attIdx < inIdx,
+    `4f key order broke: ${yaml}`,
+  );
+});
+
 test('serializer: omits undefined top-level fields', () => {
+  // 4f / D70 #1 — a savable workflow needs a trigger, so this test asserts
+  // omission only for fields that genuinely default-absent (description /
+  // inputs / outputs / worktree / scratch_cleanup / disabled /
+  // attached_to_work_item).
   const wf: Workflow = {
     id: 'minimal',
+    triggers: { callable: true },
     nodes: [{ kind: 'bash', id: 'n1', bash: 'echo' }],
   };
   const yaml = serializeWorkflow(wf);
   assert.ok(!yaml.includes('description:'));
-  assert.ok(!yaml.includes('triggers:'));
   assert.ok(!yaml.includes('inputs:'));
   assert.ok(!yaml.includes('outputs:'));
   assert.ok(!yaml.includes('worktree:'));
   assert.ok(!yaml.includes('scratch_cleanup:'));
+  assert.ok(!yaml.includes('disabled:'));
+  assert.ok(!yaml.includes('attached_to_work_item:'));
 });

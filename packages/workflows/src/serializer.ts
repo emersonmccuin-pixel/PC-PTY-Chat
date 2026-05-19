@@ -7,11 +7,11 @@
 // returns the same logical `Workflow` (modulo the post-parse `kind:`
 // discriminator the validator adds — the on-disk YAML never carries it).
 //
-// Key-order is fixed (id → description → triggers → inputs → outputs →
-// worktree → scratch_cleanup → nodes) so the on-disk shape stays
-// human-readable and diff-friendly across emits. Within nodes the type-body
-// field (subagent/bash/http/…) gets emitted with the base fields preserved
-// in their typed-object order.
+// Key-order is fixed (id → description → triggers → disabled →
+// attached_to_work_item → inputs → outputs → worktree → scratch_cleanup →
+// nodes) so the on-disk shape stays human-readable and diff-friendly across
+// emits. Within nodes the type-body field (subagent/bash/http/…) gets
+// emitted with the base fields preserved in their typed-object order.
 
 import { dump as yamlDump } from 'js-yaml';
 
@@ -21,6 +21,10 @@ export function serializeWorkflow(workflow: Workflow): string {
   const out: Record<string, unknown> = { id: workflow.id };
   if (workflow.description !== undefined) out.description = workflow.description;
   if (workflow.triggers !== undefined) out.triggers = workflow.triggers;
+  if (workflow.disabled === true) out.disabled = true;
+  if (workflow.attached_to_work_item !== undefined) {
+    out.attached_to_work_item = workflow.attached_to_work_item;
+  }
   if (workflow.inputs !== undefined) out.inputs = workflow.inputs;
   if (workflow.outputs !== undefined) out.outputs = workflow.outputs;
   if (workflow.worktree !== undefined) out.worktree = workflow.worktree;

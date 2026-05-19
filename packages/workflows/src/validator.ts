@@ -12,6 +12,7 @@ import { load as yamlLoad } from 'js-yaml';
 
 import type {
   ApprovalNode,
+  AttachedToWorkItem,
   AttachToWorkItemNode,
   BashNode,
   CancelNode,
@@ -54,6 +55,12 @@ const TRIGGER_RULES: ReadonlySet<TriggerRule> = new Set([
   'one_success',
   'all_done',
   'none_failed_min_one_success',
+]);
+
+const ATTACHED_TO_WORK_ITEM_VALUES: ReadonlySet<AttachedToWorkItem> = new Set([
+  'required',
+  'optional',
+  'forbidden',
 ]);
 
 const TYPE_BODY_FIELDS = [
@@ -144,6 +151,30 @@ export function validateWorkflow(
     });
   }
 
+  // disabled (optional, 4f / D62)
+  if (obj.disabled !== undefined && typeof obj.disabled !== 'boolean') {
+    errors.push({
+      path: 'disabled',
+      message: 'must be a boolean if provided',
+    });
+  }
+
+  // attached_to_work_item (optional, 4f / D67)
+  let attachedToWorkItem: AttachedToWorkItem | undefined;
+  if (obj.attached_to_work_item !== undefined) {
+    if (
+      typeof obj.attached_to_work_item !== 'string' ||
+      !ATTACHED_TO_WORK_ITEM_VALUES.has(obj.attached_to_work_item as AttachedToWorkItem)
+    ) {
+      errors.push({
+        path: 'attached_to_work_item',
+        message: `must be one of ${[...ATTACHED_TO_WORK_ITEM_VALUES].join(', ')} if provided`,
+      });
+    } else {
+      attachedToWorkItem = obj.attached_to_work_item as AttachedToWorkItem;
+    }
+  }
+
   // nodes (required)
   let nodes: DagNode[] | undefined;
   if (!Array.isArray(obj.nodes)) {
@@ -172,8 +203,143 @@ export function validateWorkflow(
   if (obj.scratch_cleanup === 'auto' || obj.scratch_cleanup === 'keep') {
     workflow.scratch_cleanup = obj.scratch_cleanup;
   }
+  if (obj.disabled === true) workflow.disabled = true;
+  if (attachedToWorkItem) workflow.attached_to_work_item = attachedToWorkItem;
+
+  // Section 4f / D69 + D70. Savability + cross-cut checks run only when the
+  // structural parse succeeded — empty / malformed `nodes` already failed
+  // above and these checks need a populated graph + parsed triggers to be
+  // meaningful.
+  checkWorkflowSavability(workflow, errors);
+
+  if (errors.length) {
+    return { ok: false, errors, partialStageId };
+  }
 
   return { ok: true, workflow, errors: [], partialStageId };
+}
+
+/**
+ * Section 4f / D69 + D70. Cross-cut + structural-correctness rules for a
+ * fully-parsed workflow. Split out so the parse path stays linear and the
+ * rules are testable in isolation.
+ *
+ * D69 cross-cuts (only `on_enter + forbidden` ships in 4f; the cron/webhook
+ * rows in the buildout doc are placeholders for 4g).
+ *
+ * D70 savability:
+ *   1. Trigger required — at least one of `on_enter` / `callable`.
+ *   2. Graph connectedness — every node reachable from the entry set.
+ *   3. Outputs producibility — every `${node.id.field}` reference inside an
+ *      `outputs:` value resolves to a real node id.
+ */
+function checkWorkflowSavability(
+  workflow: Workflow,
+  errors: ValidationError[],
+): void {
+  // D69 — cross-cuts. `on_enter` always carries a card (the card whose stage
+  // move fired the workflow); declaring it alongside `forbidden` is a save
+  // mistake.
+  if (
+    workflow.triggers?.on_enter &&
+    workflow.attached_to_work_item === 'forbidden'
+  ) {
+    errors.push({
+      path: 'attached_to_work_item',
+      message:
+        'on_enter triggers always have a card (the card whose stage move fired the workflow). Either remove the on_enter trigger or change attachment to required/optional.',
+    });
+  }
+
+  // D70 #1 — trigger required. A workflow with no trigger sits dead — it
+  // can't fire from a stage move and isn't reachable from the orchestrator.
+  const hasOnEnter = workflow.triggers?.on_enter !== undefined;
+  const hasCallable = workflow.triggers?.callable === true;
+  if (!hasOnEnter && !hasCallable) {
+    errors.push({
+      path: 'triggers',
+      message:
+        'workflow needs at least one trigger (on_enter or callable)',
+    });
+  }
+
+  // D70 #2 — graph connectedness. Walk forward from entry nodes (no
+  // `depends_on`); every node should be reached. Catches orphan subgraphs.
+  // Top-level only — loop bodies are isolated dependency-evaluation contexts
+  // and validate their own graph via `validateNodeArray` already.
+  const entries = workflow.nodes.filter((n) => !n.depends_on?.length);
+  if (entries.length === 0) {
+    errors.push({
+      path: 'nodes',
+      message:
+        'no entry node: every node declares depends_on, so the graph has no starting point',
+    });
+  } else {
+    const forwardAdj = new Map<string, string[]>();
+    for (const n of workflow.nodes) forwardAdj.set(n.id, []);
+    for (const n of workflow.nodes) {
+      for (const dep of n.depends_on ?? []) {
+        forwardAdj.get(dep)?.push(n.id);
+      }
+    }
+    const reachable = new Set<string>();
+    const queue: string[] = entries.map((e) => e.id);
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (reachable.has(id)) continue;
+      reachable.add(id);
+      for (const next of forwardAdj.get(id) ?? []) queue.push(next);
+    }
+    for (const n of workflow.nodes) {
+      if (!reachable.has(n.id)) {
+        errors.push({
+          path: `nodes[${workflow.nodes.indexOf(n)}]`,
+          message: `node "${n.id}" is unreachable from any entry node`,
+        });
+      }
+    }
+  }
+
+  // D70 #3 — outputs producibility. Walk each `outputs:` value string for
+  // `${nodeId...}` / `$nodeId.output...` references and confirm each nodeId
+  // exists. Catches typos in outputs declarations. Plain type strings
+  // (`result: string`) carry no reference and skip the check — they're
+  // documentation only per the existing Workflow type contract.
+  if (workflow.outputs) {
+    const ids = new Set(workflow.nodes.map((n) => n.id));
+    for (const [key, value] of Object.entries(workflow.outputs)) {
+      for (const refId of extractNodeRefIds(value)) {
+        if (!ids.has(refId)) {
+          errors.push({
+            path: `outputs.${key}`,
+            message: `references unknown node "${refId}"`,
+          });
+        }
+      }
+    }
+  }
+}
+
+/** Pull every `${nodeId...}` and `$nodeId.output...` reference id out of a
+ *  string. Both syntaxes are accepted by the substitution layer — D70 #3
+ *  walks the same shape it does. Identifiers are JS-like (letter/_ then
+ *  letter/digit/-/_). `$inputs` / `$ENV` are not node refs and are
+ *  intentionally skipped. */
+function extractNodeRefIds(value: string): string[] {
+  const out: string[] = [];
+  const RE_BRACED = /\$\{([A-Za-z_][A-Za-z0-9_-]*)\b[^}]*\}/g;
+  const RE_BARE = /\$([A-Za-z_][A-Za-z0-9_-]*)\b/g;
+  for (const m of value.matchAll(RE_BRACED)) {
+    const id = m[1]!;
+    if (id === 'inputs' || id === 'ENV') continue;
+    out.push(id);
+  }
+  for (const m of value.matchAll(RE_BARE)) {
+    const id = m[1]!;
+    if (id === 'inputs' || id === 'ENV') continue;
+    out.push(id);
+  }
+  return out;
 }
 
 /** Parse + validate from raw YAML text. Used by the registry. */

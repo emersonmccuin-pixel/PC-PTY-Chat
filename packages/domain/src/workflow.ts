@@ -257,6 +257,16 @@ export interface WorkflowTriggers {
   callable?: boolean;
 }
 
+/** Section 4f / D67. Work Contract declaration — does this workflow operate on
+ *  a card (work item)?
+ *    - `required`   → fire-path must supply a workItemId; runtime hard-fails
+ *      otherwise (D71). Manual-fire UI forces a card picker.
+ *    - `optional`   → today's permissive default; runs with or without a card.
+ *    - `forbidden`  → workflow must NOT receive a workItemId. Save-time
+ *      cross-cut (D69) rejects combinations like `on_enter + forbidden`.
+ *  Default when missing = `optional` (every existing workflow file stays valid). */
+export type AttachedToWorkItem = 'required' | 'optional' | 'forbidden';
+
 export interface Workflow {
   id: string;
   description?: string;
@@ -271,5 +281,13 @@ export interface Workflow {
    *  workflow terminal status. `keep` (default) leaves it; the boot-time
    *  sweep still removes entries older than the 14-day threshold. */
   scratch_cleanup?: 'auto' | 'keep';
+  /** Section 4f / D62. When `true`, all external fire-paths skip this workflow
+   *  (drag-fire, pc_run_workflow, manual-fire, future cron/webhook). Nested
+   *  `call-workflow` is the documented exception: a parent that's already
+   *  running can still call a disabled child by intent. Missing or `false` =
+   *  enabled (matches every existing workflow file; zero migration). */
+  disabled?: boolean;
+  /** Section 4f / D67. Work Contract. See {@link AttachedToWorkItem}. */
+  attached_to_work_item?: AttachedToWorkItem;
   nodes: DagNode[];
 }
