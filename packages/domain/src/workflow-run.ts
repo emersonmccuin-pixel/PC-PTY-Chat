@@ -50,6 +50,11 @@ export interface NodeOutput {
 export interface WorkflowRun {
   id: string;
   workflowId: string;
+  /** What kicked off this run (4e surfaces this as a per-row badge so the
+   *  user can distinguish drag-fired from chat-fired from cron-fired). Future
+   *  trigger values (`manual` / `cron` / `webhook` per 4f / 4g) are accepted
+   *  string-graceful by the UI even before they're enum-locked here. */
+  trigger?: WorkflowRunTrigger;
   /** Raw YAML text snapshot at dispatch — frozen against live edits. */
   workflowYamlSnapshot: string;
   status: WorkflowRunStatus;

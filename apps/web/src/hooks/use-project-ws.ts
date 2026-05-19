@@ -93,6 +93,19 @@ export interface ApprovalRequiredEvent extends ChatEventBase {
   on_reject_prompt?: string;
 }
 
+/** Section 4e.3 — per-project envelope fired by `persistAndBroadcast` on
+ *  every workflow_runs mutation. Carries the minimum shape needed to drive
+ *  the WorkflowDrawer's live-tick without forcing a full refetch. The drawer
+ *  re-fetches the full run record for the inspected run on demand. */
+export interface WorkflowRunChangedEnvelope {
+  type: 'workflow-run-changed';
+  projectId: string;
+  workflowId: string;
+  runId: string;
+  status: string;
+  nodeOutputs: Record<string, unknown>;
+}
+
 // Section 0 phase 0e — supplemental hook events.
 
 export interface NotificationEvent extends ChatEventBase {

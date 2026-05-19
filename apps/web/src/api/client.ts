@@ -577,6 +577,36 @@ export const api = {
     if (!res.ok) throw new Error(`stop workflow-creator → ${res.status}`);
   },
 
+  // ── Workflows (4e) ────────────────────────────────────────────────────
+  /** Full Workflow def for the drawer's Definition tab. 404 on unknown id. */
+  getWorkflow: (projectId: ULID, wfId: string) =>
+    getJson<{ ok: true; workflow: Workflow; fileName: string }>(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
+    ).then((r) => ({ workflow: r.workflow, fileName: r.fileName })),
+
+  /** All runs for this project (across workflows). The drawer filters
+   *  client-side by workflowId. */
+  listWorkflowRuns: (projectId: ULID) =>
+    getJson<{ runs: WorkflowRun[] }>(
+      `/api/projects/${projectId}/workflow-runs`,
+    ).then((r) => r.runs),
+
+  /** Single run with full `nodeOutputs` map. 404 on unknown / cross-project. */
+  getWorkflowRun: (projectId: ULID, runId: string) =>
+    getJson<{ run: WorkflowRun }>(
+      `/api/projects/${projectId}/workflow-runs/${runId}`,
+    ).then((r) => r.run),
+
+  /** Re-fire a failed run from a specific failed node. Server creates a NEW
+   *  run row (history-preserving) and returns its id. 400 if target run is
+   *  not failed/cancelled, target node not failed, or shape errors; 404 for
+   *  unknown / cross-project ids. */
+  retryWorkflowRunFrom: (projectId: ULID, runId: string, nodeId: string) =>
+    postJson<{ ok: true; runId: string }>(
+      `/api/projects/${projectId}/workflow-runs/${runId}/retry-from`,
+      { nodeId },
+    ).then((r) => r.runId),
+
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
     getJson<{ ok: true; session: OrchestratorSession | null }>(
@@ -920,4 +950,62 @@ export interface Workflow {
   worktree?: 'auto' | 'none';
   scratch_cleanup?: 'auto' | 'keep';
   nodes: WfDagNode[];
+}
+
+// ── Workflow-run wire shapes (4e.4) ───────────────────────────────────────
+// Mirror of packages/domain/src/workflow-run.ts. Web stays off `@pc/domain`
+// per the 3d session-log finding #2.
+
+export type WorkflowRunStatus =
+  | 'pending'
+  | 'in-progress'
+  | 'paused'
+  | 'complete'
+  | 'failed'
+  | 'cancelled';
+
+/** Trigger values that exist today. 4f / 4g will add `manual` / `cron` /
+ *  `webhook`; the UI renders unknown values string-graceful so the API can
+ *  ship those without a web-side enum bump. */
+export type WorkflowRunTrigger = 'on_enter' | 'callable' | 'nested' | string;
+
+export type NodeOutputStatus =
+  | 'pending'
+  | 'running'
+  | 'complete'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export interface NodeOutput {
+  status: NodeOutputStatus;
+  output?: unknown;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+  attempt?: number;
+  /** Set by the runtime for `subagent` kind nodes when the spawn handle
+   *  reports jsonlPath (4d D48 / 4e D55). Powers the run-detail "View
+   *  transcript" link. Undefined for non-subagent kinds and pre-4e rows. */
+  transcriptPath?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflowId: string;
+  trigger?: WorkflowRunTrigger;
+  workflowYamlSnapshot?: string;
+  status: WorkflowRunStatus;
+  startedAt: string;
+  completedAt?: string;
+  workItemId?: string;
+  stageId?: string;
+  parentRunId?: string;
+  parentNodeId?: string;
+  worktreePath: string | null;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  nodeOutputs: Record<string, NodeOutput>;
+  lastReason?: string;
+  metadata?: Record<string, unknown>;
 }

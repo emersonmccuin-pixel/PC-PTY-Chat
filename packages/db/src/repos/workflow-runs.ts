@@ -40,6 +40,7 @@ function toDomain(row: WorkflowRunRow): WorkflowRun {
   const run: WorkflowRun = {
     id: row.id,
     workflowId: row.workflowId,
+    trigger: row.trigger,
     workflowYamlSnapshot: row.workflowYamlSnapshot,
     status: row.status,
     startedAt: row.startedAt != null ? new Date(row.startedAt).toISOString() : new Date(row.createdAt).toISOString(),

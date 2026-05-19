@@ -1405,6 +1405,22 @@ app.get('/api/projects/:projectId/workflows', (c) => {
   });
 });
 
+// 4e.4 / D51. Per-workflow detail. Returns the full Workflow def so the
+// drawer's Definition tab can render the read-only graph viewer without a
+// separate "list with full defs" inflated payload. 404 on unknown id (parse
+// failures stay invisible here — the list endpoint already surfaces them
+// under `invalid[]`).
+app.get('/api/projects/:projectId/workflows/:wfId', (c) => {
+  const id = c.req.param('projectId');
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const state = runtime.workflowRegistry().reload();
+  const entry = state.valid.find((e) => e.workflow.id === wfId);
+  if (!entry) return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
+  return c.json({ ok: true, workflow: entry.workflow, fileName: entry.fileName });
+});
+
 /** 4b.1: create a new project-scoped workflow YAML from a typed `def`. Mirrors
  *  the agent-creation path. `def` is the same shape parseWorkflowText would
  *  produce, minus the post-parse `kind:` discriminator (which never appears
