@@ -116,3 +116,21 @@ function expandHome(p: string, home: string): string {
   if (p.startsWith('~/') || p.startsWith('~\\')) return join(home, p.slice(2));
   return p;
 }
+
+/** Enumerate accessible drive roots so the picker can offer drive-jump
+ *  buttons (Windows: `C:\`, `D:\`, …). POSIX: returns `['/']` — single root
+ *  means the UI naturally hides the drives row. */
+export function listDrives(): string[] {
+  if (process.platform !== 'win32') return ['/'];
+  const drives: string[] = [];
+  for (let c = 65; c <= 90; c++) {
+    const letter = String.fromCharCode(c);
+    const path = `${letter}:\\`;
+    try {
+      if (existsSync(path)) drives.push(path);
+    } catch {
+      /* drive not accessible (e.g. empty floppy) — skip */
+    }
+  }
+  return drives;
+}

@@ -219,6 +219,15 @@ export const api = {
       (r) => r.project,
     ),
 
+  listDrives: async (): Promise<string[]> => {
+    const res = await fetch('/api/fs/drives');
+    const data = (await res.json()) as { ok?: boolean; drives?: string[]; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `drives → ${res.status}`);
+    }
+    return data.drives ?? [];
+  },
+
   browseFolder: async (path?: string, gateRoot?: string): Promise<BrowseResult> => {
     const qs = new URLSearchParams();
     if (path) qs.set('path', path);

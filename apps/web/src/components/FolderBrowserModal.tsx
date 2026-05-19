@@ -31,6 +31,7 @@ export function FolderBrowserModal({
   const [pathInput, setPathInput] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [drives, setDrives] = useState<string[]>([]);
 
   useEffect(() => {
     const remembered = readLocal(LAST_DIR_KEY);
@@ -42,6 +43,17 @@ export function FolderBrowserModal({
     // Mount-only — subsequent nav routes through `load`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Drives row appears only in ungated mode (the App Settings picker that
+  // sets `projectsFolder` itself — needs cross-drive navigation).
+  useEffect(() => {
+    if (gateRoot) return;
+    let cancelled = false;
+    api.listDrives()
+      .then((d) => { if (!cancelled) setDrives(d); })
+      .catch(() => { /* non-blocking */ });
+    return () => { cancelled = true; };
+  }, [gateRoot]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -100,6 +112,31 @@ export function FolderBrowserModal({
             ×
           </button>
         </header>
+
+        {!gateRoot && drives.length > 1 && (
+          <div className="flex items-center gap-1 border-b border-border px-4 py-1.5 text-xs">
+            <span className="mr-1 text-muted-foreground">Drives:</span>
+            {drives.map((d) => {
+              const isActive = view?.path.toLowerCase().startsWith(d.toLowerCase());
+              return (
+                <button
+                  key={d}
+                  onClick={() => void load(d)}
+                  disabled={loading}
+                  className={
+                    'border px-2 py-0.5 font-mono hover:bg-muted disabled:opacity-50 ' +
+                    (isActive
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border')
+                  }
+                  title={`Jump to ${d}`}
+                >
+                  {d.replace(/[\\/]$/, '')}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs">
           <button

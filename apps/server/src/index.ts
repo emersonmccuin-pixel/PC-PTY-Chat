@@ -58,7 +58,7 @@ import {
   readProjectAgent,
   writeProjectAgent,
 } from './services/project-agents.ts';
-import { browseFolder, BrowseError } from './services/fs-browse.ts';
+import { browseFolder, BrowseError, listDrives } from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
 import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
@@ -347,6 +347,11 @@ app.get('/api/fs/browse', (c) => {
     }
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
+});
+
+/** Enumerate drive roots for the picker's drive-jump row (Windows). */
+app.get('/api/fs/drives', (c) => {
+  return c.json({ ok: true, drives: listDrives() });
 });
 
 /** Probe a folder for the create-project preview. Body: `{ path }`.
