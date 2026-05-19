@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 
 import type { AgentDef, GlobalSettings, ULID, Workflow } from '@pc/domain';
 import { parseAgentFile, serializeAgentFile, validateAgentDef, withSettingsDefaults } from '@pc/domain';
-import { serializeWorkflow, validateWorkflow } from '@pc/workflows';
+import { parseWorkflowText, serializeWorkflow, validateWorkflow } from '@pc/workflows';
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
@@ -1395,6 +1395,11 @@ app.get('/api/projects/:projectId/workflows', (c) => {
       id: e.workflow.id,
       stageId: e.workflow.triggers?.on_enter?.stage_id ?? null,
       callable: e.workflow.triggers?.callable === true,
+      // 4f / D62 + D67. UI reads these to drive the disabled-row visual +
+      // the Run-now / manual-fire shape. Defaults preserve today's behavior
+      // (disabled=false; attached defaults to 'optional' when absent).
+      disabled: e.workflow.disabled === true,
+      attachedToWorkItem: e.workflow.attached_to_work_item ?? 'optional',
       fileName: e.fileName,
     })),
     invalid: state.invalid.map((e) => ({
@@ -1468,6 +1473,224 @@ app.post('/api/projects/:projectId/workflows', async (c) => {
       {
         ok: true,
         workflow: { id: wfId, fileName: `${wfId}.yaml`, path: filePath },
+      },
+      201,
+    );
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 4f.1 / D61. Edit an existing workflow in place. Reuses the create-time
+ *  validator + serializer. Rejects an id rename (use duplicate + delete
+ *  instead). Same shape rules as create: 400 on shape errors, 404 when the
+ *  target file doesn't exist. WS broadcast carries `change: 'updated'` so
+ *  the disabled/enable toggle (PUT with body.disabled flipped) and content
+ *  edits all surface through the same envelope. */
+app.put('/api/projects/:projectId/workflows/:wfId', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const payload = await c.req.json<{ def?: unknown }>();
+  if (!payload.def || typeof payload.def !== 'object') {
+    return c.json({ ok: false, error: 'def required' }, 400);
+  }
+  const rawDef = payload.def as Record<string, unknown>;
+  if (typeof rawDef.id !== 'string' || rawDef.id !== wfId) {
+    return c.json(
+      {
+        ok: false,
+        error: `def.id must match URL workflow id (${wfId}); rename via duplicate + delete`,
+      },
+      400,
+    );
+  }
+
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const filePath = resolve(dir, `${wfId}.yaml`);
+  if (!existsSync(filePath)) {
+    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
+  }
+
+  const validation = validateWorkflow(rawDef, { expectedId: wfId });
+  if (!validation.ok || !validation.workflow) {
+    return c.json(
+      { ok: false, error: 'invalid workflow', errors: validation.errors },
+      400,
+    );
+  }
+
+  try {
+    const yamlText = serializeWorkflow(validation.workflow);
+    writeFileSync(filePath, yamlText, 'utf-8');
+    // The `change` value lets clients distinguish a content edit from a
+    // pure disable/enable flip. Use the persisted disabled flag (not the
+    // request body) so a save that flips `disabled` is identified faithfully.
+    const change =
+      validation.workflow.disabled === true ? 'disabled' : 'updated';
+    broadcastTo(id, { type: 'project-workflows-changed', change, id: wfId });
+    return c.json({
+      ok: true,
+      workflow: { id: wfId, fileName: `${wfId}.yaml`, path: filePath },
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 4f.1 / D60. Delete a workflow YAML. Blocks on in-flight runs (returns 409
+ *  with the run-id list); use the cancel-runs-and-delete endpoint to force
+ *  through. Historical `workflow_runs` rows stay — they're orphan-by-
+ *  workflowId after delete but still reachable from 4e's drawer by runId. */
+app.delete('/api/projects/:projectId/workflows/:wfId', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const filePath = resolve(dir, `${wfId}.yaml`);
+  if (!existsSync(filePath)) {
+    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
+  }
+
+  const inFlight = runtime.workflowRuntime().inFlightRunsForWorkflow(wfId);
+  if (inFlight.length > 0) {
+    return c.json(
+      {
+        ok: false,
+        error: `workflow has ${inFlight.length} in-flight run(s); cancel them first`,
+        inFlightRunIds: inFlight.map((r) => r.id),
+      },
+      409,
+    );
+  }
+
+  try {
+    rmSync(filePath);
+    broadcastTo(id, { type: 'project-workflows-changed', change: 'deleted', id: wfId });
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 4f.1 / D60. Cancel-then-delete escape for the in-flight-runs guard.
+ *  Walks every in-flight run for this workflow, marks each cancelled with
+ *  the supplied reason (defaults to "workflow deleted"), then removes the
+ *  YAML. 404 when the workflow file is missing. */
+app.post('/api/projects/:projectId/workflows/:wfId/cancel-runs-and-delete', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const body = await c.req
+    .json<{ reason?: string }>()
+    .catch(() => ({}) as { reason?: string });
+  const reason =
+    typeof body.reason === 'string' && body.reason.trim()
+      ? body.reason.trim()
+      : 'workflow deleted';
+
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const filePath = resolve(dir, `${wfId}.yaml`);
+  if (!existsSync(filePath)) {
+    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
+  }
+
+  const wfRuntime = runtime.workflowRuntime();
+  const inFlight = wfRuntime.inFlightRunsForWorkflow(wfId);
+  for (const run of inFlight) {
+    await wfRuntime.cancelRunExternal(run.id, reason);
+  }
+
+  try {
+    rmSync(filePath);
+    broadcastTo(id, { type: 'project-workflows-changed', change: 'deleted', id: wfId });
+    return c.json({ ok: true, cancelledRunIds: inFlight.map((r) => r.id) });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 4f.1 / D63. Duplicate a workflow YAML. New id required; defaults to
+ *  `<source>-copy[-N]` if absent. Duplicate is force-disabled so the user
+ *  doesn't accidentally fire two near-identical workflows on the same
+ *  trigger. Triggers block is preserved as-is — user reviews + adjusts via
+ *  the edit modal. 409 on newId collision; 404 on missing source. */
+app.post('/api/projects/:projectId/workflows/:wfId/duplicate', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const body = await c.req
+    .json<{ newId?: string }>()
+    .catch(() => ({}) as { newId?: string });
+
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const srcPath = resolve(dir, `${wfId}.yaml`);
+  if (!existsSync(srcPath)) {
+    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
+  }
+
+  // Default new id walks `<src>-copy`, `<src>-copy-2`, `<src>-copy-3`, …
+  let newId = typeof body.newId === 'string' && body.newId.trim() ? body.newId.trim() : '';
+  if (!newId) {
+    newId = `${wfId}-copy`;
+    let n = 2;
+    while (existsSync(resolve(dir, `${newId}.yaml`))) {
+      newId = `${wfId}-copy-${n++}`;
+    }
+  }
+  const newPath = resolve(dir, `${newId}.yaml`);
+  if (existsSync(newPath)) {
+    return c.json({ ok: false, error: `workflow already exists: ${newId}` }, 409);
+  }
+
+  let srcText = '';
+  try {
+    srcText = readFileSync(srcPath, 'utf-8');
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+
+  // Parse + mutate + validate with the new id; serialize round-trip-stable.
+  const parsed = parseWorkflowText(srcText, { expectedId: wfId });
+  if (!parsed.ok || !parsed.workflow) {
+    return c.json(
+      {
+        ok: false,
+        error: `source workflow is invalid; cannot duplicate. Errors: ${parsed.errors
+          .map((e) => `${e.path}: ${e.message}`)
+          .join('; ')}`,
+      },
+      400,
+    );
+  }
+  const cloned: Workflow = { ...parsed.workflow, id: newId, disabled: true };
+  const reValidation = validateWorkflow(cloned, { expectedId: newId });
+  if (!reValidation.ok || !reValidation.workflow) {
+    return c.json(
+      {
+        ok: false,
+        error: 'cloned workflow failed validation',
+        errors: reValidation.errors,
+      },
+      400,
+    );
+  }
+
+  try {
+    writeFileSync(newPath, serializeWorkflow(reValidation.workflow), 'utf-8');
+    broadcastTo(id, { type: 'project-workflows-changed', change: 'duplicated', id: newId });
+    return c.json(
+      {
+        ok: true,
+        workflow: { id: newId, fileName: `${newId}.yaml`, path: newPath },
       },
       201,
     );

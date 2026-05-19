@@ -441,17 +441,23 @@ export class WorkflowRuntime {
       throw new Error(`no valid workflow for stage_id "${toStage}" (${match.count} invalid file(s))`);
     }
 
+    // 4f / D62. Disabled workflows behave as if no workflow matched the
+    // stage — the move is a pure move with no firing. Treating disabled as
+    // `kind=none` (vs. throwing) keeps the user's drag-and-drop unbroken
+    // even when the workflow they expected to fire has been paused.
+    const disabled = match.kind === 'one' && match.entry.workflow.disabled === true;
+
     // ensureWorktree before any move so a worktree-provision failure leaves
     // the work item where it was.
     let worktreePath: string | null = null;
-    if (match.kind === 'one' && match.entry.workflow.worktree !== 'none') {
+    if (match.kind === 'one' && !disabled && match.entry.workflow.worktree !== 'none') {
       worktreePath = await this.ensureWorktree(id);
     }
 
     // Commit the move — version-checked when `expectedVersion` is supplied.
     const moved = this.commitMove(id, toStage, expectedVersion, position);
 
-    if (match.kind === 'none') return moved;
+    if (match.kind === 'none' || disabled) return moved;
 
     // Workflow firing is committed atomically with the lock.
     updateWorkItemStatus(id as ULID, 'in-progress', null);
@@ -714,6 +720,76 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Section 4f / D60. Return every in-flight run (pending / in-progress /
+   * paused) for a given workflow id in this project. The DELETE endpoint
+   * uses this to surface a 409 with the run-id list when the user tries to
+   * delete a workflow with live runs attached.
+   */
+  inFlightRunsForWorkflow(workflowId: string): WorkflowRun[] {
+    const all = listActiveRuns().filter(
+      (r) => r.workflowId === workflowId,
+    );
+    // The active-runs query is global; scope to this project by reading
+    // each row's projectId via dbGetRunForProject (the in-memory shape
+    // doesn't carry projectId). One round-trip per in-flight row is cheap —
+    // a workflow rarely has many simultaneous active runs.
+    return all.filter(
+      (r) => dbGetRunForProject(r.id as ULID, this.projectId) !== null,
+    );
+  }
+
+  /**
+   * Section 4f / D60. Externally-triggered cancel for an in-flight run.
+   * Marks the run cancelled, kills any in-flight subagent helpers, persists
+   * the new state, broadcasts, unlocks the attached work item. Idempotent:
+   * a run already in a terminal state returns { ok: false, error: ... }
+   * (the caller distinguishes "already done" from "cancelled now"). Used by
+   * the cancel-runs-then-delete escape path.
+   */
+  async cancelRunExternal(
+    runId: string,
+    reason: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const run = dbGetRunForProject(runId as ULID, this.projectId);
+    if (!run) return { ok: false, error: `unknown run: ${runId}` };
+    if (TERMINAL_RUN_STATUSES.has(run.status)) {
+      return { ok: false, error: `run is already ${run.status}` };
+    }
+    // Kill any in-flight subagent helpers for this run before flipping
+    // status. Spawn handles are keyed `${runId}:${nodeId}`; iterate-by-prefix.
+    const killPrefix = `${runId}:`;
+    for (const [key, handle] of this.inflightSubagentHandles) {
+      if (!key.startsWith(killPrefix)) continue;
+      try {
+        handle.kill('cancelled');
+      } catch (err) {
+        console.warn(
+          `[workflow-runtime] cancelRunExternal: kill ${key} failed: ${(err as Error).message}`,
+        );
+      }
+      this.inflightSubagentHandles.delete(key);
+    }
+    const completedAt = new Date().toISOString();
+    // Mark any non-terminal node outputs as cancelled so the run-detail
+    // view reads coherently. Completed nodes stay completed.
+    for (const [nodeId, output] of Object.entries(run.nodeOutputs)) {
+      if (output.status === 'complete' || output.status === 'failed') continue;
+      run.nodeOutputs[nodeId] = {
+        ...output,
+        status: 'cancelled',
+        error: reason,
+        completedAt,
+      };
+    }
+    run.status = 'cancelled';
+    run.lastReason = reason;
+    run.completedAt = completedAt;
+    this.persistAndBroadcast(run);
+    if (run.workItemId && !run.parentRunId) this.unlockWorkItem(run);
+    return { ok: true };
+  }
+
+  /**
    * Orchestrator-callable entry. Looks up `name` against the registry, applies
    * the four-case rule, checks `triggers.callable: true`, ensures a
    * `run-<short>` worktree, creates the run, and defers the first tick via
@@ -740,6 +816,12 @@ export class WorkflowRuntime {
     const entry = validHits[0]!;
     if (entry.workflow.triggers?.callable !== true) {
       throw new Error(`workflow "${name}" is not callable (triggers.callable !== true)`);
+    }
+    // 4f / D62. External fire-paths (orchestrator-callable + future manual-
+    // fire) refuse a disabled workflow. Nested `call-workflow` is exempt by
+    // intent — a parent already running can finish out a chain it started.
+    if (entry.workflow.disabled === true) {
+      throw new Error(`workflow "${name}" is disabled`);
     }
 
     const runId = randomUUID();
