@@ -53,13 +53,26 @@ Do not attempt to call WCP (`wcp_*`), archon, Gmail, Calendar, HubSpot, Drive, o
 
 ## Channel events
 
-Messages from external systems arrive as `<channel source="webhook" ...>BODY</channel>` blocks injected into your context.
+Messages from external systems arrive as `<channel source="..." ...>BODY</channel>` blocks injected into your context.
 
-There are two shapes of body.
+### Routing by header tag
 
-### 1. Workflow event (per-node dispatch)
+Workflow-runtime messages start with a stable header line so kind detection doesn't rely on prose:
 
-A body that starts with the line `Workflow event: workflow="..." node="..." subagent="..."` is a dispatch from the workflow runtime for a single DAG node. The body has this structure:
+```
+[pc:workflow-event kind=<kind> version=1]
+```
+
+Read the `kind` to pick the right handler:
+
+- `kind=subagent-dispatch` — fire a Task call (§1).
+- `kind=terminated` — reflect in your next reply (§2).
+- `kind=orchestrator-review` — decide + close the node via `pc_complete_node` (§3).
+- No header (or unrecognised `kind`) — plain text from an external system (§4).
+
+### 1. Subagent dispatch (`kind=subagent-dispatch`)
+
+A per-node dispatch from the workflow runtime. The body has this structure (header omitted for brevity):
 
 ```
 Workflow event: workflow="<id>" node="<node-id>" subagent="<agent-name>".
@@ -73,7 +86,7 @@ Delegate to subagent "<agent-name>". Pass this prompt verbatim (keep the tokens 
 The subagent MUST close this node before returning to you...
 ```
 
-Your job is one tool call: fire `Task` against the named subagent, passing the prompt body **verbatim**, keeping every `[workflowRunId: ...]` / `[nodeId: ...]` / `[worktree: ...]` token intact. The subagent reads those tokens to call `pc_complete_node` / `pc_node_failed` and to constrain its file operations to the worktree.
+Your job is one tool call: fire `Task` against the named subagent, passing the prompt body (everything from `Delegate to subagent` through the end of the bracket tokens) **verbatim**, keeping every `[workflowRunId: ...]` / `[nodeId: ...]` / `[worktree: ...]` token intact. The subagent reads those tokens to call `pc_complete_node` / `pc_node_failed` and to constrain its file operations to the worktree.
 
 Rules:
 
@@ -82,9 +95,21 @@ Rules:
 - **Do not call `pc_complete_node` or `pc_node_failed` yourself.** Those belong to the subagent. If a subagent returns without calling either, the runtime's turn-end safety net marks the node failed — that's working as intended.
 - **After Task returns, go idle.** Don't write a summary, don't try to "advance" the workflow. The runtime ticks the next ready node and you'll get another channel event if there's more work.
 
-### 2. Plain text (log + acknowledge)
+### 2. Terminated workflow (`kind=terminated`)
 
-A body that does NOT start with `Workflow event:` is plain text from an external system:
+A top-level workflow run finished with `status="failed"` or `status="cancelled"`. The body names the workflow, its status, an optional `Reason: ...` line, and the `[workflowRunId: ...]` token. There is no node to dispatch.
+
+Your job is to **reflect on the failure in your next reply to the user**. Surface what failed, what the reason says, and the suggested next action (retry, adjust inputs, file a bug). Do not call any tool — the runtime has already torn the run down.
+
+### 3. Orchestrator review request (`kind=orchestrator-review`)
+
+The runtime has paused a workflow at an `orchestrator-review` node and is asking you to make a judgment call. The body names the workflow + node, includes the review prompt, an optional `Artifact: ...` line, and the `[workflowRunId: ...]` / `[nodeId: ...]` tokens. The run stays paused until you close the node.
+
+Your job is one tool call: `pc_complete_node({ workflowRunId, nodeId, output: { decision: "approve" | "reject" | "revise", notes?: string } })`. Read the prompt + artifact, decide, and close. Use `revise` with `notes` when the artifact needs changes; the workflow author's `on_revise.prompt` (if present in the body) tells you what flavour of revision is expected.
+
+### 4. Plain text (log + acknowledge)
+
+A body with no `[pc:workflow-event ...]` header is plain text from an external system:
 
 1. Call `pc_log` with `message` set to the body text.
 2. Briefly acknowledge in chat (one short line).

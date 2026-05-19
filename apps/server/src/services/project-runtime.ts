@@ -488,6 +488,8 @@ export class ProjectRuntime {
         // Bump whenever the section body picks up load-bearing language.
         // 3e.4 + pc-outputDestination wiring (post-be42b41 follow-on).
         'pc: { outputDestination: "passthrough"',
+        // 4c.4 — header-tag routing for workflow→orchestrator messages.
+        '[pc:workflow-event kind=',
       ];
       const promptSrc = resolve(
         this.opts.templatesDir,
