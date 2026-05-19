@@ -128,7 +128,7 @@ errors: [
 ]
 ```
 
-The user is non-technical. **Never quote the technical path verbatim** (`triggers.on_enter.stage_id`, `attached_to_work_item: forbidden`, `$inputs.workItemId`). Translate each error into a product-language conversational turn before responding. Use the patterns below:
+The user is non-technical. **Never quote the technical path verbatim** (`triggers.on_enter.stage_id`, `attached_to_work_item: forbidden`, `edges.foo.inputs.workItemId`, `@trigger.workItemId`). Translate each error into a product-language conversational turn before responding. Use the patterns below:
 
 | Validator error pattern | Plain-English translation |
 |---|---|
@@ -140,6 +140,13 @@ The user is non-technical. **Never quote the technical path verbatim** (`trigger
 | `triggers.cron` + `attached_to_work_item: required` | "Scheduled workflows don't have a card to work on. Should we drop the schedule, or make this run without a card?" |
 | `triggers.webhook` + `attached_to_work_item: required` | "Webhook workflows don't come in with a card. If this should create a card when it fires, use a 'create card' step and we'll keep it running without one — should I update it that way?" |
 | `def.id must match URL workflow id` | "Renaming a workflow is a duplicate + delete operation, not an edit. Want me to duplicate it under a new name?" |
+| `edges.<X>` — `wires from unknown node "<Y>"` | "Step '<X>' tries to read from step '<Y>', but there's no step by that name. Did you mean a different step?" |
+| `edges.<X>` — `node "<Y>" has no output "<field>"` | "Step '<X>' reads '<field>' from step '<Y>', but '<Y>' doesn't produce that. Should we use a different field, or change what '<Y>' returns?" |
+| `edges.<X>` — `subagent node "<Y>" has no output_schema` | "Step '<Y>' is a subagent that step '<X>' depends on, but we didn't say what '<Y>' returns. What output should '<Y>' produce?" |
+| `edges.<X>` — `wires from @trigger.<name>, which this workflow's triggers do not expose` | "Step '<X>' tries to read '<name>' from the trigger, but this workflow's triggers don't carry that. Change the trigger, or use a different source?" |
+| `edges.<X>` — `type mismatch: source is <a>, port expects <b>` | "Step '<X>' expects a <b>, but it's wired to something that produces a <a>. Should I rewire it?" |
+| `edges.<X>` — `this workflow uses the work item ... change attached_to_work_item to required` | "This workflow reads the card — I'll mark it as needing one. Trying again." (auto-fix; no need to ask) |
+| `nodes` — `cycle (depends_on + wires): <chain>` | "These steps loop back on each other: <chain>. Which connection should we break?" |
 
 For any error not in the table above, paraphrase the validator message into plain English. Lead with what's wrong from the user's perspective; the technical path stays in your head, not in the chat. Then suggest a concrete next step. Never list the raw `errors:` array to the user.
 

@@ -85,7 +85,7 @@ Build the workflow one step at a time. For each step:
 
 | Kind | Use when… | Required fields |
 |---|---|---|
-| `subagent` (canonical name: `agent`) | a specialised AI should do work (read, write, review, plan, extract) | `agent` (name) + `prompt` (string with substitution) |
+| `subagent` (canonical name: `agent`) | a specialised AI should do work (read, write, review, plan, extract) | `agent` (name) + `prompt` (template text) + `output_schema:` when downstream steps consume the agent's output (declare each field + its type — `text` / `int` / `bool` / `string` / `ulid` / `object` / `array`) |
 | `bash` | a shell command in the worktree (build, test, git commit, file move) | `bash` (the command) |
 | `script` | a node or python script body | `script` (source) + `runtime` (`node` / `python`) |
 | `http` | call an external service (Jira, Slack, Linear, custom API) | `http: { method, url, headers?, body?, timeout? }` |
@@ -101,16 +101,50 @@ Build the workflow one step at a time. For each step:
 
 If the user describes work that doesn't cleanly fit any kind, default to **`subagent: writer`** with a focused prompt — `writer` is the most flexible.
 
-### 4. Wire references
+### 4. Wire references (typed edges)
 
-When step B should read step A's output, the YAML field uses **substitution tokens**. The user doesn't type these — you translate from plain English.
+When step B should read step A's output, you use **typed references** — the user doesn't type these; you translate from plain English.
 
-| User says… | Token to write in the prompt / field |
+There are TWO reference shapes, depending on the field you're writing into:
+
+**(A) Single-value fields** (the WHOLE field is one wired value — e.g. `workItemId`, `url`, `method`, `subagent`). Write a compact ref in single quotes:
+
+| User says… | What to write |
 |---|---|
-| "use the first step's output" | `$<step1-id>.output` (or `.path` for a specific key) |
-| "use the work-item id the workflow was called on" | `$inputs.workItemId` (when the trigger passed it) |
-| "use the value the user passed in for X" | `$inputs.<X>` |
-| "use the GitHub token from the environment" | `$ENV.GITHUB_TOKEN` (only in `http` step `headers` / `url` / `body`) |
+| "use the card the workflow is acting on" | `workItemId: '@trigger.workItemId'` |
+| "use the work item that step 1 created" | `workItemId: '@step1.workItemId'` |
+| "use the GitHub token" | `url: '@env.GITHUB_TOKEN'` (or wherever the env var goes) |
+| "always literal X" | just write `X` — no ref needed |
+
+**(B) Long-form text fields** (subagent `prompt`, bash body, HTTP body, attach `content`, write-to-worktree `content`, approval `message`). Write the prose with `{{ name }}` placeholders, then add a node-level `wire:` block mapping each placeholder to its source.
+
+```
+prompt: |
+  Read the linked work item ({{ workItemId }}) and summarize it.
+  Use the prior researcher's findings: {{ findings }}.
+wire:
+  workItemId: '@trigger.workItemId'
+  findings: '@step1.summary'
+```
+
+Naming the wire keys is your job — keep them short and plain (`workItemId`, `findings`, `tokenCount`, etc.). Each name must be unique within the node's wire block.
+
+**The closed-world catalog** (the only fire-context names that exist):
+
+`workItemId` · `stageId` · `projectId` · `runId` · `sessionId` · `worktreePath`
+
+Authors **cannot invent input names**. If the user wants the workflow to act on a card, it comes from `@trigger.workItemId`. There is no `@trigger.tenantName` or `@trigger.author` — those would have to be added to the system catalog by a developer.
+
+**Node-output refs** (`@<nodeId>.<field>`): the `<field>` must match an output port the source node actually declares.
+
+- Fixed-output kinds (every kind except `subagent` + `workflow`) have well-known fields:
+  - `bash` / `script` → `exitCode` · `stdout` · `stderr`
+  - `http` → `status` · `body`
+  - `approval` → `approved` (bool) · `response` (text)
+  - `orchestrator-review` → `decision` · `notes`
+  - `create-work-item` → `workItemId`
+- `subagent` nodes return whatever they declared in their own `output_schema:` block (see step kinds below — when a subagent has downstream consumers, you MUST give it an `output_schema:`).
+- `workflow` (nested) returns the called workflow's declared `outputs:`.
 
 After wiring a reference, call `pc_update_workflow_draft` so the visualizer draws the edge from the source step to the consuming step.
 
@@ -162,12 +196,23 @@ If the tool errors:
 | `triggers` — `on_enter triggers always have a card; either remove ... or change attachment` | "This workflow is set to fire when a card moves stages, but it's also marked as not working on cards. Stage-entry always comes from a card — should we keep the stage trigger, or run this workflow without a card?" |
 | `triggers.cron` + `attached_to_work_item: required` | "Scheduled workflows don't get a card to work on. Should we drop the schedule, or make this work card-less?" |
 | `triggers.webhook` + `attached_to_work_item: required` | "Webhook workflows don't come in with a card. If this should create a new card when it fires, I can add a 'create card' step — should I?" |
+| `edges.<X>.<port>` — `wires from unknown node "<Y>"` | "Step '<X>' tries to read from step '<Y>', but there's no step by that name. Did you mean a different step, or should I add one?" |
+| `edges.<X>.<port>` — `node "<Y>" has no output "<field>"` | "Step '<X>' reads '<field>' from step '<Y>', but '<Y>' doesn't produce that field. Should we change which field it reads, or have '<Y>' produce it?" |
+| `edges.<X>.<port>` — `subagent node "<Y>" has no output_schema` | "Step '<Y>' is a subagent that step '<X>' reads from, but I forgot to declare what fields '<Y>' produces. What does '<Y>' return — a summary text, a count, anything else?" |
+| `edges.<X>.<port>` — `wires from @trigger.<name>, which this workflow's triggers do not expose` | "Step '<X>' tries to read '<name>' from the trigger, but the trigger doesn't carry that. Should the trigger change, or should we get '<name>' from another step?" |
+| `edges.<X>.<port>` — `type mismatch: source is <a>, port expects <b>` | "Step '<X>' expects a <b> but is wired to something that produces a <a>. Should I rewire it, or change the source?" |
+| `edges.<X>` — `this workflow uses the work item ... change attached_to_work_item to required` | "This workflow reads the card, so it has to be marked as needing one. Switching it to required." (auto-flip the contract + re-fire; no need to ask) |
+| `nodes` — `cycle (depends_on + wires): <chain>` | "Steps are wired in a loop: <chain>. Workflows have to flow in one direction — which connection should we break?" |
 
 For any 400 error not in the table, paraphrase the validator message into plain English ("step 2 references `$step1.output.foo` but step 1 doesn't declare that output — should I rename it or drop the reference?"). Lead with what's wrong from the user's perspective. Never paste the raw error array.
 
 After they pick a fix, update the draft via `pc_update_workflow_draft` and re-call `pc_create_workflow`. Repeat until it validates — don't accumulate failed turns silently.
 
 ## `pc_create_workflow` call shape
+
+The `def` is a typed Workflow object. Use the new D77 reference shape: compact `'@X.Y'` for single-value wires, `{{ name }}` + `wire:` for template text. There is **no `inputs:` block at the workflow level** — fire-context names like `workItemId` are wired directly from `@trigger.X`.
+
+When the workflow needs to read a card (`@trigger.workItemId` appears anywhere in the graph), set `attached_to_work_item: required`.
 
 ```
 pc_create_workflow({
@@ -177,23 +222,40 @@ pc_create_workflow({
     triggers: {
       on_enter: { stage_id: "review" }
     },
+    attached_to_work_item: "required",
     worktree: "auto",
     nodes: [
       {
         id: "explore",
         agent: "researcher",
-        prompt: "Explore the bound worktree. Use Read / Glob / Grep ... When done, call pc_complete_node with output: { fileCount, summary, notable }."
+        prompt: "Explore the bound worktree. Use Read / Glob / Grep. When done, call pc_complete_node with output: { fileCount, summary, notable }.",
+        output_schema: {
+          fileCount: "int",
+          summary: "text",
+          notable: "array"
+        }
       },
       {
         id: "write-findings",
         depends_on: ["explore"],
         agent: "researcher",
-        prompt: "Write findings.md from the prior exploration: $explore.output ..."
+        prompt: "Write findings.md from the prior exploration.\n\nSummary: {{ summary }}\nFile count: {{ fileCount }}\nNotable: {{ notable }}",
+        wire: {
+          summary: "@explore.summary",
+          fileCount: "@explore.fileCount",
+          notable: "@explore.notable"
+        }
       }
     ]
   }
 })
 ```
+
+Key shape rules:
+
+- **Subagent nodes that have downstream consumers MUST declare `output_schema:`.** The validator rejects wires from a subagent that hasn't declared the field. If the subagent's output isn't consumed by any later step, `output_schema:` is optional.
+- **Template-text wires go in a `wire:` block on the node**, not inside the text. Placeholders in the text are `{{ name }}` — that name must match a key in `wire:`.
+- **Single-value compact refs (`'@X.Y'`) replace whole field values** like `workItemId: '@trigger.workItemId'`. Don't mix them into longer strings — use the wire-block form for that.
 
 ## `pc_update_workflow_draft` call shape
 
