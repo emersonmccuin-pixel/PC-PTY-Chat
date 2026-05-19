@@ -82,7 +82,7 @@ import { detectRetryCause, shouldRetry } from './retry-policy.ts';
 import { buildWorkflowEventHeader } from './workflow-event-header.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
-import type { WorkItemService } from './work-item.ts';
+import type { MoveWorkItemServiceInput, WorkItemService } from './work-item.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -315,17 +315,40 @@ export class WorkflowRuntime {
 
   /**
    * Move a work item to a stage and, if any workflow's `triggers.on_enter`
-   * matches, fire it as a fresh run bound to the wi-<id> worktree. Four-case
-   * lookup mirrors the 8b contract:
+   * matches, fire it. Thin wrapper around `moveAndFire` preserved for the
+   * chat/MCP path which doesn't have a `version` to check (callers route
+   * through `WorkflowRuntime.moveWorkItem(id, toStage)` historically).
+   */
+  async moveWorkItem(id: string, toStage: string): Promise<WorkItem> {
+    return this.moveAndFire({ id, toStage });
+  }
+
+  /**
+   * Shared move + workflow-firing path used by both the drag endpoint and the
+   * chat/MCP move endpoint (4c.3 / D36 / D37). Four-case lookup mirrors the 8b
+   * contract:
    *   none    → pure move, status reset to pending
-   *   one     → ensure worktree, lock work item to in-progress, createRun + tick
+   *   one     → ensure worktree, version-checked move, lock to in-progress,
+   *             createRun + tick
    *   many    → throw "ambiguous trigger" (caller maps to HTTP 409)
    *   invalid → throw "no valid workflow" (caller maps to HTTP 409)
    *
-   * Many/invalid throw BEFORE applying the move. ensureWorktree throws BEFORE
-   * the move + lock so the work item stays put on dispatch failure.
+   * Pre-checks (ambiguity / invalid / ensureWorktree) run BEFORE any DB write
+   * so the work item stays put on dispatch failure. When `expectedVersion` is
+   * supplied the move routes through `WorkItemService.move()` which throws
+   * `WorkItemVersionConflictError` on mismatch — the card stays put in that
+   * case too (the conflict throws after pre-checks but before any state
+   * change). After the version-checked move succeeds, workflow firing
+   * (lock + createRun + tick) is committed atomically — the card never sits
+   * in the target stage with no workflow run attached when one was expected.
    */
-  async moveWorkItem(id: string, toStage: string): Promise<WorkItem> {
+  async moveAndFire(args: {
+    id: string;
+    toStage: string;
+    expectedVersion?: number;
+    position?: number;
+  }): Promise<WorkItem> {
+    const { id, toStage, expectedVersion, position } = args;
     const project = this.readProject();
     const stage = project.stages.find((s) => s.id === toStage);
     if (!stage) throw new Error(`unknown stage: ${toStage}`);
@@ -345,19 +368,19 @@ export class WorkflowRuntime {
       throw new Error(`no valid workflow for stage_id "${toStage}" (${match.count} invalid file(s))`);
     }
 
-    if (match.kind === 'none') {
-      const moved = moveWorkItemStage(id as ULID, toStage);
-      if (!moved) throw new Error(`unknown work item: ${id}`);
-      return moved;
-    }
-
-    // Fire workflow: ensure worktree first so a failure leaves the work item
-    // where it was. Then commit the move + lock, then create the run + tick.
+    // ensureWorktree before any move so a worktree-provision failure leaves
+    // the work item where it was.
     let worktreePath: string | null = null;
-    if (match.entry.workflow.worktree !== 'none') {
+    if (match.kind === 'one' && match.entry.workflow.worktree !== 'none') {
       worktreePath = await this.ensureWorktree(id);
     }
-    moveWorkItemStage(id as ULID, toStage);
+
+    // Commit the move — version-checked when `expectedVersion` is supplied.
+    const moved = this.commitMove(id, toStage, expectedVersion, position);
+
+    if (match.kind === 'none') return moved;
+
+    // Workflow firing is committed atomically with the lock.
     updateWorkItemStatus(id as ULID, 'in-progress', null);
 
     const run = this.createRun({
@@ -374,7 +397,28 @@ export class WorkflowRuntime {
 
     const final = getWorkItem(id as ULID);
     if (!final) throw new Error(`work item disappeared mid-move: ${id}`);
+    this.broadcast({ type: 'work-items-changed', change: 'moved', workItem: final });
     return final;
+  }
+
+  /** Commits the stage move. Routes through `WorkItemService.move()` (which
+   *  does version-check + broadcast) when `expectedVersion` is provided.
+   *  Falls back to the raw repo path used by the legacy chat/MCP move route
+   *  when no expectedVersion is supplied. */
+  private commitMove(
+    id: string,
+    toStage: string,
+    expectedVersion: number | undefined,
+    position: number | undefined,
+  ): WorkItem {
+    if (expectedVersion !== undefined && this.workItemSvc) {
+      const input: MoveWorkItemServiceInput = { expectedVersion, stageId: toStage };
+      if (position !== undefined) input.position = position;
+      return this.workItemSvc.move(id as ULID, input);
+    }
+    const moved = moveWorkItemStage(id as ULID, toStage);
+    if (!moved) throw new Error(`unknown work item: ${id}`);
+    return moved;
   }
 
   updateWorkItem(id: string, fields: Record<string, unknown>): WorkItem {

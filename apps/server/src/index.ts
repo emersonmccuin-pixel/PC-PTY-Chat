@@ -1153,12 +1153,13 @@ app.post('/api/projects/:projectId/work-items/:wiId/move', async (c) => {
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!stageId) return c.json({ ok: false, error: 'stageId required' }, 400);
   try {
-    const moveInput: Parameters<ReturnType<typeof runtime.workItemService>['move']>[1] = {
+    const moveArgs: Parameters<ReturnType<typeof runtime.workflowRuntime>['moveAndFire']>[0] = {
+      id: wiId,
+      toStage: stageId,
       expectedVersion: body.version,
-      stageId,
     };
-    if (body.position !== undefined) moveInput.position = body.position;
-    const workItem = runtime.workItemService().move(wiId, moveInput);
+    if (body.position !== undefined) moveArgs.position = body.position;
+    const workItem = await runtime.workflowRuntime().moveAndFire(moveArgs);
     return c.json({ ok: true, workItem });
   } catch (err) {
     if (err instanceof WorkItemVersionConflictError) {
@@ -1167,7 +1168,9 @@ app.post('/api/projects/:projectId/work-items/:wiId/move', async (c) => {
     if (err instanceof UnknownStageError) {
       return c.json({ ok: false, error: err.message }, 400);
     }
-    return c.json({ ok: false, error: (err as Error).message }, 500);
+    const msg = (err as Error).message;
+    const is409 = /^ambiguous trigger|^no valid workflow|is locked: workflow in progress/.test(msg);
+    return c.json({ ok: false, error: msg }, is409 ? 409 : 500);
   }
 });
 
