@@ -962,39 +962,35 @@ function NotificationBubble({ event }: { event: NotificationEvent }) {
   );
 }
 
-// ── System bubble (Section 1 / 2026-05-19 — system-message surfacing) ────
+// ── System bubble / footer (Section 1 / 2026-05-19 — system-message surfacing) ──
 //
-// Renders any `type: 'system'` row from CC's JSONL — API errors, retry
-// status, init banners, anything claude.exe writes that a CLI user would
-// have seen in their status line. Colour-coded by `level`:
-//   - 'error' → destructive border + red SUBTYPE chip (api_error, etc.)
-//   - 'warn'  → warning border (yellow)
-//   - other   → muted border (info / init)
+// Renders any `type: 'system'` row from CC's JSONL. Two visual shapes:
 //
-// "Show details" toggle expands the raw entry for debugging. Most users
-// will never open it; it's there because [[hand-user-everything]] says
-// don't hide context the user might need.
+// 1. **Error-level** (`level === 'error'`) → full red bubble with chip +
+//    timestamp + body + "Show details" toggle. Load-bearing user signal —
+//    e.g. the API-overload retry status that drove the 2026-05-19 ask.
+//    Stays prominent so the user can't miss it.
+//
+// 2. **Everything else** (info / warn / no-level) → tiny one-line muted
+//    footer that doesn't look like a bubble. Subtype as a label,
+//    one-line message preview, click to expand the full message + raw
+//    entry. Designed not to disrupt the chat-bubble flow; per the
+//    2026-05-19 follow-up, full bubbles for `turn_duration` /
+//    `away_summary` / `local_command` etc. were too noisy.
+//
+// Per [[hand-user-everything]]: still surfaced, just compact by default.
 
 function SystemBubble({ event }: { event: SystemEvent }) {
+  if (event.level === 'error') return <SystemErrorBubble event={event} />;
+  return <SystemFooter event={event} />;
+}
+
+function SystemErrorBubble({ event }: { event: SystemEvent }) {
   const [open, setOpen] = useState(false);
-  const isError = event.level === 'error';
-  const isWarn = event.level === 'warn' || event.level === 'warning';
-  const wrapClass = isError
-    ? 'border-destructive/60 bg-destructive/5'
-    : isWarn
-      ? 'border-warning/60 bg-warning/10'
-      : 'border-border bg-muted/30';
-  const chipClass = isError
-    ? 'bg-destructive text-destructive-foreground'
-    : isWarn
-      ? 'bg-warning text-background'
-      : 'bg-muted-foreground/70 text-background';
   return (
-    <div className={`self-start max-w-[85%] border px-3 py-2 text-xs ${wrapClass}`}>
+    <div className="self-start max-w-[85%] border border-destructive/60 bg-destructive/5 px-3 py-2 text-xs">
       <div className="mb-1 flex items-center gap-2">
-        <span
-          className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${chipClass}`}
-        >
+        <span className="bg-destructive px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
           {event.subtype.replace(/_/g, ' ')}
         </span>
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -1016,18 +1012,64 @@ function SystemBubble({ event }: { event: SystemEvent }) {
       >
         {open ? 'Hide details' : 'Show details'}
       </button>
+      {open && <SystemRawDump raw={event.raw} />}
+    </div>
+  );
+}
+
+function SystemFooter({ event }: { event: SystemEvent }) {
+  const [open, setOpen] = useState(false);
+  // Strip the leading "[subtype] " prefix the tailer adds for unknown
+  // subtypes — the footer already shows the subtype label, no need to
+  // repeat it in the preview line.
+  const previewRaw = event.message.startsWith(`[${event.subtype}]`)
+    ? event.message.slice(`[${event.subtype}]`.length).trim()
+    : event.message;
+  // Single-line preview when collapsed; full message + raw when open.
+  const preview = previewRaw.split('\n')[0] ?? '';
+  const hasMore = previewRaw !== preview || event.raw !== undefined;
+  return (
+    <div className="self-start max-w-[90%] text-[11px] text-muted-foreground">
+      <button
+        type="button"
+        onClick={() => hasMore && setOpen((v) => !v)}
+        className={`flex w-full items-center gap-2 text-left ${hasMore ? 'hover:text-foreground' : 'cursor-default'}`}
+      >
+        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/80">
+          {event.subtype.replace(/_/g, ' ')}
+        </span>
+        <span className="min-w-0 flex-1 truncate italic">{preview}</span>
+        {hasMore && (
+          <span className="shrink-0 text-[10px] uppercase tracking-wider underline-offset-2 hover:underline">
+            {open ? 'hide' : 'details'}
+          </span>
+        )}
+      </button>
       {open && (
-        <pre className="mt-1.5 max-h-64 overflow-auto border border-border bg-background p-2 font-mono text-[10px] leading-snug">
-          {(() => {
-            try {
-              return JSON.stringify(event.raw, null, 2);
-            } catch {
-              return String(event.raw);
-            }
-          })()}
-        </pre>
+        <div className="mt-1 border-l-2 border-border pl-3">
+          {previewRaw !== preview && (
+            <div className="mb-1.5 whitespace-pre-wrap break-words text-foreground">
+              {previewRaw}
+            </div>
+          )}
+          <SystemRawDump raw={event.raw} />
+        </div>
       )}
     </div>
+  );
+}
+
+function SystemRawDump({ raw }: { raw: unknown }) {
+  return (
+    <pre className="mt-1.5 max-h-64 overflow-auto border border-border bg-background p-2 font-mono text-[10px] leading-snug">
+      {(() => {
+        try {
+          return JSON.stringify(raw, null, 2);
+        } catch {
+          return String(raw);
+        }
+      })()}
+    </pre>
   );
 }
 
