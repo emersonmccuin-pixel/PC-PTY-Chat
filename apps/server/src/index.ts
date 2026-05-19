@@ -1937,7 +1937,10 @@ app.post('/api/projects/:projectId/workflow/run', async (c) => {
     return c.json({ ok: true, run });
   } catch (err) {
     const msg = (err as Error).message;
-    const is409 = /^ambiguous trigger|^no valid workflow|^unknown workflow|is not callable/.test(msg);
+    // 4f / D62 — a disabled workflow surfaces as a 409 (not 500) so the
+    // orchestrator can react with the right conversational turn ("that
+    // workflow is paused — enable it or pick another?").
+    const is409 = /^ambiguous trigger|^no valid workflow|^unknown workflow|is not callable|is disabled/.test(msg);
     return c.json({ ok: false, error: msg }, is409 ? 409 : 500);
   }
 });
