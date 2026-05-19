@@ -219,9 +219,12 @@ export const api = {
       (r) => r.project,
     ),
 
-  browseFolder: async (path?: string): Promise<BrowseResult> => {
-    const qs = path ? `?path=${encodeURIComponent(path)}` : '';
-    const res = await fetch(`/api/fs/browse${qs}`);
+  browseFolder: async (path?: string, gateRoot?: string): Promise<BrowseResult> => {
+    const qs = new URLSearchParams();
+    if (path) qs.set('path', path);
+    if (gateRoot) qs.set('gateRoot', gateRoot);
+    const tail = qs.toString();
+    const res = await fetch(`/api/fs/browse${tail ? `?${tail}` : ''}`);
     const data = (await res.json()) as
       | { ok: true; path: string; parent: string | null; entries: BrowseEntry[] }
       | { ok: false; error: string; kind?: string };

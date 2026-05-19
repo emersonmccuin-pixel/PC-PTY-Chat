@@ -327,14 +327,22 @@ app.patch('/api/settings', async (c) => {
 
 // ── Filesystem browse + probe (create-project UI) ─────────────────────────
 
-/** List a directory for the folder picker. Query: `path` (default = ~/). */
+/** List a directory for the folder picker. Query:
+ *    path       — directory to list (defaults to ~/ or the gate root).
+ *    gateRoot   — optional absolute path. When set, restricts browsing to
+ *                 within this root (returns 403 for paths outside). Used by
+ *                 the create-project flow with the global projectsFolder
+ *                 setting; omitted by the App Settings picker that sets the
+ *                 projectsFolder itself. */
 app.get('/api/fs/browse', (c) => {
   const path = c.req.query('path') ?? '';
+  const gateRoot = c.req.query('gateRoot');
+  const opts = gateRoot && gateRoot.trim() ? { roots: [gateRoot.trim()] } : {};
   try {
-    return c.json({ ok: true, ...browseFolder(path) });
+    return c.json({ ok: true, ...browseFolder(path, opts) });
   } catch (err) {
     if (err instanceof BrowseError) {
-      const status = err.kind === 'not_found' ? 404 : 400;
+      const status = err.kind === 'forbidden' ? 403 : err.kind === 'not_found' ? 404 : 400;
       return c.json({ ok: false, error: err.message, kind: err.kind }, status);
     }
     return c.json({ ok: false, error: (err as Error).message }, 500);

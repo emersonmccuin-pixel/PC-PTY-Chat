@@ -227,8 +227,12 @@ export default function App() {
       </div>
       {createOpen && (
         <CreateProjectModal
-          {...(settings?.projectsFolder ? { defaultFolder: settings.projectsFolder } : {})}
+          {...(settings?.projectsFolder ? { projectsFolder: settings.projectsFolder } : {})}
           onClose={() => setCreateOpen(false)}
+          onOpenAppSettings={() => {
+            setCreateOpen(false);
+            setSettingsOpen(true);
+          }}
           onCreated={(p) => {
             setProjects((prev) => (prev ? [p, ...prev] : [p]));
             setActiveSlug(p.slug);

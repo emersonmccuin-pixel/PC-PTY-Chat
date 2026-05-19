@@ -12,6 +12,9 @@ import { api, type BrowseResult } from '@/api/client';
 
 interface FolderBrowserModalProps {
   initialPath?: string;
+  /** When set, the picker is hard-capped to this root — `↑` stops there
+   *  and typed paths outside the root are 403'd by the server. */
+  gateRoot?: string;
   onCancel: () => void;
   onSelect: (absolutePath: string) => void;
 }
@@ -20,6 +23,7 @@ const LAST_DIR_KEY = 'pc.last-browse-dir';
 
 export function FolderBrowserModal({
   initialPath,
+  gateRoot,
   onCancel,
   onSelect,
 }: FolderBrowserModalProps) {
@@ -30,7 +34,11 @@ export function FolderBrowserModal({
 
   useEffect(() => {
     const remembered = readLocal(LAST_DIR_KEY);
-    void load(initialPath ?? remembered ?? undefined);
+    // When the picker is gated, the remembered path may be outside the gate
+    // (e.g. it was set by an earlier unrestricted-pick). Prefer initialPath
+    // if given, otherwise the gate root, otherwise the remembered path.
+    const seed = initialPath ?? (gateRoot ? gateRoot : remembered ?? undefined);
+    void load(seed);
     // Mount-only — subsequent nav routes through `load`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -47,7 +55,7 @@ export function FolderBrowserModal({
     setLoading(true);
     setErr(null);
     try {
-      const result = await api.browseFolder(path);
+      const result = await api.browseFolder(path, gateRoot);
       setView(result);
       setPathInput(result.path);
       writeLocal(LAST_DIR_KEY, result.path);
@@ -75,7 +83,15 @@ export function FolderBrowserModal({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-base font-semibold">Choose folder</h2>
+          <div>
+            <h2 className="text-base font-semibold">Choose folder</h2>
+            {gateRoot && (
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                Inside your Projects folder:{' '}
+                <code className="bg-muted px-1 font-mono">{gateRoot}</code>
+              </p>
+            )}
+          </div>
           <button
             onClick={onCancel}
             className="text-muted-foreground hover:text-foreground"

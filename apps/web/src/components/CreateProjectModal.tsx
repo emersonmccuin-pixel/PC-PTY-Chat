@@ -15,9 +15,11 @@ import {
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface CreateProjectModalProps {
-  /** Initial path for the folder picker (Q10 projectsFolder global setting). */
-  defaultFolder?: string;
+  /** Global Projects folder setting — also the gate root for the picker.
+   *  When unset, the Browse button is disabled with a "set it first" link. */
+  projectsFolder?: string;
   onClose: () => void;
+  onOpenAppSettings: () => void;
   onCreated: (project: Project) => void;
 }
 
@@ -27,7 +29,12 @@ type ProbeState =
   | { status: 'ready'; probe: FolderProbe }
   | { status: 'error'; message: string };
 
-export function CreateProjectModal({ defaultFolder, onClose, onCreated }: CreateProjectModalProps) {
+export function CreateProjectModal({
+  projectsFolder,
+  onClose,
+  onOpenAppSettings,
+  onCreated,
+}: CreateProjectModalProps) {
   const [name, setName] = useState('');
   const [folderPath, setFolderPath] = useState('');
   const [probeState, setProbeState] = useState<ProbeState>({ status: 'idle' });
@@ -132,11 +139,30 @@ export function CreateProjectModal({ defaultFolder, onClose, onCreated }: Create
 
             <div className="flex flex-col gap-1 text-sm">
               <span className="text-muted-foreground">Folder</span>
+              {projectsFolder ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Inside your Projects folder:{' '}
+                  <code className="bg-muted px-1 font-mono">{projectsFolder}</code>
+                </p>
+              ) : (
+                <p className="text-[11px] text-warning">
+                  No Projects folder set yet.{' '}
+                  <button
+                    type="button"
+                    onClick={onOpenAppSettings}
+                    className="underline hover:text-foreground"
+                  >
+                    Open App Settings
+                  </button>{' '}
+                  to choose where projects live before creating one.
+                </p>
+              )}
               <div className="flex items-stretch gap-1">
                 <button
                   type="button"
                   onClick={() => setBrowserOpen(true)}
-                  className="border border-border bg-card px-2 py-1 text-xs text-foreground hover:bg-muted"
+                  disabled={!projectsFolder}
+                  className="border border-border bg-card px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-50"
                 >
                   Browse…
                 </button>
@@ -170,9 +196,10 @@ export function CreateProjectModal({ defaultFolder, onClose, onCreated }: Create
           </form>
         </div>
       </div>
-      {browserOpen && (
+      {browserOpen && projectsFolder && (
         <FolderBrowserModal
-          {...(folderPath || defaultFolder ? { initialPath: folderPath || defaultFolder! } : {})}
+          gateRoot={projectsFolder}
+          initialPath={folderPath || projectsFolder}
           onCancel={() => setBrowserOpen(false)}
           onSelect={pickFolder}
         />
