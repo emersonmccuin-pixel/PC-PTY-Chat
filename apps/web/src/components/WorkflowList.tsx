@@ -8,7 +8,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { Project, ULID } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
+import { useWorkflowDrawer } from '@/store/workflow-drawer';
 import { CreateWorkflowModal } from './CreateWorkflowModal';
+import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
 interface WorkflowList {
   valid: Array<{ id: string; stageId: string | null; callable: boolean; fileName: string }>;
@@ -42,41 +44,6 @@ interface WorkflowListProps {
   events: WsEnvelope[];
   send: (msg: WsOutbound) => boolean;
 }
-
-// 4a.10 / `feedback_ui_visible_feedback`. Bg-filled + glyph per status — text
-// color alone doesn't register at a glance.
-const STATUS_STYLES: Record<RunStatus, { bg: string; glyph: string; label: string }> = {
-  pending: {
-    bg: 'bg-muted text-muted-foreground',
-    glyph: '◯',
-    label: 'pending',
-  },
-  'in-progress': {
-    bg: 'bg-warning text-background',
-    glyph: '◐',
-    label: 'running',
-  },
-  paused: {
-    bg: 'bg-info text-background',
-    glyph: '⏸',
-    label: 'paused',
-  },
-  complete: {
-    bg: 'bg-success text-background',
-    glyph: '✓',
-    label: 'complete',
-  },
-  failed: {
-    bg: 'bg-destructive text-destructive-foreground',
-    glyph: '✕',
-    label: 'failed',
-  },
-  cancelled: {
-    bg: 'bg-muted text-muted-foreground',
-    glyph: '⊘',
-    label: 'cancelled',
-  },
-};
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -188,7 +155,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           }
         >
           {registry?.valid.map((wf) => (
-            <WorkflowRow key={wf.fileName} wf={wf} runs={runs} />
+            <WorkflowRow key={wf.fileName} wf={wf} runs={runs} projectId={project.id} />
           ))}
           {registry?.invalid.map((wf) => (
             <div
@@ -216,14 +183,6 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           ))}
         </Section>
 
-        <Section title="Recent runs" empty="No runs yet." count={runs.length}>
-          {[...runs]
-            .slice(-50)
-            .reverse()
-            .map((r) => (
-              <RunRow key={r.id} run={r} />
-            ))}
-        </Section>
       </div>
       {createOpen && (
         <CreateWorkflowModal
@@ -233,6 +192,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           onClose={() => setCreateOpen(false)}
         />
       )}
+      <WorkflowDrawer projectId={project.id} events={events} />
     </div>
   );
 }
@@ -363,114 +323,56 @@ function ApprovalRow({
   );
 }
 
-/** Section 4d / D45 throwaway scaffold — replaced by Section 4e Runs view.
- *  Per-workflow row with a red "✕ N failed (24h)" pill when there are recent
- *  failed runs; click to expand the last 5 of them with timestamps + reason.
- *  Failures from background-spawned subagents would otherwise be invisible
- *  once D44 silences chat for background dispatches. */
+/** Section 4e.4 / D51 — clean click affordance. Entire row opens the
+ *  WorkflowDrawer (Definition + Runs tabs). The 4d D45 inline "recent
+ *  failures (24h)" expand was stripped here when the drawer landed — the
+ *  Runs tab inside the drawer is the canonical home for failed-run inspection
+ *  (filter Status = Failed, click row → full per-step detail + retry). */
 function WorkflowRow({
   wf,
   runs,
+  projectId,
 }: {
   wf: { id: string; stageId: string | null; callable: boolean; fileName: string };
   runs: WorkflowRun[];
+  projectId: ULID;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const recentFailures = recentFailedRuns(runs, wf.id);
+  const openDrawer = useWorkflowDrawer((s) => s.open);
+  const runsForWf = runs.filter((r) => r.workflowId === wf.id);
+  const runCount = runsForWf.length;
+  const failedCount = runsForWf.filter((r) => r.status === 'failed').length;
+  void projectId;
   return (
-    <div className="border border-border bg-card text-sm">
-      <div className="flex items-center justify-between px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium text-foreground">{wf.id}</div>
-          <div className="text-xs text-muted-foreground">{wf.fileName}</div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {recentFailures.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="inline-flex items-center gap-1 bg-destructive px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground hover:bg-destructive/90"
-              title="Recent failed runs (last 24h)"
-            >
-              <span aria-hidden="true">✕</span>
-              {recentFailures.length} failed (24h)
-              <span aria-hidden="true">{expanded ? '▴' : '▾'}</span>
-            </button>
-          )}
-          {wf.stageId && (
-            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-              on_enter: {wf.stageId}
-            </span>
-          )}
-          {wf.callable && (
-            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-              callable
-            </span>
-          )}
-        </div>
-      </div>
-      {expanded && recentFailures.length > 0 && (
-        <div className="border-t border-destructive/40 bg-destructive/5 px-3 py-2">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-destructive">
-            last {Math.min(5, recentFailures.length)} failed run{recentFailures.length === 1 ? '' : 's'}
-          </div>
-          <ul className="flex flex-col gap-1">
-            {recentFailures.slice(0, 5).map((r) => (
-              <li key={r.id} className="text-xs">
-                <span className="font-mono text-muted-foreground">
-                  {new Date(r.startedAt).toLocaleString()} · {r.id.slice(-8)}
-                </span>
-                {r.lastReason && (
-                  <span className="ml-2 text-foreground">{r.lastReason}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
-function recentFailedRuns(runs: WorkflowRun[], workflowId: string): WorkflowRun[] {
-  const cutoffMs = Date.now() - ONE_DAY_MS;
-  const matches = runs.filter((r) => {
-    if (r.workflowId !== workflowId) return false;
-    if (r.status !== 'failed') return false;
-    const startMs = Date.parse(r.startedAt);
-    return Number.isFinite(startMs) && startMs >= cutoffMs;
-  });
-  matches.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-  return matches;
-}
-
-function RunRow({ run }: { run: WorkflowRun }) {
-  const start = new Date(run.startedAt);
-  const end = run.completedAt ? new Date(run.completedAt) : null;
-  const style = STATUS_STYLES[run.status];
-  return (
-    <div className="flex items-center justify-between gap-3 border border-border bg-card px-3 py-2 text-sm">
+    <button
+      type="button"
+      onClick={() => openDrawer(wf.id)}
+      className="flex items-center justify-between border border-border bg-card px-3 py-2 text-left text-sm hover:bg-muted"
+    >
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-foreground">{run.workflowId}</div>
-        <div className="font-mono text-[10px] text-muted-foreground">
-          {run.id.slice(-12)} · {start.toLocaleString()}
-          {end && ` → ${end.toLocaleString()}`}
-        </div>
-        {run.lastReason && (
-          <div className="mt-1 text-xs text-muted-foreground">{run.lastReason}</div>
+        <div className="font-medium text-foreground">{wf.id}</div>
+        <div className="text-xs text-muted-foreground">{wf.fileName}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {runCount > 0 && (
+          <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            {runCount} run{runCount === 1 ? '' : 's'}
+            {failedCount > 0 && (
+              <span className="ml-1 text-destructive">· {failedCount} failed</span>
+            )}
+          </span>
+        )}
+        {wf.stageId && (
+          <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            on_enter: {wf.stageId}
+          </span>
+        )}
+        {wf.callable && (
+          <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            callable
+          </span>
         )}
       </div>
-      <span
-        className={
-          'inline-flex shrink-0 items-center gap-1 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ' +
-          style.bg
-        }
-      >
-        <span aria-hidden="true">{style.glyph}</span>
-        {style.label}
-      </span>
-    </div>
+    </button>
   );
 }
+

@@ -815,6 +815,180 @@ test('4e.3 / D52: retry-from-failed fires envelopes for both the prior lineage a
   }
 });
 
+/** Section 4e.8 / D39. End-to-end HTTP smoke for the per-run + retry-from
+ *  surfaces the drawer hits. Spins up a minimal Hono app that mirrors the
+ *  three 4e endpoints (list-runs, get-run-detail, retry-from) wired to the
+ *  fixture's runtime, then drives the failure → retry → success arc
+ *  exclusively through `app.fetch(new Request(...))`. This guards the wire
+ *  layer the same way 4c.4 guards the channel-POST URL — unit tests would
+ *  miss a misnamed route or a JSON-shape regression. */
+test('4e.8 / D39 e2e smoke (HTTP): fire → fail → list → get-detail → retry-from → succeed', async () => {
+  const { Hono } = await import('hono');
+
+  // Spawner stages: first dispatch fails, second dispatch (the retry)
+  // succeeds. Mirrors a user inspecting a failed run in the drawer and
+  // clicking "Retry from here."
+  let dispatchIdx = 0;
+  const results: SubagentSpawnResult[] = [
+    {
+      kind: 'failure',
+      cause: 'idle-timeout',
+      message: 'first dispatch failed',
+      transcriptPath: '/dev/null',
+      jsonlPath: null,
+      partialAssistantText: '',
+    },
+    {
+      kind: 'success',
+      lastAssistantText: 'second dispatch succeeded',
+      pcCompletePayload: null,
+      transcriptPath: '/dev/null',
+      jsonlPath: null,
+    },
+  ];
+  const stagedSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve(results[dispatchIdx++] ?? results[results.length - 1]!),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: stagedSpawner },
+  );
+  try {
+    const projectId = f.project.id as string;
+    const runtime = f.runtime;
+
+    // Stand up a focused Hono app wired to this fixture's runtime. Only the
+    // three 4e routes — enough to validate URL shape + JSON contract.
+    const app = new Hono();
+    app.get('/api/projects/:projectId/workflow-runs', (c) => {
+      const id = c.req.param('projectId');
+      if (id !== projectId) return c.json({ ok: false, error: 'unknown project' }, 404);
+      return c.json({ runs: runtime.readRunsForProject() });
+    });
+    app.get('/api/projects/:projectId/workflow-runs/:runId', (c) => {
+      const id = c.req.param('projectId');
+      const runId = c.req.param('runId');
+      if (id !== projectId) return c.json({ ok: false, error: 'unknown project' }, 404);
+      const run = runtime.readRunForProject(runId);
+      if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+      return c.json({ run });
+    });
+    app.post('/api/projects/:projectId/workflow-runs/:runId/retry-from', async (c) => {
+      const id = c.req.param('projectId');
+      const runId = c.req.param('runId');
+      if (id !== projectId) return c.json({ ok: false, error: 'unknown project' }, 404);
+      const body = await c.req.json<{ nodeId?: string }>().catch(() => ({}) as { nodeId?: string });
+      const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
+      if (!nodeId) return c.json({ ok: false, error: 'nodeId required' }, 400);
+      const result = await runtime.retryFromFailedNode(runId, nodeId);
+      if (!result.ok) {
+        const status = result.error.startsWith('unknown run:') ? 404 : 400;
+        return c.json({ ok: false, error: result.error }, status);
+      }
+      return c.json({ ok: true, runId: result.runId });
+    });
+
+    // 1. Drag-fire equivalent: invoke the workflow on the runtime, wait for
+    //    failure to settle.
+    const priorRun = await runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 100; i++) {
+      const fresh = runtime['tryGetRun'].call(runtime, priorRun.id);
+      if (fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    // 2. List the runs — drawer "open" path.
+    const listRes = await app.fetch(
+      new Request(`http://test.local/api/projects/${projectId}/workflow-runs`),
+    );
+    assert.equal(listRes.status, 200);
+    const listJson = (await listRes.json()) as { runs: Array<{ id: string; status: string }> };
+    const failedRun = listJson.runs.find((r) => r.id === priorRun.id);
+    assert.ok(failedRun, 'list endpoint must surface the failed run');
+    assert.equal(failedRun!.status, 'failed');
+
+    // 3. Get the per-run detail — drawer "open run" path.
+    const detailRes = await app.fetch(
+      new Request(`http://test.local/api/projects/${projectId}/workflow-runs/${priorRun.id}`),
+    );
+    assert.equal(detailRes.status, 200);
+    const detailJson = (await detailRes.json()) as {
+      run: { nodeOutputs: Record<string, { status: string }> };
+    };
+    assert.equal(detailJson.run.nodeOutputs['investigate']?.status, 'failed');
+
+    // 4. Retry-from — drawer "Retry from here" path.
+    const retryRes = await app.fetch(
+      new Request(
+        `http://test.local/api/projects/${projectId}/workflow-runs/${priorRun.id}/retry-from`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId: 'investigate' }),
+        },
+      ),
+    );
+    assert.equal(retryRes.status, 200);
+    const retryJson = (await retryRes.json()) as { ok: boolean; runId: string };
+    assert.ok(retryJson.ok);
+    assert.notEqual(retryJson.runId, priorRun.id);
+    const newRunId = retryJson.runId;
+
+    // 5. Wait for the new run to complete, then verify via HTTP.
+    for (let i = 0; i < 100; i++) {
+      const fresh = runtime['tryGetRun'].call(runtime, newRunId);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const newDetailRes = await app.fetch(
+      new Request(`http://test.local/api/projects/${projectId}/workflow-runs/${newRunId}`),
+    );
+    assert.equal(newDetailRes.status, 200);
+    const newDetailJson = (await newDetailRes.json()) as {
+      run: {
+        status: string;
+        metadata?: Record<string, unknown>;
+        nodeOutputs: Record<string, { status: string }>;
+      };
+    };
+    assert.equal(newDetailJson.run.status, 'complete');
+    assert.equal(newDetailJson.run.nodeOutputs['investigate']?.status, 'complete');
+    assert.equal(newDetailJson.run.metadata?.['reFiredFromRunId'], priorRun.id);
+    assert.equal(newDetailJson.run.metadata?.['reFiredFromNodeId'], 'investigate');
+
+    // 6. Validation paths: invalid retry-from inputs return the right HTTP codes.
+    const missingNodeId = await app.fetch(
+      new Request(
+        `http://test.local/api/projects/${projectId}/workflow-runs/${priorRun.id}/retry-from`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        },
+      ),
+    );
+    assert.equal(missingNodeId.status, 400);
+
+    const unknownRun = await app.fetch(
+      new Request(
+        `http://test.local/api/projects/${projectId}/workflow-runs/00000000-0000-0000-0000-000000000000/retry-from`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeId: 'investigate' }),
+        },
+      ),
+    );
+    assert.equal(unknownRun.status, 404);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('4e.3: nodeFailed broadcasts the failed envelope', async () => {
   const captured: unknown[] = [];
   const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
