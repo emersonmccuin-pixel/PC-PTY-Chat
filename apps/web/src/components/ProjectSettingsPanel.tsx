@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type Project, type ResolvedAgent } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectSettingsFocus } from '@/store/project-settings-focus';
+import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
 import { AgentEditor } from './project-settings/AgentEditor';
 import { CreateAgentModal } from './project-settings/CreateAgentModal';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
@@ -378,118 +379,73 @@ function DangerZone({
   project: Project;
   onDeleted: (projectId: string) => void;
 }) {
-  const [confirmSoft, setConfirmSoft] = useState(false);
-  const [confirmFiles, setConfirmFiles] = useState(false);
-  const [softBusy, setSoftBusy] = useState(false);
-  const [filesBusy, setFilesBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [softOpen, setSoftOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
   const [filesNote, setFilesNote] = useState<string | null>(null);
 
-  async function softDelete() {
-    if (softBusy) return;
-    setSoftBusy(true);
-    setErr(null);
-    try {
-      await api.softDeleteProject(project.id);
-      onDeleted(project.id);
-    } catch (e) {
-      setErr((e as Error).message);
-      setSoftBusy(false);
-    }
-  }
-
-  async function deleteFiles() {
-    if (filesBusy) return;
-    setFilesBusy(true);
-    setErr(null);
-    setFilesNote(null);
-    try {
-      const removed = await api.deleteProjectFiles(project.id);
-      setFilesNote(
-        removed.length === 0
-          ? 'Nothing to remove — PC scaffold dirs are already gone.'
-          : `Removed: ${removed.join(', ')}`,
-      );
-      setConfirmFiles(false);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setFilesBusy(false);
-    }
-  }
-
   return (
-    <div className="space-y-4 border border-destructive/40 bg-destructive/5 p-3">
-      <div>
-        <div className="mb-1 text-sm font-medium text-destructive">Soft-delete project</div>
-        <p className="mb-2 text-xs text-foreground/80">
-          Hides the project from the rail. Files on disk are untouched.
-        </p>
-        {confirmSoft ? (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={softDelete}
-              disabled={softBusy}
-              className="bg-destructive px-3 py-1 text-xs font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-            >
-              {softBusy ? 'Deleting…' : 'Confirm soft-delete'}
-            </button>
-            <button
-              onClick={() => setConfirmSoft(false)}
-              disabled={softBusy}
-              className="border border-border px-3 py-1 text-xs hover:bg-muted"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
+    <>
+      <div className="space-y-4 border border-destructive/40 bg-destructive/5 p-3">
+        <div>
+          <div className="mb-1 text-sm font-medium text-destructive">Archive project</div>
+          <p className="mb-2 text-xs text-foreground/80">
+            Hides the project from the rail. Files on disk are untouched.
+            Restorable from "Show archived".
+          </p>
           <button
-            onClick={() => setConfirmSoft(true)}
+            onClick={() => setSoftOpen(true)}
             className="border border-destructive/60 px-3 py-1 text-xs text-destructive hover:bg-destructive/10"
           >
-            Soft-delete…
+            Archive…
           </button>
-        )}
-      </div>
+        </div>
 
-      <div className="border-t border-destructive/30 pt-3">
-        <div className="mb-1 text-sm font-medium text-destructive">Delete PC files on disk</div>
-        <p className="mb-2 text-xs text-foreground/80">
-          Removes <code className="font-mono">.project-companion/</code> and{' '}
-          <code className="font-mono">.claude/</code> from the project folder. Your own files,{' '}
-          <code className="font-mono">.git/</code>, README, and <code className="font-mono">.mcp.json</code>{' '}
-          stay. Independent of soft-delete.
-        </p>
-        {confirmFiles ? (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={deleteFiles}
-              disabled={filesBusy}
-              className="bg-destructive px-3 py-1 text-xs font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-            >
-              {filesBusy ? 'Removing…' : 'Confirm delete files'}
-            </button>
-            <button
-              onClick={() => setConfirmFiles(false)}
-              disabled={filesBusy}
-              className="border border-border px-3 py-1 text-xs hover:bg-muted"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
+        <div className="border-t border-destructive/30 pt-3">
+          <div className="mb-1 text-sm font-medium text-destructive">Delete PC files on disk</div>
+          <p className="mb-2 text-xs text-foreground/80">
+            Removes <code className="font-mono">.project-companion/</code> and{' '}
+            <code className="font-mono">.claude/</code> from the project folder. Your own files,{' '}
+            <code className="font-mono">.git/</code>, README, and <code className="font-mono">.mcp.json</code>{' '}
+            stay. Independent of archive state.
+          </p>
           <button
-            onClick={() => setConfirmFiles(true)}
+            onClick={() => {
+              setFilesNote(null);
+              setFilesOpen(true);
+            }}
             className="border border-destructive/60 px-3 py-1 text-xs text-destructive hover:bg-destructive/10"
           >
             Delete files…
           </button>
-        )}
-        {filesNote && <p className="mt-2 text-xs text-success">{filesNote}</p>}
+          {filesNote && <p className="mt-2 text-xs text-success">{filesNote}</p>}
+        </div>
       </div>
 
-      {err && <p className="text-xs text-destructive">{err}</p>}
-    </div>
+      {softOpen && (
+        <SoftDeleteProjectModal
+          project={project}
+          onCancel={() => setSoftOpen(false)}
+          onDeleted={(id) => {
+            setSoftOpen(false);
+            onDeleted(id);
+          }}
+        />
+      )}
+      {filesOpen && (
+        <DeleteProjectFilesModal
+          project={project}
+          onCancel={() => setFilesOpen(false)}
+          onDone={(removed) => {
+            setFilesOpen(false);
+            setFilesNote(
+              removed.length === 0
+                ? 'Nothing to remove — PC scaffold dirs were already gone.'
+                : `Removed: ${removed.join(', ')}`,
+            );
+          }}
+        />
+      )}
+    </>
   );
 }
 
