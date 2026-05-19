@@ -115,6 +115,8 @@ export type {
   TemplateFieldSpec,
 } from './workflow-ports.ts';
 export { NODE_PORT_SCHEMAS, getPortSchema } from './workflow-ports.ts';
+export type { EdgeRef, NodeEdges } from './workflow-edges.ts';
+export { formatEdgeRef, isCompactEdgeRef, parseEdgeRef } from './workflow-edges.ts';
 export {
   AGENT_BODY_VARIABLES,
   AgentBodyTemplateError,
