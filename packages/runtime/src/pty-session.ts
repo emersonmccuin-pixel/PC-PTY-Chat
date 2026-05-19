@@ -72,6 +72,19 @@ export interface PtySessionOptions {
    *  missing), the flag is omitted and the orchestrator runs with CC's default
    *  system prompt only. */
   appendSystemPromptPath?: string;
+  /** Agent name to load via `--agent <name>`. claude.exe reads the matching
+   *  `.claude/agents/<name>.md` from the cwd. Section 4d (independent subagent
+   *  execution) uses this to spawn helper sessions; interactive mode REPLACES
+   *  CC's default system prompt with the agent body (source-verified
+   *  utils/systemPrompt.ts:115–122). Orchestrator path does NOT set this. */
+  agentName?: string;
+  /** `--model` override. Defaults to `'opus'` (orchestrator-locked per
+   *  chat.md). Subagents pass the agent file's declared model. */
+  model?: string;
+  /** When false, skip the `--dangerously-load-development-channels` flag +
+   *  the dev-channels boot-prompt auto-press. Defaults to true (orchestrator
+   *  shape). Section 4d subagents pass false — they don't listen on channels. */
+  loadDevChannels?: boolean;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -103,6 +116,7 @@ export class PtySession extends EventEmitter {
   private claudeProjectsDir: string;
   private spawnedAt = 0;
   private excludeJsonlPaths: Set<string>;
+  private loadDevChannels = true;
   private tailer: JsonlTailer | null = null;
   private discoveryTimer: NodeJS.Timeout | null = null;
   private cursorPersistTimer: NodeJS.Timeout | null = null;
@@ -148,12 +162,13 @@ export class PtySession extends EventEmitter {
     // var so the codepath can be re-enabled for testing without a code change.
     // TODO(phase-2): finish diagnosing + remove the gate.
     const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS === '1';
+    this.loadDevChannels = opts.loadDevChannels ?? true;
     const args: string[] = [
       '--dangerously-skip-permissions',
       // Orchestrator is locked to opus per chat.md locked decision.
-      // Subagents pick their own model via YAML.
+      // Subagents pick their own model via YAML (`opts.model`).
       '--model',
-      'opus',
+      opts.model ?? 'opus',
       // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
       // --strict-mcp-config the orchestrator merges global user-level MCPs
       // (e.g. WCP, archon) and tries to use them — confusing and leaks
@@ -162,6 +177,13 @@ export class PtySession extends EventEmitter {
       '.mcp.json',
       '--strict-mcp-config',
     ];
+    // Section 4d: subagent dispatches load the agent body via `--agent <name>`.
+    // Interactive mode REPLACES CC's default system prompt with the agent body
+    // (source-verified). Orchestrator path leaves this unset and uses
+    // `--append-system-prompt-file` instead (which appends).
+    if (opts.agentName) {
+      args.push('--agent', opts.agentName);
+    }
     // Section 3 D11: layer PC's PM identity on top of CC's built-in system
     // prompt. Skip silently if the file is missing — fresh projects always
     // have it scaffolded; pre-3c projects pick it up via the boot-time backfill
@@ -179,8 +201,11 @@ export class PtySession extends EventEmitter {
     // Load the webhook channel registered in workspace/.mcp.json. CC will
     // prompt once on boot to confirm dev-channel usage; we auto-press
     // Enter below. Variadic — keep at the end of the arg list so any future
-    // flags don't get gobbled.
-    args.push('--dangerously-load-development-channels', 'server:webhook');
+    // flags don't get gobbled. Subagent dispatches (loadDevChannels=false)
+    // skip this — they don't listen on channels.
+    if (this.loadDevChannels) {
+      args.push('--dangerously-load-development-channels', 'server:webhook');
+    }
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
       env: { ...process.env, FORCE_COLOR: '0', ...(opts.extraEnv ?? {}) },
@@ -205,7 +230,10 @@ export class PtySession extends EventEmitter {
       // *in place of* literal spaces — once stripAnsi removes them, the words
       // collide. All "Foo bar" matchers use `\s*` so they match both renderings
       // (modern collided + legacy spaced).
-      if (!this.channelConfirmSent) {
+      // Subagent dispatches (loadDevChannels=false) skip this — the prompt
+      // never appears, and gating prevents a false-match on agent content
+      // (e.g. an agent body containing "local development" phrasing).
+      if (this.loadDevChannels && !this.channelConfirmSent) {
         const cleanAll = stripAnsi(this.rawBuffer);
         if (
           /local\s*development/i.test(cleanAll) ||
