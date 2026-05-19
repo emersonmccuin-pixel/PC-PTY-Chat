@@ -24,6 +24,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 import {
   api,
   WorkItemConflictError,
+  WorkItemFieldValidationError,
   type Project,
   type Stage,
   type WorkItem,
@@ -470,16 +471,29 @@ function AddCardForm({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
     const trimmed = title.trim();
     if (!trimmed || busy) return;
     setBusy(true);
+    setErr(null);
     try {
       const r = await api.createWorkItem(projectId, trimmed, stageId, {});
       onCreated(r.workItem);
       setTitle('');
       setOpen(false);
+    } catch (e) {
+      if (e instanceof WorkItemFieldValidationError) {
+        const lines = Object.values(e.errors);
+        setErr(
+          lines.length > 0
+            ? `Can't save — required fields missing:\n${lines.map((l) => `• ${l}`).join('\n')}\nOpen the card in detail to fill them, or unmark them as required in project settings.`
+            : e.message,
+        );
+      } else {
+        setErr((e as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -511,6 +525,11 @@ function AddCardForm({
         className="bg-background px-2 py-1 text-sm"
         rows={2}
       />
+      {err && (
+        <div className="border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          {err}
+        </div>
+      )}
       <div className="flex gap-1">
         <button
           type="submit"
@@ -524,6 +543,7 @@ function AddCardForm({
           onClick={() => {
             setOpen(false);
             setTitle('');
+            setErr(null);
           }}
           className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
         >

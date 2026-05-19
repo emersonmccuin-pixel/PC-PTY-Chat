@@ -246,16 +246,31 @@ export const api = {
     getJson<{ ok: true; workItem: WorkItem }>(
       `/api/projects/${projectId}/work-items/${wiId}`,
     ).then((r) => r.workItem),
-  createWorkItem: (
+  /** Create. Throws WorkItemFieldValidationError on 400 field-validation so
+   *  callers can render per-field messages instead of the opaque "field
+   *  validation failed: <keys>" join. */
+  createWorkItem: async (
     projectId: ULID,
     title: string,
     stageId: string,
     opts: { body?: string; parentId?: ULID | null } = {},
-  ) =>
-    postJson<{ ok: true; workItem: WorkItem }>(
-      `/api/projects/${projectId}/work-items/create`,
-      { title, stageId, ...opts },
-    ),
+  ): Promise<{ ok: true; workItem: WorkItem }> => {
+    const res = await fetch(`/api/projects/${projectId}/work-items/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, stageId, ...opts }),
+    });
+    const data = (await res.json()) as
+      | { ok: true; workItem: WorkItem }
+      | { ok: false; error: string; errors?: Record<string, string> };
+    if (res.status === 400 && data.ok === false && data.errors) {
+      throw new WorkItemFieldValidationError(data.error, data.errors);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `create → ${res.status}`);
+    }
+    return data;
+  },
   /** Version-checked PATCH. Throws WorkItemConflictError on 409 (carrying the
    *  current row), WorkItemFieldValidationError on 400 field-validation. */
   patchWorkItem: async (
