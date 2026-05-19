@@ -19,10 +19,10 @@
 // next turn.
 
 import { execFile } from 'node:child_process';
-import { statSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
-import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 
@@ -71,6 +71,12 @@ import {
   updateWorkItemStatus,
 } from '@pc/db';
 import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
+import {
+  encodeCwdForClaude,
+  spawnSubagent as defaultSpawnSubagent,
+  type SubagentSpawnHandle,
+  type SubagentSpawnRequest,
+} from '@pc/runtime';
 
 import { runHttpStep } from './http-step.ts';
 import { runAttachToWorkItemStep } from './attach-to-work-item-step.ts';
@@ -124,10 +130,21 @@ export interface WorkflowRuntimeOptions {
   /** Optional Project lookup — required for `create-work-item` routing steps
    *  to default the stage to the project's first stage when unset. */
   getProject?: () => Project;
-  /** Optional lookup for the latest subagent transcript JSONL path. Threaded
-   *  through ProjectRuntime — fed by the SubagentStop hook payload. Used to
-   *  decorate D10 failure signals with a clickable transcript link. */
-  subagentTranscriptLookup?: () => string | null;
+  /** Factory for per-dispatch session data dirs. Section 4d's subagent
+   *  spawner writes `stop-markers.txt` / `events.jsonl` / `transcript.log`
+   *  inside the returned dir; the runtime mkdirs it before spawn. ProjectRuntime
+   *  provides one that returns `<dataPath>/sessions/<pcSessionId>`. Without
+   *  this, subagent dispatch fails at the boundary with a clear error. */
+  subagentSessionDirFor?: (pcSessionId: string) => string;
+  /** Override the spawner implementation. Defaults to the real `spawnSubagent`
+   *  from `@pc/runtime`. Tests inject a stub that resolves synthetic results
+   *  without booting claude.exe. */
+  subagentSpawner?: typeof defaultSpawnSubagent;
+  /** Root of CC's per-project JSONL dirs. Used by the spawner-input path to
+   *  snapshot already-claimed JSONL files in the helper's worktree, so two
+   *  parallel dispatches in the same worktree don't latch onto each other's
+   *  JSONL. Defaults to `<homedir>/.claude/projects`. Override for tests. */
+  claudeProjectsDir?: string;
 }
 
 const MAX_NESTING_DEPTH = 10;
@@ -183,7 +200,21 @@ export class WorkflowRuntime {
   private readonly attachmentSvc: AttachmentService | undefined;
   private readonly getProjectFn: (() => Project) | undefined;
   private readonly projectId: ULID;
-  private readonly subagentTranscriptLookup: () => string | null;
+  private readonly subagentSessionDirFor: ((pcSessionId: string) => string) | null;
+  private readonly subagentSpawnerImpl: typeof defaultSpawnSubagent;
+  private readonly claudeProjectsDir: string;
+  /** Section 4d. Per-(runId:nodeId) memory of the spawned helper's transcript
+   *  path, populated synchronously at dispatch time off the spawn handle and
+   *  read back when broadcasting D10 subagent-failure signals. Cleared once
+   *  the node settles (complete / failed). Replaces the pre-4d
+   *  `subagentTranscriptLookup` callback which sourced from the orchestrator's
+   *  SubagentStop hook (dead path now — orchestrator no longer dispatches
+   *  helpers). */
+  private readonly subagentTranscriptsByNode: Map<string, string> = new Map();
+  /** Section 4d. In-flight spawn handles keyed by `${runId}:${nodeId}`. Kept
+   *  so a future cancel-run path (4f) can kill helpers mid-flight. Cleared
+   *  once the node settles. */
+  private readonly inflightSubagentHandles: Map<string, SubagentSpawnHandle> = new Map();
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
 
   constructor(private readonly opts: WorkflowRuntimeOptions) {
@@ -197,7 +228,9 @@ export class WorkflowRuntime {
     this.attachmentSvc = opts.attachmentService;
     this.getProjectFn = opts.getProject;
     this.projectId = opts.projectId;
-    this.subagentTranscriptLookup = opts.subagentTranscriptLookup ?? (() => null);
+    this.subagentSessionDirFor = opts.subagentSessionDirFor ?? null;
+    this.subagentSpawnerImpl = opts.subagentSpawner ?? defaultSpawnSubagent;
+    this.claudeProjectsDir = opts.claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
     // 4a.8 / D18. Fire-and-forget sweep of this project's stale scratch
     // entries on construction. Runs once per WorkflowRuntime lifecycle —
     // ProjectRuntime lazy-spawns the runtime on first work-item / workflow
@@ -984,7 +1017,7 @@ export class WorkflowRuntime {
       attemptNumber: run.nodeOutputs[nodeId]?.attempt ?? 1,
       cause,
       surfaceError,
-      transcriptPath: this.subagentTranscriptLookup() ?? null,
+      transcriptPath: this.subagentTranscriptsByNode.get(transcriptKey(run.id, nodeId)) ?? null,
     };
     this.broadcast({
       type: 'event',
@@ -1047,53 +1080,20 @@ export class WorkflowRuntime {
   }
 
   /**
-   * Turn-end safety net. Subagent nodes still 'running' after the orchestrator's
-   * turn ends are marked failed.
+   * Pre-4d: turn-end safety net that scanned in-progress runs and failed any
+   * subagent node still 'running' after the orchestrator's turn ended. The
+   * orchestrator was the dispatcher then, so its turn-end was the right
+   * cleanup signal. Post-4d (D40 / D41) the workflow runtime owns subagent
+   * dispatch via `spawnSubagent`; completion is detected from the spawned
+   * helper's own Stop hook + JSONL turn-end, with D47 idle + wall-clock
+   * timers as the failure signals. The orchestrator's turn-end is no longer
+   * load-bearing for any subagent node, so this method is a no-op. Kept on
+   * the class because PtySession still calls it on every orchestrator
+   * `turn-end`; dropping the wire would need a coordinated change in
+   * `apps/server/src/index.ts`.
    */
   async onTurnEnd(): Promise<void> {
-    const dirtyRuns: WorkflowRun[] = [];
-    const failedNodes: Array<{ run: WorkflowRun; nodeId: string }> = [];
-    for (const run of listActiveRuns()) {
-      if (run.status !== 'in-progress') continue;
-      const subagentNodeIds = collectSubagentNodeIds(run);
-      let runChanged = false;
-      for (const nodeId of subagentNodeIds) {
-        const out = run.nodeOutputs[nodeId];
-        if (!out || out.status !== 'running') continue;
-        const reason = 'subagent returned without closing the node';
-        const node = lookupNode(run, nodeId);
-        if (node) {
-          const retried = await this.tryRetry(run, node, 'failed');
-          if (retried) {
-            runChanged = true;
-            continue;
-          }
-        }
-        run.nodeOutputs[nodeId] = {
-          ...out,
-          status: 'failed',
-          error: reason,
-          completedAt: new Date().toISOString(),
-        };
-        runChanged = true;
-        failedNodes.push({ run, nodeId });
-      }
-      if (runChanged) {
-        dbPersistRun(run);
-        dirtyRuns.push(run);
-      }
-    }
-    for (const { run, nodeId } of failedNodes) {
-      this.broadcastSubagentFailure(
-        run,
-        nodeId,
-        'agent-returned-without-closing',
-        'subagent returned without closing the node',
-      );
-    }
-    for (const run of dirtyRuns) {
-      await this.tick(run.id);
-    }
+    /* intentionally empty — see jsdoc */
   }
 
   /** Reset a failed node back to pending + bumped attempt counter if its
@@ -1471,6 +1471,12 @@ export class WorkflowRuntime {
     }
   }
 
+  /** Section 4d / D40–D47. The workflow runtime spawns its own helper for
+   *  every subagent node via `spawnSubagent`. Pre-4d this method built a
+   *  channel envelope and asked the orchestrator to spawn the helper via its
+   *  Task tool; that path is removed (no orchestrator-routed dispatch
+   *  remains). Completion + failure detection happen in `wireSpawnHandle`
+   *  below — this method just kicks the spawn and returns `async`. */
   private async dispatchSubagent(ctx: DispatchContext): Promise<DispatchResult> {
     const node = ctx.node as SubagentNode;
     const rendered = ctx.substituteOutputs(node.prompt, ctx.run);
@@ -1479,37 +1485,137 @@ export class WorkflowRuntime {
     // pass the input the workflow declared; fail fast with a clear reason.
     const resolvedAgent = ctx.substituteOutputs(node.subagent, ctx.run).trim();
     if (!resolvedAgent) {
-      return {
-        kind: 'sync',
-        output: {
-          status: 'failed',
-          error: `agent name resolved to empty (raw: "${node.subagent}"; check the workflow's inputs and the caller's input map)`,
-          completedAt: new Date().toISOString(),
-        },
-      };
+      return failedSync(
+        `agent name resolved to empty (raw: "${node.subagent}"; check the workflow's inputs and the caller's input map)`,
+        new Date().toISOString(),
+      );
     }
-    const body = buildSubagentChannelBody({
+    if (!this.subagentSessionDirFor) {
+      return failedSync(
+        `subagent dispatch requires a subagentSessionDirFor factory; runtime was not configured with one`,
+        new Date().toISOString(),
+      );
+    }
+
+    const worktreeDir = ctx.run.worktreePath ?? this.opts.workspaceDir;
+    const attempt = ctx.run.nodeOutputs[node.id]?.attempt ?? 1;
+    // Short, human-readable enough that the corresponding session dir is
+    // greppable; the random suffix avoids retry-attempt collisions.
+    const runIdSuffix = ctx.run.id.slice(-8);
+    const pcSessionId = `sub-${runIdSuffix}-${node.id}-a${attempt}-${randomUUID().slice(0, 8)}`;
+    let sessionDataDir: string;
+    try {
+      sessionDataDir = this.subagentSessionDirFor(pcSessionId);
+      mkdirSync(sessionDataDir, { recursive: true });
+    } catch (err) {
+      return failedSync(
+        `subagent session dir mkdir failed: ${(err as Error).message}`,
+        new Date().toISOString(),
+      );
+    }
+
+    const initialInput = buildSubagentInitialInput({
       runId: ctx.run.id,
       nodeId: node.id,
-      subagent: resolvedAgent,
-      workflowId: ctx.workflow.id,
       worktreePath: ctx.run.worktreePath,
       prompt: rendered,
     });
 
+    const spawnReq: SubagentSpawnRequest = {
+      agentName: resolvedAgent,
+      worktreeDir,
+      initialInput,
+      sessionDataDir,
+      pcSessionId,
+      excludeJsonlPaths: this.snapshotExistingJsonl(worktreeDir),
+      idleTimeoutMs: node.timeout,
+    };
+
+    let handle: SubagentSpawnHandle;
     try {
-      await this.postChannel(body);
+      handle = this.subagentSpawnerImpl(spawnReq);
     } catch (err) {
-      return {
-        kind: 'sync',
-        output: {
-          status: 'failed',
-          error: `channel POST failed: ${(err as Error).message}`,
-          completedAt: new Date().toISOString(),
-        },
-      };
+      // spawnSubagent's defined contract never throws; this guards a custom
+      // injected spawner that does. Fail the node sync so the executor's
+      // recompute drives downstream skip / retry logic.
+      return failedSync(`subagent spawn threw: ${(err as Error).message}`, new Date().toISOString());
     }
+
+    const key = transcriptKey(ctx.run.id, node.id);
+    this.inflightSubagentHandles.set(key, handle);
+    this.subagentTranscriptsByNode.set(key, handle.transcriptPath());
+
+    this.wireSpawnHandle(ctx.run.id, node.id, handle);
     return { kind: 'async' };
+  }
+
+  /** Section 4d / D41. Bridge the spawn handle's `done` resolution into the
+   *  runtime's nodeComplete / nodeFailed paths. The helper MAY also have
+   *  called `pc_complete_node` / `pc_node_failed` during its turn, which
+   *  hits the same runtime methods via the MCP server — in that case the
+   *  node has already settled and this handler short-circuits.
+   *
+   *  Settlement is deferred via `setImmediate` so the dispatching tick fully
+   *  unwinds before nodeComplete/nodeFailed re-enter the runtime. Without
+   *  this, a synchronously-resolved spawner (test fakes; or any real spawn
+   *  whose turn-end races the dispatch path's own awaits) lets the
+   *  microtask-fired nodeComplete mutate the run, then the still-in-flight
+   *  outer tick `dbPersistRun`s its STALE `run` snapshot and undoes the
+   *  completion. */
+  private wireSpawnHandle(
+    runId: string,
+    nodeId: string,
+    handle: SubagentSpawnHandle,
+  ): void {
+    const key = transcriptKey(runId, nodeId);
+    void handle.done.then((result) => {
+      setImmediate(async () => {
+        try {
+          // Refresh the JSONL path on the transcripts map — discovery may
+          // have resolved between dispatch and this handler firing.
+          const finalJsonl = handle.jsonlPath();
+          if (finalJsonl) this.subagentTranscriptsByNode.set(key, finalJsonl);
+
+          const current = this.tryGetRun(runId);
+          const status = current?.nodeOutputs[nodeId]?.status;
+          if (status !== 'running') {
+            // Helper already closed the node via pc_complete_node /
+            // pc_node_failed during its turn — nothing to do.
+            return;
+          }
+          if (result.kind === 'success') {
+            const output = result.pcCompletePayload ?? result.lastAssistantText;
+            await this.nodeComplete(runId, nodeId, output);
+          } else {
+            await this.nodeFailed(runId, nodeId, formatSpawnFailure(result));
+          }
+        } catch (err) {
+          console.error(
+            `[workflow-runtime] subagent done-handler failed for ${runId}/${nodeId}: ${(err as Error).message}`,
+          );
+        } finally {
+          this.inflightSubagentHandles.delete(key);
+          this.subagentTranscriptsByNode.delete(key);
+        }
+      });
+    });
+  }
+
+  /** Synchronous snapshot of `.jsonl` paths already living in CC's per-
+   *  worktree session dir. Threaded into the spawner so discovery doesn't
+   *  latch onto a sibling parallel dispatch's JSONL. Best-effort: the dir
+   *  doesn't exist on the very first dispatch in a given worktree, which is
+   *  fine. */
+  private snapshotExistingJsonl(worktreeDir: string): string[] {
+    const encoded = encodeCwdForClaude(worktreeDir);
+    const wtDir = join(this.claudeProjectsDir, encoded);
+    try {
+      return readdirSync(wtDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => join(wtDir, f));
+    } catch {
+      return [];
+    }
   }
 
   /** 4c / D33–D34. POSTs `body` to the channel server's path-routed entry.
@@ -1676,12 +1782,6 @@ function isEmptyValue(value: unknown): boolean {
   return false;
 }
 
-function collectSubagentNodeIds(run: WorkflowRun): string[] {
-  const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
-  if (!parsed.ok || !parsed.workflow) return [];
-  return parsed.workflow.nodes.filter((n) => n.kind === 'subagent').map((n) => n.id);
-}
-
 /** Returns the `subagent:` field for a node, or null if the node isn't a
  *  subagent node (or the YAML snapshot fails to reparse). */
 function lookupSubagentName(run: WorkflowRun, nodeId: string): string | null {
@@ -1710,26 +1810,26 @@ export function buildTerminatedChannelBody(args: {
     .join('\n');
 }
 
-export function buildSubagentChannelBody(args: {
+/** Section 4d / D40. Initial input piped into a spawned subagent helper after
+ *  it reaches banner-ready. The helper IS the agent (--agent <name> loads its
+ *  prompt + tools), so this envelope carries only the rendered prompt + the
+ *  tokens the helper needs if it chooses to call `pc_complete_node` /
+ *  `pc_node_failed` for a structured output override. Per D41 those calls are
+ *  optional — the runtime auto-completes from the helper's natural turn-end
+ *  if neither is called. */
+export function buildSubagentInitialInput(args: {
   runId: string;
   nodeId: string;
-  subagent: string;
-  workflowId: string;
   worktreePath: string | null;
   prompt: string;
 }): string {
   const wtToken = args.worktreePath ? ` [worktree: ${args.worktreePath}]` : '';
   return [
-    buildWorkflowEventHeader('subagent-dispatch'),
-    `Workflow event: workflow="${args.workflowId}" node="${args.nodeId}" subagent="${args.subagent}".`,
-    ``,
-    `Delegate to subagent "${args.subagent}". Pass this prompt verbatim (keep the tokens intact):`,
-    ``,
     args.prompt,
     ``,
     `[workflowRunId: ${args.runId}] [nodeId: ${args.nodeId}]${wtToken}`,
     ``,
-    `The subagent MUST close this node before returning to you. On success it calls pc_complete_node({ workflowRunId, nodeId, output }); on hard failure it calls pc_node_failed({ workflowRunId, nodeId, reason }). If the subagent returns without either, the turn-end safety net marks the node failed.`,
+    `When you finish, your final reply becomes this node's output automatically. If you have a structured result the next workflow step should consume, call pc_complete_node({ workflowRunId, nodeId, output: { ... } }) instead — that payload overrides the text fallback. Call pc_node_failed({ workflowRunId, nodeId, reason }) for hard failures.`,
   ].join('\n');
 }
 
@@ -1738,4 +1838,30 @@ function failedSync(error: string, completedAt: string): DispatchResult {
     kind: 'sync',
     output: { status: 'failed', error, completedAt },
   };
+}
+
+/** Per-(runId:nodeId) key for the runtime's transcript + inflight maps. */
+function transcriptKey(runId: string, nodeId: string): string {
+  return `${runId}:${nodeId}`;
+}
+
+/** D47 failure result → `nodeFailed` reason string. Preserves the timeout
+ *  prefix so `detectRetryCause` can route timeouts into the retry policy's
+ *  separate `on: ['timeout']` opt-in. */
+function formatSpawnFailure(
+  result: import('@pc/runtime').SubagentSpawnFailure,
+): string {
+  switch (result.cause) {
+    case 'idle-timeout':
+    case 'wall-clock-timeout':
+      return `timeout (${result.message})`;
+    case 'spawn-error':
+      return `spawn error: ${result.message}`;
+    case 'empty-turn':
+      return `empty turn: ${result.message}`;
+    case 'mcp-tool-error':
+      return result.message;
+    case 'killed':
+      return `killed: ${result.message}`;
+  }
 }

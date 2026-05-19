@@ -4,9 +4,13 @@
 // URL + drag-fires-workflow) for ~10 days because they never made a live
 // HTTP request to the channel server. This test closes that gap.
 //
-// Covers both surviving post-4d kinds:
+// Covers the surviving channel-routed kind (post-4d):
 //   - `terminated` ping (a cancel-only callable workflow → cancelled run)
-//   - `subagent-dispatch` POST (a single-subagent callable workflow)
+//
+// Plus a focused integration test for Section 4d's spawner-routed dispatch:
+//   - `subagent` node fires via the injected `subagentSpawner`, NOT via the
+//     channel server, and `nodeComplete` propagates the helper's output back
+//     into the run state.
 //
 // Stands up a real ChannelServer on an ephemeral port + a real WS client
 // playing the part of the per-project registered child, then drives a real
@@ -25,6 +29,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import WebSocket from 'ws';
+import type {
+  SubagentSpawnHandle,
+  SubagentSpawnRequest,
+  SubagentSpawnResult,
+} from '@pc/runtime';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-server-smoke-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -141,7 +150,17 @@ interface Fixture {
 
 let fixtureSeq = 0;
 
-async function mkFixture(workflows: Array<{ name: string; yaml: string }>): Promise<Fixture> {
+interface FixtureOptions {
+  /** Override the WorkflowRuntime's subagent spawner. Tests that exercise
+   *  subagent dispatch pass a fake that synthesizes results without booting
+   *  a real claude.exe. */
+  subagentSpawner?: (req: SubagentSpawnRequest) => SubagentSpawnHandle;
+}
+
+async function mkFixture(
+  workflows: Array<{ name: string; yaml: string }>,
+  fopts: FixtureOptions = {},
+): Promise<Fixture> {
   const seq = ++fixtureSeq;
   const folder = resolve(tmpDir, `smoke-${seq}`);
   mkdirSync(folder, { recursive: true });
@@ -186,6 +205,8 @@ async function mkFixture(workflows: Array<{ name: string; yaml: string }>): Prom
     worktrees: worktreeSvc,
     workItemService: workItemSvc,
     getProject: () => project,
+    subagentSessionDirFor: (pcSessionId) => resolve(folder, 'subagent-sessions', pcSessionId),
+    subagentSpawner: fopts.subagentSpawner,
   });
 
   const child = await registerChild(project.id as ULID, project.slug);
@@ -230,18 +251,103 @@ test('e2e smoke: callable cancel workflow → terminated ping forwarded to regis
   }
 });
 
-test('e2e smoke: callable subagent workflow → subagent-dispatch POST forwarded with kind=subagent-dispatch header', async () => {
-  const f = await mkFixture([{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }]);
-  try {
-    await f.runtime.runWorkflow('smoke-subagent');
+test('e2e smoke (4d): subagent node fires via injected spawner (NOT the channel); helper output lands on the run', async () => {
+  const recordedSpawns: SubagentSpawnRequest[] = [];
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    recordedSpawns.push(req);
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'investigation complete: nothing to report',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
 
-    const msg = await waitForMessage(f.child);
-    assert.equal(msg['type'], 'channel-event');
-    assert.equal(msg['source'], 'workflow');
-    const content = msg['content'] as string;
-    const firstLine = content.split('\n', 1)[0];
-    assert.equal(firstLine, '[pc:workflow-event kind=subagent-dispatch version=1]');
-    assert.match(content, /Workflow event:.*workflow="smoke-subagent".*subagent="researcher"/);
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+
+    // The runtime defers the first dispatch + the spawner resolves async; give
+    // the microtask + tick chain a moment to settle. Poll instead of fixed
+    // wait so the test doesn't bake in flakiness on slow CI.
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.nodeOutputs?.['investigate']?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    // 1. Spawner was called once with the right shape.
+    assert.equal(recordedSpawns.length, 1, 'spawner should be invoked exactly once');
+    assert.equal(recordedSpawns[0]!.agentName, 'researcher');
+    assert.match(recordedSpawns[0]!.initialInput, /Take a look\./);
+    assert.match(recordedSpawns[0]!.initialInput, /\[workflowRunId:/);
+    assert.match(recordedSpawns[0]!.initialInput, /\[nodeId: investigate\]/);
+
+    // 2. No channel-event was forwarded to the registered child — subagent
+    //    dispatch no longer routes through the channel server.
+    assert.equal(
+      f.child.received.length,
+      0,
+      `expected zero channel forwards for subagent dispatch, got: ${JSON.stringify(f.child.received)}`,
+    );
+
+    // 3. nodeComplete propagated the helper's lastAssistantText as the node
+    //    output, and the run advanced to terminal status.
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'complete');
+    assert.equal(
+      settled?.nodeOutputs?.['investigate']?.output,
+      'investigation complete: nothing to report',
+    );
+    assert.equal(settled?.status, 'complete');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('e2e smoke (4d): spawner idle-timeout → nodeFailed with "timeout (...)" prefix + run failed', async () => {
+  const failure: SubagentSpawnResult = {
+    kind: 'failure',
+    cause: 'idle-timeout',
+    message: 'helper idle for 300s — likely hung',
+    transcriptPath: '/dev/null',
+    jsonlPath: null,
+    partialAssistantText: '',
+  };
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve(failure),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'failed');
+    assert.match(settled?.nodeOutputs?.['investigate']?.error ?? '', /^timeout \(/);
+    assert.equal(settled?.status, 'failed');
   } finally {
     f.cleanup();
   }

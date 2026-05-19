@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { buildWorkflowEventHeader } from '../src/services/workflow-event-header.ts';
 import {
-  buildSubagentChannelBody,
+  buildSubagentInitialInput,
   buildTerminatedChannelBody,
 } from '../src/services/workflow-runtime.ts';
 
@@ -40,30 +40,29 @@ test('buildWorkflowEventHeader: explicit version override', () => {
   );
 });
 
-test('buildSubagentChannelBody: starts with the subagent-dispatch header line', () => {
-  const body = buildSubagentChannelBody({
+// Section 4d / D40 replaced `buildSubagentChannelBody` (channel-routed
+// envelope addressed to the orchestrator) with `buildSubagentInitialInput`
+// (text piped directly into a spawned helper). No workflow-event header —
+// the helper IS the agent, not a chat reader that needs routing tags.
+
+test('buildSubagentInitialInput: leads with the prompt, omits the workflow-event header', () => {
+  const body = buildSubagentInitialInput({
     runId: 'run-1',
     nodeId: 'explore',
-    subagent: 'researcher',
-    workflowId: 'review-research',
     worktreePath: '/wt/x',
     prompt: 'Do the thing.',
   });
-  const firstLine = body.split('\n', 1)[0];
-  assert.equal(firstLine, '[pc:workflow-event kind=subagent-dispatch version=1]');
-  // Verify rest of the body kept its existing shape.
-  assert.match(body, /Workflow event: workflow="review-research"/);
+  assert.equal(body.split('\n', 1)[0], 'Do the thing.');
+  assert.doesNotMatch(body, /\[pc:workflow-event/);
   assert.match(body, /\[workflowRunId: run-1\] \[nodeId: explore\] \[worktree: \/wt\/x\]/);
   assert.match(body, /pc_complete_node/);
   assert.match(body, /pc_node_failed/);
 });
 
-test('buildSubagentChannelBody: omits [worktree:] token when worktreePath is null', () => {
-  const body = buildSubagentChannelBody({
+test('buildSubagentInitialInput: omits [worktree:] token when worktreePath is null', () => {
+  const body = buildSubagentInitialInput({
     runId: 'run-1',
     nodeId: 'n',
-    subagent: 'researcher',
-    workflowId: 'wf',
     worktreePath: null,
     prompt: 'x',
   });

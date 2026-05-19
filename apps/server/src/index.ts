@@ -170,7 +170,6 @@ function attachPtyHandlers(
   });
   session.on('event', (event: unknown) => {
     maybeSetSessionTitle(projectId, event);
-    captureSubagentTranscriptPath(runtime, event);
     broadcastTo(projectId, { type: 'event', event });
   });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
@@ -210,17 +209,6 @@ function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   setOrchestratorSessionTitle(active.id, title);
   const updated = getActiveOrchestratorSession(projectId);
   if (updated) broadcastTo(projectId, { type: 'session-changed', session: updated });
-}
-
-/** Stash the transcript_path from each SubagentStop hook event on the project
- *  runtime so the workflow runtime can attach it to D10 failure signals. */
-function captureSubagentTranscriptPath(runtime: ProjectRuntime, event: unknown): void {
-  if (!event || typeof event !== 'object') return;
-  const ev = event as { kind?: string; transcriptPath?: unknown };
-  if (ev.kind !== 'subagent-stop') return;
-  if (typeof ev.transcriptPath === 'string' && ev.transcriptPath) {
-    runtime.noteSubagentTranscript(ev.transcriptPath);
-  }
 }
 
 /** First non-empty line, collapsed whitespace, truncated to ~60 chars. */

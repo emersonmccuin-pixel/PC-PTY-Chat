@@ -59,7 +59,11 @@ export interface BaseNode {
   when?: string;
   trigger_rule?: TriggerRule;
   done_when?: DoneWhen;
-  /** Hard ceiling in ms. Bash/script only in v1; ignored elsewhere. */
+  /** Hard ceiling in ms. Bash + script kinds: kills the child after this many
+   *  ms of wall-clock. Subagent kind (Section 4d): idle ceiling — the helper
+   *  fails if no JSONL activity for this many ms (default 5 min when unset;
+   *  D47 wall-clock fail-safe of 2 h is separate and not overridable in v1).
+   *  Other kinds ignore this field. */
   timeout?: number;
   /** Per-step retry policy. Omitted = no retry. */
   retry?: RetryPolicy;

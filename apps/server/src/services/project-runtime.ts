@@ -55,26 +55,11 @@ export class ProjectRuntime {
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
   private hooksRefreshed = false;
-  /** Per-project memory of the last SubagentStop's transcript_path. Index.ts
-   *  populates this from the hook event stream; WorkflowRuntime reads it via
-   *  `subagentTranscriptLookup` when emitting D10 failure signals so the chat
-   *  bubble has a transcript link to click. Single-slot (no per-node map) —
-   *  v1 dispatches subagents sequentially through the orchestrator channel, so
-   *  the latest SubagentStop is always the one that just closed. */
-  private lastSubagentTranscriptPath: string | null = null;
   /** 4b.1: in-memory workflow-creator drafts keyed by transient PC_SESSION_ID.
    *  Populated by `pc_update_workflow_draft` mid-interview; consumed by the
    *  visualizer via the `workflow-creator-draft` WS envelope. Cleared on
    *  session exit (4b.3's `endWorkflowCreator` plus a sweep in `shutdown()`). */
   private readonly workflowCreatorDrafts: Map<string, Workflow> = new Map();
-
-  noteSubagentTranscript(path: string | null): void {
-    if (path && typeof path === 'string') this.lastSubagentTranscriptPath = path;
-  }
-
-  latestSubagentTranscriptPath(): string | null {
-    return this.lastSubagentTranscriptPath;
-  }
 
   constructor(public project: Project, private readonly opts: ProjectRuntimeOptions) {}
 
@@ -155,7 +140,7 @@ export class ProjectRuntime {
         workItemService: this.workItemService(),
         attachmentService: this.attachmentService(),
         getProject: () => this.project,
-        subagentTranscriptLookup: () => this.latestSubagentTranscriptPath(),
+        subagentSessionDirFor: (pcSessionId) => this.sessionDataPath(pcSessionId),
       });
     }
     return this.workflow;
