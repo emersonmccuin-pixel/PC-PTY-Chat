@@ -40,11 +40,18 @@ export const projects = sqliteTable(
     stages: text('stages', { mode: 'json' }).notNull().$type<Stage[]>(),
     folderPath: text('folder_path').notNull().default(''),
     gitRemote: text('git_remote'),
+    /** 5+.4 (D87). Sort key for the LeftRail Projects list. New projects are
+     *  appended at `max(position) + 1`; drag-reorder rewrites every row's
+     *  position in a single transaction. */
+    position: integer('position').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
   },
-  (t) => [uniqueIndex('projects_slug_idx').on(t.slug).where(sql`deleted_at IS NULL`)],
+  (t) => [
+    uniqueIndex('projects_slug_idx').on(t.slug).where(sql`deleted_at IS NULL`),
+    index('projects_position_idx').on(t.position),
+  ],
 );
 
 export const workItems = sqliteTable(

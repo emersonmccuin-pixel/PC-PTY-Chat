@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Project, Stage, ULID } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
@@ -48,7 +48,12 @@ export interface ListProjectsOptions {
 }
 
 export function listProjects(opts: ListProjectsOptions = {}): Project[] {
-  const q = getDb().select().from(projects).orderBy(asc(projects.createdAt));
+  // Order by `position` asc, breaking ties on `created_at` so two rows that
+  // somehow share a position stay in a deterministic order.
+  const q = getDb()
+    .select()
+    .from(projects)
+    .orderBy(asc(projects.position), asc(projects.createdAt));
   const rows = (opts.includeDeleted
     ? q.all()
     : q.where(isNull(projects.deletedAt)).all()) as ProjectRow[];
@@ -77,6 +82,15 @@ export function createProject(input: CreateProjectInput): Project {
   const now = Date.now();
   const id = input.id ?? newId();
   const gitRemote = input.gitRemote ?? null;
+  // 5+.4 (D87) — new projects land at the bottom of the rail. Soft-deleted
+  // rows still count toward `max(position)` so the position space stays gap-
+  // free across the lifetime of a project (cheaper than re-compacting on
+  // soft-delete).
+  const maxPos = getDb()
+    .select({ v: sql<number | null>`max(${projects.position})` })
+    .from(projects)
+    .get() as { v: number | null } | undefined;
+  const position = (maxPos?.v ?? -1) + 1;
   getDb()
     .insert(projects)
     .values({
@@ -87,6 +101,7 @@ export function createProject(input: CreateProjectInput): Project {
       folderPath: input.folderPath,
       gitRemote,
       settings: input.settings ?? {},
+      position,
       createdAt: now,
       updatedAt: now,
     })
@@ -99,6 +114,34 @@ export function createProject(input: CreateProjectInput): Project {
     folderPath: input.folderPath,
     gitRemote,
   };
+}
+
+/** 5+.4 (D87) — drag-reorder. Rewrites the `position` column for the given
+ *  IDs in order (0..N-1). Wrapped in a transaction so a partial failure can't
+ *  leave the rail in a torn state. Unknown IDs are silently skipped — the API
+ *  layer is the right place to enforce membership; this repo is just persist. */
+export function reorderProjects(orderedIds: ULID[]): void {
+  if (orderedIds.length === 0) return;
+  const db = getDb();
+  // Sanity-clamp against the existing membership so a stale list can't
+  // promote a deleted row's position.
+  const live = (db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(isNull(projects.deletedAt), inArray(projects.id, orderedIds)))
+    .all() as { id: ULID }[]).map((r) => r.id);
+  const liveSet = new Set(live);
+  const finalOrder = orderedIds.filter((id) => liveSet.has(id));
+  const now = Date.now();
+  // Single transaction — every row moves or none do.
+  db.transaction((tx) => {
+    finalOrder.forEach((id, idx) => {
+      tx.update(projects)
+        .set({ position: idx, updatedAt: now })
+        .where(eq(projects.id, id))
+        .run();
+    });
+  });
 }
 
 /** Update the stored stages for a project. */

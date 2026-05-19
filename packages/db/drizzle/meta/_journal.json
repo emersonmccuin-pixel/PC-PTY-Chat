@@ -43,6 +43,13 @@
       "when": 1779115091136,
       "tag": "0005_attachment_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1779230070870,
+      "tag": "0006_futuristic_bruce_banner",
+      "breakpoints": true
     }
   ]
 }

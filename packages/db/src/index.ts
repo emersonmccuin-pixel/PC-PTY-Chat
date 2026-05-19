@@ -8,6 +8,7 @@ export {
   getProjectById,
   getProjectBySlug,
   listProjects,
+  reorderProjects,
   softDeleteProject,
   updateProjectMeta,
   updateProjectStages,

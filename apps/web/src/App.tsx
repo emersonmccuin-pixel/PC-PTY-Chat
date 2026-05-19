@@ -150,6 +150,27 @@ export default function App() {
     [activeSlug, setActiveSlug],
   );
 
+  // 5+.4 (D87) — drag-reorder. Optimistic local reorder, then PATCH; refetch
+  // on failure to recover the canonical order.
+  const handleProjectReorder = useCallback((orderedIds: string[]) => {
+    setProjects((prev) => {
+      if (!prev) return prev;
+      const byId = new Map(prev.map((p) => [p.id, p] as const));
+      const reordered: Project[] = [];
+      for (const id of orderedIds) {
+        const p = byId.get(id);
+        if (p) reordered.push(p);
+      }
+      // Append any projects the caller didn't include (defensive — keeps the
+      // rail from accidentally dropping rows on a partial-list reorder).
+      for (const p of prev) if (!orderedIds.includes(p.id)) reordered.push(p);
+      return reordered;
+    });
+    void api.reorderProjects(orderedIds).then(setProjects).catch(() => {
+      void api.listProjects().then(setProjects).catch(() => {});
+    });
+  }, []);
+
   if (projects === null) {
     return (
       <div className="grid h-full place-items-center bg-background text-muted-foreground">
@@ -214,6 +235,7 @@ export default function App() {
           onCreateProject={() => setCreateOpen(true)}
           onProjectUpdated={handleProjectUpdated}
           onProjectDeleted={handleProjectDeleted}
+          onProjectReorder={handleProjectReorder}
           wsEvents={ws.events}
           wsSend={ws.send}
           wsClear={ws.clear}
@@ -234,7 +256,10 @@ export default function App() {
             setSettingsOpen(true);
           }}
           onCreated={(p) => {
-            setProjects((prev) => (prev ? [p, ...prev] : [p]));
+            // 5+.4 (D87) — new projects land at the bottom of the rail,
+            // matching the server-side `max(position) + 1` placement so the
+            // optimistic update doesn't fight the next refetch.
+            setProjects((prev) => (prev ? [...prev, p] : [p]));
             setActiveSlug(p.slug);
             setCreateOpen(false);
           }}

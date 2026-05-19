@@ -26,6 +26,7 @@ import {
   listOrchestratorSessionsForProject,
   listProjects,
   reassignStage,
+  reorderProjects,
   runMigrations,
   setGlobalSettings,
   setOrchestratorSessionJsonlCursor,
@@ -380,6 +381,25 @@ app.post('/api/fs/probe', async (c) => {
 app.get('/api/projects', (c) => {
   const includeDeleted = c.req.query('include_deleted') === '1';
   return c.json({ projects: listProjects({ includeDeleted }) });
+});
+
+/** 5+.4 (D87) — drag-reorder the LeftRail Projects list. Body:
+ *  `{ orderedIds: ULID[] }` — the full list of live project IDs in their new
+ *  display order. Server rewrites every row's `position` to its index in
+ *  one transaction. Unknown / soft-deleted ids are silently dropped (repo-
+ *  level enforcement). Registered before the :projectId variant for clarity;
+ *  Hono's trie-router prefers literal segments anyway. */
+app.patch('/api/projects/reorder', async (c) => {
+  const body = await c.req.json<{ orderedIds?: unknown }>();
+  if (!Array.isArray(body.orderedIds) || !body.orderedIds.every((v) => typeof v === 'string')) {
+    return c.json({ ok: false, error: 'orderedIds must be an array of strings' }, 400);
+  }
+  try {
+    reorderProjects(body.orderedIds as ULID[]);
+    return c.json({ ok: true, projects: listProjects() });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
 });
 
 /** Patch a project's mutable metadata (name + git_remote). Slug stays locked

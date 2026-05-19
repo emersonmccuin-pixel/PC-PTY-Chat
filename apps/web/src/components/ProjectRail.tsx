@@ -20,6 +20,7 @@ interface ProjectRailProps {
   projects: Project[];
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
+  onProjectReorder: (orderedIds: string[]) => void;
 }
 
 interface MenuPos {
@@ -36,6 +37,7 @@ export function ProjectRail({
   projects,
   onCreateProject,
   onProjectDeleted,
+  onProjectReorder,
 }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
@@ -44,6 +46,13 @@ export function ProjectRail({
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  // 5+.4 (D87) — drag state. `draggingId` is the source row; `dragOverId` +
+  // `dragOverPos` drive the insertion-line indicator. Drag is disabled while
+  // the filter input has text — reorder semantics on a partial view get weird
+  // fast, and the filter is a transient lookup tool anyway.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragOverPos, setDragOverPos] = useState<'before' | 'after'>('before');
 
   // 5+.3 (D89): rail-local, transient, name-only substring filter.
   const filtered = useMemo(() => {
@@ -51,6 +60,8 @@ export function ProjectRail({
     if (!q) return projects;
     return projects.filter((p) => p.name.toLowerCase().includes(q));
   }, [projects, filter]);
+
+  const dragEnabled = filter.trim() === '' && projects.length > 1;
 
   useEffect(() => {
     if (!menu) return;
@@ -119,6 +130,50 @@ export function ProjectRail({
     setDanger({ kind: 'delete-files', project });
   }
 
+  function handleDragStart(e: React.DragEvent, project: Project) {
+    if (!dragEnabled) return;
+    setDraggingId(project.id);
+    e.dataTransfer.effectAllowed = 'move';
+    // Firefox needs payload set for drag to start at all.
+    e.dataTransfer.setData('text/plain', project.id);
+  }
+
+  function handleDragOver(e: React.DragEvent, project: Project) {
+    if (!draggingId || draggingId === project.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const pos: 'before' | 'after' = e.clientY < midY ? 'before' : 'after';
+    if (project.id !== dragOverId) setDragOverId(project.id);
+    if (pos !== dragOverPos) setDragOverPos(pos);
+  }
+
+  function handleDrop(e: React.DragEvent, target: Project) {
+    e.preventDefault();
+    const srcId = draggingId;
+    setDraggingId(null);
+    setDragOverId(null);
+    if (!srcId || srcId === target.id) return;
+    const srcIdx = projects.findIndex((p) => p.id === srcId);
+    const tgtIdx = projects.findIndex((p) => p.id === target.id);
+    if (srcIdx < 0 || tgtIdx < 0) return;
+    const insertAt = dragOverPos === 'after' ? tgtIdx + 1 : tgtIdx;
+    const next = projects.slice();
+    const [moved] = next.splice(srcIdx, 1);
+    if (!moved) return;
+    // Account for the gap left by the splice when inserting after an earlier
+    // index — without this the move ends up off by one to the right.
+    const adjusted = srcIdx < insertAt ? insertAt - 1 : insertAt;
+    next.splice(adjusted, 0, moved);
+    onProjectReorder(next.map((p) => p.id));
+  }
+
+  function handleDragEnd() {
+    setDraggingId(null);
+    setDragOverId(null);
+  }
+
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
       <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -143,24 +198,42 @@ export function ProjectRail({
         ) : (
           filtered.map((p) => {
             const isActive = p.slug === activeSlug;
+            const isDragging = draggingId === p.id;
+            const isOver = dragOverId === p.id;
+            const showLineBefore = isOver && dragOverPos === 'before';
+            const showLineAfter = isOver && dragOverPos === 'after';
             return (
-              <button
-                key={p.id}
-                onClick={() => setActiveSlug(p.slug)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setMenu({ project: p, x: e.clientX, y: e.clientY });
-                }}
-                title={p.folderPath}
-                className={
-                  'block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted ' +
-                  (isActive
-                    ? 'border-l-2 border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary'
-                    : 'border-l-2 border-transparent text-foreground/80')
-                }
-              >
-                {p.name}
-              </button>
+              <div key={p.id} className="relative">
+                {showLineBefore && (
+                  <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-0.5 bg-primary" />
+                )}
+                <button
+                  draggable={dragEnabled}
+                  onDragStart={(e) => handleDragStart(e, p)}
+                  onDragOver={(e) => handleDragOver(e, p)}
+                  onDrop={(e) => handleDrop(e, p)}
+                  onDragEnd={handleDragEnd}
+                  onClick={() => setActiveSlug(p.slug)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setMenu({ project: p, x: e.clientX, y: e.clientY });
+                  }}
+                  title={p.folderPath}
+                  className={
+                    'block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                    (isActive
+                      ? 'border-l-2 border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary '
+                      : 'border-l-2 border-transparent text-foreground/80 ') +
+                    (isDragging ? 'opacity-40 ' : '') +
+                    (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
+                  }
+                >
+                  {p.name}
+                </button>
+                {showLineAfter && (
+                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary" />
+                )}
+              </div>
             );
           })
         )}

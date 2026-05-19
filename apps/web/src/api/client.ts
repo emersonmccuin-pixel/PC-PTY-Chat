@@ -484,6 +484,18 @@ export const api = {
     }
   },
 
+  // ── Projects: reorder (5+.4 / D87) ───────────────────────────────────────
+  /** Persist a drag-reordered project list. `orderedIds` is the full live
+   *  list in its new display order; the server rewrites every row's
+   *  `position` to its index. Returns the canonical list back so the caller
+   *  can reconcile against any in-flight optimistic state. */
+  reorderProjects: (orderedIds: ULID[]) =>
+    postJsonMethod<{ ok: true; projects: Project[] }>(
+      '/api/projects/reorder',
+      { orderedIds },
+      'PATCH',
+    ).then((r) => r.projects),
+
   // ── Files (5+.2) ─────────────────────────────────────────────────────────
   /** Recursive tree of the project's folderPath, with HARD_SKIP_DIRS and
    *  .gitignore applied server-side. Paths are posix-style + relative to the

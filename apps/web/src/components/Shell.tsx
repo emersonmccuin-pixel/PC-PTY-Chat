@@ -32,6 +32,7 @@ interface ShellProps {
   onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
+  onProjectReorder: (orderedIds: string[]) => void;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsClear: () => void;
@@ -48,6 +49,7 @@ export function Shell({
   onCreateProject,
   onProjectUpdated,
   onProjectDeleted,
+  onProjectReorder,
   wsEvents,
   wsSend,
   wsClear,
@@ -81,6 +83,7 @@ export function Shell({
           events={wsEvents}
           onCreateProject={onCreateProject}
           onProjectDeleted={onProjectDeleted}
+          onProjectReorder={onProjectReorder}
         />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />

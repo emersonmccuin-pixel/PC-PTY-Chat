@@ -15,6 +15,7 @@ interface LeftRailProps {
   events: WsEnvelope[];
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
+  onProjectReorder: (orderedIds: string[]) => void;
 }
 
 const TABS: { mode: RailMode; label: string }[] = [
@@ -29,6 +30,7 @@ export function LeftRail({
   events,
   onCreateProject,
   onProjectDeleted,
+  onProjectReorder,
 }: LeftRailProps) {
   const mode = useRailMode((s) => s.mode);
   const setMode = useRailMode((s) => s.setMode);
@@ -57,6 +59,7 @@ export function LeftRail({
             projects={projects}
             onCreateProject={onCreateProject}
             onProjectDeleted={onProjectDeleted}
+            onProjectReorder={onProjectReorder}
           />
         ) : mode === 'sessions' ? (
           <SessionsRail project={activeProject} events={events} />
