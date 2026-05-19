@@ -11,3 +11,9 @@ export type {
 export { parseTypedWorkflowText } from './typed-parser.ts';
 export type { TypedValidationResult, TypedWorkflow } from './typed-parser.ts';
 export { validateTypedWorkflow } from './typed-validator.ts';
+export { migrateWorkflowText } from './typed-migration.ts';
+export type {
+  MigrationErr,
+  MigrationOk,
+  MigrationResult,
+} from './typed-migration.ts';

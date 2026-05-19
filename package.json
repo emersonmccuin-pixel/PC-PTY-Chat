@@ -10,7 +10,8 @@
     "build": "pnpm --filter @pc/web build",
     "typecheck": "pnpm -r typecheck",
     "test:unit": "pnpm -r --if-present test",
-    "test:smoke": "playwright test tests/playwright/chat-smoke.spec.ts"
+    "test:smoke": "playwright test tests/playwright/chat-smoke.spec.ts",
+    "migrate:workflows": "pnpm --filter @pc/server exec tsx ../../scripts/migrate-workflows-to-typed-refs.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
