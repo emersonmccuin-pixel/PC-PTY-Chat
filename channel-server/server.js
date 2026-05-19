@@ -8,9 +8,12 @@
 // docs/design/multi-tenancy.md §3.
 //
 // Required env (set by the per-project .mcp.json substitution):
-//   PC_PROJECT_ID  — ULID, registered with the dispatcher
+//   PC_PROJECT_ID   — ULID, registered with the dispatcher
 //   PC_PROJECT_SLUG — slug, registered with the dispatcher
-//   PC_SERVER_PORT — apps/server HTTP port (default 4040)
+//   CHANNEL_PORT    — multiplexed channel server port (default 8788). The
+//                     /channel-register WS endpoint lives on the channel
+//                     server, NOT the API server. The .mcp.json template
+//                     names this var CHANNEL_PORT; we match.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -18,7 +21,7 @@ import WebSocket from 'ws';
 
 const PROJECT_ID = process.env.PC_PROJECT_ID ?? '';
 const PROJECT_SLUG = process.env.PC_PROJECT_SLUG ?? '';
-const SERVER_PORT = Number(process.env.PC_SERVER_PORT ?? 4040);
+const SERVER_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
 const mcp = new Server(
   { name: 'webhook', version: '0.0.1' },
