@@ -157,3 +157,16 @@ test('buildOrchestratorReviewChannelBody: emits decision-shape instruction', () 
   assert.match(body, /"revise"/);
   assert.match(body, /pc_complete_node\(\{ workflowRunId, nodeId, output:/);
 });
+
+test('buildOrchestratorReviewChannelBody: prepends the [pc:workflow-event] header (4c / D38)', () => {
+  const body = buildOrchestratorReviewChannelBody({
+    runId: 'r1',
+    nodeId: 'n1',
+    workflowId: 'wf',
+    prompt: 'p',
+    artifact: null,
+    onRevisePrompt: null,
+  });
+  const firstLine = body.split('\n', 1)[0];
+  assert.equal(firstLine, '[pc:workflow-event kind=orchestrator-review version=1]');
+});

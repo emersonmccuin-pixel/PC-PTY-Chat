@@ -79,6 +79,7 @@ import { runUpdateWorkItemStep } from './update-work-item-step.ts';
 import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
 import { runOrchestratorReviewStep } from './orchestrator-review-step.ts';
 import { detectRetryCause, shouldRetry } from './retry-policy.ts';
+import { buildWorkflowEventHeader } from './workflow-event-header.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { WorkItemService } from './work-item.ts';
@@ -737,16 +738,14 @@ export class WorkflowRuntime {
     run: WorkflowRun,
     workflow: Workflow,
   ): Promise<void> {
-    const body = [
-      `Workflow run terminated: workflow="${workflow.id}" status="${run.status}".`,
-      run.lastReason ? `Reason: ${run.lastReason}` : '',
-      `[workflowRunId: ${run.id}]`,
-      ``,
-      `The workflow won't resume on its own. Reflect this in your reply to the user; if action is needed (retry, adjust inputs, file a bug), surface it now.`,
-    ]
-      .filter((line) => line !== '')
-      .join('\n');
-    await this.postChannel(body);
+    await this.postChannel(
+      buildTerminatedChannelBody({
+        runId: run.id,
+        workflowId: workflow.id,
+        status: run.status,
+        lastReason: run.lastReason ?? null,
+      }),
+    );
   }
 
   /** 4a.9 fix #3. Strict `done_when` enforcement. Returns ok=true when the
@@ -1469,13 +1468,25 @@ export class WorkflowRuntime {
     return { kind: 'async' };
   }
 
-  private async postChannel(body: string): Promise<void> {
+  /** 4c / D33–D34. POSTs `body` to the channel server's path-routed entry.
+   *  Slug comes from the `getProject` callback (threaded at construction).
+   *  `source` is the second URL segment — defaults to `"workflow"` since every
+   *  workflow-runtime POST originates from the workflow runtime. */
+  private async postChannel(body: string, source = 'workflow'): Promise<void> {
+    const slug = this.getProjectFn?.().slug;
+    if (!slug) {
+      throw new Error(
+        'workflow-runtime postChannel requires a getProject() lookup with a slug; runtime was not configured with one',
+      );
+    }
+    const path = `/channel/${encodeURIComponent(slug)}/${encodeURIComponent(source)}`;
     await new Promise<void>((res, rej) => {
       const req = httpRequest(
         {
           host: '127.0.0.1',
           port: this.channelPort,
           method: 'POST',
+          path,
           headers: {
             'X-Sender': 'test',
             'Content-Type': 'text/plain',
@@ -1637,7 +1648,25 @@ function lookupSubagentName(run: WorkflowRun, nodeId: string): string | null {
   return (node as SubagentNode).subagent;
 }
 
-function buildSubagentChannelBody(args: {
+export function buildTerminatedChannelBody(args: {
+  runId: string;
+  workflowId: string;
+  status: WorkflowRunStatus;
+  lastReason: string | null;
+}): string {
+  return [
+    buildWorkflowEventHeader('terminated'),
+    `Workflow run terminated: workflow="${args.workflowId}" status="${args.status}".`,
+    args.lastReason ? `Reason: ${args.lastReason}` : '',
+    `[workflowRunId: ${args.runId}]`,
+    ``,
+    `The workflow won't resume on its own. Reflect this in your reply to the user; if action is needed (retry, adjust inputs, file a bug), surface it now.`,
+  ]
+    .filter((line) => line !== '')
+    .join('\n');
+}
+
+export function buildSubagentChannelBody(args: {
   runId: string;
   nodeId: string;
   subagent: string;
@@ -1647,6 +1676,7 @@ function buildSubagentChannelBody(args: {
 }): string {
   const wtToken = args.worktreePath ? ` [worktree: ${args.worktreePath}]` : '';
   return [
+    buildWorkflowEventHeader('subagent-dispatch'),
     `Workflow event: workflow="${args.workflowId}" node="${args.nodeId}" subagent="${args.subagent}".`,
     ``,
     `Delegate to subagent "${args.subagent}". Pass this prompt verbatim (keep the tokens intact):`,

@@ -14,6 +14,8 @@ import type {
   WorkflowRun,
 } from '@pc/domain';
 
+import { buildWorkflowEventHeader } from './workflow-event-header.ts';
+
 export type SubstituteOutputs = (text: string, run: WorkflowRun) => string;
 export type PostChannel = (body: string) => Promise<void>;
 export type BroadcastFn = (event: unknown) => void;
@@ -88,6 +90,7 @@ export function buildOrchestratorReviewChannelBody(args: {
     ? `\nIf you want revisions, choose "revise" and use these notes as guidance for the workflow author: ${args.onRevisePrompt}\n`
     : '';
   return [
+    buildWorkflowEventHeader('orchestrator-review'),
     `Workflow review request: workflow="${args.workflowId}" node="${args.nodeId}".`,
     ``,
     `${args.prompt}${artifactLine}${reviseLine}`,

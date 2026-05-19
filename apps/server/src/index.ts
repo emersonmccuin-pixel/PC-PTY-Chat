@@ -1671,24 +1671,28 @@ app.post('/api/projects/:projectId/workflow/run', async (c) => {
   }
 });
 
-// Proxy to the channel server. P5 reshapes the channel server to a
-// multiplexed path-routed shape (POST /channel/<slug>/<source>); for now this
-// forwards a plain text body with the rig's allowlist header.
+// Proxy to the channel server. POSTs the UI's test message to the path-routed
+// channel entry at `/channel/<slug>/test` (4c / D35) so the channel server
+// accepts it. Source segment `test` matches the existing `X-Sender: test`
+// header.
 app.post('/api/projects/:projectId/channel-send', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const slug = runtime.project.slug;
   const body = await c.req.json<{ message?: string }>();
   const message = typeof body.message === 'string' ? body.message : '';
   if (!message) return c.json({ ok: false, error: 'empty message' }, 400);
 
   try {
+    const path = `/channel/${encodeURIComponent(slug)}/test`;
     const result = await new Promise<{ status: number; body: string }>((res, rej) => {
       const req = httpRequest(
         {
           host: '127.0.0.1',
           port: CHANNEL_PORT,
           method: 'POST',
+          path,
           headers: {
             'X-Sender': 'test',
             'Content-Type': 'text/plain',
