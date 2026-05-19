@@ -1,25 +1,27 @@
 // 4b.5 / 4b.6 — read-only workflow visualizer.
+// 4h.11a — typed-edge rewrite.
 //
-// Phase B2 of the Workflow Builder UI. Takes a typed `Workflow` (the same
-// validated `def` the server broadcasts via `workflow-creator-draft` and
-// stores via `pc_create_workflow`) and renders the graph with react-flow.
+// Takes the validated `def` the server broadcasts via `workflow-creator-draft`
+// and stores via `pc_create_workflow`, plus the typed-edge map (4h.3) that
+// captures structured wires (`@nodeId.field` / `@trigger.X` / `@env.NAME`).
+// Renders the graph with react-flow.
 //
 // Layout: dagre auto-layout, left-to-right. Pan + zoom enabled, drag/edit
-// disabled (v2 owns that).
+// disabled (4h.11b+ owns that).
 //
-// Edges = references + structural deps. We walk every string field of every
-// node for `$<id>.output[.path]` and `$inputs.<key>` tokens, AND honor
-// declared `depends_on` arrays. The two sources are de-duplicated per
-// upstream→downstream pair; an edge exists if either source declares it.
-// $inputs.* references draw an edge from whichever trigger source is active
-// (on_enter / callable / first-of-the-two).
+// Edges = typed wires from the edges map + structural `depends_on` arrays.
+// Each typed wire carries the source's output socket id + the consumer's
+// input socket id, so react-flow draws between the right Handles. Env-var
+// refs surface as a node-attached badge in the detail panel rather than a
+// wire (no upstream node to wire from).
 //
 // Trigger nodes are synthetic — id `__trigger_on_enter` / `__trigger_callable`.
-// Both can coexist on the same graph. When neither is set we still render the
-// real nodes; the graph just floats without an explicit entry point.
+// Both can coexist on the same graph. Per D76, multi-trigger workflows
+// expose only the INTERSECTION of trigger outputs. The synthetic node's
+// outputs come from TRIGGER_OUTPUTS.
 //
-// Click a node → side panel renders read-only field detail. No edit
-// affordances; v2 promotes the panel to an editor.
+// Click a node → side panel renders read-only field detail. SDR-mode by
+// default; edit-mode lands in 4h.11b.
 
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -54,10 +56,28 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
-import type { Workflow, WfDagNode as DagNode } from '@/api/client';
+import type {
+  CatalogType,
+  EdgeRef,
+  NodeEdges,
+  Workflow,
+  WfDagNode as DagNode,
+  WorkflowEdges,
+} from '@/api/client';
+import {
+  TRIGGER_OUTPUTS,
+  TYPE_COLOR_BG,
+  TYPE_COLOR_BORDER,
+  WEB_NODE_PORTS,
+  type WebPortSpec,
+} from '@/lib/workflow-ports';
 
 interface WorkflowGraphProps {
   workflow: Workflow | null;
+  /** Typed-edge map (4h). Keyed by node id; missing entries → node has no
+   *  typed wires (only literal body fields). Null when the caller hasn't
+   *  fetched edges yet — viewer renders nodes but skips wire edges. */
+  edges?: WorkflowEdges | null;
 }
 
 // ── node-kind visual config ─────────────────────────────────────────────────
@@ -103,19 +123,38 @@ interface WorkflowNodeData extends Record<string, unknown> {
   kind: KindKey;
   title: string; // step id, or stage id for triggers
   subtitle?: string; // agent name for subagents, etc.
+  /** Output sockets to render on the right edge. Determined per kind from the
+   *  port-schema mirror + (for subagent) the author-declared output_schema. */
+  outputs: ReadonlyArray<{ name: string; type: CatalogType }>;
+  /** Input sockets to render on the left edge. Combines fixed input ports
+   *  with `wire:` block keys; the structured edge map keys both kinds the
+   *  same way (`in-<name>` for fixed ports, `wire-<name>` for wires). */
+  inputs: ReadonlyArray<{ id: string; name: string; type: CatalogType; isWire: boolean }>;
+}
+
+// Vertical spacing per socket within the node body.
+const SOCKET_GAP = 18;
+// Distance from the band's bottom to the first socket.
+const SOCKET_TOP_OFFSET = 38;
+
+function socketY(index: number): number {
+  return SOCKET_TOP_OFFSET + index * SOCKET_GAP;
 }
 
 function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
   const cfg = KIND_CONFIG[data.kind];
   const Icon = cfg.icon;
+  const socketCount = Math.max(data.inputs.length, data.outputs.length);
+  // Ensure the body extends to fit the tallest socket column.
+  const bodyMinH = socketCount > 0 ? socketY(socketCount - 1) + 14 : 48;
   return (
     <div
       className={
         'min-w-[180px] max-w-[260px] border bg-card text-foreground shadow-sm ' +
         (selected ? 'border-primary ring-1 ring-primary' : 'border-border')
       }
+      style={{ minHeight: bodyMinH + 20 }}
     >
-      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border !border-border !bg-background" />
       <div className={'flex items-center gap-2 px-2 py-1 text-[10px] uppercase tracking-wider text-background ' + cfg.band}>
         <Icon size={12} />
         <span className="font-medium">{cfg.label}</span>
@@ -126,69 +165,179 @@ function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
           <div className="mt-0.5 break-words text-[10px] text-muted-foreground">{data.subtitle}</div>
         )}
       </div>
-      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border !border-border !bg-background" />
+      {/* Input sockets — left edge, one Handle per port + wire entry. */}
+      {data.inputs.map((p, i) => (
+        <Handle
+          key={`tgt-${p.id}`}
+          type="target"
+          id={p.id}
+          position={Position.Left}
+          title={`${p.name} : ${p.type}`}
+          className={`!h-2 !w-2 !border ${TYPE_COLOR_BORDER[p.type]} ${TYPE_COLOR_BG[p.type]}`}
+          style={{ top: socketY(i) }}
+        />
+      ))}
+      {/* Output sockets — right edge, one Handle per declared output. */}
+      {data.outputs.map((p, i) => (
+        <Handle
+          key={`src-${p.name}`}
+          type="source"
+          id={`out-${p.name}`}
+          position={Position.Right}
+          title={`${p.name} : ${p.type}`}
+          className={`!h-2 !w-2 !border ${TYPE_COLOR_BORDER[p.type]} ${TYPE_COLOR_BG[p.type]}`}
+          style={{ top: socketY(i) }}
+        />
+      ))}
     </div>
   );
 }
 
 const NODE_TYPES = { workflowNode: WorkflowNode };
 
-// ── reference + dep extraction ──────────────────────────────────────────────
+// ── typed-edge reference extraction ─────────────────────────────────────────
 //
-// Walk every string-valued field on every node body and capture `$<id>.output`
-// and `$inputs.<key>` tokens. Returned as a map keyed by consumer step id, so
-// the edge builder can de-dupe against `depends_on`.
-
-const STEP_REF_RE = /\$([a-zA-Z0-9_-]+)\.output\b/g;
-const INPUTS_REF_RE = /\$inputs\.[a-zA-Z0-9_-]+/g;
+// Pre-4h.11a we walked every string-valued field for `$<id>.output` /
+// `$inputs.<key>` tokens via regex. Post-4h, the typed-edge map carries
+// structured wires; this helper re-shapes them into the detail panel's
+// existing data contract (set of upstream node ids + trigger / env flags +
+// the raw EdgeRef list for richer surfacing).
 
 interface NodeRefs {
+  /** Set of upstream node ids this consumer reads from. */
   fromSteps: Set<string>;
-  fromInputs: boolean;
+  /** True if the consumer reads from any trigger output. */
+  fromTrigger: boolean;
+  /** Set of env var names referenced. */
+  fromEnv: Set<string>;
+  /** All typed wires (input ports + template wires) keyed by consumer-side
+   *  socket id (`in-<port>` or `wire-<localName>`). */
+  wires: Array<{ consumerSocket: string; localName: string; ref: EdgeRef }>;
 }
 
-function collectStrings(value: unknown, out: string[]) {
-  if (typeof value === 'string') out.push(value);
-  else if (Array.isArray(value)) value.forEach((v) => collectStrings(v, out));
-  else if (value && typeof value === 'object') {
-    for (const v of Object.values(value as Record<string, unknown>)) collectStrings(v, out);
-  }
-}
-
-function extractRefs(node: DagNode): NodeRefs {
-  const strings: string[] = [];
-  collectStrings(node, strings);
+function extractRefs(node: DagNode, edges: WorkflowEdges | null | undefined): NodeRefs {
   const fromSteps = new Set<string>();
-  let fromInputs = false;
-  for (const s of strings) {
-    for (const m of s.matchAll(STEP_REF_RE)) {
-      const id = m[1];
-      if (id && id !== node.id) fromSteps.add(id);
+  const fromEnv = new Set<string>();
+  let fromTrigger = false;
+  const wires: NodeRefs['wires'] = [];
+  const ne: NodeEdges | undefined = edges?.[node.id];
+  if (ne?.inputs) {
+    for (const [port, ref] of Object.entries(ne.inputs)) {
+      wires.push({ consumerSocket: `in-${port}`, localName: port, ref });
+      if (ref.kind === 'node' && ref.nodeId !== node.id) fromSteps.add(ref.nodeId);
+      else if (ref.kind === 'trigger') fromTrigger = true;
+      else if (ref.kind === 'env') fromEnv.add(ref.name);
     }
-    if (INPUTS_REF_RE.test(s)) fromInputs = true;
-    INPUTS_REF_RE.lastIndex = 0;
   }
-  return { fromSteps, fromInputs };
+  if (ne?.wire) {
+    for (const [name, ref] of Object.entries(ne.wire)) {
+      wires.push({ consumerSocket: `wire-${name}`, localName: name, ref });
+      if (ref.kind === 'node' && ref.nodeId !== node.id) fromSteps.add(ref.nodeId);
+      else if (ref.kind === 'trigger') fromTrigger = true;
+      else if (ref.kind === 'env') fromEnv.add(ref.name);
+    }
+  }
+  return { fromSteps, fromTrigger, fromEnv, wires };
+}
+
+// ── per-node port resolution ────────────────────────────────────────────────
+//
+// Output port list for a real DagNode. `fixed` kinds use the static schema;
+// `subagent` reads its author-declared `output_schema`; `workflow` (nested)
+// gets a placeholder single output that's wired by hand in v2.
+
+function outputsForNode(
+  node: DagNode,
+  edges: WorkflowEdges | null | undefined,
+): Array<{ name: string; type: CatalogType }> {
+  const schema = WEB_NODE_PORTS[node.kind];
+  if (schema.outputs.mode === 'fixed') {
+    return schema.outputs.ports.map((p) => ({ name: p.name, type: p.type }));
+  }
+  if (schema.outputs.mode === 'author-declared') {
+    const declared = edges?.[node.id]?.output_schema;
+    if (!declared) return [];
+    return Object.entries(declared).map(([name, type]) => ({ name, type }));
+  }
+  // nested-workflow: render a single placeholder output. Full resolution of
+  // the called workflow's outputs lives in v2 (4h.11b/c).
+  return [{ name: 'output', type: 'object' }];
+}
+
+function inputsForNode(
+  node: DagNode,
+  edges: WorkflowEdges | null | undefined,
+): Array<{ id: string; name: string; type: CatalogType; isWire: boolean }> {
+  const schema = WEB_NODE_PORTS[node.kind];
+  const list: Array<{ id: string; name: string; type: CatalogType; isWire: boolean }> = [];
+  if (schema.inputs.mode === 'fixed') {
+    for (const p of schema.inputs.ports as ReadonlyArray<WebPortSpec>) {
+      list.push({ id: `in-${p.name}`, name: p.name, type: p.type, isWire: false });
+    }
+  }
+  // Wire-block entries are sockets too. Type for wire sockets is `text` —
+  // template fields are strings that get interpolated; the upstream type
+  // doesn't matter for compatibility at this layer (the runtime stringifies).
+  const ne = edges?.[node.id];
+  if (ne?.wire) {
+    for (const name of Object.keys(ne.wire)) {
+      list.push({ id: `wire-${name}`, name, type: 'text', isWire: true });
+    }
+  }
+  return list;
+}
+
+function triggerOutputsFor(wf: Workflow): Array<{ name: string; type: CatalogType }> {
+  // Multi-trigger intersection per D76. Today we have two trigger kinds —
+  // on_enter and callable. Compute the union when only one is active, the
+  // intersection when both are.
+  const active: Array<ReadonlyArray<{ name: string; type: CatalogType }>> = [];
+  if (wf.triggers?.on_enter?.stage_id) active.push(TRIGGER_OUTPUTS.on_enter);
+  if (wf.triggers?.callable === true) active.push(TRIGGER_OUTPUTS.callable);
+  if (active.length === 0) return [];
+  if (active.length === 1) return [...active[0]!];
+  // Intersection by name; type is stable across triggers (catalog-driven).
+  const byName = new Map(active[0]!.map((p) => [p.name, p]));
+  for (let i = 1; i < active.length; i++) {
+    const next = new Map<string, { name: string; type: CatalogType }>();
+    for (const p of active[i]!) {
+      if (byName.has(p.name)) next.set(p.name, p);
+    }
+    byName.clear();
+    for (const [k, v] of next) byName.set(k, v);
+  }
+  return [...byName.values()];
 }
 
 // ── dagre layout ────────────────────────────────────────────────────────────
 
 const NODE_W = 220;
-const NODE_H = 80;
+const NODE_MIN_H = 80;
 
-function layout(nodes: Node[], edges: Edge[]): Node[] {
+function nodeHeight(socketCount: number): number {
+  // Mirror of WorkflowNode's `bodyMinH + 20`. Keep dagre in sync so port
+  // sockets don't render outside the node bounding box.
+  const bodyH = socketCount > 0 ? socketY(socketCount - 1) + 14 : 48;
+  return Math.max(NODE_MIN_H, bodyH + 20);
+}
+
+function layout(nodes: Node<WorkflowNodeData>[], edges: Edge[]): Node<WorkflowNodeData>[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 60, marginx: 20, marginy: 20 });
+  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const n of nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
+  for (const n of nodes) {
+    const socketCount = Math.max(n.data.inputs.length, n.data.outputs.length);
+    g.setNode(n.id, { width: NODE_W, height: nodeHeight(socketCount) });
+  }
   for (const e of edges) g.setEdge(e.source, e.target);
   dagre.layout(g);
   return nodes.map((n) => {
     const pos = g.node(n.id);
+    const socketCount = Math.max(n.data.inputs.length, n.data.outputs.length);
+    const h = nodeHeight(socketCount);
     return {
       ...n,
-      position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 },
-      // anchor points so react-flow handles align with the dagre coords
+      position: { x: pos.x - NODE_W / 2, y: pos.y - h / 2 },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
     };
@@ -200,35 +349,50 @@ function layout(nodes: Node[], edges: Edge[]): Node[] {
 const TRIGGER_ON_ENTER_ID = '__trigger_on_enter';
 const TRIGGER_CALLABLE_ID = '__trigger_callable';
 
-function buildGraph(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
+function buildGraph(
+  wf: Workflow,
+  edgesMap: WorkflowEdges | null | undefined,
+): { nodes: Node<WorkflowNodeData>[]; edges: Edge[] } {
   const wfNodes = wf.nodes ?? [];
   const triggerOnEnter = wf.triggers?.on_enter?.stage_id ?? null;
   const triggerCallable = wf.triggers?.callable === true;
 
-  const nodes: Node[] = [];
+  const triggerOuts = triggerOutputsFor(wf);
+  // Single synthetic trigger root per D76 ("When this workflow runs"). When
+  // multiple trigger kinds are active, the intersection of their outputs
+  // becomes the root's socket list — but visually we collapse to one node
+  // labelled with whichever trigger is present.
+  const triggerId: string | null = triggerOnEnter
+    ? TRIGGER_ON_ENTER_ID
+    : triggerCallable
+      ? TRIGGER_CALLABLE_ID
+      : null;
+  const triggerKind: KindKey =
+    triggerOnEnter && triggerCallable
+      ? 'trigger-on-enter'
+      : triggerOnEnter
+        ? 'trigger-on-enter'
+        : 'trigger-callable';
+  const triggerSubtitle =
+    triggerOnEnter && triggerCallable
+      ? `on stage enter · also callable`
+      : triggerOnEnter
+        ? 'on stage enter'
+        : 'orchestrator-invoked';
 
-  if (triggerOnEnter) {
+  const nodes: Node<WorkflowNodeData>[] = [];
+
+  if (triggerId) {
     nodes.push({
-      id: TRIGGER_ON_ENTER_ID,
+      id: triggerId,
       type: 'workflowNode',
       position: { x: 0, y: 0 },
       data: {
-        kind: 'trigger-on-enter',
-        title: triggerOnEnter,
-        subtitle: 'on stage enter',
-      } satisfies WorkflowNodeData,
-      selectable: false,
-    });
-  }
-  if (triggerCallable) {
-    nodes.push({
-      id: TRIGGER_CALLABLE_ID,
-      type: 'workflowNode',
-      position: { x: 0, y: 0 },
-      data: {
-        kind: 'trigger-callable',
-        title: 'callable',
-        subtitle: 'orchestrator-invoked',
+        kind: triggerKind,
+        title: triggerOnEnter ?? 'callable',
+        subtitle: triggerSubtitle,
+        outputs: triggerOuts,
+        inputs: [],
       } satisfies WorkflowNodeData,
       selectable: false,
     });
@@ -244,55 +408,75 @@ function buildGraph(wf: Workflow): { nodes: Node[]; edges: Edge[] } {
         kind: n.kind,
         title: n.id,
         subtitle: nodeSubtitle(n),
+        outputs: outputsForNode(n, edgesMap),
+        inputs: inputsForNode(n, edgesMap),
       } satisfies WorkflowNodeData,
     });
   }
 
-  // de-duplicated edge set keyed `${source}->${target}`
+  // Edges keyed by `${source}:${sourceHandle}->${target}:${targetHandle}` so a
+  // single producer/consumer pair can carry multiple wires across different
+  // sockets without collisions.
   const edgeMap = new Map<string, Edge>();
-  const addEdge = (source: string, target: string, kind: 'ref' | 'dep') => {
-    const key = `${source}->${target}`;
-    const existing = edgeMap.get(key);
-    if (existing) {
-      // ref wins over dep visually (it's the more informative edge)
-      if (kind === 'ref') {
-        existing.style = { ...existing.style, strokeDasharray: undefined };
-        (existing.data as { kind: string }).kind = 'ref';
-      }
-      return;
-    }
+  const addWireEdge = (
+    source: string,
+    sourceHandle: string,
+    target: string,
+    targetHandle: string,
+  ) => {
+    const key = `${source}:${sourceHandle}->${target}:${targetHandle}`;
+    if (edgeMap.has(key)) return;
+    edgeMap.set(key, {
+      id: `e-${key}`,
+      source,
+      sourceHandle,
+      target,
+      targetHandle,
+      animated: false,
+      data: { kind: 'ref' },
+    });
+  };
+  const addDepEdge = (source: string, target: string) => {
+    const key = `${source}:__dep->${target}:__dep`;
+    if (edgeMap.has(key)) return;
     edgeMap.set(key, {
       id: `e-${key}`,
       source,
       target,
       animated: false,
-      data: { kind },
-      style: kind === 'dep' ? { strokeDasharray: '4 3', stroke: 'var(--color-muted-foreground)' } : undefined,
+      data: { kind: 'dep' },
+      style: { strokeDasharray: '4 3', stroke: 'var(--color-muted-foreground)' },
     });
   };
 
-  let inputsTriggerId: string | null = null;
-  if (triggerOnEnter) inputsTriggerId = TRIGGER_ON_ENTER_ID;
-  else if (triggerCallable) inputsTriggerId = TRIGGER_CALLABLE_ID;
-
+  // 1) Typed wires from edges map (4h structured edges).
   for (const n of wfNodes) {
-    const refs = extractRefs(n);
-    for (const upstream of refs.fromSteps) {
-      if (realIds.has(upstream)) addEdge(upstream, n.id, 'ref');
-    }
-    if (refs.fromInputs && inputsTriggerId) addEdge(inputsTriggerId, n.id, 'ref');
-    for (const dep of n.depends_on ?? []) {
-      if (realIds.has(dep)) addEdge(dep, n.id, 'dep');
+    const refs = extractRefs(n, edgesMap);
+    for (const w of refs.wires) {
+      if (w.ref.kind === 'node' && realIds.has(w.ref.nodeId)) {
+        addWireEdge(w.ref.nodeId, `out-${w.ref.output}`, n.id, w.consumerSocket);
+      } else if (w.ref.kind === 'trigger' && triggerId) {
+        addWireEdge(triggerId, `out-${w.ref.output}`, n.id, w.consumerSocket);
+      }
+      // env refs render as side-panel badges, not wires.
     }
   }
 
-  // entry-point hook: any node with no incoming edge gets connected from the
-  // first available trigger node. Skip if there's no trigger at all.
-  if (inputsTriggerId) {
+  // 2) Structural `depends_on` arrays (legacy ordering hint).
+  for (const n of wfNodes) {
+    for (const dep of n.depends_on ?? []) {
+      if (realIds.has(dep)) addDepEdge(dep, n.id);
+    }
+  }
+
+  // 3) Entry-point hook: any real node with no incoming edge gets a dep edge
+  //    from the trigger node. Keeps disconnected nodes visually tied to the
+  //    entry point until the author wires them.
+  if (triggerId) {
     const consumed = new Set<string>();
     for (const e of edgeMap.values()) consumed.add(e.target);
     for (const n of wfNodes) {
-      if (!consumed.has(n.id)) addEdge(inputsTriggerId, n.id, 'dep');
+      if (!consumed.has(n.id)) addDepEdge(triggerId, n.id);
     }
   }
 
@@ -335,13 +519,13 @@ function nodeSubtitle(n: DagNode): string | undefined {
 
 // ── component ───────────────────────────────────────────────────────────────
 
-export function WorkflowGraph({ workflow }: WorkflowGraphProps) {
+export function WorkflowGraph({ workflow, edges: edgesMap }: WorkflowGraphProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { nodes, edges } = useMemo(() => {
-    if (!workflow) return { nodes: [] as Node[], edges: [] as Edge[] };
-    return buildGraph(workflow);
-  }, [workflow]);
+    if (!workflow) return { nodes: [] as Node<WorkflowNodeData>[], edges: [] as Edge[] };
+    return buildGraph(workflow, edgesMap ?? null);
+  }, [workflow, edgesMap]);
 
   // drop the selection when the underlying graph drops the node (eg the
   // interview deleted/renamed a step). Otherwise the panel sticks open with
@@ -394,6 +578,7 @@ export function WorkflowGraph({ workflow }: WorkflowGraphProps) {
         <NodeDetailPanel
           node={selectedNode}
           workflow={workflow}
+          edges={edgesMap ?? null}
           onClose={() => setSelectedId(null)}
           onJumpToNode={(id) => setSelectedId(id)}
         />
@@ -407,17 +592,19 @@ export function WorkflowGraph({ workflow }: WorkflowGraphProps) {
 function NodeDetailPanel({
   node,
   workflow,
+  edges,
   onClose,
   onJumpToNode,
 }: {
   node: DagNode;
   workflow: Workflow;
+  edges: WorkflowEdges | null;
   onClose: () => void;
   onJumpToNode: (id: string) => void;
 }) {
   const cfg = KIND_CONFIG[node.kind];
   const Icon = cfg.icon;
-  const refs = useMemo(() => extractRefs(node), [node]);
+  const refs = useMemo(() => extractRefs(node, edges), [node, edges]);
 
   return (
     <aside className="absolute right-3 top-3 bottom-3 z-10 flex w-[320px] max-w-[60%] flex-col border border-border bg-card text-xs shadow-xl">
@@ -707,16 +894,27 @@ function ReferencesSection({
   workflow: Workflow;
   onJumpToNode: (id: string) => void;
 }) {
-  if (refs.fromSteps.size === 0 && !refs.fromInputs) return null;
+  const hasAny =
+    refs.fromSteps.size > 0 || refs.fromTrigger || refs.fromEnv.size > 0;
+  if (!hasAny) return null;
   const known = new Set(workflow.nodes.map((n) => n.id));
   return (
     <DetailRow label="reads from">
       <div className="flex flex-wrap gap-1">
-        {refs.fromInputs && (
+        {refs.fromTrigger && (
           <span className="bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-            $inputs
+            @trigger
           </span>
         )}
+        {[...refs.fromEnv].map((name) => (
+          <span
+            key={`env-${name}`}
+            className="bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground"
+            title={`Environment variable: ${name}`}
+          >
+            @env.{name}
+          </span>
+        ))}
         {[...refs.fromSteps].map((id) => {
           const exists = known.has(id);
           return (
@@ -731,7 +929,7 @@ function ReferencesSection({
               }
               title={exists ? `Jump to ${id}` : `Unknown step: ${id}`}
             >
-              ${id}.output
+              @{id}
             </button>
           );
         })}

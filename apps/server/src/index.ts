@@ -11,7 +11,12 @@ import { homedir } from 'node:os';
 
 import type { AgentDef, GlobalSettings, ULID, Workflow } from '@pc/domain';
 import { parseAgentFile, serializeAgentFile, validateAgentDef, withSettingsDefaults } from '@pc/domain';
-import { parseWorkflowText, serializeWorkflow, validateWorkflow } from '@pc/workflows';
+import {
+  parseTypedWorkflowDef,
+  parseWorkflowText,
+  serializeWorkflow,
+  validateWorkflow,
+} from '@pc/workflows';
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
@@ -1435,7 +1440,15 @@ app.get('/api/projects/:projectId/workflows/:wfId', (c) => {
   } catch {
     /* best-effort */
   }
-  return c.json({ ok: true, workflow: entry.workflow, fileName: entry.fileName, yamlText });
+  // 4h.11a — typed edges accompany the workflow def so the graph viewer can
+  // walk structured wires instead of regex-parsing legacy strings.
+  return c.json({
+    ok: true,
+    workflow: entry.workflow,
+    edges: entry.edges,
+    fileName: entry.fileName,
+    yamlText,
+  });
 });
 
 /** 4b.1: create a new project-scoped workflow YAML from a typed `def`. Mirrors
@@ -1805,16 +1818,24 @@ app.post('/api/projects/:projectId/workflow-creator/draft', async (c) => {
   }
   // Validate so the visualizer never receives a broken draft. Errors flow
   // back through the tool-call result so the model self-corrects mid-chat.
-  const validation = validateWorkflow(rawDef, { expectedId: wfId });
-  if (!validation.ok || !validation.workflow) {
+  //
+  // 4h.11a — typed-edge extraction piggy-backs on the legacy validation pass.
+  // Drafts pass through iff the legacy validator accepts the structural shape
+  // (preserves pre-4h authoring tolerance for mid-interview partial drafts);
+  // typed edges are populated when the typed-validator additionally passes,
+  // empty otherwise (so the visualizer renders sockets-without-wires, not a
+  // blanket rejection mid-conversation).
+  const validation = parseTypedWorkflowDef(rawDef, { expectedId: wfId });
+  if (!validation.workflow) {
     return c.json(
       { ok: false, error: 'invalid workflow draft', errors: validation.errors },
       400,
     );
   }
   const def: Workflow = validation.workflow;
+  const edges = validation.edges ?? {};
   runtime.setWorkflowCreatorDraft(sessionId, def);
-  broadcastTo(id, { type: 'workflow-creator-draft', sessionId, def });
+  broadcastTo(id, { type: 'workflow-creator-draft', sessionId, def, edges });
   return c.json({ ok: true });
 });
 

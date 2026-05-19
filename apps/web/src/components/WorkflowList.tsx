@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { AttachedToWorkItem, Project, ULID, Workflow } from '@/api/client';
+import type { AttachedToWorkItem, Project, ULID, Workflow, WorkflowEdges } from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
@@ -90,7 +90,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<
-    | { id: string; def: Workflow; yamlText: string }
+    | { id: string; def: Workflow; edges: WorkflowEdges; yamlText: string }
     | null
   >(null);
   const [editLoadErr, setEditLoadErr] = useState<string | null>(null);
@@ -162,8 +162,8 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   async function openEditModal(wfId: string) {
     setEditLoadErr(null);
     try {
-      const { workflow, yamlText } = await api.getWorkflow(project.id, wfId);
-      setEditing({ id: wfId, def: workflow, yamlText });
+      const { workflow, edges, yamlText } = await api.getWorkflow(project.id, wfId);
+      setEditing({ id: wfId, def: workflow, edges, yamlText });
     } catch (e) {
       setEditLoadErr(`${wfId}: ${(e as Error).message}`);
     }

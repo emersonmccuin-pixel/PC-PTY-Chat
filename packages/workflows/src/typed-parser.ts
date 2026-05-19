@@ -35,7 +35,7 @@ import type {
   Workflow,
 } from '@pc/domain';
 
-import { parseWorkflowText } from './validator.ts';
+import { parseWorkflowText, validateWorkflow } from './validator.ts';
 import type { ValidationError } from './validator.ts';
 import { validateTypedWorkflow } from './typed-validator.ts';
 
@@ -95,15 +95,6 @@ export function parseTypedWorkflowText(
   yamlText: string,
   opts: { expectedId: string },
 ): TypedValidationResult {
-  const legacy = parseWorkflowText(yamlText, opts);
-  if (!legacy.ok || !legacy.workflow) {
-    return {
-      ok: false,
-      errors: legacy.errors,
-      partialStageId: legacy.partialStageId,
-    };
-  }
-
   let raw: unknown;
   try {
     raw = yamlLoad(yamlText);
@@ -111,6 +102,37 @@ export function parseTypedWorkflowText(
     return {
       ok: false,
       errors: [{ path: '', message: `yaml parse failed: ${(err as Error).message}` }],
+    };
+  }
+  // parseWorkflowText also yaml-loads + validates; share its result so we
+  // don't double-yaml-load. The bare object path uses the same downstream
+  // helpers via parseTypedWorkflowDef.
+  const legacy = parseWorkflowText(yamlText, opts);
+  return runTypedValidation(legacy, raw);
+}
+
+/** Parse + extract typed edges from an already-parsed object (e.g. a JSON
+ *  payload from the workflow-creator-draft endpoint). Same shape as
+ *  parseTypedWorkflowText otherwise. */
+export function parseTypedWorkflowDef(
+  rawDef: unknown,
+  opts: { expectedId: string },
+): TypedValidationResult {
+  const legacy = validateWorkflow(rawDef, opts);
+  return runTypedValidation(legacy, rawDef);
+}
+
+/** Shared body for the text + def entry points. Takes the legacy validation
+ *  result + the raw parsed object, runs typed-edge extraction, and applies
+ *  the typed validator. */
+function runTypedValidation(
+  legacy: ReturnType<typeof parseWorkflowText>,
+  raw: unknown,
+): TypedValidationResult {
+  if (!legacy.ok || !legacy.workflow) {
+    return {
+      ok: false,
+      errors: legacy.errors,
       partialStageId: legacy.partialStageId,
     };
   }

@@ -579,11 +579,21 @@ export const api = {
 
   // ── Workflows (4e) ────────────────────────────────────────────────────
   /** Full Workflow def for the drawer's Definition tab + raw YAML text for
-   *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. */
+   *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. 4h.11a — also returns
+   *  the typed-edge map the graph viewer needs to render structured wires. */
   getWorkflow: (projectId: ULID, wfId: string) =>
-    getJson<{ ok: true; workflow: Workflow; fileName: string; yamlText?: string }>(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
-    ).then((r) => ({ workflow: r.workflow, fileName: r.fileName, yamlText: r.yamlText ?? '' })),
+    getJson<{
+      ok: true;
+      workflow: Workflow;
+      edges?: WorkflowEdges;
+      fileName: string;
+      yamlText?: string;
+    }>(`/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`).then((r) => ({
+      workflow: r.workflow,
+      edges: r.edges ?? {},
+      fileName: r.fileName,
+      yamlText: r.yamlText ?? '',
+    })),
 
   // ── Workflow lifecycle (4f.2) ─────────────────────────────────────────
   /** Edit an existing workflow in place. Used by both the conversational
@@ -900,6 +910,37 @@ async function postJsonMethod<T>(
 // policy). The shapes the server hands us via `workflow-creator-draft` and the
 // future GET-workflow endpoints arrive already validated, with each node
 // tagged via the `kind` discriminator the validator adds post-parse.
+
+// 4h.11a — typed-edge mirror. Same shapes as packages/domain/src/workflow-
+// catalog.ts (CatalogType) + workflow-edges.ts (EdgeRef / NodeEdges). Authors
+// never invent CatalogType values; the union is closed-world.
+
+export type CatalogType =
+  | 'ulid'
+  | 'string'
+  | 'text'
+  | 'int'
+  | 'bool'
+  | 'object'
+  | 'array';
+
+/** Where a typed-edge value originates. Compact YAML form is `@nodeId.output`
+ *  / `@trigger.X` / `@env.NAME`; the structured forms below are what the
+ *  server hands us after parse. */
+export type EdgeRef =
+  | { kind: 'node'; nodeId: string; output: string }
+  | { kind: 'trigger'; output: string }
+  | { kind: 'env'; name: string };
+
+export interface NodeEdges {
+  inputs?: Record<string, EdgeRef>;
+  wire?: Record<string, EdgeRef>;
+  output_schema?: Record<string, CatalogType>;
+}
+
+/** Per-workflow typed-edge map. Keyed by node id; missing keys mean the node
+ *  has no typed wires (only literal body fields). */
+export type WorkflowEdges = Record<string, NodeEdges>;
 
 export type WorkflowTriggerRule =
   | 'all_success'

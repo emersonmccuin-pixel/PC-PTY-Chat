@@ -17,7 +17,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api, type Workflow, type WorkflowRun, type NodeOutput } from '@/api/client';
+import {
+  api,
+  type NodeOutput,
+  type Workflow,
+  type WorkflowEdges,
+  type WorkflowRun,
+} from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
 import { WorkflowGraph } from '../WorkflowGraph';
@@ -42,6 +48,7 @@ export function WorkflowDrawer({ projectId, events }: WorkflowDrawerProps) {
 
   const [tab, setTab] = useState<TabId>('runs');
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const [wfEdges, setWfEdges] = useState<WorkflowEdges | null>(null);
   const [wfErr, setWfErr] = useState<string | null>(null);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [runsErr, setRunsErr] = useState<string | null>(null);
@@ -57,6 +64,7 @@ export function WorkflowDrawer({ projectId, events }: WorkflowDrawerProps) {
   useEffect(() => {
     if (!workflowId) {
       setWorkflow(null);
+      setWfEdges(null);
       setWfErr(null);
       setRuns([]);
       setRunsErr(null);
@@ -70,6 +78,7 @@ export function WorkflowDrawer({ projectId, events }: WorkflowDrawerProps) {
       .then((r) => {
         if (cancelled) return;
         setWorkflow(r.workflow);
+        setWfEdges(r.edges);
       })
       .catch((e: unknown) => {
         if (!cancelled) setWfErr((e as Error).message);
@@ -209,7 +218,7 @@ export function WorkflowDrawer({ projectId, events }: WorkflowDrawerProps) {
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {tab === 'definition' ? (
-            <DefinitionBody workflow={workflow} error={wfErr} />
+            <DefinitionBody workflow={workflow} edges={wfEdges} error={wfErr} />
           ) : runId ? (
             <RunDetailBody
               projectId={projectId}
@@ -241,7 +250,15 @@ function triggerHintFromWorkflow(wf: Workflow): string {
 
 // ── Definition tab ─────────────────────────────────────────────────────────
 
-function DefinitionBody({ workflow, error }: { workflow: Workflow | null; error: string | null }) {
+function DefinitionBody({
+  workflow,
+  edges,
+  error,
+}: {
+  workflow: Workflow | null;
+  edges: WorkflowEdges | null;
+  error: string | null;
+}) {
   if (error) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-sm text-destructive">
@@ -258,7 +275,7 @@ function DefinitionBody({ workflow, error }: { workflow: Workflow | null; error:
   }
   return (
     <div className="h-full w-full">
-      <WorkflowGraph workflow={workflow} />
+      <WorkflowGraph workflow={workflow} edges={edges} />
     </div>
   );
 }

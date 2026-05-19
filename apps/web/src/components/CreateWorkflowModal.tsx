@@ -32,7 +32,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
 import { api, WorkflowValidationError } from '@/api/client';
-import type { Workflow } from '@/api/client';
+import type { Workflow, WorkflowEdges } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { AskCard } from './AskCard';
 import { WorkflowGraph } from './WorkflowGraph';
@@ -40,6 +40,9 @@ import { WorkflowGraph } from './WorkflowGraph';
 interface EditingWorkflow {
   id: string;
   def: Workflow;
+  /** Typed-edge map for the existing workflow (4h.11a). Pre-populates the
+   *  visualizer so wires render before the model's first acknowledgment. */
+  edges?: WorkflowEdges;
   yamlText: string;
 }
 
@@ -108,6 +111,9 @@ export function CreateWorkflowModal({
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draftDef, setDraftDef] = useState<Workflow | null>(editingWorkflow?.def ?? null);
+  const [draftEdges, setDraftEdges] = useState<WorkflowEdges | null>(
+    editingWorkflow?.edges ?? null,
+  );
   const [tab, setTab] = useState<TabId>('conversation');
 
   // Raw-YAML tab state (4f.2b — folds in the prior EditWorkflowModal surface).
@@ -143,6 +149,7 @@ export function CreateWorkflowModal({
     // Edit-mode: pre-populate draft so the visualizer shows the existing
     // shape immediately, before the model's first acknowledgment.
     setDraftDef(editingRef.current?.def ?? null);
+    setDraftEdges(editingRef.current?.edges ?? null);
     handoffSentRef.current = false;
     processedRef.current = eventsRef.current.length;
     api
@@ -217,11 +224,17 @@ export function CreateWorkflowModal({
       } else if (env.type === 'workflow-creator-exit') {
         setState('exited');
       } else if (env.type === 'workflow-creator-draft') {
-        const d = env as { sessionId?: string; def?: Workflow };
+        const d = env as { sessionId?: string; def?: Workflow; edges?: WorkflowEdges };
         // Filter by sessionId — drop drafts from any other session that might
         // still be broadcasting on this project's WS.
         if (sessionId && d.sessionId && d.sessionId !== sessionId) continue;
-        if (d.def && typeof d.def === 'object') setDraftDef(d.def);
+        if (d.def && typeof d.def === 'object') {
+          setDraftDef(d.def);
+          // 4h.11a — typed edges piggy-back on the draft broadcast; empty
+          // when the typed-validator rejects but legacy passes (so the
+          // visualizer still renders the structural shape).
+          setDraftEdges(d.edges ?? {});
+        }
       } else if (env.type === 'ask') {
         // Hooks forward `sessionId` (PC_SESSION_ID env) alongside the ask
         // payload. Drop asks whose sessionId doesn't match ours — they belong
@@ -439,7 +452,7 @@ export function CreateWorkflowModal({
             </Panel>
             <Separator className="w-px bg-border transition-colors hover:bg-primary" />
             <Panel id="graph" defaultSize="60%" minSize="32%">
-              <WorkflowGraph workflow={draftDef} />
+              <WorkflowGraph workflow={draftDef} edges={draftEdges} />
             </Panel>
           </Group>
         )}

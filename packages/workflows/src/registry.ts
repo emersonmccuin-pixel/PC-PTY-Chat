@@ -6,16 +6,20 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, extname, join } from 'node:path';
-import { load as yamlLoad } from 'js-yaml';
 
-import type { Workflow } from '@pc/domain';
+import type { NodeEdges, Workflow } from '@pc/domain';
 
-import { validateWorkflow, type ValidationError } from './validator.ts';
+import { parseTypedWorkflowText } from './typed-parser.ts';
+import { type ValidationError } from './validator.ts';
 
 export interface ValidWorkflowEntry {
   filePath: string;
   fileName: string;
   workflow: Workflow;
+  /** Per-node typed-edge data (4h). Keyed by node id. Empty object when the
+   *  workflow declares no typed wires (rare post-migration; subagents always
+   *  carry at least `output_schema`). */
+  edges: Readonly<Record<string, NodeEdges>>;
   /** Raw YAML text — snapshotted into WorkflowRun at dispatch. */
   yamlText: string;
 }
@@ -66,26 +70,20 @@ export class WorkflowRegistry {
         continue;
       }
 
-      let parsed: unknown;
-      try {
-        parsed = yamlLoad(yamlText);
-      } catch (err) {
-        next.invalid.push({
+      const result = parseTypedWorkflowText(yamlText, { expectedId });
+      if (result.ok && result.workflow) {
+        next.valid.push({
           filePath,
           fileName,
-          errors: [{ path: '', message: `yaml parse failed: ${(err as Error).message}` }],
+          workflow: result.workflow,
+          edges: result.edges ?? {},
+          yamlText,
         });
-        continue;
-      }
-
-      const result = validateWorkflow(parsed, { expectedId });
-      if (result.ok && result.workflow) {
-        next.valid.push({ filePath, fileName, workflow: result.workflow, yamlText });
       } else {
         next.invalid.push({
           filePath,
           fileName,
-          errors: result.errors,
+          errors: [...result.errors],
           partialStageId: result.partialStageId,
         });
       }

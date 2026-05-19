@@ -8,7 +8,7 @@ export type {
   StageMatch,
   ValidWorkflowEntry,
 } from './registry.ts';
-export { parseTypedWorkflowText } from './typed-parser.ts';
+export { parseTypedWorkflowDef, parseTypedWorkflowText } from './typed-parser.ts';
 export type { TypedValidationResult, TypedWorkflow } from './typed-parser.ts';
 export { validateTypedWorkflow } from './typed-validator.ts';
 export { migrateWorkflowText } from './typed-migration.ts';
