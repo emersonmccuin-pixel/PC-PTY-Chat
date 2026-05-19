@@ -188,27 +188,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           }
         >
           {registry?.valid.map((wf) => (
-            <div
-              key={wf.fileName}
-              className="flex items-center justify-between border border-border bg-card px-3 py-2 text-sm"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-foreground">{wf.id}</div>
-                <div className="text-xs text-muted-foreground">{wf.fileName}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {wf.stageId && (
-                  <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    on_enter: {wf.stageId}
-                  </span>
-                )}
-                {wf.callable && (
-                  <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    callable
-                  </span>
-                )}
-              </div>
-            </div>
+            <WorkflowRow key={wf.fileName} wf={wf} runs={runs} />
           ))}
           {registry?.invalid.map((wf) => (
             <div
@@ -381,6 +361,89 @@ function ApprovalRow({
       </div>
     </div>
   );
+}
+
+/** Section 4d / D45 throwaway scaffold — replaced by Section 4e Runs view.
+ *  Per-workflow row with a red "✕ N failed (24h)" pill when there are recent
+ *  failed runs; click to expand the last 5 of them with timestamps + reason.
+ *  Failures from background-spawned subagents would otherwise be invisible
+ *  once D44 silences chat for background dispatches. */
+function WorkflowRow({
+  wf,
+  runs,
+}: {
+  wf: { id: string; stageId: string | null; callable: boolean; fileName: string };
+  runs: WorkflowRun[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const recentFailures = recentFailedRuns(runs, wf.id);
+  return (
+    <div className="border border-border bg-card text-sm">
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-foreground">{wf.id}</div>
+          <div className="text-xs text-muted-foreground">{wf.fileName}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {recentFailures.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="inline-flex items-center gap-1 bg-destructive px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground hover:bg-destructive/90"
+              title="Recent failed runs (last 24h)"
+            >
+              <span aria-hidden="true">✕</span>
+              {recentFailures.length} failed (24h)
+              <span aria-hidden="true">{expanded ? '▴' : '▾'}</span>
+            </button>
+          )}
+          {wf.stageId && (
+            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              on_enter: {wf.stageId}
+            </span>
+          )}
+          {wf.callable && (
+            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              callable
+            </span>
+          )}
+        </div>
+      </div>
+      {expanded && recentFailures.length > 0 && (
+        <div className="border-t border-destructive/40 bg-destructive/5 px-3 py-2">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+            last {Math.min(5, recentFailures.length)} failed run{recentFailures.length === 1 ? '' : 's'}
+          </div>
+          <ul className="flex flex-col gap-1">
+            {recentFailures.slice(0, 5).map((r) => (
+              <li key={r.id} className="text-xs">
+                <span className="font-mono text-muted-foreground">
+                  {new Date(r.startedAt).toLocaleString()} · {r.id.slice(-8)}
+                </span>
+                {r.lastReason && (
+                  <span className="ml-2 text-foreground">{r.lastReason}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function recentFailedRuns(runs: WorkflowRun[], workflowId: string): WorkflowRun[] {
+  const cutoffMs = Date.now() - ONE_DAY_MS;
+  const matches = runs.filter((r) => {
+    if (r.workflowId !== workflowId) return false;
+    if (r.status !== 'failed') return false;
+    const startMs = Date.parse(r.startedAt);
+    return Number.isFinite(startMs) && startMs >= cutoffMs;
+  });
+  matches.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  return matches;
 }
 
 function RunRow({ run }: { run: WorkflowRun }) {
