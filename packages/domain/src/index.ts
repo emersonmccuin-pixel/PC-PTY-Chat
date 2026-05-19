@@ -108,6 +108,13 @@ export {
   getCatalogEntry,
   isCatalogName,
 } from './workflow-catalog.ts';
+export type {
+  NodePortSchema,
+  PortShape,
+  PortSpec,
+  TemplateFieldSpec,
+} from './workflow-ports.ts';
+export { NODE_PORT_SCHEMAS, getPortSchema } from './workflow-ports.ts';
 export {
   AGENT_BODY_VARIABLES,
   AgentBodyTemplateError,
