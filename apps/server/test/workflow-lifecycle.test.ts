@@ -32,9 +32,7 @@ const {
   createWorkItem,
   getWorkItem,
 } = await import('@pc/db');
-const { WorkflowRuntime, WorkflowMissingInputsError } = await import(
-  '../src/services/workflow-runtime.ts'
-);
+const { WorkflowRuntime } = await import('../src/services/workflow-runtime.ts');
 const { WorkItemService } = await import('../src/services/work-item.ts');
 const {
   WorkflowRegistry,
@@ -659,12 +657,10 @@ test('4f.3 runtime: unknown workflow id throws "unknown workflow"', async () => 
 
 test('4f.3 runtime: fireManually on a locked work item rejects', async () => {
   const f = mkFixture([{ name: 'manual-with-inputs', yaml: MANUAL_OPT_WITH_INPUTS_YAML }]);
-  // First fire locks the card. Supply `customerName` to satisfy 4f.4's
-  // fire-time required-inputs check (the workflow declares it as required).
+  // First fire locks the card.
   await f.runtime.fireManually({
     workflowId: 'manual-with-inputs',
     workItemId: f.workItemId,
-    inputs: { customerName: 'Acme Co' },
   });
   // Second fire while the lock is still in place must reject.
   await assert.rejects(
@@ -672,7 +668,6 @@ test('4f.3 runtime: fireManually on a locked work item rejects', async () => {
       f.runtime.fireManually({
         workflowId: 'manual-with-inputs',
         workItemId: f.workItemId,
-        inputs: { customerName: 'Acme Co' },
       }),
     /is locked: workflow in progress/,
   );
@@ -805,217 +800,4 @@ test('4f.3 HTTP route: disabled workflow → 409', async () => {
   assert.equal(res.status, 409);
   const json = (await res.json()) as { error: string };
   assert.match(json.error, /is disabled/);
-});
-
-// ── 4f.4 / D71 fire-time required-inputs hard-fail ─────────────────────────
-
-const REQUIRED_INPUTS_CALLABLE_YAML = `id: needs-customer
-triggers:
-  callable: true
-worktree: none
-inputs:
-  customerName: string
-nodes:
-  - id: stop
-    cancel: noop
-`;
-
-const REQUIRED_INPUTS_MANUAL_YAML = `id: manual-needs-customer
-attached_to_work_item: optional
-triggers:
-  callable: true
-worktree: none
-inputs:
-  customerName: string
-nodes:
-  - id: stop
-    cancel: noop
-`;
-
-// on_enter workflow that declares an input no fire-path can ever supply.
-// Tests the "drag-fire creates a failed run + lastReason" path.
-const ON_ENTER_NEEDS_EXTRA_YAML = `id: on-enter-needs-extra
-attached_to_work_item: optional
-triggers:
-  on_enter:
-    stage_id: review
-worktree: none
-inputs:
-  workItemId: ULID
-  stageId: string
-  customerName: string
-nodes:
-  - id: stop
-    cancel: noop
-`;
-
-test('4f.4 / D71 runtime: runWorkflow with missing declared input throws WorkflowMissingInputsError', async () => {
-  const f = mkFixture([{ name: 'needs-customer', yaml: REQUIRED_INPUTS_CALLABLE_YAML }]);
-  await assert.rejects(
-    () => f.runtime.runWorkflow('needs-customer', {}),
-    (err: unknown) => {
-      assert.ok(err instanceof WorkflowMissingInputsError, 'must throw the typed error class');
-      assert.equal(err.workflowId, 'needs-customer');
-      assert.deepEqual(err.missing, ['customerName']);
-      assert.match(err.message, /missing required input/);
-      return true;
-    },
-  );
-});
-
-test('4f.4 / D71 runtime: runWorkflow with empty-string input value treats as missing', async () => {
-  const f = mkFixture([{ name: 'needs-customer', yaml: REQUIRED_INPUTS_CALLABLE_YAML }]);
-  await assert.rejects(
-    () => f.runtime.runWorkflow('needs-customer', { customerName: '   ' }),
-    (err: unknown) => {
-      assert.ok(err instanceof WorkflowMissingInputsError);
-      assert.deepEqual(err.missing, ['customerName']);
-      return true;
-    },
-  );
-});
-
-test('4f.4 / D71 runtime: runWorkflow with all declared inputs supplied succeeds', async () => {
-  const f = mkFixture([{ name: 'needs-customer', yaml: REQUIRED_INPUTS_CALLABLE_YAML }]);
-  const run = await f.runtime.runWorkflow('needs-customer', { customerName: 'Acme Co' });
-  assert.equal(run.workflowId, 'needs-customer');
-  assert.deepEqual(run.inputs, { customerName: 'Acme Co' });
-});
-
-test('4f.4 / D71 runtime: fireManually with missing declared input throws WorkflowMissingInputsError', async () => {
-  const f = mkFixture([
-    { name: 'manual-needs-customer', yaml: REQUIRED_INPUTS_MANUAL_YAML },
-  ]);
-  await assert.rejects(
-    () =>
-      f.runtime.fireManually({
-        workflowId: 'manual-needs-customer',
-        workItemId: f.workItemId,
-      }),
-    (err: unknown) => {
-      assert.ok(err instanceof WorkflowMissingInputsError);
-      assert.deepEqual(err.missing, ['customerName']);
-      return true;
-    },
-  );
-  // No card lock when fire-time validation rejects.
-  const wi = getWorkItem(f.workItemId);
-  assert.equal(wi?.status, 'pending', 'work item must not have been locked');
-});
-
-test('4f.4 / D71 runtime: fireManually with all declared inputs supplied succeeds + locks the card', async () => {
-  const f = mkFixture([
-    { name: 'manual-needs-customer', yaml: REQUIRED_INPUTS_MANUAL_YAML },
-  ]);
-  const run = await f.runtime.fireManually({
-    workflowId: 'manual-needs-customer',
-    workItemId: f.workItemId,
-    inputs: { customerName: 'Acme Co' },
-  });
-  assert.deepEqual(run.inputs, { customerName: 'Acme Co' });
-  const wi = getWorkItem(f.workItemId);
-  assert.equal(wi?.status, 'in-progress');
-});
-
-test('4f.4 / D71 runtime: drag-fire with on_enter + unfillable declared input creates a failed run + lastReason; card flips to blocked', async () => {
-  const f = mkFixture([
-    { name: 'on-enter-needs-extra', yaml: ON_ENTER_NEEDS_EXTRA_YAML },
-  ]);
-  // Drag the card into review — should trigger on_enter, fail-pre-tick, and
-  // leave a visible failed run for the user.
-  const moved = await f.runtime.moveAndFire({
-    id: f.workItemId,
-    toStage: 'review',
-    expectedVersion: 1,
-  });
-  assert.equal(moved.stageId, 'review', 'card move still commits');
-  // Card flips through in-progress → blocked via unlockWorkItem after the
-  // failed run terminates.
-  assert.equal(moved.status, 'blocked');
-
-  const runs = f.runtime.readRunsForProject();
-  assert.equal(runs.length, 1, 'exactly one run row created and immediately failed');
-  const run = runs[0]!;
-  assert.equal(run.status, 'failed');
-  assert.equal(run.workflowId, 'on-enter-needs-extra');
-  assert.match(
-    run.lastReason ?? '',
-    /This workflow needs an input named "customerName" — it wasn't supplied\./,
-  );
-});
-
-test('4f.4 / D71 HTTP route (manual-fire): missing declared input → 400 with structured missing array', async () => {
-  const { Hono } = await import('hono');
-  const f = mkFixture([
-    { name: 'manual-needs-customer', yaml: REQUIRED_INPUTS_MANUAL_YAML },
-  ]);
-  const app = new Hono();
-  // Mirror the production route's error mapping for the missing-inputs case.
-  app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
-    const wfId = c.req.param('wfId');
-    const body = await c.req
-      .json<{ workItemId?: string; inputs?: Record<string, unknown> }>()
-      .catch(() => ({}) as { workItemId?: string; inputs?: Record<string, unknown> });
-    try {
-      const run = await f.runtime.fireManually({
-        workflowId: wfId,
-        ...(body.workItemId ? { workItemId: body.workItemId } : {}),
-        ...(body.inputs ? { inputs: body.inputs } : {}),
-      });
-      return c.json({ ok: true, runId: run.id });
-    } catch (err) {
-      if (err instanceof WorkflowMissingInputsError) {
-        return c.json({ ok: false, error: err.message, missing: err.missing }, 400);
-      }
-      return c.json({ ok: false, error: (err as Error).message }, 500);
-    }
-  });
-  const res = await app.fetch(
-    new Request(
-      `http://test.local/api/projects/${f.project.id}/workflows/manual-needs-customer/fire`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workItemId: f.workItemId }),
-      },
-    ),
-  );
-  assert.equal(res.status, 400);
-  const json = (await res.json()) as { error: string; missing: string[] };
-  assert.match(json.error, /missing required input/);
-  assert.deepEqual(json.missing, ['customerName']);
-});
-
-test('4f.4 / D71 HTTP route (pc_run_workflow): missing declared input → 400 with structured missing array', async () => {
-  const { Hono } = await import('hono');
-  const f = mkFixture([{ name: 'needs-customer', yaml: REQUIRED_INPUTS_CALLABLE_YAML }]);
-  const app = new Hono();
-  app.post('/api/projects/:projectId/workflow/run', async (c) => {
-    const body = await c.req.json<{ name?: string; input?: unknown }>();
-    const name = typeof body.name === 'string' ? body.name : '';
-    const inputs =
-      body.input && typeof body.input === 'object' && !Array.isArray(body.input)
-        ? (body.input as Record<string, unknown>)
-        : undefined;
-    try {
-      const run = await f.runtime.runWorkflow(name, inputs);
-      return c.json({ ok: true, run });
-    } catch (err) {
-      if (err instanceof WorkflowMissingInputsError) {
-        return c.json({ ok: false, error: err.message, missing: err.missing }, 400);
-      }
-      return c.json({ ok: false, error: (err as Error).message }, 500);
-    }
-  });
-  const res = await app.fetch(
-    new Request(`http://test.local/api/projects/${f.project.id}/workflow/run`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'needs-customer', input: {} }),
-    }),
-  );
-  assert.equal(res.status, 400);
-  const json = (await res.json()) as { error: string; missing: string[] };
-  assert.match(json.error, /missing required input/);
-  assert.deepEqual(json.missing, ['customerName']);
 });

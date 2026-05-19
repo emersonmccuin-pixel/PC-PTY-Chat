@@ -58,7 +58,6 @@ import { ProjectCreate, type CreateProjectMode } from './services/project-create
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
-import { WorkflowMissingInputsError } from './services/workflow-runtime.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -1765,11 +1764,8 @@ app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
     });
     return c.json({ ok: true, runId: run.id });
   } catch (err) {
-    // Map runtime error shapes to HTTP codes the modal can surface cleanly.
-    if (err instanceof WorkflowMissingInputsError) {
-      return c.json({ ok: false, error: err.message, missing: err.missing }, 400);
-    }
     const msg = (err as Error).message;
+    // Map runtime error shapes to HTTP codes the modal can surface cleanly.
     if (/^unknown workflow:|^no valid workflow|^ambiguous workflow id/.test(msg)) {
       return c.json({ ok: false, error: msg }, 404);
     }
@@ -2024,12 +2020,6 @@ app.post('/api/projects/:projectId/workflow/run', async (c) => {
     const run = await runtime.workflowRuntime().runWorkflow(name, inputs);
     return c.json({ ok: true, run });
   } catch (err) {
-    // 4f.4 / D71 — missing declared inputs surface as 400 with structured
-    // `missing` array so the orchestrator can name the specific keys it
-    // needs to supply when it retries.
-    if (err instanceof WorkflowMissingInputsError) {
-      return c.json({ ok: false, error: err.message, missing: err.missing }, 400);
-    }
     const msg = (err as Error).message;
     // 4f / D62 — a disabled workflow surfaces as a 409 (not 500) so the
     // orchestrator can react with the right conversational turn ("that
