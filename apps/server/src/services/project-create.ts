@@ -6,13 +6,16 @@
 //   2. Resolve a unique slug from the name.
 //   3. Mint a ULID up-front so the scaffold pass (which embeds the id into
 //      hooks + .mcp.json) and the DB row share an identity.
-//   4. `git init -b main` in the project folder.
+//   4. `git init -b main` in the project folder (skipped for attach-to-git).
 //   5. If `init-in-place` AND the folder had pre-existing files: commit them
 //      first as `Initial import` so the user can `git diff` the next commit
 //      to see exactly what PC added.
-//   6. Scaffold (templates rendered into the folder).
+//   6. Scaffold (templates rendered into the folder). attach-to-git skips
+//      README to preserve the user's existing one.
 //   7. Commit the scaffold as `Initial commit` (fresh folder) or
-//      `Add Project Companion scaffold` (in-place w/ pre-existing files).
+//      `Add Project Companion scaffold` (in-place w/ pre-existing files or
+//      attach-to-git — only the PC paths get staged, not the user's other
+//      uncommitted changes).
 //   8. Insert the DB row with the pre-minted id.
 //   9. Register the runtime in the ProjectRegistry.
 //
@@ -39,7 +42,7 @@ import type { ProjectScaffold, ProjectScaffoldTarget } from './project-scaffold.
 
 const exec = promisify(execFile);
 
-export type CreateProjectMode = 'init-empty' | 'init-in-place';
+export type CreateProjectMode = 'init-empty' | 'init-in-place' | 'attach-to-git';
 
 export interface CreateProjectFlowInput {
   name: string;
@@ -54,6 +57,16 @@ const DEFAULT_STAGES: Stage[] = [
   { id: 'done', name: 'Done', order: 2 },
 ];
 
+/** Paths the scaffold writes; used to stage only PC's own files in
+ *  attach-to-git so the user's other uncommitted changes are left alone.
+ *  README.md is intentionally absent — attach-to-git skips it to preserve
+ *  the existing repo's README. */
+const SCAFFOLD_PATHS_FOR_COMMIT = [
+  '.mcp.json',
+  '.claude',
+  '.project-companion',
+];
+
 export class ProjectCreate {
   constructor(
     private readonly scaffold: ProjectScaffold,
@@ -63,14 +76,40 @@ export class ProjectCreate {
   async create(input: CreateProjectFlowInput): Promise<Project> {
     const name = (input.name ?? '').trim();
     if (!name) throw new Error('name required');
-    if (input.mode !== 'init-empty' && input.mode !== 'init-in-place') {
+    if (
+      input.mode !== 'init-empty' &&
+      input.mode !== 'init-in-place' &&
+      input.mode !== 'attach-to-git'
+    ) {
       throw new Error(`invalid mode: ${input.mode}`);
     }
     const folderPath = resolve(input.folderPath);
 
     mkdirSync(folderPath, { recursive: true });
-    if (existsSync(resolve(folderPath, '.git'))) {
-      throw new Error(`folder is already a git repo: ${folderPath}`);
+
+    const folderIsGitRepo = existsSync(resolve(folderPath, '.git'));
+    if (input.mode === 'attach-to-git' && !folderIsGitRepo) {
+      throw new Error(
+        `folder is not a git repo: ${folderPath} — use mode 'init-empty' or 'init-in-place'`,
+      );
+    }
+    if (input.mode !== 'attach-to-git' && folderIsGitRepo) {
+      throw new Error(
+        `folder is already a git repo: ${folderPath} — use mode 'attach-to-git' to adopt it`,
+      );
+    }
+
+    if (input.mode === 'attach-to-git') {
+      if (existsSync(resolve(folderPath, '.project-companion'))) {
+        throw new Error(
+          `${folderPath}/.project-companion already exists — remove it first to re-adopt this repo`,
+        );
+      }
+      if (existsSync(resolve(folderPath, '.mcp.json'))) {
+        throw new Error(
+          `${folderPath}/.mcp.json already exists — back it up + remove it first; PC needs to write its own`,
+        );
+      }
     }
 
     const filesBefore = readdirSync(folderPath).filter((f) => f !== '.git');
@@ -83,7 +122,9 @@ export class ProjectCreate {
     const slug = this.uniqueSlug(name);
     const id = newId();
 
-    await exec('git', ['init', '-b', 'main'], { cwd: folderPath });
+    if (input.mode !== 'attach-to-git') {
+      await exec('git', ['init', '-b', 'main'], { cwd: folderPath });
+    }
 
     const hadExistingFiles = filesBefore.length > 0;
     if (input.mode === 'init-in-place' && hadExistingFiles) {
@@ -97,10 +138,23 @@ export class ProjectCreate {
       projectSlug: slug,
       projectName: name,
     };
-    this.scaffold.writeAll(target);
+    if (input.mode === 'attach-to-git') {
+      this.scaffold.writeWithoutReadme(target);
+    } else {
+      this.scaffold.writeAll(target);
+    }
 
-    await exec('git', ['add', '.'], { cwd: folderPath });
-    const scaffoldMsg = hadExistingFiles ? 'Add Project Companion scaffold' : 'Initial commit';
+    if (input.mode === 'attach-to-git') {
+      // Stage ONLY PC's paths so the user's other uncommitted changes don't
+      // get swept into our commit.
+      await exec('git', ['add', '--', ...SCAFFOLD_PATHS_FOR_COMMIT], { cwd: folderPath });
+    } else {
+      await exec('git', ['add', '.'], { cwd: folderPath });
+    }
+    const scaffoldMsg =
+      input.mode === 'attach-to-git' || hadExistingFiles
+        ? 'Add Project Companion scaffold'
+        : 'Initial commit';
     await exec('git', ['commit', '-m', scaffoldMsg], { cwd: folderPath });
 
     const project = createProject({

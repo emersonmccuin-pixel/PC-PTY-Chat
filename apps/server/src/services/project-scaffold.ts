@@ -55,6 +55,15 @@ export class ProjectScaffold {
     this.writeReadme(target);
   }
 
+  /** Like writeAll but skips README.md — used by attach-to-git so the user's
+   *  existing project README isn't clobbered. */
+  writeWithoutReadme(target: ProjectScaffoldTarget): void {
+    this.writeConfigs(target);
+    this.writeHooks(target);
+    this.writeWorkflowSeeds(target);
+    this.writeOrchestratorPrompt(target);
+  }
+
   /**
    * Write the two generated configs into the project folder:
    *  - `<folder>/.mcp.json` from `templates/.mcp.template.json`

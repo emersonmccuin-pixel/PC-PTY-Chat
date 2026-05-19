@@ -171,9 +171,11 @@ export interface FolderProbe {
   hasFiles: boolean;
   fileCount: number;
   isGitRepo: boolean;
+  hasPcScaffold: boolean;
+  hasMcpJson: boolean;
 }
 
-export type CreateProjectMode = 'init-empty' | 'init-in-place';
+export type CreateProjectMode = 'init-empty' | 'init-in-place' | 'attach-to-git';
 
 // ── Global settings (Q10 envelope) ─────────────────────────────────────────
 

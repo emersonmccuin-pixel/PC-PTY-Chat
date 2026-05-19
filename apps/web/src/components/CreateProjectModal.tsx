@@ -224,9 +224,26 @@ function ProbePreview({ state }: { state: ProbeState }) {
     return <div className="text-xs text-destructive">Path is not a directory.</div>;
   }
   if (probe.isGitRepo) {
+    if (probe.hasPcScaffold) {
+      return (
+        <div className="text-xs text-destructive">
+          A <code className="bg-muted px-1">.project-companion/</code> folder already
+          exists here. Remove it first to re-adopt this repo.
+        </div>
+      );
+    }
+    if (probe.hasMcpJson) {
+      return (
+        <div className="text-xs text-destructive">
+          An <code className="bg-muted px-1">.mcp.json</code> file already exists
+          here. Back it up + remove it first — PC needs to write its own.
+        </div>
+      );
+    }
     return (
-      <div className="text-xs text-destructive">
-        Already a git repo — cannot create a project here.
+      <div className="text-xs text-success">
+        Existing git repo — will add the Project Companion scaffold as one new
+        commit. Your code + history stay untouched.
       </div>
     );
   }
@@ -249,6 +266,10 @@ function ProbePreview({ state }: { state: ProbeState }) {
 function derivedMode(state: ProbeState): CreateProjectMode | null {
   if (state.status !== 'ready') return null;
   const p = state.probe;
-  if (!p.exists || !p.isDirectory || p.isGitRepo) return null;
+  if (!p.exists || !p.isDirectory) return null;
+  if (p.isGitRepo) {
+    if (p.hasPcScaffold || p.hasMcpJson) return null;
+    return 'attach-to-git';
+  }
   return p.hasFiles ? 'init-in-place' : 'init-empty';
 }

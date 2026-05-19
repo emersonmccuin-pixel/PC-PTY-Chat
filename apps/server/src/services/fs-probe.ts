@@ -22,6 +22,10 @@ export interface FolderProbeResult {
   fileCount: number;
   /** Whether `<path>/.git` is present (dir or file). */
   isGitRepo: boolean;
+  /** Whether `<path>/.project-companion` already exists — blocks attach. */
+  hasPcScaffold: boolean;
+  /** Whether `<path>/.mcp.json` already exists — blocks attach. */
+  hasMcpJson: boolean;
 }
 
 export function probeFolder(input: string): FolderProbeResult {
@@ -32,16 +36,36 @@ export function probeFolder(input: string): FolderProbeResult {
   const path = resolve(expanded);
 
   if (!existsSync(path)) {
-    return { path, exists: false, isDirectory: false, hasFiles: false, fileCount: 0, isGitRepo: false };
+    return {
+      path,
+      exists: false,
+      isDirectory: false,
+      hasFiles: false,
+      fileCount: 0,
+      isGitRepo: false,
+      hasPcScaffold: false,
+      hasMcpJson: false,
+    };
   }
 
   const st = statSync(path);
   if (!st.isDirectory()) {
-    return { path, exists: true, isDirectory: false, hasFiles: false, fileCount: 0, isGitRepo: false };
+    return {
+      path,
+      exists: true,
+      isDirectory: false,
+      hasFiles: false,
+      fileCount: 0,
+      isGitRepo: false,
+      hasPcScaffold: false,
+      hasMcpJson: false,
+    };
   }
 
   const entries = readdirSync(path).filter((f) => f !== '.git');
   const isGitRepo = existsSync(join(path, '.git'));
+  const hasPcScaffold = existsSync(join(path, '.project-companion'));
+  const hasMcpJson = existsSync(join(path, '.mcp.json'));
   return {
     path,
     exists: true,
@@ -49,6 +73,8 @@ export function probeFolder(input: string): FolderProbeResult {
     hasFiles: entries.length > 0,
     fileCount: entries.length,
     isGitRepo,
+    hasPcScaffold,
+    hasMcpJson,
   };
 }
 
