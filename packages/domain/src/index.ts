@@ -94,6 +94,20 @@ export type {
   AgentBodyTemplateIssue,
 } from './agent-body.ts';
 export type { SubagentFailureCause, SubagentFailureSignal } from './subagent-failure.ts';
+export type {
+  CatalogEntry,
+  CatalogName,
+  CatalogSource,
+  CatalogType,
+} from './workflow-catalog.ts';
+export {
+  CATALOG_TYPES,
+  WORKFLOW_CATALOG,
+  WORKFLOW_CATALOG_NAMES,
+  catalogNameHasSource,
+  getCatalogEntry,
+  isCatalogName,
+} from './workflow-catalog.ts';
 export {
   AGENT_BODY_VARIABLES,
   AgentBodyTemplateError,
