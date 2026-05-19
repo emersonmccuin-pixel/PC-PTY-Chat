@@ -15,6 +15,7 @@ import { useWorkflowDrawer } from '@/store/workflow-drawer';
 import { CreateWorkflowModal } from './CreateWorkflowModal';
 import { DeleteWorkflowDialog } from './workflows/DeleteWorkflowDialog';
 import { DuplicateWorkflowModal } from './workflows/DuplicateWorkflowModal';
+import { RunNowModal } from './workflows/RunNowModal';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
 interface WorkflowSummary {
@@ -95,7 +96,9 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const [editLoadErr, setEditLoadErr] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
   const [toggleErr, setToggleErr] = useState<string | null>(null);
+  const openDrawerTo = useWorkflowDrawer((s) => s.openTo);
 
   const refetch = useCallback(
     async (projectId: ULID) => {
@@ -224,6 +227,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
               key={wf.fileName}
               wf={wf}
               runs={runs}
+              onRunNow={() => setRunningId(wf.id)}
               onEdit={() => void openEditModal(wf.id)}
               onDuplicate={() => setDuplicatingId(wf.id)}
               onDelete={() => setDeletingId(wf.id)}
@@ -297,6 +301,21 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           onClose={() => setDeletingId(null)}
           onDeleted={() => {
             setDeletingId(null);
+            void refetch(project.id);
+          }}
+        />
+      )}
+      {runningId && (
+        <RunNowModal
+          project={project}
+          workflowId={runningId}
+          onClose={() => setRunningId(null)}
+          onFired={(runId) => {
+            const wfId = runningId;
+            setRunningId(null);
+            // Land the user on the brand-new run's detail view so they can
+            // watch it boot. 4e's WS subscription will pull in tick updates.
+            openDrawerTo(wfId, runId);
             void refetch(project.id);
           }}
         />
@@ -435,6 +454,7 @@ function ApprovalRow({
 function WorkflowRow({
   wf,
   runs,
+  onRunNow,
   onEdit,
   onDuplicate,
   onDelete,
@@ -442,6 +462,7 @@ function WorkflowRow({
 }: {
   wf: WorkflowSummary;
   runs: WorkflowRun[];
+  onRunNow: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -495,6 +516,7 @@ function WorkflowRow({
       </button>
       <RowMenu
         disabled={wf.disabled}
+        onRunNow={onRunNow}
         onEdit={onEdit}
         onDuplicate={onDuplicate}
         onDelete={onDelete}
@@ -505,16 +527,18 @@ function WorkflowRow({
 }
 
 /** Section 4f.2 / D65 — `⋯` popover anchored to the row's right edge.
- *  Menu items: Run now (queued for 4f.3) / Edit / Duplicate /
- *  Disable | Enable / Delete. Click anywhere outside to dismiss. */
+ *  Menu items: Run now / Edit / Duplicate / Disable | Enable / Delete.
+ *  Click anywhere outside to dismiss. */
 function RowMenu({
   disabled,
+  onRunNow,
   onEdit,
   onDuplicate,
   onDelete,
   onToggleDisabled,
 }: {
   disabled: boolean;
+  onRunNow: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -556,13 +580,15 @@ function RowMenu({
       </button>
       {open && (
         <div className="absolute right-0 top-full z-10 mt-1 flex w-56 flex-col border border-border bg-card text-xs shadow-lg">
+          {/* D62 + D64: a paused workflow can't fire from any trigger,
+              including manual. Disable the menu item with a plain-English
+              sublabel rather than hiding it — keeps the row UI shape stable
+              when toggling Disable/Enable. */}
           <MenuItem
             label="Run now"
-            sublabel="(coming in 4f.3)"
-            disabled
-            onClick={() => {
-              /* 4f.3 lands the manual-fire path */
-            }}
+            sublabel={disabled ? '(paused)' : undefined}
+            disabled={disabled}
+            onClick={() => pick(onRunNow)}
           />
           <MenuItem label="Edit" onClick={() => pick(onEdit)} />
           <MenuItem label="Duplicate" onClick={() => pick(onDuplicate)} />

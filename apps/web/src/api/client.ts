@@ -674,6 +674,31 @@ export const api = {
       newId ? { newId } : {},
     ).then((r) => r.workflow),
 
+  /** 4f.3 / D64. User-initiated manual fire. Body is the resolved card +
+   *  inputs from the RunNowModal. Throws WorkflowFireError carrying the HTTP
+   *  status so the modal can distinguish Work Contract mismatches (400) from
+   *  disabled / locked (409) from unknown (404). The error message is
+   *  plain-English from the server — render verbatim. */
+  fireWorkflow: async (
+    projectId: ULID,
+    wfId: string,
+    body: { workItemId?: string; inputs?: Record<string, unknown> },
+  ): Promise<string> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/fire`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json()) as { ok?: boolean; runId?: string; error?: string };
+    if (res.ok && data.ok === true && typeof data.runId === 'string') {
+      return data.runId;
+    }
+    throw new WorkflowFireError(data.error ?? `fire workflow → ${res.status}`, res.status);
+  },
+
   /** All runs for this project (across workflows). The drawer filters
    *  client-side by workflowId. */
   listWorkflowRuns: (projectId: ULID) =>
@@ -1070,6 +1095,19 @@ export class WorkflowValidationError extends Error {
     super(message);
     this.name = 'WorkflowValidationError';
     this.errors = errors;
+  }
+}
+
+/** Thrown by fireWorkflow on non-2xx. Carries the HTTP status so the
+ *  RunNowModal can distinguish 400 (Work Contract / unknown work item) from
+ *  409 (disabled / card-locked) from 404 (unknown id). The server message is
+ *  plain-English from D74's translation surface — render verbatim. */
+export class WorkflowFireError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'WorkflowFireError';
+    this.status = status;
   }
 }
 

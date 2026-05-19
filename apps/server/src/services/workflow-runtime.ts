@@ -847,6 +847,122 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Section 4f.3 / D64. User-initiated manual fire from the WorkflowList
+   * "Run now" menu. Looks up by workflow id (not name); enforces D62 (no
+   * disabled) + D67/D71 Work Contract; locks the attached card on the same
+   * symmetric `in-progress → unlockWorkItem` lifecycle used by the on_enter
+   * (drag-fire) path; merges natural context (workItemId + stageId) for
+   * declared `inputs:` keys + layers user-supplied inputs on top.
+   *
+   * Error shapes are caller-readable strings; the HTTP route maps them to
+   * 4xx codes. Fire-time required-inputs check (D71) lands with 4f.4 — this
+   * method enforces the Work Contract surface only.
+   */
+  async fireManually(args: {
+    workflowId: string;
+    workItemId?: string;
+    inputs?: Record<string, unknown>;
+  }): Promise<WorkflowRun> {
+    if (!this.registry) {
+      throw new Error(`workflow registry not configured`);
+    }
+    this.registry.reload();
+    const snapshot = this.registry.snapshot();
+    const validHits = snapshot.valid.filter((e) => e.workflow.id === args.workflowId);
+    if (validHits.length === 0) {
+      const invalidHits = snapshot.invalid.filter((e) =>
+        e.fileName.startsWith(`${args.workflowId}.`),
+      );
+      if (invalidHits.length > 0) {
+        throw new Error(
+          `no valid workflow for id "${args.workflowId}" (${invalidHits.length} invalid file(s))`,
+        );
+      }
+      throw new Error(`unknown workflow: "${args.workflowId}"`);
+    }
+    if (validHits.length > 1) {
+      throw new Error(
+        `ambiguous workflow id: ${validHits.length} files declare id "${args.workflowId}"`,
+      );
+    }
+    const entry = validHits[0]!;
+    const workflow = entry.workflow;
+
+    if (workflow.disabled === true) {
+      throw new Error(`workflow "${args.workflowId}" is disabled`);
+    }
+
+    const attached = workflow.attached_to_work_item ?? 'optional';
+    if (attached === 'required' && !args.workItemId) {
+      throw new Error(`workflow "${args.workflowId}" requires a work item to run`);
+    }
+    if (attached === 'forbidden' && args.workItemId) {
+      throw new Error(`workflow "${args.workflowId}" cannot be attached to a work item`);
+    }
+
+    // Resolve the attached card (when present) and check the lock. Matches
+    // moveAndFire's drag-fire guard so two fire-paths can't double-dispatch
+    // on the same card.
+    let stageId: string | undefined;
+    if (args.workItemId) {
+      const wi = getWorkItem(args.workItemId as ULID);
+      if (!wi) {
+        throw new Error(`unknown work item: ${args.workItemId}`);
+      }
+      if (wi.status === 'in-progress') {
+        throw new Error(`work item ${args.workItemId} is locked: workflow in progress`);
+      }
+      stageId = wi.stageId;
+    }
+
+    // Build run.inputs: natural context (workItemId + stageId) filtered to
+    // declared keys, then user-supplied inputs layered on top. Caller-
+    // explicit wins; the natural context is a courtesy fill for declared
+    // keys that match. 4f.4 will add the fire-time required-keys check.
+    const naturalInputs = pickDeclaredInputs(workflow, {
+      ...(args.workItemId ? { workItemId: args.workItemId } : {}),
+      ...(stageId ? { stageId } : {}),
+    });
+    const userInputs =
+      args.inputs && typeof args.inputs === 'object' && !Array.isArray(args.inputs)
+        ? args.inputs
+        : {};
+    const inputs: Record<string, unknown> = { ...naturalInputs, ...userInputs };
+
+    const runId = randomUUID();
+    let worktreePath: string | null = null;
+    if (workflow.worktree !== 'none') {
+      worktreePath = await this.ensureWorktree(
+        args.workItemId ?? `run-${runId.slice(0, 8)}`,
+      );
+    }
+
+    // Lock the attached card so concurrent fire-paths see the in-progress
+    // status guard. Symmetric with moveAndFire — unlockWorkItem releases on
+    // terminal run status (success → pending; failure / cancel → blocked).
+    if (args.workItemId) {
+      updateWorkItemStatus(args.workItemId as ULID, 'in-progress', null);
+    }
+
+    const run = this.createRun({
+      id: runId,
+      workflow,
+      yamlText: entry.yamlText,
+      trigger: 'manual',
+      ...(args.workItemId ? { workItemId: args.workItemId } : {}),
+      ...(stageId ? { stageId } : {}),
+      worktreePath,
+      ...(Object.keys(inputs).length > 0 ? { inputs } : {}),
+    });
+    setImmediate(() => {
+      void this.tick(run.id).catch((err) => {
+        console.error('[workflow-runtime] fireManually tick failed:', (err as Error).message);
+      });
+    });
+    return run;
+  }
+
+  /**
    * Run one scheduling pass. Loops until no sync progress is possible. Async
    * dispatch (subagent / approval) leaves the node at 'running' and tick
    * returns — external completion endpoints call tick again.

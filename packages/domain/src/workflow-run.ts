@@ -16,8 +16,9 @@ export type WorkflowRunStatus =
 
 /** What kicked off the run. `on_enter` = work-item stage transition; `callable` =
  *  orchestrator-called via pc_run_workflow; `nested` = spawned by a parent's
- *  `workflow:` node. */
-export type WorkflowRunTrigger = 'on_enter' | 'callable' | 'nested';
+ *  `workflow:` node; `manual` = user fired from the WorkflowList "Run now"
+ *  menu (4f.3). Future: `cron` / `webhook` (4g). */
+export type WorkflowRunTrigger = 'on_enter' | 'callable' | 'nested' | 'manual';
 
 /** Per-node status. `pending` = waiting on deps; `running` = dispatched. */
 export type NodeOutputStatus =

@@ -1729,6 +1729,60 @@ app.post('/api/projects/:projectId/workflows/:wfId/duplicate', async (c) => {
   }
 });
 
+/** 4f.3 / D64. Manual fire from the WorkflowList "Run now" menu. Body:
+ *  `{ workItemId?, inputs? }`. The runtime enforces D62 (no disabled),
+ *  D67/D71 (Work Contract attached_to_work_item), and the card-lock guard
+ *  (matches drag-fire). 4xx error shapes:
+ *    - 404 → unknown project / unknown workflow id / ambiguous id
+ *    - 409 → workflow disabled / work item locked
+ *    - 400 → Work Contract mismatch (required without card, forbidden with)
+ *  Returns `{ runId }` on success — the web side opens the run-detail view. */
+app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const wfId = c.req.param('wfId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+
+  const body = await c.req
+    .json<{ workItemId?: string; inputs?: Record<string, unknown> }>()
+    .catch(() => ({}) as { workItemId?: string; inputs?: Record<string, unknown> });
+
+  const workItemId =
+    typeof body.workItemId === 'string' && body.workItemId.trim()
+      ? body.workItemId.trim()
+      : undefined;
+  const inputs =
+    body.inputs && typeof body.inputs === 'object' && !Array.isArray(body.inputs)
+      ? body.inputs
+      : undefined;
+
+  try {
+    const run = await runtime.workflowRuntime().fireManually({
+      workflowId: wfId,
+      ...(workItemId ? { workItemId } : {}),
+      ...(inputs ? { inputs } : {}),
+    });
+    return c.json({ ok: true, runId: run.id });
+  } catch (err) {
+    const msg = (err as Error).message;
+    // Map runtime error shapes to HTTP codes the modal can surface cleanly.
+    if (/^unknown workflow:|^no valid workflow|^ambiguous workflow id/.test(msg)) {
+      return c.json({ ok: false, error: msg }, 404);
+    }
+    if (/ is disabled$| is locked: workflow in progress$/.test(msg)) {
+      return c.json({ ok: false, error: msg }, 409);
+    }
+    if (
+      / requires a work item to run$| cannot be attached to a work item$|^unknown work item:/.test(
+        msg,
+      )
+    ) {
+      return c.json({ ok: false, error: msg }, 400);
+    }
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
 /** 4b.1: stash an in-progress draft from the workflow-creator interview.
  *  Does NOT write to disk — only the final `pc_create_workflow` does that.
  *  Broadcasts `workflow-creator-draft` so the modal's visualizer re-renders. */

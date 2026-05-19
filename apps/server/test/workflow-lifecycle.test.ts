@@ -547,5 +547,257 @@ test('4f.1 route: duplicate with explicit newId that already exists → 409', as
   assert.equal(res.status, 409);
 });
 
-// ── workItem unused but the import keeps eslint happy in the broader suite ──
-void getWorkItem;
+// ── 4f.3 / D64 fireManually + manual-fire HTTP route ────────────────────────
+
+// Reusable yaml templates parameterized by Work Contract. The cancel node
+// resolves synchronously on the first tick, but the run row is returned by
+// fireManually before that tick fires (via setImmediate), so assertions on
+// row creation + trigger='manual' are race-free.
+const MANUAL_OPTIONAL_YAML = `id: manual-opt
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: stop
+    cancel: noop
+`;
+const MANUAL_REQUIRED_YAML = `id: manual-req
+attached_to_work_item: required
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: stop
+    cancel: noop
+`;
+const MANUAL_FORBIDDEN_YAML = `id: manual-forb
+attached_to_work_item: forbidden
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: stop
+    cancel: noop
+`;
+const MANUAL_OPT_WITH_INPUTS_YAML = `id: manual-with-inputs
+attached_to_work_item: optional
+triggers:
+  callable: true
+worktree: none
+inputs:
+  workItemId: ULID
+  stageId: string
+  customerName: string
+nodes:
+  - id: stop
+    cancel: noop
+`;
+
+test('4f.3 / D64 runtime: fireManually happy path (optional contract, no workItemId) creates a manual-trigger run', async () => {
+  const f = mkFixture([{ name: 'manual-opt', yaml: MANUAL_OPTIONAL_YAML }]);
+  const run = await f.runtime.fireManually({ workflowId: 'manual-opt' });
+  assert.equal(run.trigger, 'manual');
+  assert.equal(run.workItemId, undefined);
+  assert.equal(run.workflowId, 'manual-opt');
+});
+
+test('4f.3 / D64 runtime: fireManually with workItemId fills natural-context inputs + locks the card', async () => {
+  const f = mkFixture([{ name: 'manual-with-inputs', yaml: MANUAL_OPT_WITH_INPUTS_YAML }]);
+  const run = await f.runtime.fireManually({
+    workflowId: 'manual-with-inputs',
+    workItemId: f.workItemId,
+    inputs: { customerName: 'Acme Co' },
+  });
+  assert.equal(run.trigger, 'manual');
+  assert.equal(run.workItemId, f.workItemId);
+  assert.equal(run.stageId, 'backlog'); // natural context from card's current stage
+  // Natural-context fill for declared inputs + user override layered on top.
+  assert.deepEqual(run.inputs, {
+    workItemId: f.workItemId,
+    stageId: 'backlog',
+    customerName: 'Acme Co',
+  });
+  // Card lock — symmetric with drag-fire's moveAndFire path.
+  const wi = getWorkItem(f.workItemId);
+  assert.equal(wi?.status, 'in-progress');
+});
+
+test('4f.3 / D64 runtime: required contract without workItemId throws "requires a work item"', async () => {
+  const f = mkFixture([{ name: 'manual-req', yaml: MANUAL_REQUIRED_YAML }]);
+  await assert.rejects(
+    () => f.runtime.fireManually({ workflowId: 'manual-req' }),
+    /requires a work item to run/,
+  );
+});
+
+test('4f.3 / D64 runtime: forbidden contract with workItemId throws "cannot be attached"', async () => {
+  const f = mkFixture([{ name: 'manual-forb', yaml: MANUAL_FORBIDDEN_YAML }]);
+  await assert.rejects(
+    () => f.runtime.fireManually({ workflowId: 'manual-forb', workItemId: f.workItemId }),
+    /cannot be attached to a work item/,
+  );
+});
+
+test('4f.3 / D62 runtime: fireManually on disabled workflow throws "is disabled"', async () => {
+  const disabledYaml = MANUAL_OPTIONAL_YAML + '\ndisabled: true\n';
+  const f = mkFixture([{ name: 'manual-opt', yaml: disabledYaml }]);
+  await assert.rejects(
+    () => f.runtime.fireManually({ workflowId: 'manual-opt' }),
+    /is disabled/,
+  );
+});
+
+test('4f.3 runtime: unknown workflow id throws "unknown workflow"', async () => {
+  const f = mkFixture([{ name: 'manual-opt', yaml: MANUAL_OPTIONAL_YAML }]);
+  await assert.rejects(
+    () => f.runtime.fireManually({ workflowId: 'does-not-exist' }),
+    /unknown workflow/,
+  );
+});
+
+test('4f.3 runtime: fireManually on a locked work item rejects', async () => {
+  const f = mkFixture([{ name: 'manual-with-inputs', yaml: MANUAL_OPT_WITH_INPUTS_YAML }]);
+  // First fire locks the card.
+  await f.runtime.fireManually({
+    workflowId: 'manual-with-inputs',
+    workItemId: f.workItemId,
+  });
+  // Second fire while the lock is still in place must reject.
+  await assert.rejects(
+    () =>
+      f.runtime.fireManually({
+        workflowId: 'manual-with-inputs',
+        workItemId: f.workItemId,
+      }),
+    /is locked: workflow in progress/,
+  );
+});
+
+test('4f.3 HTTP route: POST /workflows/:wfId/fire — required without workItemId → 400; with workItemId → 200 + manual trigger persisted', async () => {
+  const { Hono } = await import('hono');
+  const f = mkFixture([{ name: 'manual-req', yaml: MANUAL_REQUIRED_YAML }]);
+  const app = new Hono();
+  // Mirror the production route shape (apps/server/src/index.ts).
+  app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
+    const wfId = c.req.param('wfId');
+    const body = await c.req
+      .json<{ workItemId?: string; inputs?: Record<string, unknown> }>()
+      .catch(() => ({}) as { workItemId?: string; inputs?: Record<string, unknown> });
+    try {
+      const run = await f.runtime.fireManually({
+        workflowId: wfId,
+        ...(body.workItemId ? { workItemId: body.workItemId } : {}),
+        ...(body.inputs ? { inputs: body.inputs } : {}),
+      });
+      return c.json({ ok: true, runId: run.id });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/^unknown workflow:|^no valid workflow|^ambiguous workflow id/.test(msg)) {
+        return c.json({ ok: false, error: msg }, 404);
+      }
+      if (/ is disabled$| is locked: workflow in progress$/.test(msg)) {
+        return c.json({ ok: false, error: msg }, 409);
+      }
+      if (
+        / requires a work item to run$| cannot be attached to a work item$|^unknown work item:/.test(
+          msg,
+        )
+      ) {
+        return c.json({ ok: false, error: msg }, 400);
+      }
+      return c.json({ ok: false, error: msg }, 500);
+    }
+  });
+
+  // Missing workItemId for `required` → 400.
+  const missing = await app.fetch(
+    new Request(`http://test.local/api/projects/${f.project.id}/workflows/manual-req/fire`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  );
+  assert.equal(missing.status, 400);
+  const missingJson = (await missing.json()) as { error: string };
+  assert.match(missingJson.error, /requires a work item/);
+
+  // With workItemId → 200, runId returned, run persisted with trigger='manual'.
+  const ok = await app.fetch(
+    new Request(`http://test.local/api/projects/${f.project.id}/workflows/manual-req/fire`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workItemId: f.workItemId }),
+    }),
+  );
+  assert.equal(ok.status, 200);
+  const okJson = (await ok.json()) as { ok: boolean; runId: string };
+  assert.equal(okJson.ok, true);
+  assert.ok(okJson.runId);
+  const persisted = f.runtime.readRunForProject(okJson.runId)!;
+  assert.equal(persisted.trigger, 'manual');
+  assert.equal(persisted.workItemId, f.workItemId);
+});
+
+test('4f.3 HTTP route: forbidden contract with workItemId → 400', async () => {
+  const { Hono } = await import('hono');
+  const f = mkFixture([{ name: 'manual-forb', yaml: MANUAL_FORBIDDEN_YAML }]);
+  const app = new Hono();
+  app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
+    const wfId = c.req.param('wfId');
+    const body = await c.req
+      .json<{ workItemId?: string }>()
+      .catch(() => ({}) as { workItemId?: string });
+    try {
+      const run = await f.runtime.fireManually({
+        workflowId: wfId,
+        ...(body.workItemId ? { workItemId: body.workItemId } : {}),
+      });
+      return c.json({ ok: true, runId: run.id });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/ cannot be attached to a work item$/.test(msg)) {
+        return c.json({ ok: false, error: msg }, 400);
+      }
+      return c.json({ ok: false, error: msg }, 500);
+    }
+  });
+
+  const res = await app.fetch(
+    new Request(`http://test.local/api/projects/${f.project.id}/workflows/manual-forb/fire`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workItemId: f.workItemId }),
+    }),
+  );
+  assert.equal(res.status, 400);
+  const json = (await res.json()) as { error: string };
+  assert.match(json.error, /cannot be attached to a work item/);
+});
+
+test('4f.3 HTTP route: disabled workflow → 409', async () => {
+  const { Hono } = await import('hono');
+  const disabledYaml = MANUAL_OPTIONAL_YAML + '\ndisabled: true\n';
+  const f = mkFixture([{ name: 'manual-opt', yaml: disabledYaml }]);
+  const app = new Hono();
+  app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
+    const wfId = c.req.param('wfId');
+    try {
+      const run = await f.runtime.fireManually({ workflowId: wfId });
+      return c.json({ ok: true, runId: run.id });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/ is disabled$/.test(msg)) return c.json({ ok: false, error: msg }, 409);
+      return c.json({ ok: false, error: msg }, 500);
+    }
+  });
+  const res = await app.fetch(
+    new Request(`http://test.local/api/projects/${f.project.id}/workflows/manual-opt/fire`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  );
+  assert.equal(res.status, 409);
+  const json = (await res.json()) as { error: string };
+  assert.match(json.error, /is disabled/);
+});
