@@ -1423,7 +1423,19 @@ app.get('/api/projects/:projectId/workflows/:wfId', (c) => {
   const state = runtime.workflowRegistry().reload();
   const entry = state.valid.find((e) => e.workflow.id === wfId);
   if (!entry) return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  return c.json({ ok: true, workflow: entry.workflow, fileName: entry.fileName });
+  // 4f.2 — also return the raw YAML text on disk so the edit modal's
+  // raw-YAML tab (D61 PM escape hatch) can render exactly what's saved,
+  // comments + key order intact. Best-effort read; falls back to an empty
+  // string if the file vanished between reload + read.
+  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
+  const filePath = resolve(dir, entry.fileName);
+  let yamlText = '';
+  try {
+    yamlText = readFileSync(filePath, 'utf-8');
+  } catch {
+    /* best-effort */
+  }
+  return c.json({ ok: true, workflow: entry.workflow, fileName: entry.fileName, yamlText });
 });
 
 /** 4b.1: create a new project-scoped workflow YAML from a typed `def`. Mirrors
@@ -1493,11 +1505,29 @@ app.put('/api/projects/:projectId/workflows/:wfId', async (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
 
-  const payload = await c.req.json<{ def?: unknown }>();
-  if (!payload.def || typeof payload.def !== 'object') {
-    return c.json({ ok: false, error: 'def required' }, 400);
+  // 4f.2 / D61. Accepts either `def` (typed path, used by conversational
+  // edits + lifecycle toggles like disable/enable) or `yamlText` (PM
+  // escape hatch — the raw-YAML tab). yamlText is parsed via parseWorkflowText
+  // so it goes through the same validator; round-trip preserves comments +
+  // key order via the serializer.
+  const payload = await c.req.json<{ def?: unknown; yamlText?: string }>();
+
+  let rawDef: Record<string, unknown> | null = null;
+  if (typeof payload.yamlText === 'string') {
+    const parsed = parseWorkflowText(payload.yamlText, { expectedId: wfId });
+    if (!parsed.ok || !parsed.workflow) {
+      return c.json(
+        { ok: false, error: 'invalid workflow', errors: parsed.errors },
+        400,
+      );
+    }
+    rawDef = parsed.workflow as unknown as Record<string, unknown>;
+  } else if (payload.def && typeof payload.def === 'object') {
+    rawDef = payload.def as Record<string, unknown>;
+  } else {
+    return c.json({ ok: false, error: 'def or yamlText required' }, 400);
   }
-  const rawDef = payload.def as Record<string, unknown>;
+
   if (typeof rawDef.id !== 'string' || rawDef.id !== wfId) {
     return c.json(
       {

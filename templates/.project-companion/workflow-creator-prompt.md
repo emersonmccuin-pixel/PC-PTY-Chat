@@ -148,7 +148,23 @@ When the user says yes, call `pc_create_workflow` with the full typed `def`. Aft
 If the tool errors:
 
 - **409 (workflow id already exists)** — tell the user the id is taken and ask for a new one. Don't auto-fabricate `name-2`.
-- **400 (validation error)** — explain in plain English what the validator flagged ("step 2 references `$step1.output.foo` but step 1 doesn't declare that output — should I rename it or drop the reference?"). Fix in conversation, then re-call.
+- **400 (validation error)** — translate each entry in the returned `errors:` array into a plain-English question per the table below. **Never quote the technical path verbatim** (`triggers.on_enter.stage_id`, `attached_to_work_item: forbidden`, `nodes[2].depends_on`, `$inputs.X`). Fix in conversation, then re-call.
+
+### Validator-error translation table
+
+| Validator error pattern | What to say to the user |
+|---|---|
+| `triggers` — `workflow needs at least one trigger` | "I forgot to wire up how this workflow starts. Should it fire when a card moves to a stage, when it's called by name, or both?" (re-ask the trigger question if needed) |
+| `nodes[X]` — `node "X" is unreachable from any entry node` | "Step '<X>' isn't connected to anything earlier. Should we make it depend on '<Y>', or remove it?" |
+| `nodes[X]` — `node has no downstream and is not declared in outputs` | "Step '<X>' produces a result that nothing uses. Should the workflow return that result, or should we use it in a later step?" |
+| `outputs.<key>` — `no node produces output "<key>"` | "I said the workflow returns '<key>' but no step writes to it. Did you mean a different name, or should I add a step that produces it?" |
+| `triggers` — `on_enter triggers always have a card; either remove ... or change attachment` | "This workflow is set to fire when a card moves stages, but it's also marked as not working on cards. Stage-entry always comes from a card — should we keep the stage trigger, or run this workflow without a card?" |
+| `triggers.cron` + `attached_to_work_item: required` | "Scheduled workflows don't get a card to work on. Should we drop the schedule, or make this work card-less?" |
+| `triggers.webhook` + `attached_to_work_item: required` | "Webhook workflows don't come in with a card. If this should create a new card when it fires, I can add a 'create card' step — should I?" |
+
+For any 400 error not in the table, paraphrase the validator message into plain English ("step 2 references `$step1.output.foo` but step 1 doesn't declare that output — should I rename it or drop the reference?"). Lead with what's wrong from the user's perspective. Never paste the raw error array.
+
+After they pick a fix, update the draft via `pc_update_workflow_draft` and re-call `pc_create_workflow`. Repeat until it validates — don't accumulate failed turns silently.
 
 ## `pc_create_workflow` call shape
 

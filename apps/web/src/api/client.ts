@@ -578,11 +578,101 @@ export const api = {
   },
 
   // ── Workflows (4e) ────────────────────────────────────────────────────
-  /** Full Workflow def for the drawer's Definition tab. 404 on unknown id. */
+  /** Full Workflow def for the drawer's Definition tab + raw YAML text for
+   *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. */
   getWorkflow: (projectId: ULID, wfId: string) =>
-    getJson<{ ok: true; workflow: Workflow; fileName: string }>(
+    getJson<{ ok: true; workflow: Workflow; fileName: string; yamlText?: string }>(
       `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
-    ).then((r) => ({ workflow: r.workflow, fileName: r.fileName })),
+    ).then((r) => ({ workflow: r.workflow, fileName: r.fileName, yamlText: r.yamlText ?? '' })),
+
+  // ── Workflow lifecycle (4f.2) ─────────────────────────────────────────
+  /** Edit an existing workflow in place. Used by both the conversational
+   *  edit path (when the model commits via a tool that calls PUT) and the
+   *  raw-YAML PM escape hatch. Rejects an id rename with 400 — rename is
+   *  duplicate + delete. Throws WorkflowValidationError on 400 shape errors.
+   *  Accepts either a typed `def` or raw `yamlText`; the latter is the PM
+   *  raw-YAML tab's path and preserves comments + key order on round-trip. */
+  editWorkflow: async (
+    projectId: ULID,
+    wfId: string,
+    payload: { def: unknown } | { yamlText: string },
+  ): Promise<void> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+    );
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      errors?: { path: string; message: string }[];
+    };
+    if (res.status === 400 && data.errors) {
+      throw new WorkflowValidationError(data.error ?? 'invalid workflow', data.errors);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `edit workflow → ${res.status}`);
+    }
+  },
+
+  /** Delete a workflow file. 409 → throws WorkflowInFlightRunsError with the
+   *  run-id list; UI surfaces the cancel-runs-and-delete escape. */
+  deleteWorkflow: async (projectId: ULID, wfId: string): Promise<void> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
+      { method: 'DELETE' },
+    );
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      inFlightRunIds?: string[];
+    };
+    if (res.status === 409 && Array.isArray(data.inFlightRunIds)) {
+      throw new WorkflowInFlightRunsError(data.inFlightRunIds);
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete workflow → ${res.status}`);
+    }
+  },
+
+  /** Cancel every in-flight run for this workflow, then delete the file. */
+  cancelRunsAndDeleteWorkflow: async (
+    projectId: ULID,
+    wfId: string,
+    reason?: string,
+  ): Promise<string[]> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/cancel-runs-and-delete`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reason ? { reason } : {}),
+      },
+    );
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      cancelledRunIds?: string[];
+    };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `cancel-and-delete workflow → ${res.status}`);
+    }
+    return data.cancelledRunIds ?? [];
+  },
+
+  /** Duplicate a workflow. Server clones the YAML with `disabled: true` so the
+   *  user doesn't accidentally fire two near-identical workflows. Default newId
+   *  is `<src>-copy[-N]` (server-side); pass an explicit newId to override.
+   *  409 on newId collision is surfaced as a regular Error so the duplicate
+   *  modal can show "name already taken." */
+  duplicateWorkflow: (projectId: ULID, wfId: string, newId?: string) =>
+    postJson<{ ok: true; workflow: { id: string; fileName: string; path: string } }>(
+      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/duplicate`,
+      newId ? { newId } : {},
+    ).then((r) => r.workflow),
 
   /** All runs for this project (across workflows). The drawer filters
    *  client-side by workflowId. */
@@ -941,6 +1031,8 @@ export interface WorkflowTriggers {
   callable?: boolean;
 }
 
+export type AttachedToWorkItem = 'required' | 'optional' | 'forbidden';
+
 export interface Workflow {
   id: string;
   description?: string;
@@ -949,7 +1041,36 @@ export interface Workflow {
   outputs?: Record<string, string>;
   worktree?: 'auto' | 'none';
   scratch_cleanup?: 'auto' | 'keep';
+  /** 4f / D62. Workflow is paused — no external fire-path runs it. */
+  disabled?: boolean;
+  /** 4f / D67. Work Contract: how the workflow relates to a card. */
+  attached_to_work_item?: AttachedToWorkItem;
   nodes: WfDagNode[];
+}
+
+/** Thrown by deleteWorkflow on 409 — the workflow has runs still in flight.
+ *  Carries the run-id list so the UI can present the cancel-runs-and-delete
+ *  escape with a count. */
+export class WorkflowInFlightRunsError extends Error {
+  inFlightRunIds: string[];
+  constructor(inFlightRunIds: string[]) {
+    super('workflow has in-flight runs');
+    this.name = 'WorkflowInFlightRunsError';
+    this.inFlightRunIds = inFlightRunIds;
+  }
+}
+
+/** Thrown by editWorkflow / createWorkflow on 400 validation failure. The
+ *  `errors` array maps directly to the server validator's `{ path, message }`
+ *  shape so the modal can render inline highlights for the raw-YAML PM
+ *  escape hatch + the conversational orchestrator translation for SDRs. */
+export class WorkflowValidationError extends Error {
+  errors: { path: string; message: string }[];
+  constructor(message: string, errors: { path: string; message: string }[]) {
+    super(message);
+    this.name = 'WorkflowValidationError';
+    this.errors = errors;
+  }
 }
 
 // ── Workflow-run wire shapes (4e.4) ───────────────────────────────────────

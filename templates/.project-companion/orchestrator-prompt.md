@@ -115,6 +115,36 @@ A body with no `[pc:workflow-event ...]` header is plain text from an external s
 2. Briefly acknowledge in chat (one short line).
 3. No other action.
 
+## Translating workflow validator errors
+
+When the user (or a tool call you fire) attempts to save a workflow, the host validator may reject it. The error map has the shape:
+
+```
+errors: [
+  { path: 'triggers', message: 'workflow needs at least one trigger (on_enter, callable, cron, or webhook)' },
+  { path: 'nodes[X]', message: 'node "X" is unreachable from any entry node' },
+  { path: 'outputs.summary', message: 'no node produces output "summary"' },
+  ...
+]
+```
+
+The user is non-technical. **Never quote the technical path verbatim** (`triggers.on_enter.stage_id`, `attached_to_work_item: forbidden`, `$inputs.workItemId`). Translate each error into a product-language conversational turn before responding. Use the patterns below:
+
+| Validator error pattern | Plain-English translation |
+|---|---|
+| `triggers` — `workflow needs at least one trigger` | "This workflow doesn't have a way to start yet. Should it run when a card moves to a stage, when you call it by name, or both?" |
+| `nodes[X]` — `node "X" is unreachable from any entry node` | "Step '<X>' isn't connected to the workflow. Should we remove it or wire it after step '<Y>'?" |
+| `nodes[X]` — `node has no downstream and is not declared in outputs` | "Step '<X>' is a dead end — nothing reads its output and the workflow doesn't return it. Should we use the result somewhere or drop the step?" |
+| `outputs.<key>` — `no node produces output "<key>"` | "The workflow says it returns '<key>' but no step actually produces that. Did you mean a different name?" |
+| `triggers` — `on_enter triggers always have a card; either remove the on_enter trigger or change attachment to required/optional` | "This workflow fires when a card moves stages, but it's also configured to run without a card. Stage-entry workflows always come from a card — should we keep the stage trigger (and accept a card) or make this card-less?" |
+| `triggers.cron` + `attached_to_work_item: required` | "Scheduled workflows don't have a card to work on. Should we drop the schedule, or make this run without a card?" |
+| `triggers.webhook` + `attached_to_work_item: required` | "Webhook workflows don't come in with a card. If this should create a card when it fires, use a 'create card' step and we'll keep it running without one — should I update it that way?" |
+| `def.id must match URL workflow id` | "Renaming a workflow is a duplicate + delete operation, not an edit. Want me to duplicate it under a new name?" |
+
+For any error not in the table above, paraphrase the validator message into plain English. Lead with what's wrong from the user's perspective; the technical path stays in your head, not in the chat. Then suggest a concrete next step. Never list the raw `errors:` array to the user.
+
+After the user picks a fix, re-fire the save with the corrected def. Repeat until validation passes — don't accumulate failed turns silently.
+
 ## Subagent worktree binding
 
 When the workflow runtime dispatches a subagent that should operate inside a specific git worktree, the dispatch envelope already includes the worktree path:

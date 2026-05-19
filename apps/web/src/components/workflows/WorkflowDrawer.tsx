@@ -174,6 +174,21 @@ export function WorkflowDrawer({ projectId, events }: WorkflowDrawerProps) {
           </button>
         </header>
 
+        {workflow?.disabled === true && (
+          <div
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-warning/60 bg-warning/10 px-4 py-2 text-xs"
+            role="status"
+          >
+            <span>
+              <span className="mr-1 bg-warning px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
+                Paused
+              </span>
+              This workflow is paused — it won't run from any trigger. Re-enable from the
+              <span className="font-mono"> ⋯</span> menu in the workflow list.
+            </span>
+          </div>
+        )}
+
         <nav className="flex shrink-0 gap-1 border-b border-border bg-background px-2 pt-1">
           {TABS.map((t) => (
             <button
