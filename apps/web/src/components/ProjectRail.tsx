@@ -166,7 +166,7 @@ export function ProjectRail({
             e.stopPropagation();
           }}
           style={{ position: 'fixed', top: menu.y, left: menu.x, zIndex: 50 }}
-          className="min-w-[12rem] rounded-md border border-border bg-popover py-1 shadow-md"
+          className="min-w-[12rem] border border-primary/40 bg-popover py-1 text-popover-foreground shadow-2xl"
         >
           <MenuItem onClick={() => openProjectSettings(menu.project)}>
             Open project settings
