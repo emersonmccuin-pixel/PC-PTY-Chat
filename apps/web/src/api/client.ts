@@ -442,6 +442,14 @@ export const api = {
     return data.removed ?? [];
   },
 
+  revealProject: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/reveal`, { method: 'POST' });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `reveal → ${res.status}`);
+    }
+  },
+
   // ── Agents (Section 3 D2) ────────────────────────────────────────────────
   // Globals live in the PC library and surface in every project. A project
   // file with the same name as a global is an "override" — editing a global

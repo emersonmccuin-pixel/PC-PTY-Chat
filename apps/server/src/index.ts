@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
@@ -427,6 +428,33 @@ app.delete('/api/projects/:projectId/files', (c) => {
   }
   return c.json({ ok: true, removed });
 });
+
+/** D86 — open the project's folder in the OS file manager.
+ *  Windows: `explorer.exe <path>`. macOS: `open <path>`. Linux: `xdg-open <path>`.
+ *  Spawned detached so the API doesn't track its lifetime. */
+app.post('/api/projects/:projectId/reveal', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const project = getProjectById(id) ?? listProjects({ includeDeleted: true }).find((p) => p.id === id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const folder = project.folderPath;
+  if (!existsSync(folder)) {
+    return c.json({ ok: false, error: `folder does not exist on disk: ${folder}` }, 404);
+  }
+  const { cmd, args } = revealCommand(folder);
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    child.unref();
+  } catch (err) {
+    return c.json({ ok: false, error: `failed to reveal: ${(err as Error).message}` }, 500);
+  }
+  return c.json({ ok: true });
+});
+
+function revealCommand(path: string): { cmd: string; args: string[] } {
+  if (process.platform === 'win32') return { cmd: 'explorer.exe', args: [path] };
+  if (process.platform === 'darwin') return { cmd: 'open', args: [path] };
+  return { cmd: 'xdg-open', args: [path] };
+}
 
 /** Create a project: git init in `folder_path`, write the PC scaffold, commit,
  *  insert the DB row, register the runtime. Body:

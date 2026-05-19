@@ -79,6 +79,7 @@ export function Shell({
           activeProject={activeProject}
           events={wsEvents}
           onCreateProject={onCreateProject}
+          onProjectDeleted={onProjectDeleted}
         />
       </Panel>
       <Separator className="w-px bg-border transition-colors hover:bg-primary" />

@@ -4,28 +4,45 @@
 // "+ New project" button bubbles up via `onCreateProject` so the create flow
 // (folder picker + probe + POST /api/projects) lives in a top-level modal
 // shared with future affordances (Q5). Active-slug comes from a zustand
-// store, not props.
+// store, not props. Right-click context menu built out per D86 (5.4).
 
 import { useEffect, useState } from 'react';
 
 import { api, type Project } from '@/api/client';
 import { useActiveProject } from '@/store/active-project';
+import { usePerProjectTab } from '@/store/per-project-tab';
+import {
+  DeleteProjectFilesModal,
+  SoftDeleteProjectModal,
+} from './ProjectDangerModals';
 
 interface ProjectRailProps {
   projects: Project[];
   onCreateProject: () => void;
+  onProjectDeleted: (projectId: string) => void;
 }
 
 interface MenuPos {
-  projectId: string;
+  project: Project;
   x: number;
   y: number;
 }
 
-export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
+type DangerModal =
+  | { kind: 'soft-delete'; project: Project }
+  | { kind: 'delete-files'; project: Project };
+
+export function ProjectRail({
+  projects,
+  onCreateProject,
+  onProjectDeleted,
+}: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
+  const setTab = usePerProjectTab((s) => s.setTab);
   const [menu, setMenu] = useState<MenuPos | null>(null);
+  const [danger, setDanger] = useState<DangerModal | null>(null);
+  const [filesNote, setFilesNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!menu) return;
@@ -40,14 +57,58 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
     };
   }, [menu]);
 
-  async function startNewSession(projectId: string) {
+  // Auto-clear the "Removed: …" toast after a short window.
+  useEffect(() => {
+    if (!filesNote) return;
+    const t = setTimeout(() => setFilesNote(null), 4_000);
+    return () => clearTimeout(t);
+  }, [filesNote]);
+
+  function openProjectSettings(project: Project) {
+    setMenu(null);
+    setActiveSlug(project.slug);
+    setTab(project.slug, 'project-settings');
+  }
+
+  async function revealInExplorer(project: Project) {
     setMenu(null);
     try {
-      await api.startNewSession(projectId);
+      await api.revealProject(project.id);
+    } catch (err) {
+      console.error('[pc] revealProject failed', err);
+      alert(`Couldn't open the folder: ${(err as Error).message}`);
+    }
+  }
+
+  async function copyFolderPath(project: Project) {
+    setMenu(null);
+    try {
+      await navigator.clipboard.writeText(project.folderPath);
+    } catch (err) {
+      console.error('[pc] clipboard write failed', err);
+      alert(`Couldn't copy: ${(err as Error).message}`);
+    }
+  }
+
+  async function startNewSession(project: Project) {
+    setMenu(null);
+    try {
+      await api.startNewSession(project.id);
     } catch (err) {
       console.error('[pc] startNewSession failed', err);
       alert(`Couldn't start a new session: ${(err as Error).message}`);
     }
+  }
+
+  function openSoftDelete(project: Project) {
+    setMenu(null);
+    setDanger({ kind: 'soft-delete', project });
+  }
+
+  function openDeleteFiles(project: Project) {
+    setMenu(null);
+    setFilesNote(null);
+    setDanger({ kind: 'delete-files', project });
   }
 
   return (
@@ -67,7 +128,7 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
                 onClick={() => setActiveSlug(p.slug)}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  setMenu({ projectId: p.id, x: e.clientX, y: e.clientY });
+                  setMenu({ project: p, x: e.clientX, y: e.clientY });
                 }}
                 title={p.folderPath}
                 className={
@@ -91,6 +152,11 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
           + New project
         </button>
       </div>
+      {filesNote && (
+        <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
+          {filesNote}
+        </div>
+      )}
       {menu && (
         <div
           role="menu"
@@ -100,17 +166,76 @@ export function ProjectRail({ projects, onCreateProject }: ProjectRailProps) {
             e.stopPropagation();
           }}
           style={{ position: 'fixed', top: menu.y, left: menu.x, zIndex: 50 }}
-          className="min-w-[10rem] rounded-md border border-border bg-popover py-1 shadow-md"
+          className="min-w-[12rem] rounded-md border border-border bg-popover py-1 shadow-md"
         >
-          <button
-            role="menuitem"
-            onClick={() => startNewSession(menu.projectId)}
-            className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
-          >
+          <MenuItem onClick={() => openProjectSettings(menu.project)}>
+            Open project settings
+          </MenuItem>
+          <MenuItem onClick={() => revealInExplorer(menu.project)}>
+            Open in file explorer
+          </MenuItem>
+          <MenuItem onClick={() => copyFolderPath(menu.project)}>
+            Copy folder path
+          </MenuItem>
+          <MenuItem onClick={() => startNewSession(menu.project)}>
             New session
-          </button>
+          </MenuItem>
+          <div className="my-1 border-t border-border" />
+          <MenuItem onClick={() => openSoftDelete(menu.project)} variant="danger">
+            Archive…
+          </MenuItem>
+          <MenuItem onClick={() => openDeleteFiles(menu.project)} variant="danger">
+            Delete files…
+          </MenuItem>
         </div>
       )}
+      {danger?.kind === 'soft-delete' && (
+        <SoftDeleteProjectModal
+          project={danger.project}
+          onCancel={() => setDanger(null)}
+          onDeleted={(id) => {
+            setDanger(null);
+            onProjectDeleted(id);
+          }}
+        />
+      )}
+      {danger?.kind === 'delete-files' && (
+        <DeleteProjectFilesModal
+          project={danger.project}
+          onCancel={() => setDanger(null)}
+          onDone={(removed) => {
+            setDanger(null);
+            setFilesNote(
+              removed.length === 0
+                ? `${danger.project.name}: PC scaffold dirs were already gone.`
+                : `${danger.project.name}: removed ${removed.join(', ')}.`,
+            );
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function MenuItem({
+  onClick,
+  children,
+  variant,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+  variant?: 'danger';
+}) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={
+        'block w-full px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+        (variant === 'danger' ? 'text-destructive' : '')
+      }
+    >
+      {children}
+    </button>
   );
 }

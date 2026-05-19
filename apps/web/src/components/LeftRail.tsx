@@ -13,9 +13,16 @@ interface LeftRailProps {
   activeProject: Project | null;
   events: WsEnvelope[];
   onCreateProject: () => void;
+  onProjectDeleted: (projectId: string) => void;
 }
 
-export function LeftRail({ projects, activeProject, events, onCreateProject }: LeftRailProps) {
+export function LeftRail({
+  projects,
+  activeProject,
+  events,
+  onCreateProject,
+  onProjectDeleted,
+}: LeftRailProps) {
   const mode = useRailMode((s) => s.mode);
   const setMode = useRailMode((s) => s.setMode);
 
@@ -47,7 +54,11 @@ export function LeftRail({ projects, activeProject, events, onCreateProject }: L
       </div>
       <div className="flex-1 overflow-hidden">
         {mode === 'projects' ? (
-          <ProjectRail projects={projects} onCreateProject={onCreateProject} />
+          <ProjectRail
+            projects={projects}
+            onCreateProject={onCreateProject}
+            onProjectDeleted={onProjectDeleted}
+          />
         ) : (
           <SessionsRail project={activeProject} events={events} />
         )}
