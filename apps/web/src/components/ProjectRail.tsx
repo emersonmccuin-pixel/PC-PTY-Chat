@@ -66,13 +66,18 @@ export function ProjectRail({
   useEffect(() => {
     if (!menu) return;
     const dismiss = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      // Only Escape dismisses — typing in the filter input or anywhere else
+      // shouldn't close the menu.
+      if (e.key === 'Escape') setMenu(null);
+    };
     window.addEventListener('click', dismiss);
     window.addEventListener('contextmenu', dismiss);
-    window.addEventListener('keydown', dismiss);
+    window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('click', dismiss);
       window.removeEventListener('contextmenu', dismiss);
-      window.removeEventListener('keydown', dismiss);
+      window.removeEventListener('keydown', onKey);
     };
   }, [menu]);
 
@@ -216,6 +221,12 @@ export function ProjectRail({
                   onClick={() => setActiveSlug(p.slug)}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    // stopPropagation so the SAME contextmenu doesn't bubble to
+                    // the window-level dismiss listener attached by the useEffect
+                    // below — React 18 commits + runs the effect fast enough that
+                    // the listener was live before bubbling finished, opening and
+                    // immediately closing the menu (5+.1 regression hunt).
+                    e.stopPropagation();
                     setMenu({ project: p, x: e.clientX, y: e.clientY });
                   }}
                   title={p.folderPath}
