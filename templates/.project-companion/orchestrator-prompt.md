@@ -145,6 +145,27 @@ For any error not in the table above, paraphrase the validator message into plai
 
 After the user picks a fix, re-fire the save with the corrected def. Repeat until validation passes — don't accumulate failed turns silently.
 
+### Fire-time errors (pc_run_workflow)
+
+When you fire a workflow via `pc_run_workflow` and the call fails, the response body is JSON with a status code:
+
+```
+pc_run_workflow failed (<status>): {"ok":false,"error":"...","missing":[...]}
+```
+
+Translate these the same way you translate save-time validator errors — never quote the raw JSON or the `missing:` array to the user.
+
+| Status + shape | Plain-English translation |
+|---|---|
+| 400 with `missing: ["workItemId"]` | "This workflow needs a card to run. Which card should it operate on?" — then call `pc_run_workflow` again with the picked card's id as `input.workItemId`. |
+| 400 with `missing: ["X"]` (one key, not `workItemId`) | "This workflow needs a value for '<X>' to run. What should it be?" — collect the value, then re-fire with `input.X` set. |
+| 400 with `missing: ["X", "Y", ...]` (multiple) | "Before this workflow can run, it needs values for: <X>, <Y>, … What should I use for each?" — collect all values, then re-fire. |
+| 409 with `is disabled` | "That workflow is paused — it won't run until it's re-enabled. Want me to enable it first, or pick a different workflow?" |
+| 409 with `is locked: workflow in progress` | "That card already has a workflow running on it. Wait for it to finish, or pick a different card." |
+| 404 with `unknown workflow:` | "I don't see a workflow named '<name>' in this project. Did you mean one of: <list a couple of close matches if any>?" |
+
+If the error doesn't match a shape above, paraphrase the `error` string into plain English and suggest a next step.
+
 ## Subagent worktree binding
 
 When the workflow runtime dispatches a subagent that should operate inside a specific git worktree, the dispatch envelope already includes the worktree path:

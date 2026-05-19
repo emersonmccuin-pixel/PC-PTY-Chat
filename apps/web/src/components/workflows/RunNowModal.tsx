@@ -46,6 +46,9 @@ export function RunNowModal({ project, workflowId, onClose, onFired }: RunNowMod
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [fireError, setFireError] = useState<string | null>(null);
+  /** 4f.4 / D71. Declared-but-unsupplied input keys from the server's
+   *  structured 400 response. The modal highlights each named field. */
+  const [missingInputKeys, setMissingInputKeys] = useState<Set<string>>(() => new Set());
 
   // Initial load: workflow def + project work items.
   useEffect(() => {
@@ -108,13 +111,21 @@ export function RunNowModal({ project, workflowId, onClose, onFired }: RunNowMod
   const canSubmit = useMemo(() => {
     if (!workflow || busy) return false;
     if (willAttachCard && !pickedWorkItemId) return false;
+    // 4f.4 / D71. Every declared extra-input is required at fire-time —
+    // block submit when any field is empty so the user gets the hint up
+    // front instead of bouncing off a 400 round-trip.
+    for (const key of extraInputKeys) {
+      const v = inputValues[key];
+      if (v === undefined || v.trim() === '') return false;
+    }
     return true;
-  }, [workflow, busy, willAttachCard, pickedWorkItemId]);
+  }, [workflow, busy, willAttachCard, pickedWorkItemId, extraInputKeys, inputValues]);
 
   const handleFire = useCallback(async () => {
     if (!workflow) return;
     setBusy(true);
     setFireError(null);
+    setMissingInputKeys(new Set());
     try {
       const inputs: Record<string, unknown> = {};
       for (const key of extraInputKeys) {
@@ -127,11 +138,14 @@ export function RunNowModal({ project, workflowId, onClose, onFired }: RunNowMod
       const runId = await api.fireWorkflow(project.id, workflow.id, body);
       onFired(runId);
     } catch (e) {
-      const msg =
-        e instanceof WorkflowFireError
-          ? e.message
-          : `${(e as Error).message ?? 'fire failed'}`;
-      setFireError(msg);
+      if (e instanceof WorkflowFireError) {
+        setFireError(e.message);
+        if (e.missing && e.missing.length > 0) {
+          setMissingInputKeys(new Set(e.missing));
+        }
+      } else {
+        setFireError(`${(e as Error).message ?? 'fire failed'}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -217,24 +231,40 @@ export function RunNowModal({ project, workflowId, onClose, onFired }: RunNowMod
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     Workflow inputs
                   </h3>
-                  {extraInputKeys.map((key) => (
-                    <label key={key} className="flex flex-col gap-1 text-xs">
-                      <span className="text-muted-foreground">
-                        <span className="font-mono text-foreground">{key}</span>
-                        <span className="ml-2 text-muted-foreground/70">
-                          {workflow.inputs?.[key]}
+                  {extraInputKeys.map((key) => {
+                    const isMissing = missingInputKeys.has(key);
+                    return (
+                      <label key={key} className="flex flex-col gap-1 text-xs">
+                        <span className="text-muted-foreground">
+                          <span className="font-mono text-foreground">{key}</span>
+                          <span className="ml-1 text-destructive">*</span>
+                          <span className="ml-2 text-muted-foreground/70">
+                            {workflow.inputs?.[key]}
+                          </span>
                         </span>
-                      </span>
-                      <input
-                        type="text"
-                        value={inputValues[key] ?? ''}
-                        onChange={(e) =>
-                          setInputValues((prev) => ({ ...prev, [key]: e.target.value }))
-                        }
-                        className="border border-border bg-background px-2 py-1 outline-none focus:border-primary"
-                      />
-                    </label>
-                  ))}
+                        <input
+                          type="text"
+                          value={inputValues[key] ?? ''}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setInputValues((prev) => ({ ...prev, [key]: next }));
+                            if (isMissing) {
+                              setMissingInputKeys((prev) => {
+                                const out = new Set(prev);
+                                out.delete(key);
+                                return out;
+                              });
+                            }
+                          }}
+                          className={
+                            isMissing
+                              ? 'border border-destructive bg-background px-2 py-1 outline-none focus:border-destructive'
+                              : 'border border-border bg-background px-2 py-1 outline-none focus:border-primary'
+                          }
+                        />
+                      </label>
+                    );
+                  })}
                 </div>
               )}
 

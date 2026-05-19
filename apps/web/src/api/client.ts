@@ -692,11 +692,20 @@ export const api = {
         body: JSON.stringify(body),
       },
     );
-    const data = (await res.json()) as { ok?: boolean; runId?: string; error?: string };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      runId?: string;
+      error?: string;
+      missing?: string[];
+    };
     if (res.ok && data.ok === true && typeof data.runId === 'string') {
       return data.runId;
     }
-    throw new WorkflowFireError(data.error ?? `fire workflow → ${res.status}`, res.status);
+    throw new WorkflowFireError(
+      data.error ?? `fire workflow → ${res.status}`,
+      res.status,
+      Array.isArray(data.missing) ? data.missing : undefined,
+    );
   },
 
   /** All runs for this project (across workflows). The drawer filters
@@ -1101,13 +1110,19 @@ export class WorkflowValidationError extends Error {
 /** Thrown by fireWorkflow on non-2xx. Carries the HTTP status so the
  *  RunNowModal can distinguish 400 (Work Contract / unknown work item) from
  *  409 (disabled / card-locked) from 404 (unknown id). The server message is
- *  plain-English from D74's translation surface — render verbatim. */
+ *  plain-English from D74's translation surface — render verbatim.
+ *
+ *  4f.4 / D71: 400 responses for fire-time required-inputs failures include
+ *  `missing: string[]` listing the declared-but-unsupplied keys so the
+ *  modal can highlight the offending input fields inline. */
 export class WorkflowFireError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  missing?: string[];
+  constructor(message: string, status: number, missing?: string[]) {
     super(message);
     this.name = 'WorkflowFireError';
     this.status = status;
+    if (missing !== undefined) this.missing = missing;
   }
 }
 

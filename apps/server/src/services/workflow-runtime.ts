@@ -481,6 +481,27 @@ export class WorkflowRuntime {
       worktreePath,
       ...(Object.keys(onEnterInputs).length > 0 ? { inputs: onEnterInputs } : {}),
     });
+
+    // 4f.4 / D71. Fire-time required-inputs check. on_enter can only fill
+    // workItemId + stageId from natural context, so a workflow that declares
+    // any other required input + on_enter trigger is misconfigured. Fail the
+    // run terminally with a friendly reason; the work item unlocks to
+    // `blocked` via the standard terminal-status path, and the user sees the
+    // failure in 4e's run-detail drawer. createRun has already broadcast the
+    // initial-state envelope, so the terminal update is a second broadcast.
+    const onEnterInputCheck = validateDeclaredInputs(match.entry.workflow, run.inputs);
+    if (!onEnterInputCheck.ok) {
+      run.status = 'failed';
+      run.lastReason = formatMissingInputsReason(onEnterInputCheck.missing);
+      run.completedAt = new Date().toISOString();
+      this.persistAndBroadcast(run);
+      this.unlockWorkItem(run);
+      const final = getWorkItem(id as ULID);
+      if (!final) throw new Error(`work item disappeared mid-move: ${id}`);
+      this.broadcast({ type: 'work-items-changed', change: 'moved', workItem: final });
+      return final;
+    }
+
     void this.tick(run.id).catch((err) => {
       console.error('[workflow-runtime] stage-move tick failed:', (err as Error).message);
     });
@@ -824,6 +845,14 @@ export class WorkflowRuntime {
       throw new Error(`workflow "${name}" is disabled`);
     }
 
+    // 4f.4 / D71. Fire-time required-inputs check. Throw a typed error
+    // before any worktree provisioning / run creation so the HTTP + MCP
+    // layers can surface the missing keys as a structured response.
+    const inputCheck = validateDeclaredInputs(entry.workflow, inputs);
+    if (!inputCheck.ok) {
+      throw new WorkflowMissingInputsError(entry.workflow.id, inputCheck.missing);
+    }
+
     const runId = randomUUID();
     let worktreePath: string | null = null;
     if (entry.workflow.worktree !== 'none') {
@@ -918,7 +947,7 @@ export class WorkflowRuntime {
     // Build run.inputs: natural context (workItemId + stageId) filtered to
     // declared keys, then user-supplied inputs layered on top. Caller-
     // explicit wins; the natural context is a courtesy fill for declared
-    // keys that match. 4f.4 will add the fire-time required-keys check.
+    // keys that match.
     const naturalInputs = pickDeclaredInputs(workflow, {
       ...(args.workItemId ? { workItemId: args.workItemId } : {}),
       ...(stageId ? { stageId } : {}),
@@ -928,6 +957,15 @@ export class WorkflowRuntime {
         ? args.inputs
         : {};
     const inputs: Record<string, unknown> = { ...naturalInputs, ...userInputs };
+
+    // 4f.4 / D71. Fire-time required-inputs check. Throws BEFORE the card
+    // lock + worktree provisioning so a missing-input fire leaves no
+    // side-effects to clean up. HTTP route maps the typed error to 400 +
+    // structured `missing: [...]` body for the modal to highlight fields.
+    const inputCheck = validateDeclaredInputs(workflow, inputs);
+    if (!inputCheck.ok) {
+      throw new WorkflowMissingInputsError(workflow.id, inputCheck.missing);
+    }
 
     const runId = randomUUID();
     let worktreePath: string | null = null;
@@ -1718,6 +1756,18 @@ export class WorkflowRuntime {
       inputs[k] = ctx.substituteOutputs(v, ctx.run);
     }
 
+    // 4f.4 / D71. Fire-time required-inputs check applies to nested calls
+    // too: the parent workflow's `inputs:` block must wire values for
+    // every key the child declares. failedSync surfaces the missing keys
+    // in the parent node's `lastReason` (4e's run-detail renders it).
+    const childInputCheck = validateDeclaredInputs(entry.workflow, inputs);
+    if (!childInputCheck.ok) {
+      return failedSync(
+        formatMissingInputsReason(childInputCheck.missing),
+        completedAt(),
+      );
+    }
+
     const child = this.createRun({
       workflow: entry.workflow,
       yamlText: entry.yamlText,
@@ -2201,6 +2251,61 @@ function pickDeclaredInputs(
     }
   }
   return picked;
+}
+
+/** Section 4f.4 / D71. Fire-time check: every declared `inputs:` key must
+ *  be present + non-empty in the final inputs map. Workflows with no
+ *  `inputs:` block pass trivially. Called by all four fire-paths (drag-fire
+ *  on_enter, manual-fire, pc_run_workflow callable, nested call-workflow)
+ *  so declared-but-unsupplied inputs hard-fail at fire-time instead of
+ *  silently substituting to empty strings inside subagent prompts /
+ *  http URLs / approval messages. */
+function validateDeclaredInputs(
+  workflow: Workflow,
+  inputs: Record<string, unknown> | undefined,
+): { ok: true } | { ok: false; missing: string[] } {
+  const declared = workflow.inputs;
+  if (!declared || Object.keys(declared).length === 0) return { ok: true };
+  const supplied = inputs ?? {};
+  const missing: string[] = [];
+  for (const key of Object.keys(declared)) {
+    if (!(key in supplied) || isEmptyValue(supplied[key])) {
+      missing.push(key);
+    }
+  }
+  if (missing.length > 0) return { ok: false, missing };
+  return { ok: true };
+}
+
+/** Section 4f.4 / D71. Thrown by `runWorkflow` + `fireManually` when the
+ *  fire-time required-inputs check fails. HTTP layer catches and maps to
+ *  400 with a structured `{ error, missing: [...] }` body so the modal /
+ *  orchestrator can surface the offending keys. */
+export class WorkflowMissingInputsError extends Error {
+  override readonly name = 'WorkflowMissingInputsError';
+  constructor(
+    public readonly workflowId: string,
+    public readonly missing: string[],
+  ) {
+    super(
+      `workflow "${workflowId}" is missing required input${
+        missing.length === 1 ? '' : 's'
+      }: ${missing.join(', ')}`,
+    );
+  }
+}
+
+/** Build the plain-English `lastReason` text for a run that failed at
+ *  fire-time because declared inputs were missing. Used by both the run-
+ *  row terminal-failure path (moveAndFire) and the nested-node failedSync
+ *  path (dispatchNestedWorkflow). */
+function formatMissingInputsReason(missing: string[]): string {
+  if (missing.length === 1) {
+    return `This workflow needs an input named "${missing[0]}" — it wasn't supplied.`;
+  }
+  return `This workflow needs inputs that weren't supplied: ${missing
+    .map((k) => `"${k}"`)
+    .join(', ')}.`;
 }
 
 /** Returns the `subagent:` field for a node, or null if the node isn't a
