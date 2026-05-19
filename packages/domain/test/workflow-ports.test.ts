@@ -175,15 +175,22 @@ test('http outputs status + body per D78', () => {
   );
 });
 
-test('review-style kinds output {decision, notes}', () => {
-  for (const k of ['approval', 'orchestrator-review'] as const) {
-    const s = NODE_PORT_SCHEMAS[k];
-    if (s.outputs.mode !== 'fixed') throw new Error(`${k}: expected fixed outputs`);
-    assert.deepEqual(
-      [...s.outputs.ports.map((p) => p.name)].sort(),
-      ['decision', 'notes'],
-    );
-  }
+test('approval outputs {approved, response} (matches runtime emission shape)', () => {
+  const s = NODE_PORT_SCHEMAS.approval;
+  if (s.outputs.mode !== 'fixed') throw new Error('approval: expected fixed outputs');
+  assert.deepEqual(
+    [...s.outputs.ports.map((p) => p.name)].sort(),
+    ['approved', 'response'],
+  );
+});
+
+test('orchestrator-review outputs {decision, notes} (3-way: approve / reject / revise)', () => {
+  const s = NODE_PORT_SCHEMAS['orchestrator-review'];
+  if (s.outputs.mode !== 'fixed') throw new Error('orchestrator-review: expected fixed outputs');
+  assert.deepEqual(
+    [...s.outputs.ports.map((p) => p.name)].sort(),
+    ['decision', 'notes'],
+  );
 });
 
 test('kinds with no outputs are modeled as fixed empty arrays (not author-declared)', () => {

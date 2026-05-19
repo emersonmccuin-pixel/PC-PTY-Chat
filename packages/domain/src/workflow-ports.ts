@@ -168,16 +168,16 @@ export const NODE_PORT_SCHEMAS = {
     ],
     outputs: fixed([
       {
-        name: 'decision',
-        type: 'string',
+        name: 'approved',
+        type: 'bool',
         required: true,
-        description: 'Reviewer decision (approve / reject).',
+        description: 'Whether the reviewer approved.',
       },
       {
-        name: 'notes',
+        name: 'response',
         type: 'text',
         required: true,
-        description: 'Reviewer notes (may be empty).',
+        description: 'Reviewer response text (may be empty).',
       },
     ]),
   },

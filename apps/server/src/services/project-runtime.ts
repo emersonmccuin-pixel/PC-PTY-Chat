@@ -25,6 +25,7 @@ import { renderTemplate } from './project-scaffold.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
 import { evaluateBoolean, substituteOutputs } from './output-substitution.ts';
+import { migrateWorkflowsInPlace } from './workflow-boot-migration.ts';
 import { WorkItemService } from './work-item.ts';
 import { AttachmentService } from './attachment.ts';
 import { FieldSchemaService } from './field-schema.ts';
@@ -55,6 +56,12 @@ export class ProjectRuntime {
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
   private hooksRefreshed = false;
+  /** Section 4h.8 / D80. Boot-time mandatory typed-edge migration runs once
+   *  per ProjectRuntime lifecycle, the first time the workflow registry is
+   *  initialised. Flag survives subsequent registry resets — re-running the
+   *  scan is cheap (per-file idempotence) but pointless once a project has
+   *  been migrated within the current process. */
+  private workflowMigrationRan = false;
   /** 4b.1: in-memory workflow-creator drafts keyed by transient PC_SESSION_ID.
    *  Populated by `pc_update_workflow_draft` mid-interview; consumed by the
    *  visualizer via the `workflow-creator-draft` WS envelope. Cleared on
@@ -104,14 +111,34 @@ export class ProjectRuntime {
     if (slugChanged) this.worktreesSvc = null;
   }
 
-  /** Lazy: workflow YAML registry rooted at `<folder>/.project-companion/workflows/`. */
+  /** Lazy: workflow YAML registry rooted at `<folder>/.project-companion/workflows/`.
+   *  First access runs the 4h.8 typed-edge migration in place — failures
+   *  throw, preventing the registry from ever loading legacy-shape YAML. */
   workflowRegistry(): WorkflowRegistry {
     if (!this.registry) {
       const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
+      this.runWorkflowBootMigration(dir);
       this.registry = new WorkflowRegistry(dir);
       this.registry.reload();
     }
     return this.registry;
+  }
+
+  /** Section 4h.8 / D80. Runs the boot-time migration on this project's
+   *  workflows dir once per ProjectRuntime lifecycle. Delegates the actual
+   *  scan + rewrite to `migrateWorkflowsInPlace` in
+   *  `workflow-boot-migration.ts`. Logs each rewritten file so the user
+   *  has a paper trail; rethrows on any failure so the registry never
+   *  loads legacy YAML by accident. */
+  private runWorkflowBootMigration(dir: string): void {
+    if (this.workflowMigrationRan) return;
+    this.workflowMigrationRan = true;
+    const stats = migrateWorkflowsInPlace(dir);
+    for (const path of stats.migrated) {
+      console.log(
+        `[project-runtime] migrated workflow to typed-edge shape: ${path} (backup at ${path}.pre-4h.bak)`,
+      );
+    }
   }
 
   /**
