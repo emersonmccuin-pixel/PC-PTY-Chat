@@ -60,6 +60,12 @@ import {
 } from './services/project-agents.ts';
 import { browseFolder, BrowseError, listDrives } from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
+import {
+  FileNotFoundError,
+  FilePathOutsideProjectError,
+  getFilesTree,
+  previewFile,
+} from './services/files-tree.ts';
 import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
@@ -468,6 +474,48 @@ function revealCommand(path: string): { cmd: string; args: string[] } {
   if (process.platform === 'darwin') return { cmd: 'open', args: [path] };
   return { cmd: 'xdg-open', args: [path] };
 }
+
+/** 5+.2 — read-only file tree for the LeftRail Files tab. Walks the project's
+ *  folderPath applying the D92 hard-skip list + .gitignore. Returns the full
+ *  recursive tree; the renderer collapses/expands client-side. */
+app.get('/api/projects/:projectId/files/tree', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const project = getProjectById(id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    const tree = await getFilesTree(project.folderPath);
+    return c.json({ ok: true, tree });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** 5+.2 — read-only preview for a single file under the project root. The
+ *  `path` query param is relative + posix-style (the tree returns paths in
+ *  that shape). Server resolves + bounds-checks to keep the read confined to
+ *  folderPath. Renderer kinds: markdown / html / image / text / binary /
+ *  oversized — see services/files-tree.ts for the cap + classification. */
+app.get('/api/projects/:projectId/files/preview', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const project = getProjectById(id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const relPath = c.req.query('path');
+  if (typeof relPath !== 'string' || relPath.length === 0) {
+    return c.json({ ok: false, error: 'path query param is required' }, 400);
+  }
+  try {
+    const preview = await previewFile(project.folderPath, relPath);
+    return c.json({ ok: true, preview });
+  } catch (err) {
+    if (err instanceof FilePathOutsideProjectError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
+    if (err instanceof FileNotFoundError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
 
 /** Create a project: git init in `folder_path`, write the PC scaffold, commit,
  *  insert the DB row, register the runtime. Body:

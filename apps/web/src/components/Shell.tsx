@@ -17,6 +17,7 @@ import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
 import { usePerProjectTab } from '@/store/per-project-tab';
 import { ActivityPanel } from './ActivityPanel';
+import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
 import { Orchestrator } from './Orchestrator';
@@ -163,6 +164,8 @@ function Center({
           />
         ) : tab === 'workflows' ? (
           <WorkflowList project={activeProject} events={wsEvents} send={wsSend} />
+        ) : tab === 'files' ? (
+          <FilesViewer project={activeProject} />
         ) : tab === 'project-settings' ? (
           <ProjectSettingsPanel
             project={activeProject}

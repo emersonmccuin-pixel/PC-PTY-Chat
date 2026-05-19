@@ -3,7 +3,7 @@
 // Adapted for Project Companion: dropped the legacy-tab normalizer (no v1
 // installations to migrate from in the rig).
 
-export const TABS = ['orchestrator', 'work-items', 'workflows'] as const;
+export const TABS = ['orchestrator', 'work-items', 'workflows', 'files'] as const;
 /** `project-settings` is reachable via the right-aligned gear, not the main strip. */
 export type Tab = (typeof TABS)[number] | 'project-settings';
 
@@ -11,6 +11,7 @@ const LABEL: Record<(typeof TABS)[number], string> = {
   orchestrator: 'Orchestrator',
   'work-items': 'Work items',
   workflows: 'Workflows',
+  files: 'Files',
 };
 
 export function TabBar({

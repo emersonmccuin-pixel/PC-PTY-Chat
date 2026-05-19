@@ -177,6 +177,26 @@ export interface FolderProbe {
 
 export type CreateProjectMode = 'init-empty' | 'init-in-place' | 'attach-to-git';
 
+// ── Files (5+.2) ───────────────────────────────────────────────────────────
+
+export interface FileTreeNode {
+  name: string;
+  /** Posix-style path relative to the project root. */
+  path: string;
+  kind: 'file' | 'dir';
+  children?: FileTreeNode[];
+  /** File size in bytes. Only present on files. */
+  size?: number;
+}
+
+export type FilePreview =
+  | { kind: 'markdown'; content: string; byteSize: number }
+  | { kind: 'html'; content: string; byteSize: number }
+  | { kind: 'image'; dataUri: string; byteSize: number }
+  | { kind: 'text'; content: string; byteSize: number }
+  | { kind: 'binary'; byteSize: number }
+  | { kind: 'oversized'; byteSize: number };
+
 // ── Global settings (Q10 envelope) ─────────────────────────────────────────
 
 export interface ActivityPanelSettings {
@@ -462,6 +482,30 @@ export const api = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.error ?? `reveal → ${res.status}`);
     }
+  },
+
+  // ── Files (5+.2) ─────────────────────────────────────────────────────────
+  /** Recursive tree of the project's folderPath, with HARD_SKIP_DIRS and
+   *  .gitignore applied server-side. Paths are posix-style + relative to the
+   *  root. */
+  getFilesTree: (projectId: ULID) =>
+    getJson<{ ok: true; tree: FileTreeNode[] }>(
+      `/api/projects/${projectId}/files/tree`,
+    ).then((r) => r.tree),
+
+  /** Read-only preview for a single file. `path` is the relative posix-style
+   *  path returned by `getFilesTree`. Renderer dispatches on `preview.kind`. */
+  previewFile: async (projectId: ULID, path: string): Promise<FilePreview> => {
+    const res = await fetch(
+      `/api/projects/${projectId}/files/preview?path=${encodeURIComponent(path)}`,
+    );
+    const data = (await res.json()) as
+      | { ok: true; preview: FilePreview }
+      | { ok: false; error: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.ok === false ? data.error : `preview → ${res.status}`);
+    }
+    return data.preview;
   },
 
   // ── Agents (Section 3 D2) ────────────────────────────────────────────────
