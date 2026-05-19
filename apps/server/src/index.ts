@@ -1520,6 +1520,28 @@ app.get('/api/projects/:projectId/workflow-runs/:runId', (c) => {
   return c.json({ run });
 });
 
+// 4e.2 / D53. Re-fire a failed run from a specific failed node. Returns the
+// new run's id; the original run row stays intact with a lineage suffix on
+// `lastReason`. 404 for unknown project / cross-project run; 400 for
+// shape errors (missing nodeId, target run not failed/cancelled, target
+// node not failed).
+app.post('/api/projects/:projectId/workflow-runs/:runId/retry-from', async (c) => {
+  const id = c.req.param('projectId');
+  const runId = c.req.param('runId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ nodeId?: string }>().catch(() => ({}) as { nodeId?: string });
+  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
+  if (!nodeId) return c.json({ ok: false, error: 'nodeId required' }, 400);
+  const result = await runtime.workflowRuntime().retryFromFailedNode(runId, nodeId);
+  if (!result.ok) {
+    // Treat "unknown run" as 404; everything else (validation) as 400.
+    const status = result.error.startsWith('unknown run:') ? 404 : 400;
+    return c.json({ ok: false, error: result.error }, status);
+  }
+  return c.json({ ok: true, runId: result.runId });
+});
+
 app.get('/api/projects/:projectId/worktrees', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);

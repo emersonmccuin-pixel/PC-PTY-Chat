@@ -54,6 +54,7 @@ function toDomain(row: WorkflowRunRow): WorkflowRun {
   if (Object.keys(row.inputs).length > 0) run.inputs = row.inputs;
   if (Object.keys(row.outputs).length > 0) run.outputs = row.outputs;
   if (row.lastReason) run.lastReason = row.lastReason;
+  if (Object.keys(row.metadata).length > 0) run.metadata = row.metadata;
   return run;
 }
 
@@ -73,6 +74,10 @@ export interface CreateRunInput {
   worktreePath?: string | null;
   inputs?: Record<string, unknown>;
   nodeOutputs?: Record<string, NodeOutput>;
+  /** Section 4e.2. Free-form metadata captured at row creation. Used today
+   *  for retry-from lineage (`reFiredFromRunId`, `reFiredFromNodeId`); open
+   *  shape for future fire-paths. Stored as a JSON blob on the row. */
+  metadata?: Record<string, unknown>;
 }
 
 export function createRun(input: CreateRunInput): WorkflowRun {
@@ -94,7 +99,7 @@ export function createRun(input: CreateRunInput): WorkflowRun {
     inputs: input.inputs ?? {},
     outputs: {},
     nodeOutputs: input.nodeOutputs ?? {},
-    metadata: {},
+    metadata: input.metadata ?? {},
     lastReason: null,
     createdAt: now,
     startedAt: null,
@@ -180,6 +185,7 @@ export function persistRun(run: WorkflowRun): void {
     outputs: run.outputs ?? {},
     worktreePath: run.worktreePath,
     lastReason: run.lastReason ?? null,
+    metadata: run.metadata ?? {},
     startedAt: startedAtMs,
     endedAt: endedAtMs,
     lastActivityAt: Date.now(),

@@ -72,4 +72,10 @@ export interface WorkflowRun {
   nodeOutputs: Record<string, NodeOutput>;
   /** Last reason associated with `failed` / `cancelled` / `paused`. */
   lastReason?: string;
+  /** Section 4e.2. Free-form metadata captured at run creation / persisted
+   *  through the lifecycle. Today: retry-from lineage
+   *  (`reFiredFromRunId`, `reFiredFromNodeId`). Undefined when the
+   *  underlying row has an empty `{}` (saves a per-row allocation in the
+   *  common no-metadata case). */
+  metadata?: Record<string, unknown>;
 }

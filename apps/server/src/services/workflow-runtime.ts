@@ -505,10 +505,17 @@ export class WorkflowRuntime {
     parentNodeId?: string;
     worktreePath: string | null;
     inputs?: Record<string, unknown>;
+    /** Seed nodeOutputs — used by retry-from to carry forward complete
+     *  steps from the prior run. Defaults to every node at `pending`. */
+    nodeOutputs?: Record<string, NodeOutput>;
+    /** Section 4e.2. Free-form metadata captured at row creation. Used for
+     *  retry-from lineage today. */
+    metadata?: Record<string, unknown>;
   }): WorkflowRun {
+    const seededOutputs = args.nodeOutputs;
     const nodeOutputs: Record<string, NodeOutput> = {};
     for (const node of args.workflow.nodes) {
-      nodeOutputs[node.id] = { status: 'pending' };
+      nodeOutputs[node.id] = seededOutputs?.[node.id] ?? { status: 'pending' };
     }
     const id = (args.id ?? newId()) as ULID;
     return dbCreateRun({
@@ -525,6 +532,7 @@ export class WorkflowRuntime {
       worktreePath: args.worktreePath,
       ...(args.inputs ? { inputs: args.inputs } : {}),
       nodeOutputs,
+      ...(args.metadata ? { metadata: args.metadata } : {}),
     });
   }
 
@@ -544,6 +552,122 @@ export class WorkflowRuntime {
    *  `nodeOutputs` map is included, unlike the list endpoint. */
   readRunForProject(runId: string): WorkflowRun | null {
     return dbGetRunForProject(runId as ULID, this.projectId);
+  }
+
+  /** Section 4e.2 / D53. Re-fire a failed run from a specific failed node.
+   *  Creates a NEW run row (history-preserving — the original failure stays
+   *  intact for inspection). Lineage metadata + carry-forward semantics:
+   *
+   *   - Same workflowId, same inputs, same workItemId / stageId.
+   *   - `metadata.reFiredFromRunId` + `metadata.reFiredFromNodeId` point
+   *     back at the source.
+   *   - Any node currently `complete` in the prior run keeps its output
+   *     (we don't pay to re-run already-successful work). Everything else
+   *     resets to `{ status: 'pending' }` — the target failed node and any
+   *     downstream pending/skipped/cancelled nodes re-run on the next tick.
+   *   - `attempt` counter resets to 1 in the new run; the D17 same-run
+   *     retry counter stays scoped to its own run.
+   *   - Original run's `lastReason` gets a " · re-fired as <new-run-id>"
+   *     suffix appended so the UI can surface the lineage on both ends.
+   *
+   *  Validation: target run must be `failed` or `cancelled`, target node
+   *  must be `failed` in that run. Mismatches return { ok: false, error }
+   *  for the HTTP layer to surface as 400. Cross-project + unknown run
+   *  return 404 via the route. */
+  async retryFromFailedNode(
+    runId: string,
+    nodeId: string,
+  ): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+    const prior = dbGetRunForProject(runId as ULID, this.projectId);
+    if (!prior) return { ok: false, error: `unknown run: ${runId}` };
+    if (prior.status !== 'failed' && prior.status !== 'cancelled') {
+      return {
+        ok: false,
+        error: `run is "${prior.status}", retry-from requires "failed" or "cancelled"`,
+      };
+    }
+    const priorNodeOutput = prior.nodeOutputs[nodeId];
+    if (!priorNodeOutput) {
+      return { ok: false, error: `unknown nodeId in run: ${nodeId}` };
+    }
+    if (priorNodeOutput.status !== 'failed') {
+      return {
+        ok: false,
+        error: `node "${nodeId}" is "${priorNodeOutput.status}", retry-from requires "failed"`,
+      };
+    }
+
+    const parsed = parseWorkflowText(prior.workflowYamlSnapshot, {
+      expectedId: prior.workflowId,
+    });
+    if (!parsed.ok || !parsed.workflow) {
+      return {
+        ok: false,
+        error: `frozen YAML snapshot failed to parse: ${parsed.errors
+          .map((e) => `${e.path}: ${e.message}`)
+          .join('; ')}`,
+      };
+    }
+    const workflow = parsed.workflow;
+
+    // Carry-forward seed: any `complete` node in the prior run keeps its
+    // output (drop attempt so it presents as a clean first attempt in the
+    // new run). The runtime's tick() will treat these as already-done deps.
+    const seededOutputs: Record<string, NodeOutput> = {};
+    for (const node of workflow.nodes) {
+      const prev = prior.nodeOutputs[node.id];
+      if (prev?.status === 'complete') {
+        const carried: NodeOutput = {
+          status: 'complete',
+          ...(prev.output !== undefined ? { output: prev.output } : {}),
+          ...(prev.startedAt ? { startedAt: prev.startedAt } : {}),
+          ...(prev.completedAt ? { completedAt: prev.completedAt } : {}),
+          ...(prev.transcriptPath ? { transcriptPath: prev.transcriptPath } : {}),
+        };
+        seededOutputs[node.id] = carried;
+      } else {
+        seededOutputs[node.id] = { status: 'pending' };
+      }
+    }
+
+    const newRun = this.createRun({
+      workflow,
+      yamlText: prior.workflowYamlSnapshot,
+      trigger: 'callable',
+      ...(prior.workItemId ? { workItemId: prior.workItemId } : {}),
+      ...(prior.stageId ? { stageId: prior.stageId } : {}),
+      worktreePath: prior.worktreePath,
+      ...(prior.inputs ? { inputs: prior.inputs } : {}),
+      nodeOutputs: seededOutputs,
+      metadata: {
+        ...(prior.metadata ?? {}),
+        reFiredFromRunId: prior.id,
+        reFiredFromNodeId: nodeId,
+      },
+    });
+
+    // Append the lineage suffix to the prior run's lastReason so the
+    // "open old failed run" surface can show "re-fired as <new-id>".
+    const lineageSuffix = ` · re-fired as ${newRun.id}`;
+    const refreshedPrior = dbGetRunForProject(prior.id as ULID, this.projectId);
+    if (refreshedPrior) {
+      const existing = refreshedPrior.lastReason ?? '';
+      refreshedPrior.lastReason = existing.includes(lineageSuffix)
+        ? existing
+        : `${existing}${lineageSuffix}`;
+      dbPersistRun(refreshedPrior);
+    }
+
+    setImmediate(() => {
+      void this.tick(newRun.id).catch((err) => {
+        console.error(
+          '[workflow-runtime] retryFromFailedNode tick failed:',
+          (err as Error).message,
+        );
+      });
+    });
+
+    return { ok: true, runId: newRun.id };
   }
 
   /**

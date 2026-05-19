@@ -75,6 +75,22 @@ nodes:
     prompt: Take a look.
 `;
 
+const TWO_STEP_SUBAGENT_YAML = `id: smoke-two-step
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: first
+    kind: subagent
+    subagent: researcher
+    prompt: Step one.
+  - id: second
+    kind: subagent
+    subagent: researcher
+    prompt: Step two.
+    depends_on: [first]
+`;
+
 let channelServer: InstanceType<typeof ChannelServer>;
 let channelPort = 0;
 
@@ -389,6 +405,223 @@ test('4e.1 / D55: subagent spawn handle reports jsonlPath → persisted onto nod
       fakeJsonlPath,
       'transcriptPath must survive nodeComplete spread + dbPersistRun round-trip',
     );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4e.2 / D53: retry-from-failed creates new run with carry-forward + lineage metadata', async () => {
+  // Two-step workflow: first succeeds, second fails. Then retry-from
+  // `second` with a NEW spawner (this time `second` succeeds). The new run
+  // must (a) carry forward `first`'s output without re-spawning, (b)
+  // re-run `second` and reach `complete`, and (c) carry the lineage
+  // metadata + prior lastReason suffix.
+  const results: SubagentSpawnResult[] = [
+    {
+      kind: 'success',
+      lastAssistantText: 'first-step-original-output',
+      pcCompletePayload: null,
+      transcriptPath: '/tmp/first.log',
+      jsonlPath: null,
+    },
+    {
+      kind: 'failure',
+      cause: 'idle-timeout',
+      message: 'second step timed out',
+      transcriptPath: '/tmp/second.log',
+      jsonlPath: null,
+      partialAssistantText: '',
+    },
+  ];
+  let dispatchIdx = 0;
+  const callLog: string[] = [];
+  const stagedSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    callLog.push(req.pcSessionId);
+    const result = results[dispatchIdx++] ?? results[results.length - 1]!;
+    return {
+      done: Promise.resolve(result),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-two-step', yaml: TWO_STEP_SUBAGENT_YAML }],
+    { subagentSpawner: stagedSpawner },
+  );
+  try {
+    const priorRun = await f.runtime.runWorkflow('smoke-two-step');
+    // Wait for the run to settle in `failed` (second step's failure).
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, priorRun.id);
+      if (fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const priorSettled = f.runtime['tryGetRun'].call(f.runtime, priorRun.id);
+    assert.equal(priorSettled?.status, 'failed', 'prior run must reach failed');
+    assert.equal(priorSettled?.nodeOutputs?.['first']?.status, 'complete');
+    assert.equal(priorSettled?.nodeOutputs?.['second']?.status, 'failed');
+
+    // Now stage the retry — give the spawner a fresh success for `second`.
+    results.push({
+      kind: 'success',
+      lastAssistantText: 'second-step-retry-output',
+      pcCompletePayload: null,
+      transcriptPath: '/tmp/second-retry.log',
+      jsonlPath: null,
+    });
+    const callsBeforeRetry = callLog.length;
+
+    const result = await f.runtime.retryFromFailedNode(priorRun.id, 'second');
+    assert.ok(result.ok, `retry-from should succeed: ${(result as { error?: string }).error ?? ''}`);
+    assert.ok(result.ok && result.runId !== priorRun.id, 'new run id must differ from prior');
+
+    // Wait for the new run to complete.
+    const newRunId = result.ok ? result.runId : '';
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, newRunId);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const newRun = f.runtime['tryGetRun'].call(f.runtime, newRunId);
+    assert.equal(newRun?.status, 'complete', 'new run must reach complete');
+
+    // Carry-forward: `first` keeps its prior output (the spawner was NOT
+    // called for it on this retry).
+    assert.equal(newRun?.nodeOutputs?.['first']?.status, 'complete');
+    assert.equal(
+      newRun?.nodeOutputs?.['first']?.output,
+      'first-step-original-output',
+      'first-node output must carry forward from the prior run',
+    );
+    // `second` was re-dispatched and completed with the new output.
+    assert.equal(newRun?.nodeOutputs?.['second']?.status, 'complete');
+    assert.equal(newRun?.nodeOutputs?.['second']?.output, 'second-step-retry-output');
+
+    // Exactly one new spawn happened for the retry (the second step). The
+    // first step did NOT re-spawn.
+    assert.equal(
+      callLog.length - callsBeforeRetry,
+      1,
+      `retry should spawn exactly once (for the failed step); spawn log: ${callLog.join(', ')}`,
+    );
+
+    // Lineage metadata on the new run.
+    assert.equal(newRun?.metadata?.['reFiredFromRunId'], priorRun.id);
+    assert.equal(newRun?.metadata?.['reFiredFromNodeId'], 'second');
+
+    // Prior run's lastReason got the lineage suffix appended.
+    const priorAfterRetry = f.runtime['tryGetRun'].call(f.runtime, priorRun.id);
+    assert.match(
+      priorAfterRetry?.lastReason ?? '',
+      new RegExp(`re-fired as ${newRunId}`),
+      'prior run lastReason should carry the "re-fired as <id>" suffix',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4e.2: retry-from validation — rejects unknown run, non-failed run, non-failed node', async () => {
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve({
+      kind: 'success',
+      lastAssistantText: 'done',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    } as SubagentSpawnResult),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    // 1. Unknown run id.
+    const unknown = await f.runtime.retryFromFailedNode(
+      '00000000-0000-0000-0000-000000000000',
+      'investigate',
+    );
+    assert.equal(unknown.ok, false);
+    assert.match(
+      (unknown as { error?: string }).error ?? '',
+      /unknown run:/,
+    );
+
+    // 2. Completed (not failed) run.
+    const completedRun = await f.runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, completedRun.id);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const notFailed = await f.runtime.retryFromFailedNode(completedRun.id, 'investigate');
+    assert.equal(notFailed.ok, false);
+    assert.match(
+      (notFailed as { error?: string }).error ?? '',
+      /retry-from requires "failed" or "cancelled"/,
+    );
+
+    // 3. Node-not-failed: run that's failed, but the node we point at is
+    //    `complete`. Synthesize this by failing a separate two-step run on
+    //    its SECOND node, then trying to retry from FIRST (which succeeded).
+    const stagedResults: SubagentSpawnResult[] = [
+      {
+        kind: 'success',
+        lastAssistantText: 'first done',
+        pcCompletePayload: null,
+        transcriptPath: '/tmp/x.log',
+        jsonlPath: null,
+      },
+      {
+        kind: 'failure',
+        cause: 'idle-timeout',
+        message: 'second step timed out',
+        transcriptPath: '/tmp/y.log',
+        jsonlPath: null,
+        partialAssistantText: '',
+      },
+    ];
+    let stagedIdx = 0;
+    const stagedSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+      done: Promise.resolve(stagedResults[stagedIdx++] ?? stagedResults[stagedResults.length - 1]!),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    });
+    const f2 = await mkFixture(
+      [{ name: 'smoke-two-step', yaml: TWO_STEP_SUBAGENT_YAML }],
+      { subagentSpawner: stagedSpawner },
+    );
+    try {
+      const partialRun = await f2.runtime.runWorkflow('smoke-two-step');
+      for (let i = 0; i < 100; i++) {
+        const fresh = f2.runtime['tryGetRun'].call(f2.runtime, partialRun.id);
+        if (fresh?.status === 'failed') break;
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      const nodeNotFailed = await f2.runtime.retryFromFailedNode(partialRun.id, 'first');
+      assert.equal(nodeNotFailed.ok, false);
+      assert.match(
+        (nodeNotFailed as { error?: string }).error ?? '',
+        /node "first" is "complete", retry-from requires "failed"/,
+      );
+
+      // 4. Unknown node id.
+      const unknownNode = await f2.runtime.retryFromFailedNode(partialRun.id, 'nope');
+      assert.equal(unknownNode.ok, false);
+      assert.match(
+        (unknownNode as { error?: string }).error ?? '',
+        /unknown nodeId in run/,
+      );
+    } finally {
+      f2.cleanup();
+    }
   } finally {
     f.cleanup();
   }
