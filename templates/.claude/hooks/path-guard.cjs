@@ -72,9 +72,9 @@ function gateWorkflow() {
   const prompt = payload.tool_input && payload.tool_input.prompt;
   if (typeof prompt === 'string' && prompt.includes('[workflowRunId:')) return;
   const reason =
-    'Direct Task() blocked. Subagents are workflow-only — call `pc_run_workflow` ' +
-    'instead. For one-off agent work without authoring a custom workflow, run the ' +
-    'built-in "generic-agent-runner" workflow.';
+    'Direct Task() blocked. Subagents are workflow-only — author a workflow ' +
+    'that dispatches the agent (via the conversational New Workflow modal), ' +
+    'then call `pc_run_workflow` with its id.';
   const out = {
     decision: 'block',
     reason,

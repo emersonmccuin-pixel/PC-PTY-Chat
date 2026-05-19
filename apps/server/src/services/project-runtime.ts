@@ -540,9 +540,8 @@ export class ProjectRuntime {
       }
       // Section 3 phase 3i: backfill any workflow YAMLs from templates that
       // don't yet exist in the project. Write-if-missing — user-edited copies
-      // of seed workflows (bash-loop.yaml, review-research.yaml, etc.) survive.
-      // New built-in workflows (e.g. generic-agent-runner.yaml) land in
-      // existing projects on next boot.
+      // of seed workflows (bash-loop.yaml, approval-demo.yaml, etc.) survive.
+      // New built-in workflows land in existing projects on next boot.
       const workflowsSrc = resolve(this.opts.templatesDir, '.project-companion', 'workflows');
       const workflowsDest = resolve(this.project.folderPath, '.project-companion', 'workflows');
       if (existsSync(workflowsSrc)) {
