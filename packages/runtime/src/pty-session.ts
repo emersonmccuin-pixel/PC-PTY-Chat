@@ -21,6 +21,50 @@ import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 
 const DEFAULT_CLAUDE = 'C:\\Users\\example\\.local\\bin\\claude.exe';
 
+/** claude.exe v2+ detects IDE-embedded mode from env vars set by the host
+ *  (VS Code, JetBrains, or a parent claude.exe). When PC spawns a child
+ *  claude.exe from a parent process that has any of these set — most commonly
+ *  a developer running `pnpm dev` from inside a Claude-Code-driven terminal,
+ *  or any VS Code integrated terminal — the child inherits them, tries to
+ *  attach to the parent's IPC channel (which doesn't exist for it), prints
+ *  "Visual Studio Code disconnected", and discards the first user input.
+ *  PC is the host; spawned claude.exes are tools, not peers. Scrub all
+ *  IDE-integration markers from the env before pty.spawn. */
+const IDE_INTEGRATION_ENV_KEYS = [
+  // VS Code terminal integration
+  'TERM_PROGRAM',
+  'TERM_PROGRAM_VERSION',
+  'VSCODE_PID',
+  'VSCODE_CWD',
+  'VSCODE_IPC_HOOK',
+  'VSCODE_IPC_HOOK_CLI',
+  'VSCODE_IPC_HOOK_EXTHOST',
+  'VSCODE_INJECTION',
+  'VSCODE_NLS_CONFIG',
+  'VSCODE_NONCE',
+  'VSCODE_GIT_ASKPASS_MAIN',
+  'VSCODE_GIT_ASKPASS_NODE',
+  'VSCODE_GIT_ASKPASS_EXTRA_ARGS',
+  'VSCODE_GIT_IPC_HANDLE',
+  'GIT_ASKPASS',
+  // Parent claude.exe handoff — these signal "I'm a child of another CC".
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_NO_FLICKER',
+] as const;
+
+function scrubIdeIntegrationEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (IDE_INTEGRATION_ENV_KEYS.includes(k as (typeof IDE_INTEGRATION_ENV_KEYS)[number])) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /** CC encodes the absolute cwd as the dir name under `~/.claude/projects/`.
  *  Replace any non-[A-Za-z0-9._-] character with '-'. Empirically verified
  *  against `C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test` →
@@ -108,6 +152,7 @@ export class PtySession extends EventEmitter {
   private rawBuffer = '';
   private bannerSeen = false;
   private channelConfirmSent = false;
+  private trustConfirmSent = false;
   private stopMarkerPath: string;
   private eventsPath: string;
   private lastMarkerCount = 0;
@@ -208,7 +253,11 @@ export class PtySession extends EventEmitter {
     }
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
-      env: { ...process.env, FORCE_COLOR: '0', ...(opts.extraEnv ?? {}) },
+      env: scrubIdeIntegrationEnv({
+        ...process.env,
+        FORCE_COLOR: '0',
+        ...(opts.extraEnv ?? {}),
+      }),
       cols: opts.cols ?? 120,
       rows: opts.rows ?? 30,
     });
@@ -223,6 +272,26 @@ export class PtySession extends EventEmitter {
       this.emit('raw', data);
       const stripped = stripAnsi(data);
       this.emit('chunk', stripped);
+
+      // claude.exe v2.1.140+ folder-trust prompt: fires at boot for any cwd
+      // not previously trusted. Renders as "Quick safety check: Is this a
+      // project you created or one you trust?" with "❯ 1. Yes, I trust this
+      // folder" preselected. Blocks the banner. Press Enter once to accept
+      // the default. Fires for orchestrator AND subagent paths — fresh
+      // project folders + subagent worktrees are both untrusted at first
+      // spawn. Same `\s*` matcher rule as the dev-channels prompt to absorb
+      // the cursor-right-escape rendering.
+      if (!this.trustConfirmSent) {
+        const cleanAll = stripAnsi(this.rawBuffer);
+        if (
+          /Quick\s*safety\s*check/i.test(cleanAll) ||
+          /Is\s*this\s*a\s*project\s*you\s*created/i.test(cleanAll) ||
+          /Yes,\s*I\s*trust\s*this\s*folder/i.test(cleanAll)
+        ) {
+          this.trustConfirmSent = true;
+          this.child.write('\r');
+        }
+      }
 
       // Dev-channels confirmation prompt fires once at boot. Auto-press Enter
       // to accept the preselected "I am using this for local development".
@@ -394,13 +463,23 @@ export class PtySession extends EventEmitter {
   /** Send a user message. Adds carriage return to submit. */
   send(text: string) {
     if (this.state === 'exited') throw new Error('session exited');
-    this.child.write(text);
-    // Small delay before submit lets node-pty flush the text into the input box
-    // before we send Enter — taken from drive-t11.js (~300ms there; 50ms is enough here).
+    // Multi-line inputs (Section 4d's subagent dispatch envelope is always
+    // multi-line) must use bracketed paste mode, or claude.exe's TUI
+    // interprets each embedded `\n` as a submit and fragments the prompt
+    // into N half-submits — the model receives only the first line and the
+    // remaining tokens (workflowRunId / nodeId / instructions) are lost or
+    // bounce off the input box while CC is mid-busy. Wrap with `\x1b[200~`
+    // ... `\x1b[201~` so the TUI accepts the body as a single paste, then
+    // send a separate Enter to submit. Single-line inputs are wrapped too —
+    // harmless, and keeps one code path. 50ms wasn't enough for CC to
+    // finish processing the paste-mode bytes before the Enter arrived
+    // (observed in 4d.7 live testing: paste collapsed to "Pasted text #1
+    // +4 lines" but the Enter was dropped). 500ms is conservative.
+    this.child.write('\x1b[200~' + text + '\x1b[201~');
     setTimeout(() => {
       this.child.write('\r');
       this.setState('thinking');
-    }, 50);
+    }, 500);
   }
 
   /** Stop the current turn. In claude.exe interactive mode, Escape (\x1b) is
