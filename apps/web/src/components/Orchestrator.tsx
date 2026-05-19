@@ -337,12 +337,20 @@ interface UserPart {
 }
 
 const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
+// Section 1 chat-noise cleanup: render-only hide for workflow→orchestrator
+// channel blocks. The orchestrator still receives the raw block in its context
+// (it needs the [workflowRunId: ...] tokens to dispatch / close nodes); only
+// the user-visible chat panel filters. Plain-text channel events (no header)
+// stay visible.
+const WORKFLOW_EVENT_RE = /^\[pc:workflow-event\s+kind=/;
 
 function parseUserText(text: string): UserPart[] {
   if (!text) return [{ kind: 'text', text: '' }];
   const parts: UserPart[] = [];
   let last = 0;
+  let sawChannel = false;
   for (const m of text.matchAll(CHANNEL_RE)) {
+    sawChannel = true;
     const idx = m.index ?? 0;
     if (idx > last) {
       const slice = text.slice(last, idx).trim();
@@ -350,15 +358,16 @@ function parseUserText(text: string): UserPart[] {
     }
     const attrs = m[1] ?? '';
     const body = (m[2] ?? '').trim();
+    last = idx + m[0].length;
+    if (WORKFLOW_EVENT_RE.test(body)) continue;
     const sourceMatch = attrs.match(/source\s*=\s*"([^"]+)"/);
     parts.push({ kind: 'channel', text: body, source: sourceMatch?.[1] ?? 'channel' });
-    last = idx + m[0].length;
   }
   if (last < text.length) {
     const tail = text.slice(last).trim();
     if (tail) parts.push({ kind: 'text', text: tail });
   }
-  if (parts.length === 0) parts.push({ kind: 'text', text });
+  if (parts.length === 0 && !sawChannel) parts.push({ kind: 'text', text });
   return parts;
 }
 
