@@ -450,6 +450,14 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
     };
   }, [viewingSessionId, project.id]);
 
+  // Active session. Fetched once per project, then patched live from WS
+  // session-changed events (server emits these on title set + new-session).
+  // Declared here (above chatEnvelopes) so the ask-envelope filter can scope
+  // by sessionId — transient sessions (workflow-creator, agent-creator)
+  // broadcast on the same project WS, and without this filter their asks
+  // bleed into the orchestrator chat panel.
+  const [session, setSession] = useState<OrchestratorSession | null>(null);
+
   // Pull chat-event envelopes + ask envelopes out of the WS stream OR the
   // past-session events depending on mode.
   const sourceEvents = viewingSessionId ? pastEvents : events;
@@ -459,10 +467,25 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   const chatEnvelopes = useMemo(() => {
     const suppressed = buildSuppressedHookIndices(sourceEvents);
     const out: WsEnvelope[] = [];
+    const orchestratorSessionId = session?.id ?? null;
     for (let i = 0; i < sourceEvents.length; i++) {
       if (suppressed.has(i)) continue;
       const env = sourceEvents[i]!;
-      if (env.type === 'ask' || env.type === 'event') {
+      if (env.type === 'ask') {
+        // 2026-05-19 — scope ask cards to the orchestrator's PtySession.
+        // Transient sessions (workflow-creator + agent-creator) broadcast
+        // ask envelopes on the same project WS; without this filter they
+        // bleed into the chat panel even when the owning modal is open and
+        // filtering its own asks correctly. Permissive when the session id
+        // hasn't loaded yet to avoid losing asks during the boot window.
+        const askSessionId = (env as { sessionId?: string | null }).sessionId;
+        if (orchestratorSessionId && askSessionId && askSessionId !== orchestratorSessionId) {
+          continue;
+        }
+        out.push(env);
+        continue;
+      }
+      if (env.type === 'event') {
         out.push(env);
         continue;
       }
@@ -472,7 +495,7 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
       }
     }
     return out;
-  }, [sourceEvents]);
+  }, [sourceEvents, session?.id]);
   // Collapse the flat envelope list into render-ready items: most envelopes
   // pass through as-is, but consecutive tool-start/tool-end events fold into
   // a single ToolGroup bucket for the L1/L2/L3 hierarchy.
@@ -488,10 +511,6 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   // toolUseId; server forgets the pending entry after reply). Don't render
   // dismissed cards on replay either.
   const [answeredAsks, setAnsweredAsks] = useState<Record<string, string>>({});
-
-  // Active session. Fetched once per project, then patched live from WS
-  // session-changed events (server emits these on title set + new-session).
-  const [session, setSession] = useState<OrchestratorSession | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
