@@ -75,6 +75,22 @@ nodes:
     prompt: Take a look.
 `;
 
+// 4h.6 / D78 — subagent with an author-declared output_schema. The runtime
+// must validate the helper's pc_complete_node payload against the schema.
+const SCHEMA_SUBAGENT_YAML = `id: smoke-schema
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: investigate
+    kind: subagent
+    subagent: researcher
+    prompt: Take a look.
+    output_schema:
+      result: text
+      count: int
+`;
+
 const TWO_STEP_SUBAGENT_YAML = `id: smoke-two-step
 triggers:
   callable: true
@@ -329,6 +345,131 @@ test('e2e smoke (4d): subagent node fires via injected spawner (NOT the channel)
       'investigation complete: nothing to report',
     );
     assert.equal(settled?.status, 'complete');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4h.6 / D78: subagent pcCompletePayload matches output_schema → node complete', async () => {
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'never read — pcCompletePayload wins',
+      pcCompletePayload: { result: 'all good', count: 7 },
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-schema', yaml: SCHEMA_SUBAGENT_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-schema');
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete' || fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'complete');
+    assert.deepEqual(settled?.nodeOutputs?.['investigate']?.output, {
+      result: 'all good',
+      count: 7,
+    });
+    assert.equal(settled?.status, 'complete');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4h.6 / D78: subagent pcCompletePayload violates output_schema → node failed with shape-mismatch message', async () => {
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'irrelevant',
+      // count declared as int; helper returned a string — shape mismatch.
+      pcCompletePayload: { result: 'all good', count: 'seven' },
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-schema', yaml: SCHEMA_SUBAGENT_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-schema');
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete' || fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'failed');
+    assert.match(
+      settled?.nodeOutputs?.['investigate']?.error ?? '',
+      /output_schema mismatch.*"count".*int/,
+    );
+    assert.equal(settled?.status, 'failed');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4h.6 / D78: helper returned plain-text fallback (no pcCompletePayload) → schema mismatch fails the node', async () => {
+  // When the helper doesn't call pc_complete_node, the runtime falls back
+  // to lastAssistantText (a string). With a declared output_schema, that
+  // string is structurally not an object → must fail with the same shape-
+  // mismatch message format, NOT bypass validation.
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'I did the thing',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-schema', yaml: SCHEMA_SUBAGENT_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-schema');
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete' || fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'failed');
+    assert.match(
+      settled?.nodeOutputs?.['investigate']?.error ?? '',
+      /output_schema mismatch.*got string/,
+    );
+    assert.equal(settled?.status, 'failed');
   } finally {
     f.cleanup();
   }

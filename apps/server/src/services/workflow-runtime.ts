@@ -97,6 +97,7 @@ import {
   makeNodeBoundSubstituter,
   type TypedRefContext,
 } from './typed-substitution.ts';
+import { validateSubagentOutput } from './subagent-output-validation.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { MoveWorkItemServiceInput, WorkItemService } from './work-item.ts';
@@ -1321,6 +1322,35 @@ export class WorkflowRuntime {
 
   // ── Async node callbacks (subagent + approval) ────────────────────────────
 
+  /** Shared failure-settlement path for an async-complete node that
+   *  passed `pc_complete_node` but failed a post-completion contract
+   *  (output_schema mismatch / done_when violation). Tries retry first;
+   *  on no retry, marks the node failed with `reason`, persists, and
+   *  broadcasts the subagent-failure envelope when applicable. */
+  private async failCompletedNode(
+    run: WorkflowRun,
+    node: DagNode,
+    reason: string,
+  ): Promise<'retried' | 'failed'> {
+    const cause = detectRetryCause(reason);
+    const retried = await this.tryRetry(run, node, cause);
+    if (retried) {
+      this.persistAndBroadcast(run);
+      return 'retried';
+    }
+    run.nodeOutputs[node.id] = {
+      ...run.nodeOutputs[node.id]!,
+      status: 'failed',
+      error: reason,
+      completedAt: new Date().toISOString(),
+    };
+    this.persistAndBroadcast(run);
+    if (node.kind === 'subagent') {
+      this.broadcastSubagentFailure(run, node.id, 'agent-self-failed', reason);
+    }
+    return 'failed';
+  }
+
   async nodeComplete(runId: string, nodeId: string, output: unknown): Promise<NodeUpdateResult> {
     const run = this.tryGetRun(runId);
     if (!run) return { ok: false, error: `unknown workflowRunId: ${runId}` };
@@ -1335,35 +1365,29 @@ export class WorkflowRuntime {
       output,
       completedAt: new Date().toISOString(),
     };
-    // 4a.9 fix #3. Enforce done_when on async complete too. Subagents call
-    // pc_complete_node when they think they're done; the contract still has
-    // to hold.
     const node = lookupNode(run, nodeId);
-    if (node) {
-      const check = this.enforceDoneWhen(run, node);
-      if (!check.ok) {
-        const cause = detectRetryCause(check.error);
-        const retried = await this.tryRetry(run, node, cause);
-        if (retried) {
-          this.persistAndBroadcast(run);
+    // 4h.6 / D78. Validate subagent output against the author-declared
+    // output_schema BEFORE done_when. A shape mismatch is a more fundamental
+    // contract break — done_when can't meaningfully check for a missing
+    // field that should never have type-mismatched in the first place.
+    if (node && node.kind === 'subagent') {
+      const ne = lookupNodeEdges(run, nodeId);
+      if (ne?.output_schema) {
+        const check = validateSubagentOutput(output, ne.output_schema);
+        if (!check.ok) {
+          await this.failCompletedNode(run, node, check.message);
           await this.tick(runId);
           return { ok: true };
         }
-        run.nodeOutputs[nodeId] = {
-          ...run.nodeOutputs[nodeId]!,
-          status: 'failed',
-          error: check.error,
-          completedAt: new Date().toISOString(),
-        };
-        this.persistAndBroadcast(run);
-        if (node.kind === 'subagent') {
-          this.broadcastSubagentFailure(
-            run,
-            nodeId,
-            'agent-self-failed',
-            check.error ?? 'done_when violated',
-          );
-        }
+      }
+    }
+    // 4a.9 fix #3. Enforce done_when on async complete too. Subagents call
+    // pc_complete_node when they think they're done; the contract still has
+    // to hold.
+    if (node) {
+      const check = this.enforceDoneWhen(run, node);
+      if (!check.ok) {
+        await this.failCompletedNode(run, node, check.error ?? 'done_when violated');
         await this.tick(runId);
         return { ok: true };
       }
@@ -2202,6 +2226,16 @@ function lookupNode(run: WorkflowRun, nodeId: string): DagNode | undefined {
   const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
   if (!parsed.ok || !parsed.workflow) return undefined;
   return parsed.workflow.nodes.find((n) => n.id === nodeId);
+}
+
+/** Look up the typed-edge data for a node (Section 4h / 4h.6). Returns
+ *  undefined when the YAML snapshot fails to reparse or no edges were
+ *  registered for `nodeId`. Used by `nodeComplete` to find a subagent's
+ *  author-declared `output_schema` for D78 validation. */
+function lookupNodeEdges(run: WorkflowRun, nodeId: string): NodeEdges | undefined {
+  const parsed = parseTypedWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
+  if (!parsed.ok || !parsed.edges) return undefined;
+  return parsed.edges[nodeId];
 }
 
 /** "Empty" per the DoneWhen output-fields-non-empty spec: null/undefined,
