@@ -1,13 +1,10 @@
 // Q14 coverage gaps: folder-picker real-UI flow (B.3 / C.3 / D) and WS
 // reconnect + dedup (Section L). These were skipped by the prior pass.
 //
-// Prereq for the picker tests: Hono must be booted with
-//   PC_FS_BROWSE_ALLOW=E:\temp\pc-q14-test
-// so the FolderBrowserModal can drill into the fixtures. The Section L
-// tests then kill + restart Hono inline (no env var on restart is fine —
-// the picker tests are done by then).
+// As of D81 (2026-05-19) the fs-browse server has no allowlist gate, so the
+// picker can drill into any absolute path the OS exposes — no env-var prereq.
 
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -33,20 +30,6 @@ let savedProjectsFolder = '';
 // Lifecycle: clean fixtures + DB at start, restore at end.
 // ─────────────────────────────────────────────────────────────────────────────
 test.beforeAll(async ({ request }) => {
-  // Picker tests need Hono running with PC_FS_BROWSE_ALLOW including the
-  // fixture root. Probe via fs/browse; if it's 403, restart Hono with the
-  // env var set.
-  const allowed = await isBrowseAllowed(request);
-  if (!allowed) {
-    killPort(4040);
-    startHono({ PC_FS_BROWSE_ALLOW: FIXTURE_ROOT });
-    const up = await waitForUp(`${HONO}/api/projects`, 30_000);
-    if (!up) throw new Error('Hono did not come back up after restart with env var');
-    // Re-verify the allowlist is wired.
-    const ok = await isBrowseAllowed(request);
-    if (!ok) throw new Error('PC_FS_BROWSE_ALLOW did not take effect on restart');
-  }
-
   const s = await getSettings(request);
   savedProjectsFolder = s.projectsFolder;
   await cleanupQ14(request);
@@ -58,13 +41,6 @@ test.beforeAll(async ({ request }) => {
     activityPanel: { open: true, showAllProjects: false },
   });
 });
-
-async function isBrowseAllowed(req: APIRequestContext): Promise<boolean> {
-  const r = await req.get(`${HONO}/api/fs/browse?path=${encodeURIComponent(FIXTURE_ROOT)}`);
-  if (!r.ok()) return false;
-  const j = (await r.json()) as { ok: boolean };
-  return j.ok === true;
-}
 
 test.afterAll(async ({ request }) => {
   // Best-effort: if the server is reachable, tidy up. Section L's last test

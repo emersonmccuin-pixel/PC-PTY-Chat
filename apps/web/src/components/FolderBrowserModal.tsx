@@ -3,7 +3,8 @@
 // Adapted for Project Companion: dropped the topCap, hasGit-per-entry badge,
 // and inline mkdir (the trunk server's GET /api/fs/browse doesn't expose those
 // yet). Last-browsed path persisted via localStorage directly — no
-// useLocalStorageState dependency.
+// useLocalStorageState dependency. Path bar is a typed input (D81): user can
+// type/paste an absolute path and hit Enter to navigate.
 
 import { useEffect, useState } from 'react';
 
@@ -23,6 +24,7 @@ export function FolderBrowserModal({
   onSelect,
 }: FolderBrowserModalProps) {
   const [view, setView] = useState<BrowseResult | null>(null);
+  const [pathInput, setPathInput] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -47,12 +49,20 @@ export function FolderBrowserModal({
     try {
       const result = await api.browseFolder(path);
       setView(result);
+      setPathInput(result.path);
       writeLocal(LAST_DIR_KEY, result.path);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setLoading(false);
     }
+  }
+
+  function submitPath() {
+    const trimmed = pathInput.trim();
+    if (!trimmed) return;
+    if (view && trimmed === view.path) return;
+    void load(trimmed);
   }
 
   return (
@@ -84,9 +94,28 @@ export function FolderBrowserModal({
           >
             ↑
           </button>
-          <code className="flex-1 truncate bg-muted px-2 py-1 text-foreground">
-            {view?.path ?? '…'}
-          </code>
+          <input
+            type="text"
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitPath();
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setPathInput(view?.path ?? '');
+              }
+            }}
+            onBlur={submitPath}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="Type or paste an absolute path…"
+            aria-label="Folder path"
+            className="flex-1 truncate bg-muted px-2 py-1 font-mono text-foreground outline-none focus:ring-1 focus:ring-ring"
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -125,7 +154,7 @@ export function FolderBrowserModal({
 
         <footer className="flex items-center justify-between border-t border-border px-4 py-3">
           <span className="text-xs text-muted-foreground">
-            Click a row to open · double-click to select
+            Type a path · click a row to open · double-click to select
           </span>
           <div className="flex gap-2">
             <button

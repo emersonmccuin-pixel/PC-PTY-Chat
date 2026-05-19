@@ -113,13 +113,9 @@ test.describe('A. Cold boot + empty state', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Section B — create empty-folder project (init-empty)
 //
-// NOTE: the v2 trunk gates GET /api/fs/browse to the user's home dir (+ env
-// allowlist via PC_FS_BROWSE_ALLOW). The dev environment we're running
-// against does NOT include `E:\temp\pc-q14-test` in that allowlist, so the
-// FolderBrowserModal can't drill into the fixtures. We therefore drive the
-// create-project endpoint via the API and validate the UI updates. The probe
-// preview text + the modal UI itself are still asserted by opening the modal
-// and triggering a probe through alternate means in B.4.
+// Drives the create-project endpoint via the API and validates the UI
+// updates. The real-UI folder-picker drill is exercised separately in
+// q14-gaps.spec.ts.
 // ─────────────────────────────────────────────────────────────────────────────
 test.describe('B. Create empty-folder project (init-empty)', () => {
   test('B.1 PATCH projectsFolder fixture root', async ({ request, page }) => {

@@ -333,7 +333,7 @@ app.get('/api/fs/browse', (c) => {
     return c.json({ ok: true, ...browseFolder(path) });
   } catch (err) {
     if (err instanceof BrowseError) {
-      const status = err.kind === 'forbidden' ? 403 : err.kind === 'not_found' ? 404 : 400;
+      const status = err.kind === 'not_found' ? 404 : 400;
       return c.json({ ok: false, error: err.message, kind: err.kind }, status);
     }
     return c.json({ ok: false, error: (err as Error).message }, 500);
