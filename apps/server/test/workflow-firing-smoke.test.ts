@@ -352,3 +352,83 @@ test('e2e smoke (4d): spawner idle-timeout → nodeFailed with "timeout (...)" p
     f.cleanup();
   }
 });
+
+test('4e.1 / D55: subagent spawn handle reports jsonlPath → persisted onto nodeOutputs[id].transcriptPath', async () => {
+  const fakeJsonlPath = '/tmp/fake-cc-session.jsonl';
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'done',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: fakeJsonlPath,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => fakeJsonlPath,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 50; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.nodeOutputs?.['investigate']?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'complete');
+    assert.equal(
+      settled?.nodeOutputs?.['investigate']?.transcriptPath,
+      fakeJsonlPath,
+      'transcriptPath must survive nodeComplete spread + dbPersistRun round-trip',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('4e.1: readRunForProject returns null for cross-project run ids (no info leak)', async () => {
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => ({
+    done: Promise.resolve({
+      kind: 'success',
+      lastAssistantText: 'done',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    } as SubagentSpawnResult),
+    kill: () => {},
+    transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: () => null,
+  });
+
+  const a = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  const b = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const runA = await a.runtime.runWorkflow('smoke-subagent');
+    // Same-project lookup hits.
+    const sameProject = a.runtime.readRunForProject(runA.id);
+    assert.equal(sameProject?.id, runA.id);
+    // Cross-project lookup misses (run exists, project doesn't own it).
+    const crossProject = b.runtime.readRunForProject(runA.id);
+    assert.equal(crossProject, null);
+    // Unknown id misses too.
+    const unknown = a.runtime.readRunForProject('00000000-0000-0000-0000-000000000000');
+    assert.equal(unknown, null);
+  } finally {
+    a.cleanup();
+    b.cleanup();
+  }
+});

@@ -59,6 +59,7 @@ import {
   createRun as dbCreateRun,
   getProjectById,
   getRun as dbGetRun,
+  getRunForProject as dbGetRunForProject,
   getWorkItem,
   listActiveRuns,
   listRuns as dbListRuns,
@@ -535,6 +536,14 @@ export class WorkflowRuntime {
   /** Read this project's workflow runs (recent first). */
   readRunsForProject(): WorkflowRun[] {
     return dbListRunsByProject(this.projectId);
+  }
+
+  /** Section 4e.1. Read one run, scoped to this project. Returns null when
+   *  the run doesn't exist OR belongs to a different project (treated
+   *  identically — 404 from the HTTP layer either way). The full
+   *  `nodeOutputs` map is included, unlike the list endpoint. */
+  readRunForProject(runId: string): WorkflowRun | null {
+    return dbGetRunForProject(runId as ULID, this.projectId);
   }
 
   /**
@@ -1588,10 +1597,27 @@ export class WorkflowRuntime {
           if (finalJsonl) this.subagentTranscriptsByNode.set(key, finalJsonl);
 
           const current = this.tryGetRun(runId);
+
+          // 4e / D55. Persist the spawned-session JSONL path onto the node
+          // output so the run-detail view's "View transcript" link survives
+          // past the in-flight `subagentTranscriptsByNode` map (cleared on
+          // finally). dbPersistRun BEFORE nodeComplete / nodeFailed — each
+          // of those re-reads the run from sqlite, so in-memory mutation
+          // on `current` alone is lost; we must commit transcriptPath to
+          // the DB first so their { ...current } spread picks it up.
+          if (current && finalJsonl) {
+            const cur = current.nodeOutputs[nodeId];
+            if (cur) {
+              current.nodeOutputs[nodeId] = { ...cur, transcriptPath: finalJsonl };
+              dbPersistRun(current);
+            }
+          }
+
           const status = current?.nodeOutputs[nodeId]?.status;
           if (status !== 'running') {
             // Helper already closed the node via pc_complete_node /
-            // pc_node_failed during its turn — nothing to do.
+            // pc_node_failed during its turn — transcriptPath was persisted
+            // above (if known); nothing else to do.
             return;
           }
           if (result.kind === 'success') {

@@ -52,6 +52,7 @@ export {
   createRun,
   getActiveRunForWorkItem,
   getRun,
+  getRunForProject,
   listActiveRuns,
   listRuns,
   listRunsByProject,

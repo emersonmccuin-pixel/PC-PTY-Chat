@@ -1503,6 +1503,23 @@ app.get('/api/projects/:projectId/workflow-runs', (c) => {
   return c.json({ runs });
 });
 
+// 4e.1 / D54. Per-run detail with the full nodeOutputs map. The list
+// endpoint above already includes nodeOutputs today, so this endpoint
+// exists mainly to (a) give the drawer a stable per-run cache key it can
+// re-fetch, and (b) leave room for the response to grow run-detail-only
+// fields without bloating the list payload (4e.6 may add resolved-inputs
+// previews, attempt counters, etc.). Returns 404 for unknown projects
+// AND unknown / cross-project run ids — no info leak on cross-project ids.
+app.get('/api/projects/:projectId/workflow-runs/:runId', (c) => {
+  const id = c.req.param('projectId');
+  const runId = c.req.param('runId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const run = runtime.workflowRuntime().readRunForProject(runId);
+  if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+  return c.json({ run });
+});
+
 app.get('/api/projects/:projectId/worktrees', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);

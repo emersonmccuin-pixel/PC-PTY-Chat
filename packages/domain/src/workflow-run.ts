@@ -40,6 +40,11 @@ export interface NodeOutput {
    *  keep first-attempt outputs noise-free. Final-attempt value feeds D10's
    *  SubagentFailureSignal.attemptNumber. */
   attempt?: number;
+  /** Absolute path to the spawned session's JSONL transcript. Set by the
+   *  workflow runtime for `subagent` kind nodes when the spawn handle reports
+   *  jsonlPath (4d D48 / 4e D55). Powers the run-detail "View transcript"
+   *  link. Undefined for non-subagent kinds and pre-4e rows. */
+  transcriptPath?: string;
 }
 
 export interface WorkflowRun {

@@ -156,6 +156,19 @@ export function listRunsByProject(projectId: ULID): WorkflowRun[] {
   return rows.map(toDomain);
 }
 
+/** Section 4e.1. Read one run by id and confirm it belongs to `projectId`.
+ *  Returns null when the row doesn't exist OR the projectId doesn't match —
+ *  both surface as 404 from the HTTP layer (no info leak about cross-project
+ *  ids). */
+export function getRunForProject(id: ULID, projectId: ULID): WorkflowRun | null {
+  const row = getDb()
+    .select()
+    .from(workflowRuns)
+    .where(and(eq(workflowRuns.id, id), eq(workflowRuns.projectId, projectId)))
+    .get() as WorkflowRunRow | undefined;
+  return row ? toDomain(row) : null;
+}
+
 /** Persist a full WorkflowRun back to the row. Used by tick to capture all
  *  changes (status, nodeOutputs, lastReason, timestamps) in one write. */
 export function persistRun(run: WorkflowRun): void {
