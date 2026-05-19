@@ -273,6 +273,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_write_claude_md',
+    description:
+      'Write the project-level CLAUDE.md from the conversational setup wizard (5.6 / D82). Overwrites the existing file. Use this as the SINGLE tool call at the end of the wizard interview, once the user confirms the preview. `content` is the full markdown body (the server does not interpolate). 400 if content is missing or empty. Broadcasts project-claude-md-changed on success so the modal can close.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'full CLAUDE.md markdown body (non-empty)',
+        },
+      },
+      required: ['content'],
+    },
+  },
+  {
     name: 'pc_list_stages',
     description:
       'List the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a workflow (or which stage a create/update-work-item step should target). Returns { ok: true, stages: [{ id, name, order }, ...] }. Stage `id` is what goes into `triggers.on_enter.stage_id` — never use the name. No arguments; PC_PROJECT_ID env is the implicit scope.',
@@ -858,6 +873,31 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             { type: 'text', text: `pc_update_workflow_draft failed: ${(err as Error).message}` },
           ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_write_claude_md': {
+      const content = typeof args.content === 'string' ? args.content : '';
+      if (!content.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_write_claude_md: content required (non-empty)' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await putServer(projectPath('claude-md'), { content });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_write_claude_md failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_write_claude_md failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

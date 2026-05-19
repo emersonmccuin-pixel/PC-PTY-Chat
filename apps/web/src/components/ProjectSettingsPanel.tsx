@@ -15,6 +15,7 @@ import { api, type Project, type ResolvedAgent } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectSettingsFocus } from '@/store/project-settings-focus';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
+import { SetupWizardModal } from './SetupWizardModal';
 import { AgentEditor } from './project-settings/AgentEditor';
 import { CreateAgentModal } from './project-settings/CreateAgentModal';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
@@ -53,6 +54,8 @@ export function ProjectSettingsPanel({
           </h1>
           <p className="text-xs text-muted-foreground">Project settings</p>
         </header>
+
+        <SetupWizardNag project={project} events={events} />
 
         <Section title="Project info">
           <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
@@ -443,6 +446,113 @@ function DangerZone({
                 : `Removed: ${removed.join(', ')}`,
             );
           }}
+        />
+      )}
+    </>
+  );
+}
+
+// ─── Setup wizard nag (5.6 / D82) ────────────────────────────────────────────
+//
+// Banner that appears in Project Settings when CLAUDE.md is missing or empty.
+// Offers "Run setup wizard…" + a per-session "Dismiss" option. Clears
+// automatically when the wizard finishes (project-claude-md-changed WS event)
+// or when CLAUDE.md gets a non-whitespace edit on disk.
+
+function SetupWizardNag({
+  project,
+  events,
+}: {
+  project: Project;
+  events: WsEnvelope[];
+}) {
+  const [needs, setNeeds] = useState<boolean | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const processedRef = useRef(0);
+
+  // Initial probe + reprobe on project switch.
+  useEffect(() => {
+    let cancelled = false;
+    setDismissed(false);
+    setNeeds(null);
+    api
+      .getClaudeMdStatus(project.id)
+      .then((s) => {
+        if (!cancelled) setNeeds(!s.exists || s.empty);
+      })
+      .catch(() => {
+        if (!cancelled) setNeeds(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+
+  // Re-probe on project-claude-md-changed.
+  useEffect(() => {
+    const start = events.length >= processedRef.current ? processedRef.current : 0;
+    const end = events.length;
+    processedRef.current = end;
+    for (let i = start; i < end; i++) {
+      const env = events[i];
+      if (!env) continue;
+      if (env.type === 'project-claude-md-changed') {
+        api
+          .getClaudeMdStatus(project.id)
+          .then((s) => setNeeds(!s.exists || s.empty))
+          .catch(() => {
+            /* leave stale */
+          });
+      }
+    }
+  }, [events, project.id]);
+
+  if (needs !== true || dismissed) {
+    return (
+      <>
+        {wizardOpen && (
+          <SetupWizardModal
+            projectId={project.id}
+            events={events}
+            onClose={() => setWizardOpen(false)}
+          />
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+        <div className="flex-1">
+          <div className="font-medium text-foreground">No CLAUDE.md yet.</div>
+          <p className="text-muted-foreground">
+            Future Claude sessions in this project will start blank. Run a short
+            wizard to write one (you can always edit it later).
+          </p>
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <button
+            onClick={() => setWizardOpen(true)}
+            className="bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Run setup wizard…
+          </button>
+          <button
+            onClick={() => setDismissed(true)}
+            className="border border-border px-3 py-1 text-xs hover:bg-muted"
+            title="Hide until next reload"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+      {wizardOpen && (
+        <SetupWizardModal
+          projectId={project.id}
+          events={events}
+          onClose={() => setWizardOpen(false)}
         />
       )}
     </>

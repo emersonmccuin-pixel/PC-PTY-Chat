@@ -979,6 +979,114 @@ app.delete('/api/projects/:projectId/workflow-creator', (c) => {
   return c.json({ ok: true });
 });
 
+// ── Setup-wizard transient session (Section 5.6 / D82) ─────────────────────
+//
+// Conversational interview that writes CLAUDE.md. Mirrors the agent-creator
+// + workflow-creator wiring above. WS envelopes:
+//   { type: 'setup-wizard-state', state }
+//   { type: 'setup-wizard-event', event }
+//   { type: 'setup-wizard-jsonl', event }
+//   { type: 'setup-wizard-exit', code, signal }
+
+function attachSetupWizardHandlers(
+  projectId: ULID,
+  session: ReturnType<ProjectRuntime['startSetupWizard']>,
+): void {
+  const flag = session as unknown as { __pcSetupWizardAttached?: boolean };
+  if (flag.__pcSetupWizardAttached) return;
+  session.on('state', (state: string) =>
+    broadcastTo(projectId, { type: 'setup-wizard-state', state }),
+  );
+  session.on('event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'setup-wizard-event', event }),
+  );
+  session.on('jsonl-event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'setup-wizard-jsonl', event }),
+  );
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'setup-wizard-exit', code, signal });
+  });
+  flag.__pcSetupWizardAttached = true;
+}
+
+app.post('/api/projects/:projectId/setup-wizard/start', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.startSetupWizard();
+  attachSetupWizardHandlers(id, session);
+  return c.json({ ok: true, state: session.getState() });
+});
+
+app.post('/api/projects/:projectId/setup-wizard/send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.setupWizardPty();
+  if (!session) return c.json({ ok: false, error: 'no setup-wizard session' }, 409);
+  const body = await c.req.json<{ text?: string }>();
+  if (typeof body.text !== 'string' || body.text === '') {
+    return c.json({ ok: false, error: 'text required' }, 400);
+  }
+  session.send(body.text);
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/setup-wizard/interrupt', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.setupWizardPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/projects/:projectId/setup-wizard', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.endSetupWizard();
+  return c.json({ ok: true });
+});
+
+/** D82 detection: is the project's CLAUDE.md missing or effectively empty?
+ *  "Empty" means a file whose content is whitespace-only — the nag surface
+ *  in Project Settings keys off this. */
+app.get('/api/projects/:projectId/claude-md-status', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const project = getProjectById(id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const path = resolve(project.folderPath, 'CLAUDE.md');
+  if (!existsSync(path)) return c.json({ ok: true, exists: false, empty: true });
+  try {
+    const content = readFileSync(path, 'utf-8');
+    return c.json({ ok: true, exists: true, empty: content.trim().length === 0 });
+  } catch (err) {
+    return c.json({ ok: false, error: `read failed: ${(err as Error).message}` }, 500);
+  }
+});
+
+/** D82 write — backs the `pc_write_claude_md` MCP tool. Writes the full body
+ *  to `<folder>/CLAUDE.md`, overwriting whatever was there. Broadcasts
+ *  `project-claude-md-changed` so the wizard modal can close itself + the
+ *  Project Settings nag banner can clear. */
+app.put('/api/projects/:projectId/claude-md', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const project = getProjectById(id);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ content?: string }>();
+  if (typeof body.content !== 'string' || body.content.trim().length === 0) {
+    return c.json({ ok: false, error: 'content required (non-empty)' }, 400);
+  }
+  const path = resolve(project.folderPath, 'CLAUDE.md');
+  try {
+    writeFileSync(path, body.content, 'utf-8');
+  } catch (err) {
+    return c.json({ ok: false, error: `write failed: ${(err as Error).message}` }, 500);
+  }
+  broadcastTo(id, { type: 'project-claude-md-changed' });
+  return c.json({ ok: true });
+});
+
 /** List work items with optional filters + cursor pagination. Query params:
  *    stage             — filter to a single stage id
  *    parentId          — '' (string) means top-level (parentId === null); other = exact match

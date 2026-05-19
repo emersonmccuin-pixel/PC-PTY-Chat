@@ -46,6 +46,7 @@ export class ProjectRuntime {
   private pty: PtySession | null = null;
   private agentCreator: PtySession | null = null;
   private workflowCreator: PtySession | null = null;
+  private setupWizard: PtySession | null = null;
   /** Tracks the transient PC_SESSION_ID assigned to the current workflow-
    *  creator. Used to scope draft-state cleanup on session exit. */
   private workflowCreatorSessionId: string | null = null;
@@ -428,6 +429,47 @@ export class ProjectRuntime {
     }
   }
 
+  /** 5.6 / D82: transient PtySession driving the conversational setup wizard
+   *  that writes CLAUDE.md. Mirrors startAgentCreator. One wizard at a time
+   *  per project — calling start again kills the prior one. */
+  startSetupWizard(): PtySession {
+    if (this.setupWizard) {
+      try { this.setupWizard.kill(); } catch { /* best-effort */ }
+      this.setupWizard = null;
+    }
+    this.refreshHooksIfStale();
+    const transientId = `sw-${randomUUID()}`;
+    const sessionDir = this.sessionDataPath(transientId);
+    mkdirSync(sessionDir, { recursive: true });
+    this.setupWizard = new PtySession({
+      workspaceDir: this.project.folderPath,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      extraEnv: { PC_SESSION_ID: transientId },
+      appendSystemPromptPath: resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'setup-wizard-prompt.md',
+      ),
+    });
+    return this.setupWizard;
+  }
+
+  /** Returns the live setup-wizard PtySession, or null if not started / exited. */
+  setupWizardPty(): PtySession | null {
+    return this.setupWizard && this.setupWizard.getState() !== 'exited'
+      ? this.setupWizard
+      : null;
+  }
+
+  /** Kill the setup-wizard session. Idempotent. */
+  endSetupWizard(): void {
+    if (!this.setupWizard) return;
+    try { this.setupWizard.kill(); } catch { /* best-effort */ }
+    this.setupWizard = null;
+  }
+
   private resolveSessionForSpawn(): {
     row: OrchestratorSession;
     providerSessionId: string;
@@ -563,6 +605,24 @@ export class ProjectRuntime {
         mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
         const raw = readFileSync(wfCreatorSrc, 'utf-8');
         writeFileSync(wfCreatorDest, renderTemplate(raw, tokens), 'utf-8');
+      }
+      // 5.6 / D82: setup-wizard prompt. Same always-re-render rule as the
+      // workflow-creator — nobody hand-edits this file, and the interview
+      // script may evolve between PC versions.
+      const swCreatorSrc = resolve(
+        this.opts.templatesDir,
+        '.project-companion',
+        'setup-wizard-prompt.md',
+      );
+      const swCreatorDest = resolve(
+        this.project.folderPath,
+        '.project-companion',
+        'setup-wizard-prompt.md',
+      );
+      if (existsSync(swCreatorSrc)) {
+        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
+        const raw = readFileSync(swCreatorSrc, 'utf-8');
+        writeFileSync(swCreatorDest, renderTemplate(raw, tokens), 'utf-8');
       }
       // Section 3 phase 3i: backfill any workflow YAMLs from templates that
       // don't yet exist in the project. Write-if-missing — user-edited copies

@@ -557,6 +557,43 @@ export const api = {
     if (!res.ok) throw new Error(`stop agent-creator → ${res.status}`);
   },
 
+  // ── Setup wizard (5.6 / D82) ─────────────────────────────────────────────
+
+  startSetupWizard: (projectId: ULID) =>
+    postJson<{ ok: true; state: string }>(
+      `/api/projects/${projectId}/setup-wizard/start`,
+      {},
+    ).then((r) => r.state),
+
+  sendSetupWizard: (projectId: ULID, text: string) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/setup-wizard/send`, { text }),
+
+  interruptSetupWizard: (projectId: ULID) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/setup-wizard/interrupt`, {}),
+
+  stopSetupWizard: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/setup-wizard`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`stop setup-wizard → ${res.status}`);
+  },
+
+  getClaudeMdStatus: async (
+    projectId: ULID,
+  ): Promise<{ exists: boolean; empty: boolean }> => {
+    const res = await fetch(`/api/projects/${projectId}/claude-md-status`);
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      exists?: boolean;
+      empty?: boolean;
+    };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `claude-md-status → ${res.status}`);
+    }
+    return { exists: data.exists === true, empty: data.empty === true };
+  },
+
   // ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────
   /** Spawn the per-project "+ New workflow" modal's transient PtySession.
    *  Session is layered with `workflow-creator-prompt.md` and emits its
