@@ -67,7 +67,6 @@ import type {
 import {
   TRIGGER_OUTPUTS,
   TYPE_COLOR_BG,
-  TYPE_COLOR_BORDER,
   WEB_NODE_PORTS,
   type WebPortSpec,
 } from '@/lib/workflow-ports';
@@ -132,28 +131,35 @@ interface WorkflowNodeData extends Record<string, unknown> {
   inputs: ReadonlyArray<{ id: string; name: string; type: CatalogType; isWire: boolean }>;
 }
 
-// Vertical spacing per socket within the node body.
-const SOCKET_GAP = 18;
-// Distance from the band's bottom to the first socket.
-const SOCKET_TOP_OFFSET = 38;
+// Vertical layout constants for socket rendering.
+// Header band height (band + title + subtitle padding); first socket lives
+// inside the body just below the band.
+const HEADER_H = 64;
+const SOCKET_GAP = 22;
+const SOCKET_FIRST_OFFSET = 16; // from HEADER_H to first socket center
+const FOOTER_PAD = 16;
 
 function socketY(index: number): number {
-  return SOCKET_TOP_OFFSET + index * SOCKET_GAP;
+  return HEADER_H + SOCKET_FIRST_OFFSET + index * SOCKET_GAP;
+}
+
+function nodeBodyHeight(socketCount: number): number {
+  if (socketCount === 0) return HEADER_H + 28;
+  return socketY(socketCount - 1) + FOOTER_PAD;
 }
 
 function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
   const cfg = KIND_CONFIG[data.kind];
   const Icon = cfg.icon;
   const socketCount = Math.max(data.inputs.length, data.outputs.length);
-  // Ensure the body extends to fit the tallest socket column.
-  const bodyMinH = socketCount > 0 ? socketY(socketCount - 1) + 14 : 48;
+  const totalH = nodeBodyHeight(socketCount);
   return (
     <div
       className={
-        'min-w-[180px] max-w-[260px] border bg-card text-foreground shadow-sm ' +
+        'relative w-[220px] border bg-card text-foreground shadow-sm ' +
         (selected ? 'border-primary ring-1 ring-primary' : 'border-border')
       }
-      style={{ minHeight: bodyMinH + 20 }}
+      style={{ height: totalH }}
     >
       <div className={'flex items-center gap-2 px-2 py-1 text-[10px] uppercase tracking-wider text-background ' + cfg.band}>
         <Icon size={12} />
@@ -165,7 +171,11 @@ function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
           <div className="mt-0.5 break-words text-[10px] text-muted-foreground">{data.subtitle}</div>
         )}
       </div>
-      {/* Input sockets — left edge, one Handle per port + wire entry. */}
+      {/* Input sockets — left edge, one Handle per port + wire entry. SDR
+       *  view: hover-only labels (per D79). Visual polish punted to the
+       *  4h.11a-followup backlog item; functionality is intact (wires draw
+       *  to/from the correct Y positions, drag-to-wire in 4h.11c will
+       *  exercise this). */}
       {data.inputs.map((p, i) => (
         <Handle
           key={`tgt-${p.id}`}
@@ -173,11 +183,10 @@ function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
           id={p.id}
           position={Position.Left}
           title={`${p.name} : ${p.type}`}
-          className={`!h-2 !w-2 !border ${TYPE_COLOR_BORDER[p.type]} ${TYPE_COLOR_BG[p.type]}`}
+          className={`!h-3 !w-3 !border-2 !border-background ${TYPE_COLOR_BG[p.type]}`}
           style={{ top: socketY(i) }}
         />
       ))}
-      {/* Output sockets — right edge, one Handle per declared output. */}
       {data.outputs.map((p, i) => (
         <Handle
           key={`src-${p.name}`}
@@ -185,7 +194,7 @@ function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
           id={`out-${p.name}`}
           position={Position.Right}
           title={`${p.name} : ${p.type}`}
-          className={`!h-2 !w-2 !border ${TYPE_COLOR_BORDER[p.type]} ${TYPE_COLOR_BG[p.type]}`}
+          className={`!h-3 !w-3 !border-2 !border-background ${TYPE_COLOR_BG[p.type]}`}
           style={{ top: socketY(i) }}
         />
       ))}
@@ -312,29 +321,21 @@ function triggerOutputsFor(wf: Workflow): Array<{ name: string; type: CatalogTyp
 // ── dagre layout ────────────────────────────────────────────────────────────
 
 const NODE_W = 220;
-const NODE_MIN_H = 80;
-
-function nodeHeight(socketCount: number): number {
-  // Mirror of WorkflowNode's `bodyMinH + 20`. Keep dagre in sync so port
-  // sockets don't render outside the node bounding box.
-  const bodyH = socketCount > 0 ? socketY(socketCount - 1) + 14 : 48;
-  return Math.max(NODE_MIN_H, bodyH + 20);
-}
 
 function layout(nodes: Node<WorkflowNodeData>[], edges: Edge[]): Node<WorkflowNodeData>[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80, marginx: 20, marginy: 20 });
+  g.setGraph({ rankdir: 'LR', nodesep: 48, ranksep: 90, marginx: 20, marginy: 20 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) {
     const socketCount = Math.max(n.data.inputs.length, n.data.outputs.length);
-    g.setNode(n.id, { width: NODE_W, height: nodeHeight(socketCount) });
+    g.setNode(n.id, { width: NODE_W, height: nodeBodyHeight(socketCount) });
   }
   for (const e of edges) g.setEdge(e.source, e.target);
   dagre.layout(g);
   return nodes.map((n) => {
     const pos = g.node(n.id);
     const socketCount = Math.max(n.data.inputs.length, n.data.outputs.length);
-    const h = nodeHeight(socketCount);
+    const h = nodeBodyHeight(socketCount);
     return {
       ...n,
       position: { x: pos.x - NODE_W / 2, y: pos.y - h / 2 },

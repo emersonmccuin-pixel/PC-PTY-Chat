@@ -165,10 +165,14 @@ export const TRIGGER_OUTPUTS = {
 // Socket colors per catalog primitive. Tailwind utility classes — match the
 // existing semantic color tokens already in the app.
 
+// Bright fills so sockets are unambiguously visible on the node body.
+// Type encoding still lives in these colors; D79's full color spec ships when
+// PM-mode labels land in 4h.11b. For now: ulid blue · string/text neutral
+// (white) · int green · bool yellow · object/array brand-yellow.
 export const TYPE_COLOR_BG: Record<CatalogType, string> = {
   ulid: 'bg-info',
-  string: 'bg-muted-foreground',
-  text: 'bg-muted-foreground',
+  string: 'bg-foreground',
+  text: 'bg-foreground',
   int: 'bg-success',
   bool: 'bg-warning',
   object: 'bg-primary',
@@ -177,8 +181,8 @@ export const TYPE_COLOR_BG: Record<CatalogType, string> = {
 
 export const TYPE_COLOR_BORDER: Record<CatalogType, string> = {
   ulid: 'border-info',
-  string: 'border-muted-foreground',
-  text: 'border-muted-foreground',
+  string: 'border-foreground',
+  text: 'border-foreground',
   int: 'border-success',
   bool: 'border-warning',
   object: 'border-primary',
