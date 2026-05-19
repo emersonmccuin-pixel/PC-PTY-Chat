@@ -86,9 +86,11 @@ export function Shell({
       <Panel id="center" defaultSize="54%" minSize="30%">
         <Center
           activeProject={activeProject}
+          projectCount={projects.length}
           wsEvents={wsEvents}
           wsSend={wsSend}
           wsClear={wsClear}
+          onCreateProject={onCreateProject}
           onProjectUpdated={onProjectUpdated}
           onProjectDeleted={onProjectDeleted}
         />
@@ -118,16 +120,20 @@ export function Shell({
 
 function Center({
   activeProject,
+  projectCount,
   wsEvents,
   wsSend,
   wsClear,
+  onCreateProject,
   onProjectUpdated,
   onProjectDeleted,
 }: {
   activeProject: Project | null;
+  projectCount: number;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsClear: () => void;
+  onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
 }) {
@@ -137,11 +143,7 @@ function Center({
   const setTab = usePerProjectTab((s) => s.setTab);
 
   if (!activeProject) {
-    return (
-      <div className="grid h-full place-items-center bg-background text-muted-foreground">
-        <div className="text-sm">Create a project to get started.</div>
-      </div>
-    );
+    return <EmptyState projectCount={projectCount} onCreateProject={onCreateProject} />;
   }
 
   const tab: Tab = storedTab ?? TABS[1]; // default to work-items
@@ -170,6 +172,44 @@ function Center({
           />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function EmptyState({
+  projectCount,
+  onCreateProject,
+}: {
+  projectCount: number;
+  onCreateProject: () => void;
+}) {
+  // No projects at all → prominent first-run CTA (D85). At least one project
+  // but none active (rail unselected) → quieter "pick a project" hint.
+  if (projectCount === 0) {
+    return (
+      <div className="grid h-full place-items-center bg-background">
+        <div className="flex max-w-md flex-col items-center gap-4 px-6 text-center">
+          <h1 className="text-2xl font-semibold text-foreground">
+            Create your first project
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Project Companion turns a folder on disk into a chat-driven
+            workspace: orchestrator conversations, work items, and workflows
+            scoped to one project at a time.
+          </p>
+          <button
+            onClick={onCreateProject}
+            className="bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Create your first project
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="grid h-full place-items-center bg-background text-muted-foreground">
+      <div className="text-sm">Select a project from the rail.</div>
     </div>
   );
 }
