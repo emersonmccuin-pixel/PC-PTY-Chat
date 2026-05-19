@@ -471,7 +471,7 @@ function revealCommand(path: string): { cmd: string; args: string[] } {
 
 /** Create a project: git init in `folder_path`, write the PC scaffold, commit,
  *  insert the DB row, register the runtime. Body:
- *    { name, folder_path, mode: 'init-empty' | 'init-in-place', git_remote? }
+ *    { name, folder_path, mode: 'init-empty' | 'init-in-place' | 'attach-to-git', git_remote? }
  *
  *  Per docs/design/multi-tenancy.md Q2 the UI probes the folder first and picks the
  *  mode; the server enforces consistency (refuses init-empty on a non-empty
@@ -486,7 +486,11 @@ app.post('/api/projects', async (c) => {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const folderPath = typeof body.folder_path === 'string' ? body.folder_path.trim() : '';
   const mode = body.mode;
-  if (!name || !folderPath || (mode !== 'init-empty' && mode !== 'init-in-place')) {
+  if (
+    !name ||
+    !folderPath ||
+    (mode !== 'init-empty' && mode !== 'init-in-place' && mode !== 'attach-to-git')
+  ) {
     return c.json({ ok: false, error: 'name, folder_path, and mode required' }, 400);
   }
   try {
