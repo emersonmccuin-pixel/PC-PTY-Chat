@@ -59,7 +59,9 @@ nodes:
   assert.equal(r.edges.attach, undefined);
 });
 
-test('http url + headers can be wired; method literal stays literal', () => {
+test('http url can be wired; method literal stays literal', () => {
+  // @env.* is always resolvable, sidesteps trigger-exposure rules for this
+  // test which is about extraction shape, not exposure semantics.
   const yaml = `
 id: t3
 triggers: { callable: true }
@@ -67,13 +69,13 @@ nodes:
   - id: fetch
     http:
       method: GET
-      url: '@trigger.webhookSource'
+      url: '@env.API_URL'
       headers:
         Authorization: 'Bearer abc'
 `;
   const r = ok(yaml, 't3');
   assert.deepEqual(r.edges.fetch?.inputs, {
-    url: { kind: 'trigger', output: 'webhookSource' },
+    url: { kind: 'env', name: 'API_URL' },
   });
 });
 
@@ -83,12 +85,12 @@ id: t4
 triggers: { callable: true }
 nodes:
   - id: run
-    subagent: '@trigger.webhookSource'
+    subagent: '@env.DEFAULT_AGENT'
     prompt: 'hi'
 `;
   const r = ok(yaml, 't4');
   assert.deepEqual(r.edges.run?.inputs, {
-    subagent: { kind: 'trigger', output: 'webhookSource' },
+    subagent: { kind: 'env', name: 'DEFAULT_AGENT' },
   });
 });
 
@@ -239,11 +241,11 @@ nodes:
           subagent: writer
           prompt: 'iteration'
           wire:
-            seed: '@trigger.webhookBody'
+            seed: '@env.SEED'
 `;
   const r = ok(yaml, 't12');
   assert.deepEqual(r.edges['write-each']?.wire, {
-    seed: { kind: 'trigger', output: 'webhookBody' },
+    seed: { kind: 'env', name: 'SEED' },
   });
 });
 

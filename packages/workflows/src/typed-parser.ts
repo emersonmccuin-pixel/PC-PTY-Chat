@@ -37,6 +37,7 @@ import type {
 
 import { parseWorkflowText } from './validator.ts';
 import type { ValidationError } from './validator.ts';
+import { validateTypedWorkflow } from './typed-validator.ts';
 
 export interface TypedWorkflow {
   readonly workflow: Workflow;
@@ -122,6 +123,21 @@ export function parseTypedWorkflowText(
 
   if (errors.length > 0) {
     return { ok: false, errors, partialStageId: legacy.partialStageId };
+  }
+
+  // 4h.4 — save-time checks on the assembled TypedWorkflow.
+  const validationErrors = validateTypedWorkflow({
+    workflow: legacy.workflow,
+    edges,
+  });
+  if (validationErrors.length > 0) {
+    return {
+      ok: false,
+      workflow: legacy.workflow,
+      edges,
+      errors: validationErrors,
+      partialStageId: legacy.partialStageId,
+    };
   }
 
   return {
