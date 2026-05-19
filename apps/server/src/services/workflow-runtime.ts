@@ -71,7 +71,12 @@ import {
   updateWorkItemFields as dbUpdateWorkItemFields,
   updateWorkItemStatus,
 } from '@pc/db';
-import { parseWorkflowText, type WorkflowRegistry } from '@pc/workflows';
+import {
+  parseTypedWorkflowText,
+  parseWorkflowText,
+  type WorkflowRegistry,
+} from '@pc/workflows';
+import type { NodeEdges } from '@pc/domain';
 import {
   encodeCwdForClaude,
   spawnSubagent as defaultSpawnSubagent,
@@ -87,6 +92,11 @@ import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
 import { runOrchestratorReviewStep } from './orchestrator-review-step.ts';
 import { detectRetryCause, shouldRetry } from './retry-policy.ts';
 import { buildWorkflowEventHeader } from './workflow-event-header.ts';
+import {
+  applyTypedPortEdges,
+  makeNodeBoundSubstituter,
+  type TypedRefContext,
+} from './typed-substitution.ts';
 import type { AttachmentService } from './attachment.ts';
 import type { WorktreeService } from './worktree.ts';
 import type { MoveWorkItemServiceInput, WorkItemService } from './work-item.ts';
@@ -190,7 +200,14 @@ interface DispatchContext {
   node: DagNode;
   run: WorkflowRun;
   workflow: Workflow;
+  /** Per-workflow typed-edge map (4h.5). Carried so loop bodies can resolve
+   *  their inner nodes' typed wires (same flat map covers nested loop nodes
+   *  per the typed parser's recursive walk). */
+  edges: Readonly<Record<string, NodeEdges>>;
   evaluateBoolean: EvaluateBoolean;
+  /** Node-bound substituter (4h.5). `{{ name }}` placeholders resolve from
+   *  this node's `wire:` block; legacy `$X.Y` patterns fall through to the
+   *  raw substituter until 4h.9 drops the latter. */
   substituteOutputs: SubstituteOutputs;
 }
 
@@ -971,7 +988,7 @@ export class WorkflowRuntime {
     const run = this.getRun(runId);
     if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
 
-    const parsed = parseWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
+    const parsed = parseTypedWorkflowText(run.workflowYamlSnapshot, { expectedId: run.workflowId });
     if (!parsed.ok || !parsed.workflow) {
       run.status = 'failed';
       run.completedAt = new Date().toISOString();
@@ -982,6 +999,7 @@ export class WorkflowRuntime {
       return run;
     }
     const workflow = parsed.workflow;
+    const edges = parsed.edges ?? {};
 
     if (run.status === 'pending') run.status = 'in-progress';
 
@@ -1033,7 +1051,7 @@ export class WorkflowRuntime {
           ...(priorAttempt !== undefined ? { attempt: priorAttempt } : {}),
         };
       }
-      const results = await Promise.all(ready.map((node) => this.dispatch(node, run, workflow)));
+      const results = await Promise.all(ready.map((node) => this.dispatch(node, run, workflow, edges)));
 
       const completedAt = new Date().toISOString();
       let cancelled = false;
@@ -1510,14 +1528,26 @@ export class WorkflowRuntime {
     node: DagNode,
     run: WorkflowRun,
     workflow: Workflow,
+    edges: Readonly<Record<string, NodeEdges>>,
   ): Promise<DispatchResult> {
+    // 4h.5 — apply typed-port edges + bind the template substituter for
+    // this node. Both calls short-circuit cheaply when the node has no
+    // edges registered (un-migrated YAML path).
+    const ctx: TypedRefContext = { run, projectId: this.projectId, edges };
+    const effectiveNode = applyTypedPortEdges(node, ctx);
+    const boundSubstitute = makeNodeBoundSubstituter(
+      node.id,
+      ctx,
+      this.substituteOutputs,
+    );
     const dispatcher = this.dispatchers[node.kind];
     return dispatcher({
-      node,
+      node: effectiveNode,
       run,
       workflow,
+      edges,
       evaluateBoolean: this.evaluateBoolean,
-      substituteOutputs: this.substituteOutputs,
+      substituteOutputs: boundSubstitute,
     });
   }
 
@@ -1620,7 +1650,7 @@ export class WorkflowRuntime {
           };
         }
         const results = await Promise.all(
-          ready.map((bodyNode) => this.dispatch(bodyNode, fakeRun, ctx.workflow)),
+          ready.map((bodyNode) => this.dispatch(bodyNode, fakeRun, ctx.workflow, ctx.edges)),
         );
 
         let bodyCancelled = false;
