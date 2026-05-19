@@ -247,3 +247,184 @@ test('moveWorkItem: thin wrapper preserves the no-version chat/MCP path', async 
   assert.equal(result.stageId, 'review');
   assert.equal(result.status, 'pending');
 });
+
+// ── Work Contract Layer 1 — natural-context auto-fill into run.inputs ─────
+
+test('moveAndFire: workflow declares workItemId + stageId in inputs → run.inputs populated', async () => {
+  const seq = ++fixtureSeq;
+  const folder = resolve(tmpDir, `proj-${seq}`);
+  mkdirSync(folder, { recursive: true });
+  const workflowsDir = resolve(folder, 'workflows');
+  mkdirSync(workflowsDir, { recursive: true });
+  writeFileSync(
+    resolve(workflowsDir, 'review-research.yaml'),
+    `id: review-research
+triggers:
+  on_enter:
+    stage_id: review
+inputs:
+  workItemId: ULID
+  stageId: string
+nodes:
+  - id: explore
+    kind: subagent
+    subagent: researcher
+    prompt: Look at things.
+`,
+    'utf-8',
+  );
+
+  const project = createProject({
+    slug: `wc-decl-${seq}`,
+    name: `Work Contract decl ${seq}`,
+    stages,
+    folderPath: folder,
+  });
+  const workItem = createWorkItem({
+    projectId: project.id as ULID,
+    stageId: 'backlog',
+    title: 'WI for inputs auto-fill',
+  });
+
+  const registry = new WorkflowRegistry(workflowsDir);
+  registry.reload();
+  const broadcasts: unknown[] = [];
+  const worktreeSvc = {
+    async ensureWorktree(name: string) {
+      return { path: resolve(folder, 'worktrees', name) };
+    },
+    ensureScratchDir(_: string) {},
+    sweepStaleScratch() {
+      return { removed: [] as string[] };
+    },
+  } as unknown as WorktreeService;
+  const workItemSvc = new WorkItemService({
+    projectId: project.id as ULID,
+    getProject: () => project,
+    getFieldSchemas: () => [],
+    broadcast: (e) => broadcasts.push(e),
+  });
+  const runtime = new WorkflowRuntime({
+    workspaceDir: folder,
+    projectId: project.id as ULID,
+    broadcast: (e) => broadcasts.push(e),
+    registry,
+    worktrees: worktreeSvc,
+    workItemService: workItemSvc,
+    getProject: () => project,
+  });
+
+  await runtime.moveAndFire({
+    id: workItem.id,
+    toStage: 'review',
+    expectedVersion: 1,
+  });
+
+  const runs = runtime.readRunsForProject();
+  const run = runs.find((r) => r.workItemId === workItem.id);
+  assert.ok(run, 'workflow run should exist');
+  assert.deepEqual(
+    run!.inputs,
+    { workItemId: workItem.id, stageId: 'review' },
+    'workflow declared both inputs → both auto-filled from on_enter context',
+  );
+});
+
+test('moveAndFire: workflow declares no inputs → run.inputs stays empty (no magic)', async () => {
+  // Default REVIEW_WORKFLOW_YAML has no inputs: block. Fire-path must NOT
+  // pollute run.inputs with workItemId/stageId the workflow didn't ask for.
+  const f = mkFixture();
+  await f.runtime.moveAndFire({
+    id: f.workItemId,
+    toStage: 'review',
+    expectedVersion: 1,
+  });
+
+  const runs = f.runtime.readRunsForProject();
+  const run = runs.find((r) => r.workItemId === f.workItemId);
+  assert.ok(run);
+  // run.inputs is either undefined or {} — both mean "no inputs populated."
+  const inputs = run!.inputs ?? {};
+  assert.equal(
+    Object.keys(inputs).length,
+    0,
+    'workflow declared no inputs → fire-path should not auto-fill anything',
+  );
+});
+
+test('moveAndFire: workflow declares only workItemId → run.inputs has workItemId, not stageId', async () => {
+  const seq = ++fixtureSeq;
+  const folder = resolve(tmpDir, `proj-${seq}`);
+  mkdirSync(folder, { recursive: true });
+  const workflowsDir = resolve(folder, 'workflows');
+  mkdirSync(workflowsDir, { recursive: true });
+  writeFileSync(
+    resolve(workflowsDir, 'review-research.yaml'),
+    `id: review-research
+triggers:
+  on_enter:
+    stage_id: review
+inputs:
+  workItemId: ULID
+nodes:
+  - id: explore
+    kind: subagent
+    subagent: researcher
+    prompt: Look at things.
+`,
+    'utf-8',
+  );
+
+  const project = createProject({
+    slug: `wc-partial-${seq}`,
+    name: `Work Contract partial ${seq}`,
+    stages,
+    folderPath: folder,
+  });
+  const workItem = createWorkItem({
+    projectId: project.id as ULID,
+    stageId: 'backlog',
+    title: 'WI for partial inputs',
+  });
+  const registry = new WorkflowRegistry(workflowsDir);
+  registry.reload();
+  const worktreeSvc = {
+    async ensureWorktree(name: string) {
+      return { path: resolve(folder, 'worktrees', name) };
+    },
+    ensureScratchDir(_: string) {},
+    sweepStaleScratch() {
+      return { removed: [] as string[] };
+    },
+  } as unknown as WorktreeService;
+  const workItemSvc = new WorkItemService({
+    projectId: project.id as ULID,
+    getProject: () => project,
+    getFieldSchemas: () => [],
+    broadcast: () => {},
+  });
+  const runtime = new WorkflowRuntime({
+    workspaceDir: folder,
+    projectId: project.id as ULID,
+    broadcast: () => {},
+    registry,
+    worktrees: worktreeSvc,
+    workItemService: workItemSvc,
+    getProject: () => project,
+  });
+
+  await runtime.moveAndFire({
+    id: workItem.id,
+    toStage: 'review',
+    expectedVersion: 1,
+  });
+
+  const runs = runtime.readRunsForProject();
+  const run = runs.find((r) => r.workItemId === workItem.id);
+  assert.ok(run);
+  assert.deepEqual(
+    run!.inputs,
+    { workItemId: workItem.id },
+    'only declared keys should be auto-filled',
+  );
+});

@@ -416,6 +416,16 @@ export class WorkflowRuntime {
     // Workflow firing is committed atomically with the lock.
     updateWorkItemStatus(id as ULID, 'in-progress', null);
 
+    // Work Contract Layer 1 (2026-05-19, see docs/design/work-contract.md):
+    // the on_enter fire-path has natural context (workItemId + stageId). Fill
+    // run.inputs for whichever keys the workflow declared. Principle:
+    // declarations are the contract; fire-path fills natural context only for
+    // declared inputs. No magic — caller-explicit and workflow-declared.
+    const onEnterInputs = pickDeclaredInputs(match.entry.workflow, {
+      workItemId: id,
+      stageId: toStage,
+    });
+
     const run = this.createRun({
       workflow: match.entry.workflow,
       yamlText: match.entry.yamlText,
@@ -423,6 +433,7 @@ export class WorkflowRuntime {
       workItemId: id,
       stageId: toStage,
       worktreePath,
+      ...(Object.keys(onEnterInputs).length > 0 ? { inputs: onEnterInputs } : {}),
     });
     void this.tick(run.id).catch((err) => {
       console.error('[workflow-runtime] stage-move tick failed:', (err as Error).message);
@@ -1780,6 +1791,25 @@ function isEmptyValue(value: unknown): boolean {
   if (Array.isArray(value)) return value.length === 0;
   if (typeof value === 'object') return Object.keys(value).length === 0;
   return false;
+}
+
+/** Work Contract Layer 1 (2026-05-19): given a workflow and a map of natural
+ *  context values from a fire-path, return the subset of context values that
+ *  the workflow declared in its `inputs:` block. Fire-paths fill natural
+ *  context for declared inputs only — declarations are the contract. */
+function pickDeclaredInputs(
+  workflow: Workflow,
+  context: Record<string, unknown>,
+): Record<string, unknown> {
+  const declared = workflow.inputs;
+  if (!declared) return {};
+  const picked: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (key in declared && value !== undefined && value !== null) {
+      picked[key] = value;
+    }
+  }
+  return picked;
 }
 
 /** Returns the `subagent:` field for a node, or null if the node isn't a
