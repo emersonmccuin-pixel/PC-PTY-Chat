@@ -1038,6 +1038,7 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
     stageId?: string;
     body?: string;
     parentId?: string | null;
+    fields?: Record<string, unknown>;
   }>();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
@@ -1049,6 +1050,7 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
       stageId,
       ...(body.body !== undefined ? { body: body.body } : {}),
       ...(body.parentId !== undefined ? { parentId: body.parentId as ULID | null } : {}),
+      ...(body.fields !== undefined ? { fields: body.fields } : {}),
     });
     return c.json({ ok: true, workItem });
   } catch (err) {

@@ -253,7 +253,11 @@ export const api = {
     projectId: ULID,
     title: string,
     stageId: string,
-    opts: { body?: string; parentId?: ULID | null } = {},
+    opts: {
+      body?: string;
+      parentId?: ULID | null;
+      fields?: Record<string, unknown>;
+    } = {},
   ): Promise<{ ok: true; workItem: WorkItem }> => {
     const res = await fetch(`/api/projects/${projectId}/work-items/create`, {
       method: 'POST',

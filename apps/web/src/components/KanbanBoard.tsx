@@ -31,6 +31,7 @@ import {
   type WorkItemStatus,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
 
 interface KanbanBoardProps {
@@ -46,11 +47,18 @@ const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: s
   failed: { glyph: '⚠', className: 'text-destructive' },
 };
 
+interface CreateModalState {
+  stageId: string;
+  prefillTitle: string;
+  fieldErrors: Record<string, string>;
+}
+
 export function KanbanBoard({ project, events }: KanbanBoardProps) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
+  const [createModal, setCreateModal] = useState<CreateModalState | null>(null);
 
   const refetch = useCallback(() => {
     api
@@ -177,6 +185,9 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
             childCounts={childCountByParent}
             onItemCreated={(wi) => setItems((prev) => [...prev, wi])}
             onItemClick={(id) => setOpenItemId(id)}
+            onNeedsFullForm={(prefillTitle, fieldErrors) =>
+              setCreateModal({ stageId: stage.id, prefillTitle, fieldErrors })
+            }
           />
         ))}
       </KanbanScrollContainer>
@@ -200,6 +211,19 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
           onClose={() => setOpenItemId(null)}
           onSwitchItem={(id) => setOpenItemId(id)}
           onItemCreated={(wi) =>
+            setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]))
+          }
+        />
+      )}
+
+      {createModal && (
+        <CreateWorkItemModal
+          project={project}
+          stageId={createModal.stageId}
+          prefillTitle={createModal.prefillTitle}
+          initialFieldErrors={createModal.fieldErrors}
+          onClose={() => setCreateModal(null)}
+          onCreated={(wi) =>
             setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]))
           }
         />
@@ -327,6 +351,7 @@ function Column({
   childCounts,
   onItemCreated,
   onItemClick,
+  onNeedsFullForm,
 }: {
   stage: Stage;
   items: WorkItem[];
@@ -334,6 +359,7 @@ function Column({
   childCounts: Map<string, number>;
   onItemCreated: (wi: WorkItem) => void;
   onItemClick: (id: string) => void;
+  onNeedsFullForm: (prefillTitle: string, fieldErrors: Record<string, string>) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const ids = useMemo(() => items.map((i) => i.id), [items]);
@@ -367,6 +393,7 @@ function Column({
         projectId={project.id}
         stageId={stage.id}
         onCreated={onItemCreated}
+        onNeedsFullForm={onNeedsFullForm}
       />
     </div>
   );
@@ -463,10 +490,12 @@ function AddCardForm({
   projectId,
   stageId,
   onCreated,
+  onNeedsFullForm,
 }: {
   projectId: string;
   stageId: string;
   onCreated: (wi: WorkItem) => void;
+  onNeedsFullForm: (prefillTitle: string, fieldErrors: Record<string, string>) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -485,12 +514,12 @@ function AddCardForm({
       setOpen(false);
     } catch (e) {
       if (e instanceof WorkItemFieldValidationError) {
-        const lines = Object.values(e.errors);
-        setErr(
-          lines.length > 0
-            ? `Can't save — required fields missing:\n${lines.map((l) => `• ${l}`).join('\n')}\nOpen the card in detail to fill them, or unmark them as required in project settings.`
-            : e.message,
-        );
+        // Project has required custom fields the inline form can't fill.
+        // Hand off to the fuller create modal pre-populated with the title.
+        onNeedsFullForm(trimmed, e.errors);
+        setTitle('');
+        setOpen(false);
+        setErr(null);
       } else {
         setErr((e as Error).message);
       }
