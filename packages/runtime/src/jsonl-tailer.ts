@@ -39,7 +39,28 @@ export type JsonlEvent =
       cacheReadTokens: number;
       model: string | null;
     }
-  | { kind: 'jsonl-sidechain'; raw: unknown };
+  | { kind: 'jsonl-sidechain'; raw: unknown }
+  /**
+   * `type: 'system'` rows from CC's JSONL. claude.exe writes these for any
+   * non-turn event the user would see in the CLI's stderr / status line:
+   *   - `subtype: 'api_error'` — Anthropic API failure, with retry metadata.
+   *     Surfaces the "Overloaded — retrying in 8s (attempt 5/10)" status line
+   *     that the CLI shows but our chat panel was previously eating.
+   *   - `subtype: 'init'` — session boot banner.
+   *   - other subtypes claude.exe adds over time — we emit them all and let
+   *     the chat panel decide what to render (default: dump the raw entry).
+   * Per [[hand-user-everything]] / 2026-05-19 ask: the user must see EVERY
+   * system message a claude code CLI user would see; missing this surface is
+   * how "stuck in Thinking" with no diagnosis becomes a frustrating bug.
+   */
+  | {
+      kind: 'jsonl-system';
+      subtype: string;
+      level: string;
+      message: string;
+      timestamp: string | null;
+      raw: unknown;
+    };
 
 export interface JsonlTailerOptions {
   filePath: string;
@@ -248,8 +269,77 @@ export class JsonlTailer extends EventEmitter {
       return;
     }
 
+    if (type === 'system') {
+      const subtype = typeof entry.subtype === 'string' ? entry.subtype : '';
+      // claude.exe writes init / api_error rows + an ever-growing set of
+      // operational subtypes. We emit every one of them so the chat panel
+      // can surface them. Subtypes we DON'T want as bubbles (init banner is
+      // noise; permission-mode flips are metadata) get filtered web-side.
+      if (!subtype) return;
+      const level = typeof entry.level === 'string' ? entry.level : 'info';
+      const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : null;
+      this.emit('event', {
+        kind: 'jsonl-system',
+        subtype,
+        level,
+        message: formatSystemMessage(subtype, entry),
+        timestamp,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
     // Unknown / metadata types (permission-mode, file-history-snapshot,
     // attachment, ai-title, last-prompt, …) — drop silently. CC adds shapes
     // over time; we tolerate the unknown.
   }
+}
+
+/** Build a one-line plain-English summary of a `type: 'system'` row. Used
+ *  for the chat-bubble label; the raw entry rides along so the panel can
+ *  expand for the technically curious. Per [[hand-user-everything]]: this
+ *  is what the user would have seen in the CLI's status line, so phrase it
+ *  like a status line — short, factual, no jargon. */
+function formatSystemMessage(subtype: string, entry: Record<string, unknown>): string {
+  if (subtype === 'api_error') {
+    const errOuter = entry.error as Record<string, unknown> | undefined;
+    const status =
+      errOuter && typeof errOuter.status === 'number' ? (errOuter.status as number) : null;
+    // Anthropic SDK shape: error.error.error.{type,message}.
+    let innerType = '';
+    let innerMsg = '';
+    if (errOuter && typeof errOuter.error === 'object' && errOuter.error) {
+      const lvl1 = errOuter.error as Record<string, unknown>;
+      if (typeof lvl1.error === 'object' && lvl1.error) {
+        const lvl2 = lvl1.error as Record<string, unknown>;
+        innerType = typeof lvl2.type === 'string' ? (lvl2.type as string) : '';
+        innerMsg = typeof lvl2.message === 'string' ? (lvl2.message as string) : '';
+      }
+    }
+    const retryInMs = typeof entry.retryInMs === 'number' ? (entry.retryInMs as number) : null;
+    const attempt =
+      typeof entry.retryAttempt === 'number' ? (entry.retryAttempt as number) : null;
+    const maxRetries =
+      typeof entry.maxRetries === 'number' ? (entry.maxRetries as number) : null;
+    const head = innerMsg || innerType || 'API error';
+    const statusBit = status !== null ? ` (HTTP ${status})` : '';
+    if (attempt !== null && maxRetries !== null && retryInMs !== null) {
+      const secs = (retryInMs / 1000).toFixed(1);
+      return `${head}${statusBit} — retrying in ${secs}s (attempt ${attempt}/${maxRetries})`;
+    }
+    if (attempt !== null && maxRetries !== null) {
+      return `${head}${statusBit} (attempt ${attempt}/${maxRetries})`;
+    }
+    return `${head}${statusBit}`;
+  }
+
+  if (subtype === 'init') {
+    const cwd = typeof entry.cwd === 'string' ? entry.cwd : '';
+    return cwd ? `Session started — cwd ${cwd}` : 'Session started';
+  }
+
+  // Generic fallback: surface whatever scalar fields the row carries.
+  const message = typeof entry.message === 'string' ? (entry.message as string) : '';
+  if (message) return `[${subtype}] ${message}`;
+  return `[${subtype}]`;
 }

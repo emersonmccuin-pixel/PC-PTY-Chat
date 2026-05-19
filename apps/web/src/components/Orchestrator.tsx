@@ -18,6 +18,7 @@ import type {
   JsonlEvent,
   NotificationEvent,
   SubagentFailureEvent,
+  SystemEvent,
   TaskEndEvent,
   TaskStartEvent,
   TodosEvent,
@@ -144,6 +145,19 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
           toolUseId: ev.toolUseId,
           result: ev.result,
         },
+      };
+    case 'jsonl-system':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'system',
+          subtype: ev.subtype,
+          level: ev.level,
+          message: ev.message,
+          raw: ev.raw,
+          ts: ev.timestamp ?? undefined,
+        } satisfies SystemEvent,
       };
     case 'jsonl-queue-enqueue':
     case 'jsonl-queue-dequeue':
@@ -873,6 +887,8 @@ function EventBubble({
       return <NotificationBubble event={event as NotificationEvent} />;
     case 'subagent-failure':
       return <FailureBubble event={event as SubagentFailureEvent} />;
+    case 'system':
+      return <SystemBubble event={event as SystemEvent} />;
     // session-end renders as a footer notice on the chat panel (not inline);
     // subagent-stop is captured but not rendered in chat (Section 2 owns it).
     case 'session-end':
@@ -942,6 +958,75 @@ function NotificationBubble({ event }: { event: NotificationEvent }) {
         {event.title ?? 'Notification'}
       </div>
       <div className="mt-0.5 italic">{event.message || '(no message)'}</div>
+    </div>
+  );
+}
+
+// ── System bubble (Section 1 / 2026-05-19 — system-message surfacing) ────
+//
+// Renders any `type: 'system'` row from CC's JSONL — API errors, retry
+// status, init banners, anything claude.exe writes that a CLI user would
+// have seen in their status line. Colour-coded by `level`:
+//   - 'error' → destructive border + red SUBTYPE chip (api_error, etc.)
+//   - 'warn'  → warning border (yellow)
+//   - other   → muted border (info / init)
+//
+// "Show details" toggle expands the raw entry for debugging. Most users
+// will never open it; it's there because [[hand-user-everything]] says
+// don't hide context the user might need.
+
+function SystemBubble({ event }: { event: SystemEvent }) {
+  const [open, setOpen] = useState(false);
+  const isError = event.level === 'error';
+  const isWarn = event.level === 'warn' || event.level === 'warning';
+  const wrapClass = isError
+    ? 'border-destructive/60 bg-destructive/5'
+    : isWarn
+      ? 'border-warning/60 bg-warning/10'
+      : 'border-border bg-muted/30';
+  const chipClass = isError
+    ? 'bg-destructive text-destructive-foreground'
+    : isWarn
+      ? 'bg-warning text-background'
+      : 'bg-muted-foreground/70 text-background';
+  return (
+    <div className={`self-start max-w-[85%] border px-3 py-2 text-xs ${wrapClass}`}>
+      <div className="mb-1 flex items-center gap-2">
+        <span
+          className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ${chipClass}`}
+        >
+          {event.subtype.replace(/_/g, ' ')}
+        </span>
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {event.level}
+        </span>
+        {event.ts && (
+          <span className="ml-auto text-[10px] text-muted-foreground">
+            {new Date(event.ts).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+      <div className="whitespace-pre-wrap break-words text-sm text-foreground">
+        {event.message}
+      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mt-1.5 text-[10px] uppercase tracking-wider text-muted-foreground underline-offset-2 hover:underline"
+      >
+        {open ? 'Hide details' : 'Show details'}
+      </button>
+      {open && (
+        <pre className="mt-1.5 max-h-64 overflow-auto border border-border bg-background p-2 font-mono text-[10px] leading-snug">
+          {(() => {
+            try {
+              return JSON.stringify(event.raw, null, 2);
+            } catch {
+              return String(event.raw);
+            }
+          })()}
+        </pre>
+      )}
     </div>
   );
 }

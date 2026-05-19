@@ -563,3 +563,111 @@ test('missing file → no events, no error', () => {
   assert.equal(events.length, 0);
   assert.equal(errors.length, 0);
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// System messages (2026-05-19 — surface CC's status-line errors in chat)
+// ─────────────────────────────────────────────────────────────────────────
+
+test('system api_error (overloaded) → jsonl-system with formatted retry status', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'api_error',
+      level: 'error',
+      timestamp: '2026-05-19T14:47:04.192Z',
+      error: {
+        status: 529,
+        error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+      },
+      retryInMs: 8608.6,
+      retryAttempt: 5,
+      maxRetries: 10,
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  assert.ok(ev && ev.kind === 'jsonl-system');
+  if (ev.kind !== 'jsonl-system') throw new Error('narrowing');
+  assert.equal(ev.subtype, 'api_error');
+  assert.equal(ev.level, 'error');
+  assert.equal(ev.timestamp, '2026-05-19T14:47:04.192Z');
+  assert.equal(
+    ev.message,
+    'Overloaded (HTTP 529) — retrying in 8.6s (attempt 5/10)',
+  );
+});
+
+test('system api_error without retry metadata → message keeps the http status', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'api_error',
+      level: 'error',
+      error: {
+        status: 401,
+        error: { type: 'error', error: { type: 'authentication_error', message: 'invalid auth' } },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  if (!ev || ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.equal(ev.message, 'invalid auth (HTTP 401)');
+});
+
+test('system init → jsonl-system with cwd in message', () => {
+  const f = freshFile([
+    { type: 'system', subtype: 'init', level: 'info', cwd: 'E:\temp\pc-p-test\project-b' },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  if (!ev || ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.equal(ev.subtype, 'init');
+  assert.match(ev.message, /Session started — cwd /);
+});
+
+test('system row with unknown subtype → generic fallback message', () => {
+  const f = freshFile([
+    { type: 'system', subtype: 'permission_mode_changed', level: 'info', message: 'plan → bypass' },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0];
+  if (!ev || ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.equal(ev.subtype, 'permission_mode_changed');
+  assert.equal(ev.message, '[permission_mode_changed] plan → bypass');
+});
+
+test('system row without subtype → no event (drop silently)', () => {
+  const f = freshFile([{ type: 'system', level: 'info' }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 0);
+});
+
+test('system row carries raw entry through for the debug-expand surface', () => {
+  const raw = {
+    type: 'system',
+    subtype: 'api_error',
+    level: 'error',
+    error: { status: 529, error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } },
+    retryInMs: 1000,
+    retryAttempt: 1,
+    maxRetries: 10,
+    weirdField: 'should survive',
+  };
+  const f = freshFile([raw]);
+  const events = collect(f);
+  cleanup(f);
+  const ev = events[0];
+  if (!ev || ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  const r = ev.raw as Record<string, unknown>;
+  assert.equal(r.weirdField, 'should survive');
+});

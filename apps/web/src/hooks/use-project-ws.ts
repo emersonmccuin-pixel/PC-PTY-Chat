@@ -156,6 +156,17 @@ export interface StopFailureEvent extends ChatEventBase {
   errorDetails?: unknown;
 }
 
+/** Surface for `type: 'system'` rows from CC's JSONL. Carries the same
+ *  message a claude code CLI user would see in their status line. The
+ *  chat panel renders it as a muted bubble with the subtype as a tag. */
+export interface SystemEvent extends ChatEventBase {
+  kind: 'system';
+  subtype: string;
+  level: string;
+  message: string;
+  raw: unknown;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -170,6 +181,7 @@ export type ChatEvent =
   | SubagentStopEvent
   | SubagentFailureEvent
   | StopFailureEvent
+  | SystemEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────
@@ -226,6 +238,18 @@ export interface JsonlUsageEvent {
   model: string | null;
 }
 
+/** `type: 'system'` rows from CC's JSONL — API errors, init banners, etc.
+ *  Whatever a claude code CLI user would have seen in their stderr / status
+ *  line, we surface in the chat panel as a system bubble. */
+export interface JsonlSystemEvent {
+  kind: 'jsonl-system';
+  subtype: string;
+  level: string;
+  message: string;
+  timestamp: string | null;
+  raw: unknown;
+}
+
 export type JsonlEvent =
   | JsonlUserEvent
   | JsonlTurnEndEvent
@@ -234,7 +258,8 @@ export type JsonlEvent =
   | JsonlQueueEnqueueEvent
   | JsonlQueueDequeueEvent
   | JsonlSidechainEvent
-  | JsonlUsageEvent;
+  | JsonlUsageEvent
+  | JsonlSystemEvent;
 
 // ── Outbound WS messages (Q8 chat send + interrupt + ask-reply) ───────────
 
