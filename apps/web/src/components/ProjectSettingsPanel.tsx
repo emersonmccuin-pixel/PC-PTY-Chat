@@ -131,7 +131,10 @@ function ProjectInfoForm({
 
   return (
     <div className="space-y-3">
-      <Field label="Name">
+      <Field
+        label="Display name"
+        help={`The folder name on disk and URLs stay locked at ${project.slug}.`}
+      >
         <input
           type="text"
           value={name}
