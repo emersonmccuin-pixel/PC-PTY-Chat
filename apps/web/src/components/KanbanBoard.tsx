@@ -24,7 +24,6 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 import {
   api,
   WorkItemConflictError,
-  WorkItemFieldValidationError,
   type Project,
   type Stage,
   type WorkItem,
@@ -61,8 +60,6 @@ const TYPE_CHIP: Record<
 
 interface CreateModalState {
   stageId: string;
-  prefillTitle: string;
-  fieldErrors: Record<string, string>;
 }
 
 export function KanbanBoard({ project, events }: KanbanBoardProps) {
@@ -193,13 +190,9 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
             key={stage.id}
             stage={stage}
             items={itemsByStage.get(stage.id) ?? []}
-            project={project}
             childCounts={childCountByParent}
-            onItemCreated={(wi) => setItems((prev) => [...prev, wi])}
             onItemClick={(id) => setOpenItemId(id)}
-            onNeedsFullForm={(prefillTitle, fieldErrors) =>
-              setCreateModal({ stageId: stage.id, prefillTitle, fieldErrors })
-            }
+            onAddCard={() => setCreateModal({ stageId: stage.id })}
           />
         ))}
       </KanbanScrollContainer>
@@ -232,8 +225,6 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
         <CreateWorkItemModal
           project={project}
           stageId={createModal.stageId}
-          prefillTitle={createModal.prefillTitle}
-          initialFieldErrors={createModal.fieldErrors}
           onClose={() => setCreateModal(null)}
           onCreated={(wi) =>
             setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]))
@@ -359,19 +350,15 @@ function KanbanScrollContainer({ children }: { children: React.ReactNode }) {
 function Column({
   stage,
   items,
-  project,
   childCounts,
-  onItemCreated,
   onItemClick,
-  onNeedsFullForm,
+  onAddCard,
 }: {
   stage: Stage;
   items: WorkItem[];
-  project: Project;
   childCounts: Map<string, number>;
-  onItemCreated: (wi: WorkItem) => void;
   onItemClick: (id: string) => void;
-  onNeedsFullForm: (prefillTitle: string, fieldErrors: Record<string, string>) => void;
+  onAddCard: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const ids = useMemo(() => items.map((i) => i.id), [items]);
@@ -401,12 +388,12 @@ function Column({
           ))}
         </div>
       </SortableContext>
-      <AddCardForm
-        projectId={project.id}
-        stageId={stage.id}
-        onCreated={onItemCreated}
-        onNeedsFullForm={onNeedsFullForm}
-      />
+      <button
+        onClick={onAddCard}
+        className="mt-2 px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        + Add card
+      </button>
     </div>
   );
 }
@@ -508,99 +495,3 @@ function CardContent({ item, childCount }: { item: WorkItem; childCount: number 
   );
 }
 
-function AddCardForm({
-  projectId,
-  stageId,
-  onCreated,
-  onNeedsFullForm,
-}: {
-  projectId: string;
-  stageId: string;
-  onCreated: (wi: WorkItem) => void;
-  onNeedsFullForm: (prefillTitle: string, fieldErrors: Record<string, string>) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [title, setTitle] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function submit() {
-    const trimmed = title.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await api.createWorkItem(projectId, trimmed, stageId, {});
-      onCreated(r.workItem);
-      setTitle('');
-      setOpen(false);
-    } catch (e) {
-      if (e instanceof WorkItemFieldValidationError) {
-        // Project has required custom fields the inline form can't fill.
-        // Hand off to the fuller create modal pre-populated with the title.
-        onNeedsFullForm(trimmed, e.errors);
-        setTitle('');
-        setOpen(false);
-        setErr(null);
-      } else {
-        setErr((e as Error).message);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="mt-2 px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-      >
-        + Add card
-      </button>
-    );
-  }
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-      className="mt-2 flex flex-col gap-1"
-    >
-      <textarea
-        autoFocus
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="Card title"
-        className="bg-background px-2 py-1 text-sm"
-        rows={2}
-      />
-      {err && (
-        <div className="border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
-          {err}
-        </div>
-      )}
-      <div className="flex gap-1">
-        <button
-          type="submit"
-          disabled={busy || !title.trim()}
-          className="bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          Add
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setOpen(false);
-            setTitle('');
-            setErr(null);
-          }}
-          className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-        >
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}

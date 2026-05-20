@@ -286,13 +286,10 @@ test.describe('F. Kanban DnD', () => {
     await gotoShell(page);
     await selectProject(page, 'Q14 Project A');
     await setActiveTab(page, 'Work items');
-    // Click "+ Add card" in the leftmost column. The KanbanBoard renders
-    // one AddCardForm per column; the first matching button is the leftmost.
+    // "+ Add card" opens CreateWorkItemModal directly — no inline title input.
     await page.locator('button:has-text("+ Add card")').first().click();
-    await page.locator('textarea[placeholder="Card title"]').first().fill('First card');
-    // Submit via the Add button (the input is a textarea, so Enter inserts
-    // a newline rather than submitting the form).
-    await page.locator('button:has-text("Add")').first().click();
+    await page.locator('input[placeholder="Card title"]').first().fill('First card');
+    await page.locator('button:has-text("Create")').first().click();
     await expect(page.locator('text=First card').first()).toBeVisible({
       timeout: 5_000,
     });
@@ -778,10 +775,10 @@ test.describe('M. Prod URL smoke', () => {
     await setActiveTab(page, 'Work items');
     await page.locator('button:has-text("+ Add card")').first().click();
     await page
-      .locator('textarea[placeholder="Card title"]')
+      .locator('input[placeholder="Card title"]')
       .first()
       .fill('Prod-smoke card');
-    await page.locator('button:has-text("Add")').first().click();
+    await page.locator('button:has-text("Create")').first().click();
     await expect(page.locator('text=Prod-smoke card').first()).toBeVisible({
       timeout: 5_000,
     });
