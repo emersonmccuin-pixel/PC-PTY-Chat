@@ -382,15 +382,23 @@ export class PtySession extends EventEmitter {
     //  - No jsonlPath (subagent path; CC mints its own UUID): fall back to
     //    the legacy directory-scan discovery loop.
     this.spawnedAt = Date.now();
-    if (opts.jsonlPath) {
-      if (existsSync(opts.jsonlPath)) {
-        this.attachTailer(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+    // ALWAYS defer JSONL attach to next-tick. The tailer emits historical
+    // events synchronously on attach, but the constructor's caller hasn't
+    // wired the 'jsonl-event' listener yet. Without this deferral, resume
+    // replays the entire prior conversation into a dead emitter and the
+    // chat panel stays blank even though claude.exe loaded the context.
+    setImmediate(() => {
+      if (this.state === 'exited') return;
+      if (opts.jsonlPath) {
+        if (existsSync(opts.jsonlPath)) {
+          this.attachTailer(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+        } else {
+          this.waitForNamedJsonl(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+        }
       } else {
-        this.waitForNamedJsonl(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+        this.startJsonlDiscovery();
       }
-    } else {
-      this.startJsonlDiscovery();
-    }
+    });
   }
 
   /** Poll a known JSONL path every 250ms until it exists, then attach. Used
