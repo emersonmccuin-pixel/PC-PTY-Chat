@@ -17,7 +17,15 @@ import { api } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectWorkflowRuns } from '@/hooks/use-project-workflow-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
+import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
+
+interface PendingApproval {
+  workflowRunId: string;
+  nodeId: string;
+  message: string;
+  onRejectPrompt: string | null;
+}
 
 interface ActivityPanelProps {
   project: Project | null;
@@ -44,12 +52,15 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     () => runs.filter((r) => ACTIVE_STATUSES.has(r.status)),
     [runs],
   );
+  const pausedRuns = useMemo(
+    () => runs.filter((r) => r.status === 'paused'),
+    [runs],
+  );
+  const approvals = usePendingApprovals(project, events);
   const orchestratorState = useOrchestratorState(events);
 
-  const waitingCount =
-    orchestratorState === 'waiting-on-you' || orchestratorState === 'waiting-on-approval'
-      ? 1
-      : 0;
+  const askWaiting = orchestratorState === 'waiting-on-you' ? 1 : 0;
+  const waitingCount = askWaiting + pausedRuns.length;
 
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
@@ -72,7 +83,12 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
               nowMs={nowMs}
             />
             <OrchestratorStatusRegion state={orchestratorState} />
-            <HumanReviewRegion project={project} />
+            <HumanReviewRegion
+              project={project}
+              pausedRuns={pausedRuns}
+              approvals={approvals}
+              nowMs={nowMs}
+            />
             <FailedRecentlyRegion project={project} />
           </div>
         </div>
@@ -429,11 +445,126 @@ const ORCHESTRATOR_LABELS: Record<
   },
 };
 
-function HumanReviewRegion({ project: _project }: { project: Project }) {
-  // 6.5 wires this region.
+function usePendingApprovals(
+  project: Project | null,
+  events: WsEnvelope[],
+): PendingApproval[] {
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+
+  useEffect(() => {
+    if (!project) {
+      setApprovals([]);
+      return;
+    }
+    let cancelled = false;
+    const refetch = () => {
+      void fetch(`/api/projects/${project.id}/approvals`)
+        .then((r) => r.json() as Promise<{ approvals: PendingApproval[] }>)
+        .then((r) => {
+          if (!cancelled) setApprovals(r.approvals ?? []);
+        })
+        .catch(() => {
+          /* best-effort */
+        });
+    };
+    refetch();
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  // Refetch on approval-required arrival OR workflow-run-changed (which
+  // fires when the run resumes after approval — drops the approval from
+  // the server-side pending list).
+  useEffect(() => {
+    if (!project || events.length === 0) return;
+    const last = events[events.length - 1]!;
+    const kind = (last as { event?: { kind?: string } }).event?.kind;
+    if (kind === 'approval-required' || last.type === 'workflow-run-changed') {
+      void fetch(`/api/projects/${project.id}/approvals`)
+        .then((r) => r.json() as Promise<{ approvals: PendingApproval[] }>)
+        .then((r) => setApprovals(r.approvals ?? []))
+        .catch(() => {
+          /* best-effort */
+        });
+    }
+  }, [events, project?.id]);
+
+  return approvals;
+}
+
+function HumanReviewRegion({
+  project: _project,
+  pausedRuns,
+  approvals,
+  nowMs,
+}: {
+  project: Project;
+  pausedRuns: WorkflowRun[];
+  approvals: PendingApproval[];
+  nowMs: number;
+}) {
+  const setTab = useActiveCenterTab((s) => s.setTab);
+  const requestScrollTo = useChatScrollTarget((s) => s.requestScrollTo);
+
+  // Map runId → its pending approval (if any). Most paused runs have one;
+  // orchestrator-review pauses have none and click-through just lands the
+  // user on the orchestrator tab.
+  const approvalByRunId = useMemo(() => {
+    const m = new Map<string, PendingApproval>();
+    for (const a of approvals) m.set(a.workflowRunId, a);
+    return m;
+  }, [approvals]);
+
+  if (pausedRuns.length === 0) {
+    return (
+      <RegionShell title="Waiting on you" badge="0">
+        <EmptyRegion text="Nothing waiting for your input." />
+      </RegionShell>
+    );
+  }
+
   return (
-    <RegionShell title="Waiting on you" badge="0">
-      <EmptyRegion text="Nothing waiting for your input." />
+    <RegionShell title="Waiting on you" badge={String(pausedRuns.length)}>
+      <ul className="divide-y divide-border/50">
+        {pausedRuns.map((run) => {
+          const approval = approvalByRunId.get(run.id);
+          const stepLabel = approval
+            ? `approval: ${approval.nodeId}`
+            : describeCurrentStep(run);
+          const waiting = formatElapsed(
+            nowMs - new Date(run.startedAt).getTime(),
+          );
+          return (
+            <li key={run.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab('orchestrator');
+                  if (approval) {
+                    requestScrollTo(
+                      `approval-${approval.workflowRunId}-${approval.nodeId}`,
+                    );
+                  }
+                }}
+                className="block w-full px-3 py-2 text-left hover:bg-muted/40"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                    {run.workflowId}
+                  </div>
+                  <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                    {waiting}
+                  </div>
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                  {stepLabel}
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </RegionShell>
   );
 }

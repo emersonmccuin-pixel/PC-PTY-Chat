@@ -28,6 +28,7 @@ import type {
   WsOutbound,
   WsStatus,
 } from '@/hooks/use-project-ws';
+import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useViewingSession } from '@/store/viewing-session';
 import { AskCard } from '@/components/AskCard';
 import { StatusBar, type UsageTotals } from '@/components/StatusBar';
@@ -824,6 +825,29 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
   useEffect(() => {
     setPinnedToBottom(true);
   }, [session?.id, viewingSessionId]);
+
+  // Section 6.5 — cross-tab scroll-to-bubble. The activity panel calls
+  // `useChatScrollTarget.requestScrollTo('approval-…')` after switching
+  // tabs; we find the matching `data-bubble-id` element here, scroll it
+  // into view, drop the pinned-to-bottom flag, and flash a highlight ring
+  // for ~1.5s. `requestedAt` is the trigger (not the id) so re-targeting
+  // the same bubble still fires.
+  const scrollTargetId = useChatScrollTarget((s) => s.targetId);
+  const scrollTargetRequestedAt = useChatScrollTarget((s) => s.requestedAt);
+  useEffect(() => {
+    if (!scrollTargetId || !scrollTargetRequestedAt) return;
+    const el = scrollerRef.current?.querySelector<HTMLElement>(
+      `[data-bubble-id="${CSS.escape(scrollTargetId)}"]`,
+    );
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setPinnedToBottom(false);
+    el.classList.add('ring-2', 'ring-warning', 'ring-offset-2', 'ring-offset-background');
+    const timer = setTimeout(() => {
+      el.classList.remove('ring-2', 'ring-warning', 'ring-offset-2', 'ring-offset-background');
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [scrollTargetId, scrollTargetRequestedAt]);
 
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -2026,7 +2050,10 @@ function ApprovalBubble({ event, projectId, resolved, onResolved }: ApprovalBubb
   }
 
   return (
-    <div className="self-start max-w-[85%] border border-warning/60 bg-card px-3 py-2 text-sm">
+    <div
+      data-bubble-id={`approval-${event.workflowRunId}-${event.nodeId}`}
+      className="self-start max-w-[85%] border border-warning/60 bg-card px-3 py-2 text-sm"
+    >
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-warning px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
           approval required
