@@ -82,9 +82,6 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
   if (!project) {
     return (
       <div className="flex h-full flex-col bg-card text-foreground">
-        <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Sessions
-        </div>
         <div className="px-3 py-3 text-xs text-muted-foreground">
           Select a project to see its chat history.
         </div>
@@ -94,9 +91,6 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
 
   return (
     <div className="flex h-full flex-col bg-card text-foreground">
-      <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Sessions
-      </div>
       <div className="flex-1 overflow-y-auto">
         {loading && sessions.length === 0 && (
           <div className="px-3 py-3 text-xs text-muted-foreground">Loading…</div>
