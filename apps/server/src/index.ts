@@ -30,6 +30,7 @@ import {
   getActiveOrchestratorSession,
   dismissFailedRun,
   getGlobalSettings,
+  getPendingAsk,
   getProjectById,
   listFailedRunDismissalsForProject,
   listOrchestratorSessionsForProject,
@@ -84,6 +85,13 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
+import {
+  recordAgentAnswer,
+  recordAgentCompleted,
+  recordAgentFailed,
+  recordAgentInvoke,
+  recordAgentPause,
+} from './services/agent-audit.ts';
 import {
   buildAgentApprovalRequestBody,
   buildAgentAsksOrchestratorBody,
@@ -2588,6 +2596,18 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     });
   }
 
+  // 16b.7 — audit row on the parent work item.
+  recordAgentPause({
+    workItemId: row.parentWorkItemId,
+    agentName,
+    sessionId,
+    runId: row.runId,
+    pendingAskId,
+    kind,
+    prompt: question,
+    now: Date.now(),
+  });
+
   return c.json({ ok: true, pendingAskId, status: 'waiting' });
 });
 
@@ -2620,12 +2640,35 @@ app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) 
     return c.json({ ok: false, error: 'answeredBy must be orchestrator | user' }, 400);
   }
 
+  // Snapshot the pending-ask before respawn flips the row — we need
+  // parentWorkItemId + agent context for the audit row + we want to skip
+  // audit when the answer didn't actually take effect (already-answered,
+  // unknown id, etc.). `respawnAgentWithAnswer` re-reads the row internally;
+  // the double-read is fine for one row.
+  const askBefore = getPendingAsk(askId);
+
+  const now = Date.now();
   const result = await respawnAgentWithAnswer({
     pendingAskId: askId,
     answer,
     answeredBy,
-    now: Date.now(),
+    now,
   });
+
+  // 16b.7 — audit only when the answer actually landed (atomic flip won).
+  if (result.ok && askBefore?.parentWorkItemId) {
+    recordAgentAnswer({
+      workItemId: askBefore.parentWorkItemId,
+      agentName: askBefore.agentName,
+      sessionId: askBefore.sessionId,
+      runId: askBefore.runId,
+      pendingAskId: askId,
+      answeredBy,
+      answer,
+      now,
+    });
+  }
+
   // Always 200 — the result envelope carries the success/error shape the
   // MCP tool returns to the orchestrator. Same convention as
   // /workflow/node-complete + friends.
@@ -2709,11 +2752,30 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     invokeDepth: depthCheck.childDepth,
   });
 
+  // 16b.7 — audit row on the parent work item.
+  recordAgentInvoke({
+    workItemId: parentWorkItemId,
+    agentName,
+    sessionId: spawn.sessionId,
+    runId: spawn.runId,
+    mode: wait ? 'sync' : 'async',
+    input,
+    now: Date.now(),
+  });
+
   if (wait) {
     // Block in-turn until the child reaches a terminal state. The completion
     // Promise resolves on completed / failed / cancelled — never rejects.
     const rec = await spawn.completion;
     if (rec.status === 'completed') {
+      recordAgentCompleted({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        result: rec.result ?? '',
+        now: Date.now(),
+      });
       return c.json({
         ok: true,
         mode: 'sync',
@@ -2722,6 +2784,15 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         result: rec.result,
       });
     }
+    recordAgentFailed({
+      workItemId: rec.parentWorkItemId,
+      agentName: rec.agentName,
+      sessionId: rec.sessionId,
+      runId: rec.runId,
+      reason: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
+      cause: rec.failureCause ?? rec.status,
+      now: Date.now(),
+    });
     return c.json({
       ok: false,
       error: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
@@ -2735,6 +2806,14 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   // turn (orchestrator handler protocol entries #4 + #5).
   void spawn.completion.then((rec) => {
     if (rec.status === 'completed') {
+      recordAgentCompleted({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        result: rec.result ?? '',
+        now: Date.now(),
+      });
       channelServer.emitToProject({
         projectId,
         slug: project.slug,
@@ -2749,6 +2828,16 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         sender: 'pc',
       });
     } else {
+      recordAgentFailed({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        reason:
+          rec.failureReason ?? `agent ${rec.agentName} did not complete (${rec.status})`,
+        cause: rec.failureCause ?? rec.status,
+        now: Date.now(),
+      });
       channelServer.emitToProject({
         projectId,
         slug: project.slug,

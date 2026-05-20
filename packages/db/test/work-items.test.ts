@@ -32,6 +32,7 @@ const {
   listArchivedWorkItems,
   countWorkItemsInStage,
   reassignStage,
+  appendWorkItemHistory,
   WorkItemVersionConflictError,
 } = await import('../src/index.ts');
 import type { Stage, ULID } from '@pc/domain';
@@ -294,4 +295,54 @@ test('createWorkItem stores body + fields', () => {
   });
   assert.equal(wi.body, 'hello world');
   assert.deepEqual(wi.fields, { severity: 'high', count: 3 });
+});
+
+// Section 16b.7 — agent-comms audit rows land on workItems.history via
+// appendWorkItemHistory + surface on the public WorkItem shape.
+test('appendWorkItemHistory: append + read-back via getWorkItem', () => {
+  const p = createProject({
+    slug: 'audit-trail',
+    name: 'Audit Trail',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({
+    projectId: p.id as ULID,
+    stageId: 'backlog',
+    title: 'parent card',
+  });
+  assert.deepEqual(wi.history, []);
+  const updated = appendWorkItemHistory(wi.id as ULID, {
+    ts: new Date().toISOString(),
+    kind: 'agent-invoke',
+    agentName: 'researcher',
+    sessionId: 'sess-1',
+    runId: 'run-1',
+    invokeMode: 'async',
+    note: 'orchestrator dispatched researcher',
+  });
+  assert.ok(updated);
+  assert.equal(updated.history.length, 1);
+  assert.equal(updated.history[0]?.kind, 'agent-invoke');
+  assert.equal(updated.history[0]?.agentName, 'researcher');
+  // Read back through getWorkItem to confirm the new entry lands in the
+  // public shape (not stripped by toDomain).
+  const reread = getWorkItem(wi.id as ULID);
+  assert.ok(reread);
+  assert.equal(reread.history.length, 1);
+  assert.equal(reread.history[0]?.runId, 'run-1');
+  // Version intentionally NOT bumped — audit rows must not collide with
+  // user-edit optimistic-concurrency checks.
+  assert.equal(reread.version, wi.version);
+});
+
+test('appendWorkItemHistory: NOOP returns null for unknown id', () => {
+  const result = appendWorkItemHistory('does-not-exist' as ULID, {
+    ts: new Date().toISOString(),
+    kind: 'agent-answer',
+    pendingAskId: 'ask-1',
+    answeredBy: 'orchestrator',
+    note: 'answered "ship it"',
+  });
+  assert.equal(result, null);
 });

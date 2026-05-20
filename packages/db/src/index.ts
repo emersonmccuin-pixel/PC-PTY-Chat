@@ -20,6 +20,7 @@ export type {
 } from './repos/projects.ts';
 
 export {
+  appendWorkItemHistory,
   applyRunOutcome,
   countWorkItemsInStage,
   createWorkItem,

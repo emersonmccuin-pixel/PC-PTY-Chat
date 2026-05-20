@@ -1037,6 +1037,20 @@ function ActivityTab({
         text: `Attached ${a.name} (${a.kind})`,
       });
     }
+    // 16b.7 — agent-comms audit rows written by the four pc_*_agent /
+    // pc_ask_* HTTP routes. Persisted on workItem.history, so they survive
+    // refresh and don't depend on a live WS subscription.
+    for (const entry of workItem.history) {
+      if (!entry.kind.startsWith('agent-')) continue;
+      const ts = Date.parse(entry.ts);
+      if (!Number.isFinite(ts)) continue;
+      const actor = entry.agentName ? `agent ${entry.agentName}` : 'agent';
+      out.push({
+        ts,
+        actor,
+        text: entry.note ?? entry.kind,
+      });
+    }
     // Live broadcasts captured this session that reference this work item.
     for (const env of events) {
       if (env.type === 'work-items-changed') {

@@ -41,16 +41,53 @@ export interface WorkItem {
   updatedAt: number;
   /** Soft-delete timestamp. status='archived' is the user-facing concept. */
   deletedAt: number | null;
+  /** Append-only event log. `move` + `update` written by the repo; agent-comms
+   *  rows written by the agent-comms HTTP routes (Section 16b.7). Rendered in
+   *  the work-item detail modal's Activity tab. */
+  history: WorkItemHistoryEntry[];
 }
 
-/** Internal append-only event log written by mutation paths in the repo.
- *  NOT surfaced via the public WorkItem shape — the Activity tab reads
- *  events.jsonl, which is the source of truth. */
+/** Append-only event log written by mutation paths in the repo + by the
+ *  agent-comms HTTP routes (Section 16b.7). Surfaced on the public WorkItem
+ *  shape; consumed by the work-item detail modal's Activity tab. Older
+ *  rows (`move` / `update`) carry the original optional shape; `agent-*`
+ *  rows carry the agent-context fields. */
 export interface WorkItemHistoryEntry {
   ts: string;
-  kind: 'move' | 'update';
+  kind:
+    | 'move'
+    | 'update'
+    | 'agent-invoke'
+    | 'agent-ask-orchestrator'
+    | 'agent-ask-user'
+    | 'agent-approval-request'
+    | 'agent-answer'
+    | 'agent-completed'
+    | 'agent-failed';
+  /** `move` from-stage. */
   from?: string;
+  /** `move` to-stage. */
   to?: string;
+  /** `update` field-merge payload. */
   fields?: Record<string, unknown>;
+  /** Free-form display note. `applyRunOutcome` + agent-comms summaries use
+   *  this for the human-readable line in the Activity tab. */
   note?: string;
+  // ── agent-* context ──
+  /** Agent name for any `agent-*` entry. */
+  agentName?: string;
+  /** CC session-id for any `agent-*` entry. Same across pause/resume of one run. */
+  sessionId?: string;
+  /** PC-minted run-id (only present for entries that originate from
+   *  `pc_invoke_agent`-tracked runs). */
+  runId?: string;
+  /** PC-minted pending-ask id (present on `agent-ask-*` /
+   *  `agent-approval-request` and the matching `agent-answer`). */
+  pendingAskId?: string;
+  /** For `agent-invoke` entries: whether the caller blocked on the result. */
+  invokeMode?: 'sync' | 'async';
+  /** For `agent-answer` entries: who supplied the answer (orchestrator vs user). */
+  answeredBy?: 'orchestrator' | 'user';
+  /** For `agent-failed` entries: narrow cause for the orchestrator handler protocol. */
+  cause?: string;
 }

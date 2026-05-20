@@ -59,6 +59,7 @@ function toDomain(row: WorkItemRow): WorkItem {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
+    history: row.history,
   };
 }
 
@@ -360,6 +361,28 @@ export function reassignStage(
     basePosition += 1;
   }
   return rows.length;
+}
+
+/** Section 16b.7 — append a single history entry without touching any other
+ *  column (so we don't disturb the `version` optimistic-concurrency
+ *  counter; agent-comms audit rows are informational, not user edits). The
+ *  agent-comms HTTP routes call this via `recordAgentAudit` after the
+ *  primary effect of the tool call lands. Returns the updated WorkItem,
+ *  or null if the id isn't found / is soft-deleted (audit is best-effort;
+ *  callers swallow the null). */
+export function appendWorkItemHistory(
+  id: ULID,
+  entry: WorkItemHistoryEntry,
+): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  const updated: WorkItemRow = {
+    ...row,
+    history: [...row.history, entry],
+    updatedAt: Date.now(),
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
 }
 
 /**

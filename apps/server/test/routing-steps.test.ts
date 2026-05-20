@@ -134,6 +134,7 @@ function mkFakeWorkItemService(opts: {
         stageId: input.stageId,
         parentId: input.parentId ?? null,
         position: 0,
+        type: 'task',
         fields: {},
         status: 'pending',
         statusReason: null,
@@ -141,6 +142,7 @@ function mkFakeWorkItemService(opts: {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         deletedAt: null,
+        history: [],
       } as WorkItem;
     },
     patch(id: ULID, input: PatchWorkItemServiceInput): WorkItem {
@@ -154,6 +156,7 @@ function mkFakeWorkItemService(opts: {
         stageId: 'todo',
         parentId: null,
         position: 0,
+        type: 'task',
         fields: {},
         status: 'pending',
         statusReason: null,
@@ -161,6 +164,7 @@ function mkFakeWorkItemService(opts: {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         deletedAt: null,
+        history: [],
       } as WorkItem;
       return {
         ...base,
@@ -385,6 +389,7 @@ test('runUpdateWorkItemStep: reads version + sends only changed keys', async () 
     createdAt: Date.now(),
     updatedAt: Date.now(),
     deletedAt: null,
+    history: [],
   } as WorkItem;
   const { svc, patchCalls } = mkFakeWorkItemService({ existing });
   const node: UpdateWorkItemNode = {

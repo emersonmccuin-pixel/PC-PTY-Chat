@@ -30,6 +30,35 @@ export interface Project {
 export const WORK_ITEM_TYPES = ['task', 'bug', 'feature', 'spike'] as const;
 export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
 
+/** Section 16b.7 — append-only event log entry. `move` / `update` written
+ *  by the work-items repo; `agent-*` written by the agent-comms HTTP
+ *  routes after the primary tool effect lands. Rendered in the detail
+ *  modal's Activity tab. */
+export interface WorkItemHistoryEntry {
+  ts: string;
+  kind:
+    | 'move'
+    | 'update'
+    | 'agent-invoke'
+    | 'agent-ask-orchestrator'
+    | 'agent-ask-user'
+    | 'agent-approval-request'
+    | 'agent-answer'
+    | 'agent-completed'
+    | 'agent-failed';
+  from?: string;
+  to?: string;
+  fields?: Record<string, unknown>;
+  note?: string;
+  agentName?: string;
+  sessionId?: string;
+  runId?: string;
+  pendingAskId?: string;
+  invokeMode?: 'sync' | 'async';
+  answeredBy?: 'orchestrator' | 'user';
+  cause?: string;
+}
+
 export interface WorkItem {
   id: ULID;
   projectId: ULID;
@@ -46,6 +75,7 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
+  history: WorkItemHistoryEntry[];
 }
 
 export type FieldSchemaType = 'text' | 'number' | 'boolean' | 'enum' | 'date';
