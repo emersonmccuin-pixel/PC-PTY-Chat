@@ -185,17 +185,6 @@ switch (eventType) {
     });
     break;
   }
-  case 'Notification': {
-    // CC's own notification surface — agent waiting on input, idle timeout,
-    // etc. Render as a small system-message row in the chat.
-    appendEvent({
-      ts: now,
-      kind: 'notification',
-      message: typeof payload.message === 'string' ? payload.message : '',
-      title: typeof payload.title === 'string' ? payload.title : null,
-    });
-    break;
-  }
   default:
     appendEvent({ ts: now, kind: 'unknown-event', eventType, payload });
 }

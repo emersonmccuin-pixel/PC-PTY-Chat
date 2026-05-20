@@ -123,16 +123,6 @@
           }
         ]
       }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/event-capture.cjs\" Notification"
-          }
-        ]
-      }
     ]
   }
 }

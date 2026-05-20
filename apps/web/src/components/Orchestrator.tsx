@@ -5,7 +5,7 @@
 // `<channel>` block split into one bubble per block (Session M Followup), and
 // stacked Ask card with Cancel (Session M point 3).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -16,7 +16,6 @@ import type {
   AssistantEvent,
   ChatEvent,
   JsonlEvent,
-  NotificationEvent,
   SubagentFailureEvent,
   SystemEvent,
   TaskEndEvent,
@@ -698,11 +697,35 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
     return () => clearInterval(id);
   }, [thinkingStartedAt]);
 
+  // Conditional auto-follow. Only scroll to the bottom on new events if the
+  // user is ALREADY pinned to the bottom (within 50px). If they've scrolled
+  // up to read history, leave their position alone and surface a floating
+  // "Jump to recent" button instead (rendered below the scroller).
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [pinnedToBottom, setPinnedToBottom] = useState(true);
+  const handleChatScroll = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    setPinnedToBottom(distanceFromBottom < 50);
+  }, []);
+  const jumpToBottom = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setPinnedToBottom(true);
+  }, []);
   useEffect(() => {
+    if (!pinnedToBottom) return;
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [chatEnvelopes.length, isThinking]);
+  }, [chatEnvelopes.length, isThinking, pinnedToBottom]);
+  // On session switch (resume / + New session / past-session view), snap to
+  // the bottom of the freshly-loaded conversation. Without this, the user
+  // would land mid-history if they were scrolled up in the previous session.
+  useEffect(() => {
+    setPinnedToBottom(true);
+  }, [session?.id, viewingSessionId]);
 
   async function onNewSession() {
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
@@ -769,7 +792,12 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
           </button>
         )}
       </div>
-      <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
+      <div className="relative flex-1 overflow-hidden">
+      <div
+        ref={scrollerRef}
+        onScroll={handleChatScroll}
+        className="h-full overflow-y-auto px-4 py-3"
+      >
         <div className="mx-auto flex max-w-3xl flex-col gap-3">
           {renderItems.map((item) => {
             if (item.kind === 'tool-group') {
@@ -827,6 +855,16 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
             <ThinkingIndicator elapsedMs={elapsedMs} interruptedAt={interruptedAt} />
           )}
         </div>
+      </div>
+        {!pinnedToBottom && (
+          <button
+            onClick={jumpToBottom}
+            className="absolute bottom-3 right-4 z-10 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground/80 shadow-md hover:bg-accent hover:text-accent-foreground"
+            title="Scroll to the latest messages"
+          >
+            ↓ Jump to recent
+          </button>
+        )}
       </div>
       {!isViewingPast && sessionEnded && (
         <div className="border-t border-border bg-warning/10 px-4 py-2 text-center text-xs text-warning">
@@ -902,8 +940,6 @@ function EventBubble({
           onResolved={onApprovalResolved}
         />
       );
-    case 'notification':
-      return <NotificationBubble event={event as NotificationEvent} />;
     case 'subagent-failure':
       return <FailureBubble event={event as SubagentFailureEvent} />;
     case 'system':
@@ -970,16 +1006,6 @@ function FailureBubble({ event }: { event: SubagentFailureEvent }) {
   );
 }
 
-function NotificationBubble({ event }: { event: NotificationEvent }) {
-  return (
-    <div className="self-center max-w-[85%] border border-border bg-muted/30 px-3 py-1.5 text-center text-xs text-muted-foreground">
-      <div className="text-[10px] uppercase tracking-wider">
-        {event.title ?? 'Notification'}
-      </div>
-      <div className="mt-0.5 italic">{event.message || '(no message)'}</div>
-    </div>
-  );
-}
 
 // ── System bubble / footer (Section 1 / 2026-05-19 — system-message surfacing) ──
 //
