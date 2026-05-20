@@ -16,7 +16,6 @@ import {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
-  listOrchestratorSessionsForProject,
 } from '@pc/db';
 import { encodeCwdForClaude, PtySession } from '@pc/runtime';
 import { homedir } from 'node:os';
@@ -230,13 +229,17 @@ export class ProjectRuntime {
     const session = this.resolveSessionForSpawn();
     const sessionDir = this.sessionDataPath(session.row.id);
     mkdirSync(sessionDir, { recursive: true });
-    // Collect JSONL paths claimed by all prior sessions for this project so
-    // discovery doesn't latch onto a dying OLD session's JSONL during a
-    // `+ New session` race. Resume case is unaffected (jsonlPath is passed
-    // directly, skipping discovery).
-    const priorJsonlPaths = listOrchestratorSessionsForProject(this.project.id)
-      .filter((s) => s.id !== session.row.id && s.jsonlPath)
-      .map((s) => s.jsonlPath as string);
+    // Deterministic JSONL path. With --session-id passed at spawn (gate on
+    // by default since 15.3), claude.exe writes to this exact filename. No
+    // directory scan, no mtime race, no bleed-through risk from a sibling
+    // claude.exe in the same cwd.
+    const jsonlPath = resolve(
+      homedir(),
+      '.claude',
+      'projects',
+      encodeCwdForClaude(this.project.folderPath),
+      `${session.providerSessionId}.jsonl`,
+    );
     this.pty = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
@@ -245,17 +248,8 @@ export class ProjectRuntime {
       claudeSessionId: session.providerSessionId,
       resume: session.resume,
       extraEnv: { PC_SESSION_ID: session.row.id },
-      // Resume case: if we have a persisted JSONL path for this row, attach
-      // the tailer to it directly at the persisted cursor. Else PtySession
-      // runs the discovery loop and finds the file once CC creates it.
-      // Mint case (resume=false): ignore the row's persisted jsonlPath even
-      // if set — it points at a JSONL from a PRIOR claude.exe invocation
-      // (different auto-generated UUID), not the one --session-id is about
-      // to create. Letting it through causes bleed-through into the new
-      // session.
-      jsonlPath: session.resume ? (session.row.jsonlPath ?? undefined) : undefined,
+      jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
-      excludeJsonlPaths: priorJsonlPaths,
       appendSystemPromptPath: resolve(
         this.project.folderPath,
         '.project-companion',

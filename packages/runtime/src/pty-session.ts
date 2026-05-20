@@ -200,13 +200,13 @@ export class PtySession extends EventEmitter {
     const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
     try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
 
-    // Session-continuity args (--session-id / --resume) are currently DISABLED.
-    // The plumbing on the project side still mints UUIDs + writes rows, but
-    // we don't pass them to claude.exe yet — interactive PTY spawns with
-    // --session-id are dying for reasons not yet isolated. Gating on the env
-    // var so the codepath can be re-enabled for testing without a code change.
-    // TODO(phase-2): finish diagnosing + remove the gate.
-    const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS === '1';
+    // Session-continuity args (--session-id / --resume) default to ENABLED.
+    // The "interactive PTY spawn dies with --session-id" symptom was a
+    // phantom-UUID bookkeeping bug in ProjectRuntime.resolveSessionForSpawn,
+    // not a claude.exe issue — fixed alongside this change. Set
+    // PC_ENABLE_SESSION_FLAGS=0 to opt out (emergency rollback only; the
+    // discovery loop's mtime-race bleed-through bug returns).
+    const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS !== '0';
     this.loadDevChannels = opts.loadDevChannels ?? true;
     const args: string[] = [
       '--dangerously-skip-permissions',
@@ -373,15 +373,41 @@ export class PtySession extends EventEmitter {
 
     // JSONL tailer — CC's per-session transcript is the canonical source for
     // turn lifecycle + tool calls (see docs/design/chat-reliability.md).
-    // Resume case: caller passed jsonlPath → attach immediately at the
-    // persisted cursor. Fresh case: poll the project dir until CC writes a
-    // .jsonl file with mtime past spawn time, then attach.
+    //
+    // Path resolution:
+    //  - Caller passed jsonlPath (orchestrator path; --session-id at spawn
+    //    means we KNOW where CC will write): attach immediately if the file
+    //    exists, else poll that exact path for first-existence then attach.
+    //    No directory scan, no mtime race, no bleed-through risk.
+    //  - No jsonlPath (subagent path; CC mints its own UUID): fall back to
+    //    the legacy directory-scan discovery loop.
     this.spawnedAt = Date.now();
-    if (opts.jsonlPath && existsSync(opts.jsonlPath)) {
-      this.attachTailer(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+    if (opts.jsonlPath) {
+      if (existsSync(opts.jsonlPath)) {
+        this.attachTailer(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+      } else {
+        this.waitForNamedJsonl(opts.jsonlPath, opts.jsonlStartLine ?? 0);
+      }
     } else {
       this.startJsonlDiscovery();
     }
+  }
+
+  /** Poll a known JSONL path every 250ms until it exists, then attach. Used
+   *  when --session-id is passed at spawn — we know the exact filename CC
+   *  will write but it doesn't appear until CC's first turn. Replaces the
+   *  mtime-race directory scan for the orchestrator path. */
+  private waitForNamedJsonl(filePath: string, startLine: number): void {
+    const tryAttach = () => {
+      if (this.tailer || this.state === 'exited') return;
+      if (existsSync(filePath)) {
+        this.attachTailer(filePath, startLine);
+        this.emit('jsonl-path-resolved', filePath);
+        return;
+      }
+      this.discoveryTimer = setTimeout(tryAttach, 250);
+    };
+    this.discoveryTimer = setTimeout(tryAttach, 250);
   }
 
   /** Poll `~/.claude/projects/<encoded-cwd>/` every 250ms for a .jsonl file
