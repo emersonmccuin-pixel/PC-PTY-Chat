@@ -190,15 +190,35 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
 /** Walk the envelope stream and mark hook envelopes that have a matching
  *  jsonl counterpart for suppression. Greedy left-to-right pairing: each
  *  jsonl event claims the earliest unclaimed hook envelope of matching
- *  identity (text for user/assistant; toolUseId for tools). Tool-start AND
- *  tool-end hook envelopes for a given toolUseId are both suppressed when
- *  any jsonl-tool-call/result with that id is present. */
-function buildSuppressedHookIndices(envelopes: WsEnvelope[]): Set<number> {
+ *  identity (text for user/assistant; toolUseId + kind for tools).
+ *
+ *  Two outputs:
+ *  - `suppressed`: hook envelope indices that should be dropped because a
+ *    jsonl counterpart exists.
+ *  - `replacedBy`: jsonl envelope idx → original hook envelope idx that the
+ *    jsonl is replacing. The caller uses this to inherit the HOOK's idx as
+ *    the stable identity for the surviving jsonl envelope — without this,
+ *    rendering a hook with key env-100 and later replacing it with a jsonl
+ *    keyed env-110 looks like a different component to React and triggers
+ *    remount-flicker as the chat "eats up" content during tool calls.
+ *
+ *  Tool pairing is by event-kind: `jsonl-tool-call` only matches hook
+ *  `tool-start`; `jsonl-tool-result` only matches hook `tool-end`. The
+ *  prior implementation suppressed BOTH halves when EITHER jsonl half
+ *  arrived, which briefly flipped completed tools back to "running" once
+ *  jsonl-tool-call arrived but jsonl-tool-result hadn't yet.
+ */
+function buildSuppressionMap(envelopes: WsEnvelope[]): {
+  suppressed: Set<number>;
+  replacedBy: Map<number, number>;
+} {
   const suppressed = new Set<number>();
+  const replacedBy = new Map<number, number>();
   const hookUsers: Array<{ idx: number; text: string; claimed: boolean }> = [];
   const hookAssistants: Array<{ idx: number; text: string; claimed: boolean }> = [];
-  const hookToolsByUseId = new Map<string, number[]>();
-  const jsonlEvents: JsonlEvent[] = [];
+  const hookToolStarts = new Map<string, Array<{ idx: number; claimed: boolean }>>();
+  const hookToolEnds = new Map<string, Array<{ idx: number; claimed: boolean }>>();
+  const jsonlList: Array<{ idx: number; ev: JsonlEvent }> = [];
 
   for (let i = 0; i < envelopes.length; i++) {
     const env = envelopes[i]!;
@@ -213,47 +233,66 @@ function buildSuppressedHookIndices(envelopes: WsEnvelope[]): Set<number> {
           text: (ev as AssistantEvent).text ?? '',
           claimed: false,
         });
-      } else if (ev.kind === 'tool-start' || ev.kind === 'tool-end') {
-        const t = ev as ToolStartEvent | ToolEndEvent;
+      } else if (ev.kind === 'tool-start') {
+        const t = ev as ToolStartEvent;
         if (t.toolUseId) {
-          const arr = hookToolsByUseId.get(t.toolUseId) ?? [];
-          arr.push(i);
-          hookToolsByUseId.set(t.toolUseId, arr);
+          const arr = hookToolStarts.get(t.toolUseId) ?? [];
+          arr.push({ idx: i, claimed: false });
+          hookToolStarts.set(t.toolUseId, arr);
+        }
+      } else if (ev.kind === 'tool-end') {
+        const t = ev as ToolEndEvent;
+        if (t.toolUseId) {
+          const arr = hookToolEnds.get(t.toolUseId) ?? [];
+          arr.push({ idx: i, claimed: false });
+          hookToolEnds.set(t.toolUseId, arr);
         }
       }
     } else if (env.type === 'jsonl') {
       const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
-      if (ev && typeof ev === 'object') jsonlEvents.push(ev);
+      if (ev && typeof ev === 'object') jsonlList.push({ idx: i, ev });
     }
   }
 
-  for (const ev of jsonlEvents) {
+  const claim = (
+    jsonlIdx: number,
+    pool: Array<{ idx: number; claimed: boolean }> | undefined,
+  ) => {
+    if (!pool) return;
+    for (const h of pool) {
+      if (h.claimed) continue;
+      h.claimed = true;
+      suppressed.add(h.idx);
+      replacedBy.set(jsonlIdx, h.idx);
+      return;
+    }
+  };
+
+  for (const { idx: jIdx, ev } of jsonlList) {
     if (ev.kind === 'jsonl-user') {
       for (const h of hookUsers) {
-        if (!h.claimed && h.text === ev.text) {
-          h.claimed = true;
-          suppressed.add(h.idx);
-          break;
-        }
+        if (h.claimed || h.text !== ev.text) continue;
+        h.claimed = true;
+        suppressed.add(h.idx);
+        replacedBy.set(jIdx, h.idx);
+        break;
       }
     } else if (ev.kind === 'jsonl-turn-end') {
       for (const h of hookAssistants) {
-        if (!h.claimed && h.text === ev.text) {
-          h.claimed = true;
-          suppressed.add(h.idx);
-          break;
-        }
+        if (h.claimed || h.text !== ev.text) continue;
+        h.claimed = true;
+        suppressed.add(h.idx);
+        replacedBy.set(jIdx, h.idx);
+        break;
       }
-    } else if (ev.kind === 'jsonl-tool-call' || ev.kind === 'jsonl-tool-result') {
-      const id = ev.toolUseId;
-      if (id) {
-        const indices = hookToolsByUseId.get(id);
-        if (indices) for (const i of indices) suppressed.add(i);
-      }
+    } else if (ev.kind === 'jsonl-tool-call') {
+      if (ev.toolUseId) claim(jIdx, hookToolStarts.get(ev.toolUseId));
+    } else if (ev.kind === 'jsonl-tool-result') {
+      if (ev.toolUseId) claim(jIdx, hookToolEnds.get(ev.toolUseId));
     }
   }
 
-  return suppressed;
+  return { suppressed, replacedBy };
 }
 
 function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
@@ -514,7 +553,7 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   // counterparts (preferring jsonl) and normalize jsonl envelopes into the
   // hook shape the synthesizer + bubble components already understand.
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
-    const suppressed = buildSuppressedHookIndices(sourceEvents);
+    const { suppressed, replacedBy } = buildSuppressionMap(sourceEvents);
     const out: StableEnvelope[] = [];
     const orchestratorSessionId = session?.id ?? null;
     for (let i = 0; i < sourceEvents.length; i++) {
@@ -540,7 +579,14 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
       }
       if (env.type === 'jsonl') {
         const normalized = normalizeJsonlEnvelope(env);
-        if (normalized) out.push({ origIdx: i, env: normalized });
+        if (normalized) {
+          // Inherit the replaced hook envelope's idx as the stable identity
+          // when one exists — keeps React keys constant across the hook→jsonl
+          // hand-off and avoids the remount flicker that looks like content
+          // getting "eaten up" during tool calls.
+          const stableIdx = replacedBy.get(i) ?? i;
+          out.push({ origIdx: stableIdx, env: normalized });
+        }
       }
     }
     return out;
