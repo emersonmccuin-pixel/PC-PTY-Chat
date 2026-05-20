@@ -5,6 +5,14 @@
 // pod, re-spawns claude.exe with `--agent <name> --resume <sessionId>`, and
 // writes the answer as the next user message once the boot banner clears.
 //
+// 16b.4.2 — when an AgentRunManager singleton is tracking the paused run
+// (i.e. it was spawned via `pc_invoke_agent`), the freshly-spawned resumed
+// session is handed back to the manager via `attachResumedSession` so the
+// run's lifecycle (status, idle timer, jsonl-event tracking, completion
+// Promise) continues across the pause boundary. When no run is tracked
+// (orchestrator-side resume, ad-hoc resumes from tests), the resume path
+// stands alone — same shape as pre-16b.4.
+//
 // Returns immediately after the answer is sent — does NOT block on the
 // agent's subsequent turn. The next pause / completion fires its own
 // channel event (16b.3+) and surfaces to the orchestrator separately.
@@ -14,6 +22,7 @@
 // transition in markPendingAskAnswered + the orchestrator's pod-prompt
 // status guard cover the safety case.
 
+import { EventEmitter } from 'node:events';
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
@@ -22,9 +31,14 @@ import {
   getProjectById,
   markPendingAskAnswered,
 } from '@pc/db';
-import { encodeCwdForClaude, PtySession, type PtySessionOptions } from '@pc/runtime';
+import { encodeCwdForClaude, PtySession, type PtySessionOptions, type SessionState } from '@pc/runtime';
 import type { PcAnswerPendingResult, ULID } from '@pc/domain';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
+import {
+  getAgentRunManager,
+  type AgentRunManager,
+  type AgentSessionLike,
+} from './agent-run-manager.ts';
 
 export interface RespawnAgentInput {
   pendingAskId: ULID;
@@ -34,13 +48,14 @@ export interface RespawnAgentInput {
 }
 
 /** Sub-protocol the resume primitive depends on: a PtySession-shaped child
- *  with `send`, `kill`, and the lifecycle events. Real `PtySession`
- *  satisfies this; tests pass a fake. */
-export interface ResumeSessionLike {
+ *  with `send`, `kill`, `getState`, and the lifecycle events. Real
+ *  `PtySession` satisfies this; tests pass a fake. The shape matches
+ *  `AgentSessionLike` so the resumed session can be handed straight to the
+ *  run manager's `attachResumedSession` without a cast. */
+export interface ResumeSessionLike extends EventEmitter {
   send(text: string): void;
   kill(): void;
-  on(event: 'state', listener: (state: 'spawning' | 'ready' | 'thinking' | 'exited') => void): this;
-  on(event: 'exit', listener: (code: number | null, signal: string | null) => void): this;
+  getState(): SessionState;
 }
 
 export interface RespawnAgentDeps {
@@ -56,6 +71,10 @@ export interface RespawnAgentDeps {
    *  Defaults to 30s — banner boot is normally <2s, but cold-start over a
    *  slow disk has run ~10s. */
   readyTimeoutMs?: number;
+  /** AgentRunManager to consult for an active run keyed by the paused
+   *  session-id. Defaults to the process-wide singleton. Tests pass a fresh
+   *  manager (with stubbed deps) to keep behaviour deterministic. */
+  agentRunManager?: AgentRunManager;
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
@@ -205,6 +224,18 @@ export async function respawnAgentWithAnswer(
       /* best-effort */
     }
   });
+
+  // 16b.4.2 — when the paused run is tracked by the AgentRunManager (i.e.
+  // it was spawned via `pc_invoke_agent`), hand the resumed session back to
+  // the manager so the existing run record continues to track lifecycle
+  // across the pause boundary (status flip, idle timer, jsonl-event, exit).
+  // When no run is tracked (orchestrator-side resume, ad-hoc resume in
+  // tests), the resume stands alone — same shape as pre-16b.4.
+  const manager = deps.agentRunManager ?? getAgentRunManager();
+  const trackedRunId = manager.findRunIdBySession(ask.sessionId);
+  if (trackedRunId) {
+    manager.attachResumedSession(trackedRunId, session as AgentSessionLike);
+  }
 
   const sendResult = await waitReadyAndSend(session, input.answer, readyTimeoutMs);
   if (!sendResult.ok) {

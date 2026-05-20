@@ -27,7 +27,11 @@ import type { Stage, ULID } from '@pc/domain';
 
 import { respawnAgentWithAnswer } from '../src/services/agent-resume.ts';
 import type { ResumeSessionLike } from '../src/services/agent-resume.ts';
-import type { PtySessionOptions } from '@pc/runtime';
+import type { JsonlEvent, PtySessionOptions, SessionState } from '@pc/runtime';
+import {
+  AgentRunManager,
+  type AgentSessionLike,
+} from '../src/services/agent-run-manager.ts';
 
 const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
 
@@ -43,6 +47,7 @@ after(() => {
 class FakeSession extends EventEmitter implements ResumeSessionLike {
   sent: string[] = [];
   killed = false;
+  state: SessionState = 'spawning';
   lastOpts: PtySessionOptions;
   constructor(opts: PtySessionOptions) {
     super();
@@ -53,6 +58,10 @@ class FakeSession extends EventEmitter implements ResumeSessionLike {
   }
   kill(): void {
     this.killed = true;
+    this.state = 'exited';
+  }
+  getState(): SessionState {
+    return this.state;
   }
 }
 
@@ -234,4 +243,172 @@ test('respawnAgentWithAnswer surfaces readyTimeoutMs as resume-failed', async ()
   // retry the answer or escalate.
   const row = getPendingAsk(id);
   assert.equal(row!.status, 'answered');
+});
+
+// Section 16b.4.2 — wiring test. Proves the resume primitive hands the
+// freshly-spawned PtySession back to the AgentRunManager when a tracked
+// run exists, so the original spawn's completion Promise resolves across
+// the pause→resume boundary.
+test('respawn primitive re-attaches resumed session to the tracked run (16b.4.2)', async () => {
+  const p = createProject({
+    slug: 'ar-mgr-attach',
+    name: 'AR Manager Attach',
+    stages,
+    folderPath: tmpDataDir,
+  });
+
+  // Manager-owned factory: no auto-ready (we drive ready manually to
+  // sequence the spawn-time initial-input assertion).
+  const spawnSessions: FakeSession[] = [];
+  const spawnFactory = (opts: PtySessionOptions): AgentSessionLike => {
+    const s = new FakeSession(opts);
+    spawnSessions.push(s);
+    return s;
+  };
+  const mgr = new AgentRunManager({
+    createSession: spawnFactory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'ar-mgr-attach', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, sessionId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a lib for date math',
+    wait: true,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+
+  // Drive spawn session to ready; manager sends the initial input.
+  const spawnSess = spawnSessions[0]!;
+  spawnSess.state = 'ready';
+  spawnSess.emit('state', 'ready');
+  assert.deepEqual(spawnSess.sent, ['find a lib for date math']);
+
+  // Pre-stage the pending-ask row so the manager flips to paused on the
+  // next turn-end (mirrors pc_ask_orchestrator's contract).
+  const pendingAskId = newId();
+  createPendingAsk({
+    id: pendingAskId,
+    sessionId,
+    agentName: 'researcher',
+    projectId: p.id as ULID,
+    kind: 'ask-orchestrator',
+    question: 'which one?',
+    now: 1700_001_000_000,
+  });
+
+  const turnEnd: JsonlEvent = {
+    kind: 'jsonl-turn-end',
+    text: 'asking orchestrator',
+    stopReason: 'end_turn',
+  };
+  spawnSess.emit('jsonl-event', turnEnd);
+  assert.equal(mgr.get(runId)!.status, 'paused');
+  // Completion has not resolved.
+  const racePending = await Promise.race([
+    completion.then(() => 'resolved' as const),
+    new Promise<'pending'>((r) => setImmediate(() => r('pending'))),
+  ]);
+  assert.equal(racePending, 'pending');
+
+  // Resume — pass the SAME manager via deps so the resumed session re-
+  // attaches to the original run (vs. running ungoverned).
+  const { factory: resumeFactory, sessions: resumeSessions } = makeFakeFactory();
+  const result = await respawnAgentWithAnswer(
+    {
+      pendingAskId,
+      answer: 'use date-fns',
+      answeredBy: 'orchestrator',
+      now: 1700_001_010_000,
+    },
+    {
+      agentRunManager: mgr,
+      createSession: resumeFactory,
+      sessionDataDirFor: () => join(tmpDataDir, 'scratch-mgr-attach'),
+      resolveJsonlPath: () => '/dev/null',
+      readyTimeoutMs: 2_000,
+    },
+  );
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(resumeSessions.length, 1, 'one resumed session spawned');
+  assert.deepEqual(
+    resumeSessions[0]!.sent,
+    ['use date-fns'],
+    'answer is sent on the resumed session (not the original)',
+  );
+  // Manager flipped paused → running.
+  assert.equal(mgr.get(runId)!.status, 'running');
+
+  // Drive the resumed session to terminal turn-end. No new pending-ask is
+  // waiting → manager calls complete() → original spawn's completion
+  // Promise resolves with the resumed turn's text.
+  const finalTurn: JsonlEvent = {
+    kind: 'jsonl-turn-end',
+    text: 'final answer: use date-fns',
+    stopReason: 'end_turn',
+  };
+  resumeSessions[0]!.emit('jsonl-event', finalTurn);
+
+  const finalRec = await completion;
+  assert.equal(finalRec.status, 'completed');
+  assert.equal(finalRec.result, 'final answer: use date-fns');
+  assert.equal(finalRec.runId, runId);
+});
+
+// Section 16b.4.2 — no-op path. When no run is tracked for the paused
+// session-id, the resume primitive still works: the resumed session runs
+// ungoverned (caller-side concerns like orchestrator chat replays don't
+// route through the manager). This pins down the "ad-hoc resume" contract.
+test('respawn primitive runs ungoverned when no run is tracked (16b.4.2)', async () => {
+  const p = createProject({
+    slug: 'ar-mgr-untracked',
+    name: 'AR Manager Untracked',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const askId = newId();
+  createPendingAsk({
+    id: askId,
+    sessionId: 'sess-untracked',
+    agentName: 'researcher',
+    projectId: p.id as ULID,
+    kind: 'ask-orchestrator',
+    question: 'q',
+    now: 1700_002_000_000,
+  });
+
+  // Fresh manager that has NEVER seen this session-id — findRunIdBySession
+  // returns null and respawn skips the attach.
+  const mgr = new AgentRunManager({
+    createSession: () => {
+      throw new Error('manager.createSession should not be called on the untracked path');
+    },
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'ar-mgr-untracked', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { factory, sessions } = makeFakeFactory();
+  const result = await respawnAgentWithAnswer(
+    {
+      pendingAskId: askId,
+      answer: 'a',
+      answeredBy: 'orchestrator',
+      now: 1700_002_010_000,
+    },
+    {
+      agentRunManager: mgr,
+      createSession: factory,
+      sessionDataDirFor: () => join(tmpDataDir, 'scratch-untracked'),
+      resolveJsonlPath: () => '/dev/null',
+      readyTimeoutMs: 2_000,
+    },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(sessions.length, 1, 'session still spawned even without a tracked run');
+  assert.deepEqual(sessions[0]!.sent, ['a']);
+  // No tracked run materialised on the manager from this path.
+  assert.equal(mgr.findRunIdBySession('sess-untracked'), null);
 });
