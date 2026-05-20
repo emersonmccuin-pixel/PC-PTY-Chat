@@ -105,6 +105,7 @@ export type {
   PodMcpServerRow,
   PodScope,
   PodSecretRow,
+  PodSpawnBundle,
 } from './pod.ts';
 export { POD_AUDIT_ACTORS, POD_AUDIT_FIELDS, POD_KNOWLEDGE_KINDS, POD_SCOPES } from './pod.ts';
 export type {

@@ -21,3 +21,11 @@ export {
   pruneWorktrees,
 } from './worktree.ts';
 export type { WorktreeEntry } from './worktree.ts';
+export {
+  buildEnvMap,
+  expandToolWildcards,
+  materializePod,
+  renderAgentMd,
+  renderMcpConfig,
+} from './pod-materializer.ts';
+export type { MaterializePodOptions, MaterializedPod } from './pod-materializer.ts';

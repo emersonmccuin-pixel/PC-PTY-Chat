@@ -26,6 +26,7 @@ import type {
   PodMcpServerRow,
   PodScope,
   PodSecretRow,
+  PodSpawnBundle,
   ULID,
 } from '@pc/domain';
 import { getDb } from '../connection.ts';
@@ -537,13 +538,6 @@ export function deleteMcpServer(id: ULID): boolean {
 }
 
 // --- pod bundle -------------------------------------------------------------
-
-export interface PodSpawnBundle {
-  agent: PodAgentRow;
-  knowledge: PodKnowledgeRow[];
-  secrets: PodSecretRow[];
-  mcpServers: PodMcpServerRow[];
-}
 
 /** Read the full pod the materialiser (17a.3) needs to render `.md` +
  *  `mcp.json` + env vars at spawn time.

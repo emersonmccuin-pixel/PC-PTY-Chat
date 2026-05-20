@@ -111,7 +111,6 @@ export type {
   ListKnowledgeOptions,
   ListMcpServersOptions,
   ListSecretsOptions,
-  PodSpawnBundle,
   UpdateAgentInput,
   UpdateKnowledgeInput,
 } from './repos/pods.ts';

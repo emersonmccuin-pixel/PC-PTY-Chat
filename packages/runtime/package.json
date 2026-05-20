@@ -12,6 +12,7 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@pc/domain": "workspace:*",
     "node-pty": "^1.0.0"
   },
   "devDependencies": {

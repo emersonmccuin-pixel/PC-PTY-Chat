@@ -146,3 +146,12 @@ export interface PodAuditRow {
   reason: string | null;
   createdAt: number;
 }
+
+/** Aggregate read shape the materialiser (17a.3) consumes. v1 = global-only;
+ *  17c upgrades the repo-level merge to overlay project-scoped rows on top. */
+export interface PodSpawnBundle {
+  agent: PodAgentRow;
+  knowledge: PodKnowledgeRow[];
+  secrets: PodSecretRow[];
+  mcpServers: PodMcpServerRow[];
+}
