@@ -114,6 +114,13 @@ export type {
   UpdateAgentInput,
   UpdateKnowledgeInput,
 } from './repos/pods.ts';
+export { buildAuditRow, listAgentAudit } from './repos/pod-audit.ts';
+export type {
+  AuditInput,
+  AuditRowValues,
+  BuildAuditRowInput,
+  ListAgentAuditOptions,
+} from './repos/pod-audit.ts';
 
 export {
   createOrchestratorSession,

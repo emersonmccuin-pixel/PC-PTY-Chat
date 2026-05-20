@@ -1,4 +1,4 @@
-// Section 17a.2 — Repository layer for the pod tables.
+// Section 17a.2 + 17a.4 — Repository layer for the pod tables.
 //
 // Two surfaces:
 //   1. CRUD per table (agents + the three content tables). Each accepts an
@@ -11,8 +11,16 @@
 // tables don't soft-delete — they're owned by the agent and disappear when
 // the user prunes a knowledge doc / secret / server.
 //
-// Audit-on-mutate is NOT in this file. 17a.4 layers it on top via the
-// `agent_audit` table; this repo intentionally stays pure CRUD.
+// 17a.4 — Audit-on-mutate. Every mutator accepts a required `audit:
+// AuditInput` arg and writes an `agent_audit` row in the SAME transaction as
+// the mutation. Secrets log event-only (NULL value columns). Restore is
+// intentionally NOT audited — agent state already reflects the un-delete; see
+// pod-audit.ts header for the carve-out.
+//
+// updateAgent multi-field semantics: one audit row per changed field, all
+// sharing a `changeSetId`. If the caller didn't supply one and >1 field
+// changed, a fresh ULID is minted to group them. No audit emitted when the
+// patch has no field changes.
 
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import type {
@@ -20,6 +28,7 @@ import type {
   AgentModel,
   AgentOutputDestination,
   PodAgentRow,
+  PodAuditField,
   PodKnowledgeKind,
   PodKnowledgeRow,
   PodMcpServerConfig,
@@ -31,7 +40,8 @@ import type {
 } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentKnowledge, agentMcpServers, agentSecrets, agents } from '../schema.ts';
+import { agentAudit, agentKnowledge, agentMcpServers, agentSecrets, agents } from '../schema.ts';
+import { type AuditInput, buildAuditRow } from './pod-audit.ts';
 
 // --- agents -----------------------------------------------------------------
 
@@ -71,12 +81,30 @@ function rowToAgent(row: typeof agents.$inferSelect): PodAgentRow {
   };
 }
 
-export function createAgent(input: CreateAgentInput): PodAgentRow {
+/** Compact snapshot of the agent's authored content — what `created` and
+ *  `deleted` audit rows carry as their value column. Excludes id/timestamps
+ *  (redundant against the agent_audit FK + created_at). */
+function agentSnapshot(row: PodAgentRow): string {
+  return JSON.stringify({
+    name: row.name,
+    scope: row.scope,
+    projectId: row.projectId,
+    prompt: row.prompt,
+    tools: row.tools,
+    model: row.model,
+    effort: row.effort,
+    maxTurns: row.maxTurns,
+    outputDestination: row.outputDestination,
+    description: row.description,
+  });
+}
+
+export function createAgent(input: CreateAgentInput, audit: AuditInput): PodAgentRow {
   if (input.scope === 'project' && !input.projectId) {
     throw new Error('createAgent: projectId is required when scope === "project"');
   }
   const now = Date.now();
-  const id = input.id ?? newId();
+  const id = (input.id ?? newId()) as ULID;
   const row = {
     id,
     name: input.name,
@@ -93,8 +121,21 @@ export function createAgent(input: CreateAgentInput): PodAgentRow {
     updatedAt: now,
     deletedAt: null,
   };
-  getDb().insert(agents).values(row).run();
-  return rowToAgent(row as typeof agents.$inferSelect);
+  const out = rowToAgent(row as typeof agents.$inferSelect);
+  const auditValues = buildAuditRow(
+    {
+      agentId: id,
+      field: 'created',
+      newValue: agentSnapshot(out),
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.insert(agents).values(row).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
+  return out;
 }
 
 export function getAgentById(id: ULID): PodAgentRow | null {
@@ -171,34 +212,105 @@ export interface UpdateAgentInput {
   description?: string;
 }
 
-export function updateAgent(id: ULID, patch: UpdateAgentInput): PodAgentRow | null {
+/** Map UpdateAgentInput keys to (PodAuditField, db-column-name) pairs. Order
+ *  matters: audit rows are emitted in this order for deterministic test output. */
+const UPDATE_AGENT_FIELD_MAP: ReadonlyArray<
+  [keyof UpdateAgentInput, PodAuditField, keyof typeof agents.$inferSelect]
+> = [
+  ['name', 'name', 'name'],
+  ['prompt', 'prompt', 'prompt'],
+  ['tools', 'tools', 'tools'],
+  ['model', 'model', 'model'],
+  ['effort', 'effort', 'effort'],
+  ['maxTurns', 'max_turns', 'maxTurns'],
+  ['outputDestination', 'output_destination', 'outputDestination'],
+  ['description', 'description', 'description'],
+];
+
+export function updateAgent(
+  id: ULID,
+  patch: UpdateAgentInput,
+  audit: AuditInput,
+): PodAgentRow | null {
   const existing = getAgentById(id);
   if (!existing) return null;
-  const set: Record<string, unknown> = { updatedAt: Date.now() };
-  if (patch.name !== undefined) set.name = patch.name;
-  if (patch.prompt !== undefined) set.prompt = patch.prompt;
-  if (patch.tools !== undefined) set.tools = patch.tools;
-  if (patch.model !== undefined) set.model = patch.model;
-  if (patch.effort !== undefined) set.effort = patch.effort;
-  if (patch.maxTurns !== undefined) set.maxTurns = patch.maxTurns;
-  if (patch.outputDestination !== undefined) set.outputDestination = patch.outputDestination;
-  if (patch.description !== undefined) set.description = patch.description;
-  getDb().update(agents).set(set).where(eq(agents.id, id)).run();
+
+  // Identify the fields that ACTUALLY change (patch provides + value differs
+  // from existing). We don't emit audit rows for no-op updates.
+  type Change = { auditField: PodAuditField; column: string; prior: string; next: string };
+  const changes: Change[] = [];
+  for (const [patchKey, auditField, column] of UPDATE_AGENT_FIELD_MAP) {
+    const nextRaw = patch[patchKey];
+    if (nextRaw === undefined) continue;
+    const priorRaw = existing[patchKey as keyof PodAgentRow];
+    if (JSON.stringify(nextRaw) === JSON.stringify(priorRaw)) continue;
+    changes.push({
+      auditField,
+      column,
+      prior: JSON.stringify(priorRaw),
+      next: JSON.stringify(nextRaw),
+    });
+  }
+  if (changes.length === 0) return existing; // pure no-op; skip the UPDATE entirely
+
+  const now = Date.now();
+  const set: Record<string, unknown> = { updatedAt: now };
+  for (const [patchKey, , column] of UPDATE_AGENT_FIELD_MAP) {
+    if (patch[patchKey] !== undefined) set[column] = patch[patchKey];
+  }
+  // Multi-field edits group under a shared change_set_id. Solo edits use the
+  // caller-supplied id (null = ungrouped).
+  const groupedAudit: AuditInput =
+    changes.length > 1 && !audit.changeSetId
+      ? { ...audit, changeSetId: newId() as ULID }
+      : audit;
+  const auditRows = changes.map((c) =>
+    buildAuditRow(
+      {
+        agentId: id,
+        field: c.auditField,
+        priorValue: c.prior,
+        newValue: c.next,
+        audit: groupedAudit,
+      },
+      now,
+    ),
+  );
+  getDb().transaction((tx) => {
+    tx.update(agents).set(set).where(eq(agents.id, id)).run();
+    for (const r of auditRows) tx.insert(agentAudit).values(r).run();
+  });
   return getAgentById(id);
 }
 
 /** Flip `deleted_at`. Idempotent — returns the (now-deleted) row if it
- *  existed live, or null if no such id was live to begin with. */
-export function softDeleteAgent(id: ULID): PodAgentRow | null {
+ *  existed live, or null if no such id was live to begin with. Audited as
+ *  `field='deleted'` with prior_value = pre-delete agent snapshot. */
+export function softDeleteAgent(id: ULID, audit: AuditInput): PodAgentRow | null {
   const existing = getAgentById(id);
   if (!existing) return null;
   const now = Date.now();
-  getDb().update(agents).set({ deletedAt: now, updatedAt: now }).where(eq(agents.id, id)).run();
-  return { ...existing, deletedAt: now, updatedAt: now };
+  const out = { ...existing, deletedAt: now, updatedAt: now };
+  const auditValues = buildAuditRow(
+    {
+      agentId: id,
+      field: 'deleted',
+      priorValue: agentSnapshot(existing),
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.update(agents).set({ deletedAt: now, updatedAt: now }).where(eq(agents.id, id)).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
+  return out;
 }
 
 /** Clear `deleted_at`. Returns the restored row, or null if no such id (or
- *  not currently deleted). */
+ *  not currently deleted). Intentionally NOT audited in v1 — agent state
+ *  reflects the un-delete; the original `'deleted'` audit row is the
+ *  canonical revert path. See pod-audit.ts header. */
 export function restoreAgent(id: ULID): PodAgentRow | null {
   const row = getDb().select().from(agents).where(eq(agents.id, id)).get();
   if (!row || row.deletedAt === null) return null;
@@ -233,12 +345,19 @@ function rowToKnowledge(row: typeof agentKnowledge.$inferSelect): PodKnowledgeRo
   };
 }
 
-export function createKnowledge(input: CreateKnowledgeInput): PodKnowledgeRow {
+function knowledgeSnapshot(row: PodKnowledgeRow): string {
+  return JSON.stringify({ name: row.name, kind: row.kind, content: row.content });
+}
+
+export function createKnowledge(
+  input: CreateKnowledgeInput,
+  audit: AuditInput,
+): PodKnowledgeRow {
   if (input.scope === 'project' && !input.projectId) {
     throw new Error('createKnowledge: projectId is required when scope === "project"');
   }
   const now = Date.now();
-  const id = input.id ?? newId();
+  const id = (input.id ?? newId()) as ULID;
   const row = {
     id,
     agentId: input.agentId,
@@ -250,8 +369,22 @@ export function createKnowledge(input: CreateKnowledgeInput): PodKnowledgeRow {
     createdAt: now,
     updatedAt: now,
   };
-  getDb().insert(agentKnowledge).values(row).run();
-  return rowToKnowledge(row as typeof agentKnowledge.$inferSelect);
+  const out = rowToKnowledge(row as typeof agentKnowledge.$inferSelect);
+  const auditValues = buildAuditRow(
+    {
+      agentId: input.agentId,
+      field: 'knowledge',
+      fieldRef: id,
+      newValue: knowledgeSnapshot(out),
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.insert(agentKnowledge).values(row).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
+  return out;
 }
 
 export function getKnowledge(id: ULID): PodKnowledgeRow | null {
@@ -319,20 +452,77 @@ export interface UpdateKnowledgeInput {
   content?: string;
 }
 
-export function updateKnowledge(id: ULID, patch: UpdateKnowledgeInput): PodKnowledgeRow | null {
+export function updateKnowledge(
+  id: ULID,
+  patch: UpdateKnowledgeInput,
+  audit: AuditInput,
+): PodKnowledgeRow | null {
   const existing = getKnowledge(id);
   if (!existing) return null;
-  const set: Record<string, unknown> = { updatedAt: Date.now() };
-  if (patch.name !== undefined) set.name = patch.name;
-  if (patch.kind !== undefined) set.kind = patch.kind;
-  if (patch.content !== undefined) set.content = patch.content;
-  getDb().update(agentKnowledge).set(set).where(eq(agentKnowledge.id, id)).run();
+  const set: Record<string, unknown> = {};
+  let changed = false;
+  if (patch.name !== undefined && patch.name !== existing.name) {
+    set.name = patch.name;
+    changed = true;
+  }
+  if (patch.kind !== undefined && patch.kind !== existing.kind) {
+    set.kind = patch.kind;
+    changed = true;
+  }
+  if (patch.content !== undefined && patch.content !== existing.content) {
+    set.content = patch.content;
+    changed = true;
+  }
+  if (!changed) return existing;
+
+  const now = Date.now();
+  set.updatedAt = now;
+  const next: PodKnowledgeRow = {
+    ...existing,
+    name: patch.name ?? existing.name,
+    kind: patch.kind ?? existing.kind,
+    content: patch.content ?? existing.content,
+    updatedAt: now,
+  };
+  const auditValues = buildAuditRow(
+    {
+      agentId: existing.agentId,
+      field: 'knowledge',
+      fieldRef: id,
+      priorValue: knowledgeSnapshot(existing),
+      newValue: knowledgeSnapshot(next),
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.update(agentKnowledge).set(set).where(eq(agentKnowledge.id, id)).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
   return getKnowledge(id);
 }
 
-export function deleteKnowledge(id: ULID): boolean {
-  const result = getDb().delete(agentKnowledge).where(eq(agentKnowledge.id, id)).run();
-  return (result.changes ?? 0) > 0;
+export function deleteKnowledge(id: ULID, audit: AuditInput): boolean {
+  const existing = getKnowledge(id);
+  if (!existing) return false;
+  const now = Date.now();
+  const auditValues = buildAuditRow(
+    {
+      agentId: existing.agentId,
+      field: 'knowledge',
+      fieldRef: id,
+      priorValue: knowledgeSnapshot(existing),
+      audit,
+    },
+    now,
+  );
+  let changed = false;
+  getDb().transaction((tx) => {
+    const result = tx.delete(agentKnowledge).where(eq(agentKnowledge.id, id)).run();
+    changed = (result.changes ?? 0) > 0;
+    if (changed) tx.insert(agentAudit).values(auditValues).run();
+  });
+  return changed;
 }
 
 // --- agent_secrets ----------------------------------------------------------
@@ -358,11 +548,12 @@ function rowToSecret(row: typeof agentSecrets.$inferSelect): PodSecretRow {
   };
 }
 
-export function createSecret(input: CreateSecretInput): PodSecretRow {
+export function createSecret(input: CreateSecretInput, audit: AuditInput): PodSecretRow {
   if (input.scope === 'project' && !input.projectId) {
     throw new Error('createSecret: projectId is required when scope === "project"');
   }
-  const id = input.id ?? newId();
+  const now = Date.now();
+  const id = (input.id ?? newId()) as ULID;
   const row = {
     id,
     agentId: input.agentId,
@@ -370,9 +561,18 @@ export function createSecret(input: CreateSecretInput): PodSecretRow {
     projectId: input.scope === 'project' ? input.projectId ?? null : null,
     envVarName: input.envVarName,
     valuePlaintext: input.valuePlaintext,
-    createdAt: Date.now(),
+    createdAt: now,
   };
-  getDb().insert(agentSecrets).values(row).run();
+  // Secrets: event-only audit — value columns stay NULL. fieldRef carries the
+  // env-var name so the History tab can still render "user added X".
+  const auditValues = buildAuditRow(
+    { agentId: input.agentId, field: 'secret', fieldRef: input.envVarName, audit },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.insert(agentSecrets).values(row).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
   return rowToSecret(row as typeof agentSecrets.$inferSelect);
 }
 
@@ -431,9 +631,26 @@ export function listSecrets(opts: ListSecretsOptions): PodSecretRow[] {
   return rows.map(rowToSecret);
 }
 
-export function deleteSecret(id: ULID): boolean {
-  const result = getDb().delete(agentSecrets).where(eq(agentSecrets.id, id)).run();
-  return (result.changes ?? 0) > 0;
+export function deleteSecret(id: ULID, audit: AuditInput): boolean {
+  const existing = getSecret(id);
+  if (!existing) return false;
+  const now = Date.now();
+  const auditValues = buildAuditRow(
+    {
+      agentId: existing.agentId,
+      field: 'secret',
+      fieldRef: existing.envVarName,
+      audit,
+    },
+    now,
+  );
+  let changed = false;
+  getDb().transaction((tx) => {
+    const result = tx.delete(agentSecrets).where(eq(agentSecrets.id, id)).run();
+    changed = (result.changes ?? 0) > 0;
+    if (changed) tx.insert(agentAudit).values(auditValues).run();
+  });
+  return changed;
 }
 
 // --- agent_mcp_servers ------------------------------------------------------
@@ -459,11 +676,19 @@ function rowToMcpServer(row: typeof agentMcpServers.$inferSelect): PodMcpServerR
   };
 }
 
-export function createMcpServer(input: CreateMcpServerInput): PodMcpServerRow {
+function mcpSnapshot(row: PodMcpServerRow): string {
+  return JSON.stringify({ name: row.name, config: row.config });
+}
+
+export function createMcpServer(
+  input: CreateMcpServerInput,
+  audit: AuditInput,
+): PodMcpServerRow {
   if (input.scope === 'project' && !input.projectId) {
     throw new Error('createMcpServer: projectId is required when scope === "project"');
   }
-  const id = input.id ?? newId();
+  const now = Date.now();
+  const id = (input.id ?? newId()) as ULID;
   const row = {
     id,
     agentId: input.agentId,
@@ -471,10 +696,24 @@ export function createMcpServer(input: CreateMcpServerInput): PodMcpServerRow {
     projectId: input.scope === 'project' ? input.projectId ?? null : null,
     name: input.name,
     config: input.config,
-    createdAt: Date.now(),
+    createdAt: now,
   };
-  getDb().insert(agentMcpServers).values(row).run();
-  return rowToMcpServer(row as typeof agentMcpServers.$inferSelect);
+  const out = rowToMcpServer(row as typeof agentMcpServers.$inferSelect);
+  const auditValues = buildAuditRow(
+    {
+      agentId: input.agentId,
+      field: 'mcp_server',
+      fieldRef: input.name,
+      newValue: mcpSnapshot(out),
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.insert(agentMcpServers).values(row).run();
+    tx.insert(agentAudit).values(auditValues).run();
+  });
+  return out;
 }
 
 export function getMcpServer(id: ULID): PodMcpServerRow | null {
@@ -532,9 +771,27 @@ export function listMcpServers(opts: ListMcpServersOptions): PodMcpServerRow[] {
   return rows.map(rowToMcpServer);
 }
 
-export function deleteMcpServer(id: ULID): boolean {
-  const result = getDb().delete(agentMcpServers).where(eq(agentMcpServers.id, id)).run();
-  return (result.changes ?? 0) > 0;
+export function deleteMcpServer(id: ULID, audit: AuditInput): boolean {
+  const existing = getMcpServer(id);
+  if (!existing) return false;
+  const now = Date.now();
+  const auditValues = buildAuditRow(
+    {
+      agentId: existing.agentId,
+      field: 'mcp_server',
+      fieldRef: existing.name,
+      priorValue: mcpSnapshot(existing),
+      audit,
+    },
+    now,
+  );
+  let changed = false;
+  getDb().transaction((tx) => {
+    const result = tx.delete(agentMcpServers).where(eq(agentMcpServers.id, id)).run();
+    changed = (result.changes ?? 0) > 0;
+    if (changed) tx.insert(agentAudit).values(auditValues).run();
+  });
+  return changed;
 }
 
 // --- pod bundle -------------------------------------------------------------
