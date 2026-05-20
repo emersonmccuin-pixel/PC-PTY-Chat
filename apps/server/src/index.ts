@@ -10,8 +10,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { homedir } from 'node:os';
 
-import type { AgentDef, GlobalSettings, ULID, Workflow } from '@pc/domain';
-import { parseAgentFile, serializeAgentFile, validateAgentDef, withSettingsDefaults } from '@pc/domain';
+import type { AgentDef, GlobalSettings, ULID, Workflow, WorkItemType } from '@pc/domain';
+import {
+  isWorkItemType,
+  parseAgentFile,
+  serializeAgentFile,
+  validateAgentDef,
+  withSettingsDefaults,
+} from '@pc/domain';
 import {
   parseTypedWorkflowDef,
   parseWorkflowText,
@@ -1264,11 +1270,19 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
     stageId?: string;
     body?: string;
     parentId?: string | null;
+    type?: string;
     fields?: Record<string, unknown>;
   }>();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!title || !stageId) return c.json({ ok: false, error: 'title and stageId required' }, 400);
+  let typeOpt: WorkItemType | undefined;
+  if (body.type !== undefined) {
+    if (!isWorkItemType(body.type)) {
+      return c.json({ ok: false, error: `unknown work-item type: ${String(body.type)}` }, 400);
+    }
+    typeOpt = body.type;
+  }
   try {
     // Service broadcasts 'created' internally; the route does not re-broadcast.
     const workItem = runtime.workItemService().create({
@@ -1276,6 +1290,7 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
       stageId,
       ...(body.body !== undefined ? { body: body.body } : {}),
       ...(body.parentId !== undefined ? { parentId: body.parentId as ULID | null } : {}),
+      ...(typeOpt !== undefined ? { type: typeOpt } : {}),
       ...(body.fields !== undefined ? { fields: body.fields } : {}),
     });
     return c.json({ ok: true, workItem });
@@ -1322,10 +1337,14 @@ app.patch('/api/projects/:projectId/work-items/:wiId', async (c) => {
     stageId?: string;
     parentId?: string | null;
     position?: number;
+    type?: string;
     fields?: Record<string, unknown>;
   }>();
   if (typeof body.version !== 'number') {
     return c.json({ ok: false, error: 'version required' }, 400);
+  }
+  if (body.type !== undefined && !isWorkItemType(body.type)) {
+    return c.json({ ok: false, error: `unknown work-item type: ${String(body.type)}` }, 400);
   }
   try {
     const input: Parameters<ReturnType<typeof runtime.workItemService>['patch']>[1] = {
@@ -1336,6 +1355,7 @@ app.patch('/api/projects/:projectId/work-items/:wiId', async (c) => {
     if (body.stageId !== undefined) input.stageId = body.stageId;
     if (body.parentId !== undefined) input.parentId = body.parentId as ULID | null;
     if (body.position !== undefined) input.position = body.position;
+    if (body.type !== undefined) input.type = body.type as WorkItemType;
     if (body.fields !== undefined) input.fields = body.fields;
     const workItem = runtime.workItemService().patch(wiId, input);
     return c.json({ ok: true, workItem });
