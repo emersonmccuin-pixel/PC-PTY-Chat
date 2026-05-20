@@ -129,6 +129,16 @@ export {
 } from './repos/failed-run-dismissals.ts';
 
 export {
+  createPendingAsk,
+  getPendingAsk,
+  listWaitingPendingAsksForProject,
+  listWaitingPendingAsksForSession,
+  markPendingAskAnswered,
+  markPendingAskCancelled,
+} from './repos/pending-asks.ts';
+export type { AnswerPendingAskInput, CreatePendingAskInput } from './repos/pending-asks.ts';
+
+export {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,

@@ -7,6 +7,9 @@ import type {
   FieldSchemaType,
   GlobalSettings,
   NodeOutput,
+  PendingAskKind,
+  PendingAskOption,
+  PendingAskStatus,
   PodAuditActor,
   PodAuditField,
   PodKnowledgeKind,
@@ -499,5 +502,66 @@ export const agentAudit = sqliteTable(
   (t) => [
     index('agent_audit_agent_idx').on(t.agentId),
     index('agent_audit_change_set_idx').on(t.changeSetId),
+  ],
+);
+
+/**
+ * Section 16b — Paused agent waits.
+ *
+ * One row per pause event (`pc_ask_orchestrator` / `pc_ask_user` /
+ * `pc_request_approval`). `id` = `pendingAskId` minted PC-side per pause.
+ * `session_id` is CC's session-id of the paused agent (one session can mint
+ * many pending-ask rows across its lifetime). Status enforces the
+ * "answer-once" guard against JSONL-replay re-delivery — the orchestrator
+ * checks `status === 'waiting'` before calling `pc_answer_pending`.
+ *
+ * `agent_runs` (analogous tracking for invocations) intentionally NOT added
+ * here — `pc_invoke_agent` does not pause, so its runtime state can stay
+ * in-memory until the runtime impl in 16b.4 surfaces a persistence need.
+ */
+export const pendingAsks = sqliteTable(
+  'pending_asks',
+  {
+    /** PC-minted ULID. Returned to the paused agent as the `pendingAskId`
+     *  handle + passed by the orchestrator to `pc_answer_pending`. */
+    id: text('id').primaryKey().$type<ULID>(),
+    /** CC session-id of the paused agent. Used at resume time as
+     *  `--resume <sessionId>`. */
+    sessionId: text('session_id').notNull(),
+    /** Pod-row name (`agents.name`). Joined to the live row at render time
+     *  for display; stored denormalised so cancelled rows survive an agent
+     *  rename. */
+    agentName: text('agent_name').notNull(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    /** Tracked agent-run that owns this pause, NULL when not associated
+     *  with a tracked run (16b.2 ships `pending_asks` without an
+     *  `agent_runs` partner — runId is reserved for a future tracked
+     *  surface). */
+    runId: text('run_id').$type<ULID | null>(),
+    /** Work-item the paused agent is operating on (carried from spawn
+     *  context). Drives Activity Panel scoping + cross-project bell. */
+    parentWorkItemId: text('parent_work_item_id').$type<ULID | null>(),
+    kind: text('kind').notNull().$type<PendingAskKind>(),
+    question: text('question').notNull(),
+    context: text('context'),
+    /** Multi-choice options for `approval` (always populated) and optional
+     *  for `ask-user`. JSON-encoded list of `{ value, label }`. */
+    options: text('options', { mode: 'json' }).$type<PendingAskOption[] | null>(),
+    status: text('status').notNull().default('waiting').$type<PendingAskStatus>(),
+    answer: text('answer'),
+    answeredBy: text('answered_by').$type<'orchestrator' | 'user' | null>(),
+    createdAt: integer('created_at').notNull(),
+    answeredAt: integer('answered_at'),
+    cancelledAt: integer('cancelled_at'),
+  },
+  (t) => [
+    /** List-waiting query is the hot path (orchestrator boot-time "you
+     *  have N agents waiting on you" surface + Activity Panel). */
+    index('pending_asks_project_status_idx').on(t.projectId, t.status),
+    index('pending_asks_session_idx').on(t.sessionId),
+    index('pending_asks_work_item_idx').on(t.parentWorkItemId),
   ],
 );
