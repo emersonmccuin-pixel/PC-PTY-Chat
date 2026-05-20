@@ -26,6 +26,7 @@ import {
 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
+  createPendingAsk,
   getActiveOrchestratorSession,
   dismissFailedRun,
   getGlobalSettings,
@@ -33,6 +34,8 @@ import {
   listFailedRunDismissalsForProject,
   listOrchestratorSessionsForProject,
   listProjects,
+  listWaitingPendingAsksForProject,
+  newId,
   reassignStage,
   reorderProjects,
   runMigrations,
@@ -80,6 +83,9 @@ import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
+import { respawnAgentWithAnswer } from './services/agent-resume.ts';
+import { buildAgentAsksOrchestratorBody } from './services/agent-event-header.ts';
+import type { PendingAskKind, PendingAskOption } from '@pc/domain';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -2455,6 +2461,121 @@ app.post('/api/projects/:projectId/channel-send', async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 503);
   }
+});
+
+// ── Section 16b — Agent comms primitives ──────────────────────────────────
+
+/** Create a pending-ask (paused-agent wait) for the given project. Wired
+ *  from the `pc_ask_orchestrator` MCP tool today; 16b.5 / 16b.6 add
+ *  `kind: 'ask-user'` and `kind: 'approval'` paths through the same
+ *  endpoint. Emits an `agent-asks-orchestrator` channel event to the
+ *  project's registered orchestrator child after the row lands. */
+app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const body = await c.req.json<{
+    sessionId?: string;
+    agentName?: string;
+    kind?: PendingAskKind;
+    question?: string;
+    context?: string;
+    options?: PendingAskOption[];
+    runId?: ULID | null;
+    parentWorkItemId?: ULID | null;
+  }>();
+
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+  const agentName = typeof body.agentName === 'string' ? body.agentName.trim() : '';
+  const kind = body.kind;
+  const question = typeof body.question === 'string' ? body.question : '';
+  if (!sessionId) return c.json({ ok: false, error: 'sessionId required' }, 400);
+  if (!agentName) return c.json({ ok: false, error: 'agentName required' }, 400);
+  if (kind !== 'ask-orchestrator' && kind !== 'ask-user' && kind !== 'approval') {
+    return c.json({ ok: false, error: 'kind must be ask-orchestrator | ask-user | approval' }, 400);
+  }
+  if (!question.trim()) return c.json({ ok: false, error: 'question required' }, 400);
+
+  const pendingAskId = newId();
+  const row = createPendingAsk({
+    id: pendingAskId,
+    sessionId,
+    agentName,
+    projectId,
+    runId: body.runId ?? null,
+    parentWorkItemId: body.parentWorkItemId ?? null,
+    kind,
+    question,
+    context: typeof body.context === 'string' ? body.context : null,
+    options: Array.isArray(body.options) ? body.options : null,
+    now: Date.now(),
+  });
+
+  // Only `ask-orchestrator` lights up an actual channel event in this
+  // sub-task (16b.3). `ask-user` and `approval` reuse the same row +
+  // emit different event kinds — wired in 16b.5 + 16b.6.
+  if (kind === 'ask-orchestrator') {
+    const eventBody = buildAgentAsksOrchestratorBody({
+      pendingAskId,
+      sessionId,
+      agentName,
+      runId: row.runId,
+      parentWorkItemId: row.parentWorkItemId,
+      question,
+      context: row.context,
+    });
+    channelServer.emitToProject({
+      projectId,
+      slug: project.slug,
+      source: 'agent',
+      body: eventBody,
+      sender: 'pc',
+    });
+  }
+
+  return c.json({ ok: true, pendingAskId, status: 'waiting' });
+});
+
+/** List waiting pending-asks for a project — feeds the orchestrator's
+ *  boot-time "you have N agents waiting on you" surface + Activity Panel
+ *  scoping (16b.8). */
+app.get('/api/projects/:projectId/agent-pending-asks', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+  const rows = listWaitingPendingAsksForProject(projectId);
+  return c.json({ ok: true, pendingAsks: rows });
+});
+
+/** Resume a paused agent with an answer. Atomically flips waiting→answered
+ *  + re-spawns the agent with `--agent <name> --resume <sessionId>` +
+ *  writes the answer as the next user message. Wired from the
+ *  `pc_answer_pending` MCP tool. */
+app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const askId = c.req.param('askId') as ULID;
+  const body = await c.req.json<{ answer?: string; answeredBy?: 'orchestrator' | 'user' }>();
+  const answer = typeof body.answer === 'string' ? body.answer : '';
+  const answeredBy = body.answeredBy;
+  if (!answer) return c.json({ ok: false, error: 'answer required' }, 400);
+  if (answeredBy !== 'orchestrator' && answeredBy !== 'user') {
+    return c.json({ ok: false, error: 'answeredBy must be orchestrator | user' }, 400);
+  }
+
+  const result = await respawnAgentWithAnswer({
+    pendingAskId: askId,
+    answer,
+    answeredBy,
+    now: Date.now(),
+  });
+  // Always 200 — the result envelope carries the success/error shape the
+  // MCP tool returns to the orchestrator. Same convention as
+  // /workflow/node-complete + friends.
+  return c.json(result);
 });
 
 // ── Static / SPA fallback ─────────────────────────────────────────────────

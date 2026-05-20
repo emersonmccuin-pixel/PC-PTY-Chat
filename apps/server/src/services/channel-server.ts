@@ -119,6 +119,48 @@ export class ChannelServer {
     try { this.httpServer?.close(); } catch { /* best effort */ }
   }
 
+  /** Section 16b — Programmatic emit. Server-side code (agent comms,
+   *  workflow runtime) calls this to deliver a synthesised event directly
+   *  to the registered child + UI subscribers, without round-tripping
+   *  through the HTTP listener. Returns true if a registered child
+   *  received the forward; false if no child was registered (event still
+   *  propagates to UI subscribers via `onEvent`). */
+  emitToProject(args: {
+    projectId: ULID;
+    slug: string;
+    source: string;
+    body: string;
+    sender?: string;
+  }): boolean {
+    const event: ChannelEvent = {
+      projectId: args.projectId,
+      slug: args.slug,
+      source: args.source,
+      body: args.body,
+      sender: args.sender ?? 'pc',
+      at: Date.now(),
+    };
+    const child = this.registrants.get(args.projectId);
+    const delivered = !!(child && child.ws.readyState === child.ws.OPEN);
+    if (delivered) {
+      child!.ws.send(
+        JSON.stringify({
+          type: 'channel-event',
+          content: event.body,
+          path: `/channel/${event.slug}/${event.source}`,
+          method: 'POST',
+          source: event.source,
+        }),
+      );
+    } else {
+      console.warn(
+        `[channel] emitToProject: no registered child for ${args.projectId}; UI broadcast only`,
+      );
+    }
+    this.deps.onEvent(args.projectId, event);
+    return delivered;
+  }
+
   private forwardToChild(project: Project, event: ChannelEvent): void {
     const child = this.registrants.get(project.id);
     if (!child || child.ws.readyState !== child.ws.OPEN) {
