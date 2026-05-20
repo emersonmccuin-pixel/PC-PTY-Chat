@@ -94,6 +94,7 @@ export interface WorkItemPatch {
   stageId?: string;
   parentId?: ULID | null;
   position?: number;
+  type?: WorkItemType;
   fields?: Record<string, unknown>;
 }
 

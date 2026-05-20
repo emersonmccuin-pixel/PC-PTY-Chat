@@ -13,6 +13,7 @@ import remarkGfm from 'remark-gfm';
 
 import {
   api,
+  WORK_ITEM_TYPES,
   WorkItemConflictError,
   WorkItemFieldValidationError,
   type Attachment,
@@ -20,6 +21,7 @@ import {
   type Project,
   type WorkItem,
   type WorkItemPatch,
+  type WorkItemType,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { TypedFieldEditor } from './TypedFieldEditor';
@@ -50,6 +52,7 @@ interface Draft {
   title: string;
   body: string;
   stageId: string;
+  type: WorkItemType;
   fields: Record<string, unknown>;
 }
 
@@ -58,6 +61,7 @@ function draftFromItem(wi: WorkItem): Draft {
     title: wi.title,
     body: wi.body,
     stageId: wi.stageId,
+    type: wi.type ?? 'task',
     fields: { ...(wi.fields ?? {}) },
   };
 }
@@ -66,8 +70,16 @@ function isDirty(draft: Draft, baseline: WorkItem): boolean {
   if (draft.title !== baseline.title) return true;
   if (draft.body !== baseline.body) return true;
   if (draft.stageId !== baseline.stageId) return true;
+  if (draft.type !== (baseline.type ?? 'task')) return true;
   return !shallowEqualRecord(draft.fields, baseline.fields ?? {});
 }
+
+const TYPE_LABELS: Record<WorkItemType, string> = {
+  task: '▢ Task',
+  bug: '🐛 Bug',
+  feature: '✨ Feature',
+  spike: '⚡ Spike',
+};
 
 function shallowEqualRecord(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const aKeys = Object.keys(a);
@@ -193,6 +205,7 @@ export function WorkItemDetailModal({
       if (draft.title !== baseline.title) patch.title = draft.title;
       if (draft.body !== baseline.body) patch.body = draft.body;
       if (draft.stageId !== baseline.stageId) patch.stageId = draft.stageId;
+      if (draft.type !== (baseline.type ?? 'task')) patch.type = draft.type;
       if (!shallowEqualRecord(draft.fields, baseline.fields ?? {})) {
         patch.fields = draft.fields;
       }
@@ -503,6 +516,21 @@ function OverviewTab({
             {stages.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Type">
+          <select
+            value={draft.type}
+            onChange={(e) =>
+              setDraft((p) => ({ ...p, type: e.target.value as WorkItemType }))
+            }
+            className="w-full border border-border bg-background px-2 py-1 text-sm"
+          >
+            {WORK_ITEM_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {TYPE_LABELS[t]}
               </option>
             ))}
           </select>
