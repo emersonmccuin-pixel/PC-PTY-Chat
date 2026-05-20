@@ -70,7 +70,7 @@ export function Shell({
       id="pc-shell-v3"
       className="h-full"
     >
-      <Panel id="rail" defaultSize="18%" minSize="14%" maxSize="28%">
+      <Panel id="rail" defaultSize="14%" minSize="14%" maxSize="14%">
         <LeftRail
           projects={projects}
           activeProject={activeProject}
@@ -80,8 +80,8 @@ export function Shell({
           onProjectReorder={onProjectReorder}
         />
       </Panel>
-      <Separator className="w-px bg-border transition-colors hover:bg-primary" />
-      <Panel id="center" defaultSize="54%" minSize="30%">
+      <Separator className="w-px bg-border" />
+      <Panel id="center" defaultSize="72%" minSize="30%">
         <Center
           activeProject={activeProject}
           projectCount={projects.length}
@@ -94,13 +94,13 @@ export function Shell({
           onProjectDeleted={onProjectDeleted}
         />
       </Panel>
-      <Separator className="w-px bg-border transition-colors hover:bg-primary" />
+      <Separator className="w-px bg-border" />
       <Panel
         id="activity"
         panelRef={activityRef}
-        defaultSize="28%"
-        minSize="20%"
-        maxSize="45%"
+        defaultSize="14%"
+        minSize="14%"
+        maxSize="14%"
         collapsible
         collapsedSize="0%"
       >
