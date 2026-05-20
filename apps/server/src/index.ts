@@ -84,8 +84,18 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
-import { buildAgentAsksOrchestratorBody } from './services/agent-event-header.ts';
-import type { PendingAskKind, PendingAskOption } from '@pc/domain';
+import {
+  buildAgentAsksOrchestratorBody,
+  buildAgentCompletedBody,
+  buildAgentFailedBody,
+} from './services/agent-event-header.ts';
+import {
+  AgentRunManager,
+  getAgentRunManager,
+  setAgentRunManager,
+  type AgentRunFailureCause,
+} from './services/agent-run-manager.ts';
+import type { AgentFailedPayload, PendingAskKind, PendingAskOption } from '@pc/domain';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -172,6 +182,12 @@ const channelServer = new ChannelServer({
   },
 });
 channelServer.start();
+
+// Section 16b.4 — Singleton AgentRunManager. The `pc_invoke_agent` HTTP
+// route consumes it; the resume primitive (agent-resume.ts) consults it
+// via `findRunIdBySession` so resumed sessions re-attach to the tracked
+// run. Test code overrides via `setAgentRunManager(new AgentRunManager(...))`.
+setAgentRunManager(new AgentRunManager());
 
 const app = new Hono();
 
@@ -2576,6 +2592,137 @@ app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) 
   // MCP tool returns to the orchestrator. Same convention as
   // /workflow/node-complete + friends.
   return c.json(result);
+});
+
+// ── Agent invoke (16b.4) ──────────────────────────────────────────────────
+
+/** Map `AgentRunFailureCause` → the structured `agent-failed` payload
+ *  `cause` field (the narrow domain enum the orchestrator pod prompt
+ *  parses). `spawn-failed` and `spawn-exit` collapse to `error` —
+ *  orchestrator handler protocol entry #5 treats them the same. */
+function agentFailureCauseToPayload(
+  cause: AgentRunFailureCause | null,
+): AgentFailedPayload['cause'] {
+  switch (cause) {
+    case 'timeout':
+    case 'idle-timeout':
+      return 'timeout';
+    case 'cancelled':
+      return 'cancelled';
+    case 'unknown-agent':
+    case 'spawn-failed':
+    case 'spawn-exit':
+    case null:
+    default:
+      return 'error';
+  }
+}
+
+/** `pc_invoke_agent`'s HTTP surface. Spawns the named agent in the project's
+ *  worktree via the `AgentRunManager` singleton. `wait: true` blocks the
+ *  caller's tool call until the child finishes; `wait: false` returns the
+ *  run handle immediately and emits a terminal `agent-completed` /
+ *  `agent-failed` channel event to the project when the child finishes.
+ *
+ *  Sync caller (orchestrator with `wait: true` overridden) sees the result
+ *  as a normal tool result. Async caller (orchestrator default `wait: false`)
+ *  sees the run handle now and the terminal event on its next turn — the
+ *  orchestrator pod prompt's handler protocol entries #4 + #5 surface it. */
+app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const agentName = c.req.param('name').trim();
+  if (!agentName) return c.json({ ok: false, error: 'agent name required' }, 400);
+
+  const body = await c.req.json<{
+    input?: string;
+    wait?: boolean;
+    parentWorkItemId?: ULID;
+  }>();
+
+  const input = typeof body.input === 'string' ? body.input : '';
+  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
+  const wait = body.wait !== false; // default true per the contract
+  const parentWorkItemId =
+    typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
+
+  const mgr = getAgentRunManager();
+  const spawn = mgr.spawn({
+    agentName,
+    input,
+    wait,
+    projectId,
+    worktreeDir: project.folderPath,
+    parentWorkItemId,
+  });
+
+  if (wait) {
+    // Block in-turn until the child reaches a terminal state. The completion
+    // Promise resolves on completed / failed / cancelled — never rejects.
+    const rec = await spawn.completion;
+    if (rec.status === 'completed') {
+      return c.json({
+        ok: true,
+        mode: 'sync',
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        result: rec.result,
+      });
+    }
+    return c.json({
+      ok: false,
+      error: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
+      cause: rec.failureCause === 'unknown-agent' ? 'unknown-agent' : 'spawn-failed',
+    });
+  }
+
+  // Fire-and-forget — subscribe to completion in the background. The
+  // terminal event lands on the caller's channel stream when the child
+  // finishes; the caller will see it as a `<channel>` block on its next
+  // turn (orchestrator handler protocol entries #4 + #5).
+  void spawn.completion.then((rec) => {
+    if (rec.status === 'completed') {
+      channelServer.emitToProject({
+        projectId,
+        slug: project.slug,
+        source: 'agent',
+        body: buildAgentCompletedBody({
+          runId: rec.runId,
+          sessionId: rec.sessionId,
+          agentName: rec.agentName,
+          parentWorkItemId: rec.parentWorkItemId,
+          result: rec.result,
+        }),
+        sender: 'pc',
+      });
+    } else {
+      channelServer.emitToProject({
+        projectId,
+        slug: project.slug,
+        source: 'agent',
+        body: buildAgentFailedBody({
+          runId: rec.runId,
+          sessionId: rec.sessionId,
+          agentName: rec.agentName,
+          parentWorkItemId: rec.parentWorkItemId,
+          reason:
+            rec.failureReason ?? `agent ${rec.agentName} did not complete (${rec.status})`,
+          cause: agentFailureCauseToPayload(rec.failureCause),
+        }),
+        sender: 'pc',
+      });
+    }
+  });
+
+  return c.json({
+    ok: true,
+    mode: 'async',
+    sessionId: spawn.sessionId,
+    runId: spawn.runId,
+    startedAt: spawn.startedAt,
+  });
 });
 
 // ── Static / SPA fallback ─────────────────────────────────────────────────
