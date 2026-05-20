@@ -50,15 +50,19 @@ export function useProjectWorkflowRuns(
 
   // Live tick: patch in place when `workflow-run-changed` arrives. New runs
   // (not in the map) need a full fetch — the envelope only carries the
-  // minimum subset.
+  // minimum subset. Terminal-status transitions also trigger a refetch so
+  // `completedAt` stays accurate (the envelope omits it).
   useEffect(() => {
     if (!project || events.length === 0) return;
     const last = events[events.length - 1];
     if (!last || !isRunChangedEnvelope(last)) return;
+    const isTerminal =
+      last.status === 'complete' ||
+      last.status === 'failed' ||
+      last.status === 'cancelled';
     setRunMap((prev) => {
       const existing = prev.get(last.runId);
       if (!existing) {
-        // New run — schedule a refetch; don't block this render path.
         void api.listWorkflowRuns(project.id).then((list) => {
           setRunMap(new Map(list.map((r) => [r.id, r])));
         });
@@ -72,6 +76,11 @@ export function useProjectWorkflowRuns(
       });
       return next;
     });
+    if (isTerminal) {
+      void api.listWorkflowRuns(project.id).then((list) => {
+        setRunMap(new Map(list.map((r) => [r.id, r])));
+      });
+    }
   }, [events, project?.id]);
 
   const runs = useMemo(() => Array.from(runMap.values()), [runMap]);

@@ -27,8 +27,10 @@ import {
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
+  dismissFailedRun,
   getGlobalSettings,
   getProjectById,
+  listFailedRunDismissalsForProject,
   listOrchestratorSessionsForProject,
   listProjects,
   reassignStage,
@@ -2200,6 +2202,28 @@ app.post('/api/projects/:projectId/workflow-runs/:runId/retry-from', async (c) =
     return c.json({ ok: false, error: result.error }, status);
   }
   return c.json({ ok: true, runId: result.runId });
+});
+
+// 6.6 — activity-panel "Failed recently" dismissals. The runs themselves
+// stay forever in workflow_runs (the 4e Runs tab is canonical); this only
+// records that a user has cleared a failure off the at-a-glance list.
+app.get('/api/projects/:projectId/failed-run-dismissals', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const runIds = listFailedRunDismissalsForProject(id as ULID);
+  return c.json({ runIds });
+});
+
+app.post('/api/projects/:projectId/workflow-runs/:runId/dismiss', (c) => {
+  const id = c.req.param('projectId');
+  const runId = c.req.param('runId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const run = runtime.workflowRuntime().readRunForProject(runId);
+  if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+  const dismissedAt = dismissFailedRun(runId as ULID, Date.now());
+  return c.json({ ok: true, dismissedAt });
 });
 
 // 6.3 — cancel a single in-flight run from the activity panel. Re-uses the

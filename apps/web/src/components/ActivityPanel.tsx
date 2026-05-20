@@ -62,6 +62,42 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
   const askWaiting = orchestratorState === 'waiting-on-you' ? 1 : 0;
   const waitingCount = askWaiting + pausedRuns.length;
 
+  const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+  const todayStartMs = useMemo(() => {
+    const d = new Date(nowMs);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }, [nowMs]);
+  const dismissedRunIds = useDismissedRunIds(project);
+  const recentFailedRuns = useMemo(
+    () =>
+      runs
+        .filter((r) => r.status === 'failed' || r.status === 'cancelled')
+        .filter((r) => {
+          const completed = r.completedAt
+            ? new Date(r.completedAt).getTime()
+            : new Date(r.startedAt).getTime();
+          return completed >= sevenDaysAgoMs;
+        })
+        .filter((r) => !dismissedRunIds.has(r.id))
+        .sort((a, b) => {
+          const ta = new Date(a.completedAt ?? a.startedAt).getTime();
+          const tb = new Date(b.completedAt ?? b.startedAt).getTime();
+          return tb - ta;
+        }),
+    [runs, sevenDaysAgoMs, dismissedRunIds],
+  );
+  const failedToday = useMemo(
+    () =>
+      recentFailedRuns.filter((r) => {
+        const completed = r.completedAt
+          ? new Date(r.completedAt).getTime()
+          : new Date(r.startedAt).getTime();
+        return completed >= todayStartMs;
+      }).length,
+    [recentFailedRuns, todayStartMs],
+  );
+
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
       <Header onClose={onClose} />
@@ -74,7 +110,7 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
           <StatusLine
             running={activeRuns.length}
             waiting={waitingCount}
-            failedToday={0}
+            failedToday={failedToday}
           />
           <div className="flex-1 overflow-y-auto">
             <RunningWorkflowsRegion
@@ -89,7 +125,11 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
               approvals={approvals}
               nowMs={nowMs}
             />
-            <FailedRecentlyRegion project={project} />
+            <FailedRecentlyRegion
+              project={project}
+              runs={recentFailedRuns}
+              nowMs={nowMs}
+            />
           </div>
         </div>
       )}
@@ -569,11 +609,141 @@ function HumanReviewRegion({
   );
 }
 
-function FailedRecentlyRegion({ project: _project }: { project: Project }) {
-  // 6.6 wires this region. Collapsed by default.
+function useDismissedRunIds(project: Project | null): Set<string> {
+  const [ids, setIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (!project) {
+      setIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    void api.listFailedRunDismissals(project.id).then((list) => {
+      if (!cancelled) setIds(new Set(list));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  // Expose a setter via the same hook so the region can optimistically add
+  // dismissed ids; re-fetch on next mount keeps server-of-truth canonical.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ runId: string }>).detail;
+      if (!detail?.runId) return;
+      setIds((prev) => {
+        if (prev.has(detail.runId)) return prev;
+        const next = new Set(prev);
+        next.add(detail.runId);
+        return next;
+      });
+    };
+    window.addEventListener('pc:failed-run-dismissed', handler as EventListener);
+    return () => {
+      window.removeEventListener('pc:failed-run-dismissed', handler as EventListener);
+    };
+  }, []);
+
+  return ids;
+}
+
+function FailedRecentlyRegion({
+  project,
+  runs,
+  nowMs,
+}: {
+  project: Project;
+  runs: WorkflowRun[];
+  nowMs: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const openRun = useWorkflowDrawer((s) => s.openTo);
+
+  async function handleDismiss(runId: string) {
+    // Optimistic: emit the dismissal event so the hook drops it from the
+    // list before the round-trip lands.
+    window.dispatchEvent(
+      new CustomEvent('pc:failed-run-dismissed', { detail: { runId } }),
+    );
+    try {
+      await api.dismissFailedRun(project.id, runId);
+    } catch {
+      /* best-effort; user can re-click if it failed */
+    }
+  }
+
+  if (runs.length === 0) {
+    return (
+      <RegionShell title="Failed recently" badge="0">
+        <EmptyRegion text="No failures in the last 7 days." />
+      </RegionShell>
+    );
+  }
+
   return (
-    <RegionShell title="Failed recently" badge="0">
-      <EmptyRegion text="No failures in the last 7 days." />
-    </RegionShell>
+    <section className="border-b border-border">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center justify-between px-3 py-1.5 hover:bg-muted/40"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-muted-foreground">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Failed recently
+          </span>
+        </div>
+        <div className="bg-destructive/20 px-1.5 py-0.5 text-[10px] font-mono text-destructive">
+          {runs.length}
+        </div>
+      </button>
+      {expanded && (
+        <ul className="divide-y divide-border/50">
+          {runs.map((run) => {
+            const when = formatElapsed(
+              nowMs - new Date(run.completedAt ?? run.startedAt).getTime(),
+            );
+            const failedNode = Object.entries(run.nodeOutputs ?? {}).find(
+              ([, o]) => o?.status === 'failed',
+            );
+            const stepLabel = failedNode
+              ? `${run.status} at ${failedNode[0]}`
+              : run.status;
+            return (
+              <li key={run.id} className="flex items-baseline gap-2 px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => openRun(run.workflowId, run.id)}
+                  className="min-w-0 flex-1 text-left hover:underline"
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                      {run.workflowId}
+                    </div>
+                    <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                      {when} ago
+                    </div>
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {stepLabel}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDismiss(run.id)}
+                  className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Hide this failure from the list (the 4e Runs tab still keeps it)"
+                >
+                  Dismiss
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }

@@ -872,6 +872,22 @@ export const api = {
       reason ? { reason } : {},
     ),
 
+  /** Section 6.6 — list run-ids the user has dismissed from the activity
+   *  panel's failed-recently region. Server-scoped to this project via the
+   *  workflow_runs join. */
+  listFailedRunDismissals: (projectId: ULID) =>
+    getJson<{ runIds: string[] }>(
+      `/api/projects/${projectId}/failed-run-dismissals`,
+    ).then((r) => r.runIds),
+
+  /** Dismiss a failed run from the activity panel's at-a-glance list. The
+   *  underlying run record stays intact — only the dismissal is recorded. */
+  dismissFailedRun: (projectId: ULID, runId: string) =>
+    postJson<{ ok: true; dismissedAt: number }>(
+      `/api/projects/${projectId}/workflow-runs/${runId}/dismiss`,
+      {},
+    ),
+
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
     getJson<{ ok: true; session: OrchestratorSession | null }>(

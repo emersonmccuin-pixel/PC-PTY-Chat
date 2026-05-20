@@ -191,6 +191,20 @@ export const workflowRuns = sqliteTable(
   ],
 );
 
+/** Section 6.6 — activity-panel "Failed recently" region. The 4e Runs tab
+ *  remains the canonical run history; this table only records per-row
+ *  dismissals so a user can clear a failure off the at-a-glance list. */
+export const failedRunDismissals = sqliteTable(
+  'failed_run_dismissals',
+  {
+    runId: text('run_id')
+      .primaryKey()
+      .$type<ULID>()
+      .references(() => workflowRuns.id),
+    dismissedAt: integer('dismissed_at').notNull(),
+  },
+);
+
 export const worktrees = sqliteTable(
   'worktrees',
   {

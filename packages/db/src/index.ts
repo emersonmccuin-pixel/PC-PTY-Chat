@@ -123,6 +123,12 @@ export type {
 } from './repos/pod-audit.ts';
 
 export {
+  dismissFailedRun,
+  listFailedRunDismissalsForProject,
+  listFailedRunDismissalsForRuns,
+} from './repos/failed-run-dismissals.ts';
+
+export {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
