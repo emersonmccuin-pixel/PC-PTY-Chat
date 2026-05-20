@@ -1,5 +1,7 @@
 // GlobalSettings — app-level singleton (one row, id='global').
 
+import type { ULID } from './ulid.ts';
+
 export interface ActivityPanelSettings {
   /** User's last persisted open/closed state for the right-rail activity panel. */
   open: boolean;
@@ -23,6 +25,12 @@ export interface GlobalSettings {
   projectsFolder: string;
   /** Activity-panel UI preferences. */
   activityPanel: ActivityPanelSettings;
+  /**
+   * Target project id for the `pc_log_bug` MCP tool. When set, Log Bug calls
+   * from any project's orchestrator file a bug card here with type='bug'.
+   * Null = Log Bug returns a configuration error.
+   */
+  bugLogTargetProjectId: ULID | null;
 }
 
 /** Defaults for a fresh settings_global row. The DB seeder calls this with
@@ -36,6 +44,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
       open: true,
       showAllProjects: false,
     },
+    bugLogTargetProjectId: null,
   };
 }
 
@@ -59,6 +68,7 @@ export function withSettingsDefaults(
       showAllProjects:
         stored.activityPanel?.showAllProjects ?? defaults.activityPanel.showAllProjects,
     },
+    bugLogTargetProjectId: stored.bugLogTargetProjectId ?? defaults.bugLogTargetProjectId,
   };
 }
 

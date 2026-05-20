@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type GlobalSettings } from '@/api/client';
+import { api, type GlobalSettings, type Project, type ULID } from '@/api/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface AppSettingsModalProps {
@@ -25,6 +25,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
   const initialDataDir = useRef(settings.dataDir);
 
   useEffect(() => {
@@ -35,6 +36,16 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     return () => window.removeEventListener('keydown', onKey);
   }, [pickerOpen, onClose]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void api.listProjects().then((list) => {
+      if (!cancelled) setProjects(list);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const dataDirDirty = draft.dataDir !== initialDataDir.current;
 
   async function save() {
@@ -44,6 +55,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
       const patch: Partial<GlobalSettings> = {
         projectsFolder: draft.projectsFolder,
         telemetryOptIn: draft.telemetryOptIn,
+        bugLogTargetProjectId: draft.bugLogTargetProjectId,
       };
       if (dataDirDirty) patch.dataDir = draft.dataDir;
       const r = await api.patchSettings(patch);
@@ -110,6 +122,29 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                 />
                 <span>Enable telemetry</span>
               </label>
+            </FieldRow>
+
+            <FieldRow
+              label="Bug log target"
+              help="When Log Bug is called from any project's chat, the bug card lands here. Leave unset to disable the tool."
+            >
+              <select
+                value={draft.bugLogTargetProjectId ?? ''}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    bugLogTargetProjectId: e.target.value === '' ? null : (e.target.value as ULID),
+                  })
+                }
+                className="w-full border border-border bg-background px-2 py-1 text-sm text-foreground"
+              >
+                <option value="">(none — Log Bug disabled)</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
             </FieldRow>
 
             <FieldRow

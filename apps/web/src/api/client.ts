@@ -209,6 +209,7 @@ export interface GlobalSettings {
   telemetryOptIn: boolean;
   projectsFolder: string;
   activityPanel: ActivityPanelSettings;
+  bugLogTargetProjectId: ULID | null;
 }
 
 // ── Orchestrator session ───────────────────────────────────────────────────

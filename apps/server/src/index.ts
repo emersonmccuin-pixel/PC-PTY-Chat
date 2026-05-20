@@ -329,6 +329,10 @@ app.patch('/api/settings', async (c) => {
         showAllProjects:
           body.activityPanel?.showAllProjects ?? current.activityPanel.showAllProjects,
       },
+      bugLogTargetProjectId:
+        body.bugLogTargetProjectId === undefined
+          ? current.bugLogTargetProjectId
+          : body.bugLogTargetProjectId,
     },
     getDataDir(),
     homedir(),
