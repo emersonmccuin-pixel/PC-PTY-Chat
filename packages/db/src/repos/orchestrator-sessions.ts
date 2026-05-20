@@ -94,6 +94,20 @@ export function createOrchestratorSession(
   };
 }
 
+export function getOrchestratorSession(id: ULID): OrchestratorSession | null {
+  const row = getDb()
+    .select()
+    .from(orchestratorSessions)
+    .where(
+      and(
+        eq(orchestratorSessions.id, id),
+        isNull(orchestratorSessions.deletedAt),
+      ),
+    )
+    .get() as SessionRow | undefined;
+  return row ? toDomain(row) : null;
+}
+
 export function getActiveOrchestratorSession(projectId: ULID): OrchestratorSession | null {
   const row = getDb()
     .select()

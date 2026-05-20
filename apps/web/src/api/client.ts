@@ -866,6 +866,12 @@ export const api = {
       {},
     ).then((r) => r.session),
 
+  resumeSession: (projectId: ULID, targetSessionId: ULID) =>
+    postJson<{ ok: true; session: OrchestratorSession }>(
+      `/api/projects/${projectId}/sessions/${targetSessionId}/resume`,
+      {},
+    ).then((r) => r.session),
+
   listSessions: (projectId: ULID) =>
     getJson<{ ok: true; sessions: OrchestratorSession[] }>(
       `/api/projects/${projectId}/sessions`,

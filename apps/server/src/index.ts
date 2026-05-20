@@ -920,6 +920,28 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
   return c.json({ ok: true, session });
 });
 
+/** Resume a past orchestrator session. Ends the current active row, creates
+ *  a new active row pointing at the target's claude.exe conversation
+ *  (providerSessionId), respawns the PTY with --resume so claude.exe loads
+ *  the prior context. The chat panel re-renders by tailing the existing
+ *  JSONL from its start. */
+app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const targetId = c.req.param('targetId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  let session;
+  try {
+    session = runtime.resumeSession(targetId);
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+  const pty = runtime.ensurePty();
+  attachPtyHandlers(id, runtime, pty);
+  broadcastTo(id, { type: 'session-changed', session });
+  return c.json({ ok: true, session });
+});
+
 // ── Agent-creator transient session (Section 3 phase 3e.3) ─────────────────
 //
 // One-off PtySession per project for the conversational "Create Agent" modal.

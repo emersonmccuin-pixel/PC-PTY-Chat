@@ -20,8 +20,26 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
   const [sessions, setSessions] = useState<OrchestratorSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const viewing = useViewingSession((s) => (project ? s.bySlug[project.slug] ?? null : null));
   const setViewing = useViewingSession((s) => s.setViewing);
+
+  async function handleResume(targetId: string) {
+    if (!project || resumingId) return;
+    setResumingId(targetId);
+    setResumeError(null);
+    try {
+      await api.resumeSession(project.id, targetId);
+      // Clear the read-only-viewing state so the panel snaps back to the live
+      // chat (which is now the resumed conversation).
+      setViewing(project.slug, null);
+    } catch (err) {
+      setResumeError((err as Error).message);
+    } finally {
+      setResumingId(null);
+    }
+  }
 
   useEffect(() => {
     if (!project) {
@@ -87,34 +105,63 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
         {!loading && !error && sessions.length === 0 && (
           <div className="px-3 py-3 text-xs text-muted-foreground">No sessions yet.</div>
         )}
+        {resumeError && (
+          <div className="px-3 py-2 text-xs text-red-400">Couldn't resume: {resumeError}</div>
+        )}
         {sessions.map((s) => {
           const isActive = s.status === 'active';
           const isViewing = viewing === s.id;
           const isLive = isActive && viewing === null;
+          const isResuming = resumingId === s.id;
           return (
-            <button
+            <div
               key={s.id}
-              onClick={() => {
-                setViewing(project.slug, isActive ? null : s.id);
-              }}
-              title={titleForSession(s)}
               className={
-                'block w-full border-l-2 px-3 py-1.5 text-left text-xs hover:bg-muted ' +
+                'group flex items-center border-l-2 ' +
                 (isViewing || isLive
-                  ? 'border-primary bg-muted text-primary'
-                  : 'border-transparent text-foreground/80')
+                  ? 'border-primary bg-muted'
+                  : 'border-transparent hover:bg-muted')
               }
             >
-              <div className="flex items-center gap-1.5">
-                {isActive && (
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="active" />
-                )}
-                <span className="truncate">{titleForSession(s)}</span>
-              </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground">
-                {formatStarted(s.startedAt)}{isLive ? ' · live' : isViewing ? ' · viewing' : ''}
-              </div>
-            </button>
+              <button
+                onClick={() => {
+                  setViewing(project.slug, isActive ? null : s.id);
+                }}
+                title={titleForSession(s)}
+                className={
+                  'min-w-0 flex-1 px-3 py-1.5 text-left text-xs ' +
+                  (isViewing || isLive
+                    ? 'text-primary'
+                    : 'text-foreground/80')
+                }
+              >
+                <div className="flex items-center gap-1.5">
+                  {isActive && (
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="active" />
+                  )}
+                  <span className="truncate">{titleForSession(s)}</span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">
+                  {formatStarted(s.startedAt)}{isLive ? ' · live' : isViewing ? ' · viewing' : ''}
+                </div>
+              </button>
+              {!isActive && (
+                <button
+                  onClick={() => handleResume(s.id)}
+                  disabled={isResuming || resumingId !== null}
+                  title="Resume this conversation as the live chat"
+                  className={
+                    'mr-2 shrink-0 rounded border border-border bg-card px-2 py-0.5 text-[10px] ' +
+                    'text-foreground/80 hover:bg-accent hover:text-accent-foreground ' +
+                    'disabled:opacity-40 disabled:cursor-wait ' +
+                    'opacity-0 group-hover:opacity-100 ' +
+                    (isResuming ? 'opacity-100' : '')
+                  }
+                >
+                  {isResuming ? 'Resuming…' : 'Resume'}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

@@ -16,6 +16,7 @@ import {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
+  getOrchestratorSession,
 } from '@pc/db';
 import { encodeCwdForClaude, PtySession } from '@pc/runtime';
 import { homedir } from 'node:os';
@@ -283,6 +284,50 @@ export class ProjectRuntime {
     const fresh = createOrchestratorSession({
       projectId: this.project.id,
       providerSessionId: randomUUID(),
+    });
+    return fresh;
+  }
+
+  /**
+   * Resume a past orchestrator session. Ends the current active row, creates
+   * a new active row backed by the target's providerSessionId, kills the
+   * current PtySession. Next ensurePty() spawns claude.exe with --resume
+   * <uuid> and loads the prior conversation. The chat panel re-renders by
+   * tailing the existing JSONL from its start.
+   *
+   * Errors if the target doesn't exist, belongs to another project, has no
+   * providerSessionId, or has no JSONL on disk (would fail at spawn anyway).
+   */
+  resumeSession(targetId: ULID): OrchestratorSession {
+    const target = getOrchestratorSession(targetId);
+    if (!target) throw new Error(`session not found: ${targetId}`);
+    if (target.projectId !== this.project.id) {
+      throw new Error('session belongs to a different project');
+    }
+    if (!target.providerSessionId) {
+      throw new Error('session has no claude.exe conversation associated');
+    }
+    const jsonlPath = resolve(
+      homedir(),
+      '.claude',
+      'projects',
+      encodeCwdForClaude(this.project.folderPath),
+      `${target.providerSessionId}.jsonl`,
+    );
+    if (!existsSync(jsonlPath)) {
+      throw new Error(
+        'no transcript on disk for this conversation (claude.exe never wrote it)',
+      );
+    }
+    const active = getActiveOrchestratorSession(this.project.id);
+    if (active && active.id !== targetId) {
+      endOrchestratorSession(active.id, 'user_ended');
+    }
+    try { this.pty?.kill(); } catch { /* best-effort */ }
+    this.pty = null;
+    const fresh = createOrchestratorSession({
+      projectId: this.project.id,
+      providerSessionId: target.providerSessionId,
     });
     return fresh;
   }
