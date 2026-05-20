@@ -11,12 +11,21 @@ import { useEffect, useMemo, useState } from 'react';
 
 import {
   api,
+  WORK_ITEM_TYPES,
   WorkItemFieldValidationError,
   type FieldSchema,
   type Project,
   type WorkItem,
+  type WorkItemType,
 } from '@/api/client';
 import { TypedFieldEditor } from './TypedFieldEditor';
+
+const TYPE_LABELS: Record<WorkItemType, string> = {
+  task: '▢ Task',
+  bug: '🐛 Bug',
+  feature: '✨ Feature',
+  spike: '⚡ Spike',
+};
 
 interface CreateWorkItemModalProps {
   project: Project;
@@ -40,6 +49,7 @@ export function CreateWorkItemModal({
   const [body, setBody] = useState('');
   const [fields, setFields] = useState<Record<string, unknown>>({});
   const [stage, setStage] = useState(stageId);
+  const [type, setType] = useState<WorkItemType>('task');
   const [schemas, setSchemas] = useState<FieldSchema[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -75,7 +85,8 @@ export function CreateWorkItemModal({
     title.trim() !== prefillTitle.trim() ||
     body.length > 0 ||
     Object.keys(fields).length > 0 ||
-    stage !== stageId;
+    stage !== stageId ||
+    type !== 'task';
 
   function attemptClose() {
     if (busy) return;
@@ -95,6 +106,7 @@ export function CreateWorkItemModal({
     try {
       const r = await api.createWorkItem(project.id, trimmed, stage, {
         ...(body.length > 0 ? { body } : {}),
+        ...(type !== 'task' ? { type } : {}),
         ...(Object.keys(fields).length > 0 ? { fields } : {}),
       });
       onCreated(r.workItem);
@@ -159,6 +171,20 @@ export function CreateWorkItemModal({
                 {stageOptions.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Type">
+              <select
+                value={type}
+                onChange={(e) => setType(e.target.value as WorkItemType)}
+                className="w-full border border-border bg-background px-2 py-1 text-sm"
+              >
+                {WORK_ITEM_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {TYPE_LABELS[t]}
                   </option>
                 ))}
               </select>

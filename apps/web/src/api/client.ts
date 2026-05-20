@@ -27,6 +27,9 @@ export interface Project {
   gitRemote: string | null;
 }
 
+export const WORK_ITEM_TYPES = ['task', 'bug', 'feature', 'spike'] as const;
+export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
+
 export interface WorkItem {
   id: ULID;
   projectId: ULID;
@@ -37,6 +40,7 @@ export interface WorkItem {
   stageId: string;
   status: WorkItemStatus;
   statusReason: string | null;
+  type: WorkItemType;
   fields: Record<string, unknown>;
   version: number;
   createdAt: number;
@@ -291,6 +295,7 @@ export const api = {
     opts: {
       body?: string;
       parentId?: ULID | null;
+      type?: WorkItemType;
       fields?: Record<string, unknown>;
     } = {},
   ): Promise<{ ok: true; workItem: WorkItem }> => {

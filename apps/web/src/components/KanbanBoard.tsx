@@ -47,6 +47,18 @@ const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: s
   failed: { glyph: '⚠', className: 'text-destructive' },
 };
 
+// Built-in work-item type chip. `task` is the default and stays muted; bug /
+// feature / spike get color-tinted pills so dogfood bug cards visually pop.
+const TYPE_CHIP: Record<
+  WorkItem['type'],
+  { icon: string; label: string; className: string }
+> = {
+  task: { icon: '▢', label: 'Task', className: 'border-border text-muted-foreground' },
+  bug: { icon: '🐛', label: 'Bug', className: 'border-destructive/40 bg-destructive/15 text-destructive' },
+  feature: { icon: '✨', label: 'Feature', className: 'border-success/40 bg-success/15 text-success' },
+  spike: { icon: '⚡', label: 'Spike', className: 'border-primary/40 bg-primary/15 text-primary' },
+};
+
 interface CreateModalState {
   stageId: string;
   prefillTitle: string;
@@ -460,10 +472,20 @@ function CardSurface({
 function CardContent({ item, childCount }: { item: WorkItem; childCount: number }) {
   const status = item.status ?? 'pending';
   const glyph = STATUS_GLYPH[status];
+  const typeChip = TYPE_CHIP[item.type ?? 'task'];
   return (
     <div className="flex items-start gap-2">
       <span className="line-clamp-2 min-w-0 flex-1 break-words">{item.title}</span>
       <div className="flex shrink-0 items-center gap-1">
+        {item.type && item.type !== 'task' && (
+          <span
+            className={'border px-1 text-[10px] leading-tight ' + typeChip.className}
+            title={typeChip.label}
+            aria-label={typeChip.label}
+          >
+            <span aria-hidden="true">{typeChip.icon}</span> {typeChip.label}
+          </span>
+        )}
         {childCount > 0 && (
           <span
             className="border border-border px-1 text-[10px] text-muted-foreground"
