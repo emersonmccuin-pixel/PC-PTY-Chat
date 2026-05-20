@@ -28,56 +28,102 @@ interface ProjectSettingsPanelProps {
   onProjectDeleted: (projectId: string) => void;
 }
 
+type SectionId = 'info' | 'stages' | 'fields' | 'agents' | 'danger';
+
+const SECTIONS: { id: SectionId; label: string; danger?: boolean }[] = [
+  { id: 'info', label: 'Project info' },
+  { id: 'stages', label: 'Stages' },
+  { id: 'fields', label: 'Field schemas' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'danger', label: 'Danger zone', danger: true },
+];
+
 export function ProjectSettingsPanel({
   project,
   events,
   onProjectUpdated,
   onProjectDeleted,
 }: ProjectSettingsPanelProps) {
-  const agentsRef = useRef<HTMLDivElement | null>(null);
+  const [active, setActive] = useState<SectionId>('info');
   const focusTarget = useProjectSettingsFocus((s) => s.target);
   const clearFocus = useProjectSettingsFocus((s) => s.setTarget);
 
+  // Reset to the first section on project switch — a fresh project shouldn't
+  // land deep inside another project's danger zone.
   useEffect(() => {
-    if (focusTarget === 'agents' && agentsRef.current) {
-      agentsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setActive('info');
+  }, [project.id]);
+
+  // /agents ability redirects here — swap to the agents tab and clear.
+  useEffect(() => {
+    if (focusTarget === 'agents') {
+      setActive('agents');
       clearFocus(null);
     }
   }, [focusTarget, clearFocus]);
 
   return (
-    <div className="h-full overflow-y-auto bg-background">
-      <div className="mx-auto max-w-2xl space-y-6 p-6 text-sm">
-        <header>
-          <h1 className="text-lg font-semibold uppercase tracking-wider text-foreground">
-            {project.name}
-          </h1>
-          <p className="text-xs text-muted-foreground">Project settings</p>
-        </header>
+    <div className="flex h-full flex-col bg-background">
+      <header className="border-b border-border px-6 py-4">
+        <h1 className="text-lg font-semibold uppercase tracking-wider text-foreground">
+          {project.name}
+        </h1>
+        <p className="text-xs text-muted-foreground">Project settings</p>
+      </header>
 
-        <SetupWizardNag project={project} events={events} />
+      <div className="flex min-h-0 flex-1">
+        <nav className="flex w-52 shrink-0 flex-col border-r border-border bg-card py-2">
+          {SECTIONS.map((s) => {
+            const isActive = active === s.id;
+            const base = 'block w-full border-l-2 px-3 py-2 text-left text-xs ';
+            const state = isActive
+              ? 'border-primary bg-muted ' +
+                (s.danger ? 'text-destructive font-medium' : 'text-primary font-medium')
+              : 'border-transparent hover:bg-muted ' +
+                (s.danger ? 'text-destructive/80 hover:text-destructive' : 'text-foreground/80');
+            return (
+              <button key={s.id} onClick={() => setActive(s.id)} className={base + state}>
+                {s.label}
+              </button>
+            );
+          })}
+        </nav>
 
-        <Section title="Project info">
-          <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
-        </Section>
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-2xl space-y-6 p-6 text-sm">
+            <SetupWizardNag project={project} events={events} />
 
-        <Section title="Stages">
-          <StagesEditor project={project} onProjectUpdated={onProjectUpdated} />
-        </Section>
+            {active === 'info' && (
+              <Section title="Project info">
+                <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
+              </Section>
+            )}
 
-        <Section title="Field schemas">
-          <FieldSchemasEditor projectId={project.id} />
-        </Section>
+            {active === 'stages' && (
+              <Section title="Stages">
+                <StagesEditor project={project} onProjectUpdated={onProjectUpdated} />
+              </Section>
+            )}
 
-        <div ref={agentsRef}>
-          <Section title="Agents">
-            <AgentsSection projectId={project.id} events={events} />
-          </Section>
+            {active === 'fields' && (
+              <Section title="Field schemas">
+                <FieldSchemasEditor projectId={project.id} />
+              </Section>
+            )}
+
+            {active === 'agents' && (
+              <Section title="Agents">
+                <AgentsSection projectId={project.id} events={events} />
+              </Section>
+            )}
+
+            {active === 'danger' && (
+              <Section title="Danger zone">
+                <DangerZone project={project} onDeleted={onProjectDeleted} />
+              </Section>
+            )}
+          </div>
         </div>
-
-        <Section title="Danger zone">
-          <DangerZone project={project} onDeleted={onProjectDeleted} />
-        </Section>
       </div>
     </div>
   );
