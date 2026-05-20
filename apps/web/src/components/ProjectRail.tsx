@@ -231,7 +231,7 @@ export function ProjectRail({
                   }}
                   title={p.folderPath}
                   className={
-                    'block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                    'block w-full truncate px-3 py-1.5 text-left text-base hover:bg-muted ' +
                     (isActive
                       ? 'border-l-2 border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary '
                       : 'border-l-2 border-transparent text-foreground/80 ') +

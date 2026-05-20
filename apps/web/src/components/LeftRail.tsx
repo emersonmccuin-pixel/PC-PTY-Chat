@@ -44,7 +44,7 @@ export function LeftRail({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex border-b border-border bg-card text-sm">
+      <div className="flex border-b border-border bg-card text-base">
         {TABS.map((t) => (
           <button
             key={t.mode}
