@@ -200,13 +200,6 @@ export class PtySession extends EventEmitter {
     const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
     try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
 
-    // Session-continuity args (--session-id / --resume) default to ENABLED.
-    // The "interactive PTY spawn dies with --session-id" symptom was a
-    // phantom-UUID bookkeeping bug in ProjectRuntime.resolveSessionForSpawn,
-    // not a claude.exe issue — fixed alongside this change. Set
-    // PC_ENABLE_SESSION_FLAGS=0 to opt out (emergency rollback only; the
-    // discovery loop's mtime-race bleed-through bug returns).
-    const enableSessionFlags = process.env.PC_ENABLE_SESSION_FLAGS !== '0';
     this.loadDevChannels = opts.loadDevChannels ?? true;
     const args: string[] = [
       '--dangerously-skip-permissions',
@@ -236,7 +229,12 @@ export class PtySession extends EventEmitter {
     if (opts.appendSystemPromptPath && existsSync(opts.appendSystemPromptPath)) {
       args.push('--append-system-prompt-file', opts.appendSystemPromptPath);
     }
-    if (enableSessionFlags && opts.claudeSessionId) {
+    // Section 15: deterministic session ownership. Always pass --session-id
+    // (mint) or --resume (continue) when caller supplies a UUID — caller is
+    // ProjectRuntime.resolveSessionForSpawn, which guarantees the resume vs
+    // mint decision is correct (resume only if a JSONL for that UUID exists
+    // on disk; otherwise mint at the stored UUID).
+    if (opts.claudeSessionId) {
       if (opts.resume) {
         args.push('--resume', opts.claudeSessionId);
       } else {
