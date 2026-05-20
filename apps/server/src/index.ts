@@ -91,6 +91,7 @@ import {
 } from './services/agent-event-header.ts';
 import {
   AgentRunManager,
+  checkInvokeDepth,
   getAgentRunManager,
   setAgentRunManager,
   type AgentRunFailureCause,
@@ -2640,6 +2641,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     input?: string;
     wait?: boolean;
     parentWorkItemId?: ULID;
+    parentInvokeDepth?: number;
   }>();
 
   const input = typeof body.input === 'string' ? body.input : '';
@@ -2647,6 +2649,17 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   const wait = body.wait !== false; // default true per the contract
   const parentWorkItemId =
     typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
+
+  // 16b.4.5 — depth cap. Caller forwards `parentInvokeDepth` from
+  // `PC_AGENT_INVOKE_DEPTH`; orchestrator-initiated calls omit it (parent
+  // depth 0 → child depth 1). Reject before spawning so a runaway chain
+  // can't burn the subscription.
+  const parentInvokeDepth =
+    typeof body.parentInvokeDepth === 'number' ? body.parentInvokeDepth : 0;
+  const depthCheck = checkInvokeDepth(parentInvokeDepth);
+  if (!depthCheck.ok) {
+    return c.json({ ok: false, error: depthCheck.error, cause: depthCheck.cause }, 400);
+  }
 
   const mgr = getAgentRunManager();
   const spawn = mgr.spawn({
@@ -2656,6 +2669,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     projectId,
     worktreeDir: project.folderPath,
     parentWorkItemId,
+    invokeDepth: depthCheck.childDepth,
   });
 
   if (wait) {

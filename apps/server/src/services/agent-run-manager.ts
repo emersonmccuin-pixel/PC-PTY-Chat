@@ -48,6 +48,37 @@ const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 
+/** 16b.4.5 — maximum nested `pc_invoke_agent` depth. Orchestrator dispatches
+ *  at depth 1; an agent dispatched by that one runs at depth 2; etc. At depth
+ *  5, further nesting is rejected with `cause: 'depth-cap'` so a runaway
+ *  chain can't burn the subscription. */
+export const AGENT_INVOKE_DEPTH_CAP = 5;
+
+/** Pure-function depth check. Caller passes the *parent's* depth (0 for the
+ *  orchestrator, otherwise the value read from `PC_AGENT_INVOKE_DEPTH`); the
+ *  helper returns the child's depth on success or a `depth-cap` rejection
+ *  when the cap would be exceeded. Negative inputs and NaN clamp to 0 so a
+ *  malformed env var doesn't silently allow unbounded nesting. */
+export function checkInvokeDepth(
+  parentInvokeDepth: number,
+):
+  | { ok: true; childDepth: number }
+  | { ok: false; cause: 'depth-cap'; error: string } {
+  const safeParent =
+    Number.isFinite(parentInvokeDepth) && parentInvokeDepth > 0
+      ? Math.floor(parentInvokeDepth)
+      : 0;
+  const childDepth = safeParent + 1;
+  if (childDepth > AGENT_INVOKE_DEPTH_CAP) {
+    return {
+      ok: false,
+      cause: 'depth-cap',
+      error: `pc_invoke_agent rejected: parent depth ${safeParent} would push child to ${childDepth}, exceeding cap ${AGENT_INVOKE_DEPTH_CAP}`,
+    };
+  }
+  return { ok: true, childDepth };
+}
+
 export type AgentRunStatus =
   | 'spawning'
   | 'running'
@@ -99,6 +130,12 @@ export interface AgentRunSpawnInput {
   /** Absolute path to the project's worktree (cwd for the spawn). */
   worktreeDir: string;
   parentWorkItemId?: ULID | null;
+  /** 16b.4.5 — this child's nesting depth. Orchestrator-initiated spawns
+   *  pass 1; subsequent `pc_invoke_agent` calls increment. Set on the
+   *  child's `PC_AGENT_INVOKE_DEPTH` env var so its own `pc_invoke_agent`
+   *  invocations can forward as `parentInvokeDepth`. Defaults to 1 when
+   *  omitted (most callers route through `checkInvokeDepth` first). */
+  invokeDepth?: number;
   idleTimeoutMs?: number;
   wallClockTimeoutMs?: number;
   readyTimeoutMs?: number;
@@ -279,6 +316,11 @@ export class AgentRunManager {
         PC_AGENT_RUN_ID: runId,
         ...(input.parentWorkItemId ? { PC_AGENT_PARENT_WORK_ITEM_ID: input.parentWorkItemId } : {}),
         PC_PROJECT_ID: input.projectId,
+        PC_AGENT_INVOKE_DEPTH: String(
+          Number.isFinite(input.invokeDepth) && (input.invokeDepth ?? 0) > 0
+            ? Math.floor(input.invokeDepth as number)
+            : 1,
+        ),
       },
     };
 

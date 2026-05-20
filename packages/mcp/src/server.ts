@@ -1243,7 +1243,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
           ? args.parentWorkItemId.trim()
           : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      const payload: Record<string, unknown> = { input };
+      // 16b.4.5 — forward the caller's depth so the route can enforce the
+      // nesting cap. Orchestrator (no env var) → parentInvokeDepth=0; an
+      // agent dispatched at depth N reports parentInvokeDepth=N. Malformed
+      // values clamp at the route via `checkInvokeDepth`.
+      const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
+      const parentInvokeDepth = Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
+      const payload: Record<string, unknown> = { input, parentInvokeDepth };
       if (wait !== undefined) payload.wait = wait;
       if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
       try {
