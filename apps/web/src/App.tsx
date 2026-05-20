@@ -186,12 +186,6 @@ export default function App() {
           {activeProject?.name ?? 'PROJECT COMPANION'}
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className="text-[10px] uppercase tracking-wider text-muted-foreground"
-            title={`WS: ${ws.status}`}
-          >
-            ws: {ws.status}
-          </span>
           <button
             onClick={() => setSettingsOpen(true)}
             disabled={!settings}
@@ -239,6 +233,7 @@ export default function App() {
           wsEvents={ws.events}
           wsSend={ws.send}
           wsClear={ws.clear}
+          wsStatus={ws.status}
           activityEvents={activityEvents}
           activityStatus={activityStatus}
           showAllProjects={showAllProjects}

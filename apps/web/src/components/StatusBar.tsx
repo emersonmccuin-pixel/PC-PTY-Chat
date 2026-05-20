@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '@/api/client';
+import type { WsStatus } from '@/hooks/use-project-ws';
 
 export interface UsageTotals {
   inputTokens: number;
@@ -30,6 +31,8 @@ interface McpStatus {
 interface StatusBarProps {
   model: string | null;
   usage: UsageTotals;
+  projectId: string | null;
+  wsStatus: WsStatus;
 }
 
 // Anthropic list pricing per 1M tokens (Opus tier).
@@ -62,19 +65,33 @@ function totalCost(u: UsageTotals): number {
   );
 }
 
-export function StatusBar({ model, usage }: StatusBarProps) {
+const WS_PILL: Record<WsStatus, { dot: string; label: string; title: string }> = {
+  open: { dot: 'bg-emerald-500', label: 'live', title: 'WebSocket connected' },
+  connecting: { dot: 'bg-amber-500', label: '…', title: 'WebSocket connecting' },
+  closed: { dot: 'bg-red-500', label: 'offline', title: 'WebSocket disconnected — retrying' },
+  idle: { dot: 'bg-zinc-500', label: '—', title: 'No project selected' },
+};
+
+export function StatusBar({ model, usage, projectId, wsStatus }: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [showMcp, setShowMcp] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
 
   // Poll /api/mcp-status every 5s while mounted. 8s liveness window on the
-  // server means we miss at most one tick before the pill goes dark.
+  // server means we miss at most one tick before the pill goes dark. The
+  // heartbeat is per-project (writer keys on PC_PROJECT_ID), so we pass the
+  // active projectId; without one the endpoint falls back to the legacy
+  // global path which nothing writes today.
   useEffect(() => {
+    if (!projectId) {
+      setMcp({ alive: false, toolCount: 0, tools: [] });
+      return;
+    }
     let cancelled = false;
     async function tick() {
       try {
-        const data = await api.getMcpStatus();
+        const data = await api.getMcpStatus(projectId ?? undefined);
         if (!cancelled) setMcp(data);
       } catch {
         if (!cancelled) setMcp({ alive: false, toolCount: 0, tools: [] });
@@ -86,7 +103,7 @@ export function StatusBar({ model, usage }: StatusBarProps) {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [projectId]);
 
   // Click-outside closes the panel.
   useEffect(() => {
@@ -169,6 +186,18 @@ export function StatusBar({ model, usage }: StatusBarProps) {
                 : 'offline'}
           </span>
         </button>
+
+        <span
+          className="flex items-center gap-1.5 rounded px-1.5 py-0.5"
+          title={WS_PILL[wsStatus].title}
+        >
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${WS_PILL[wsStatus].dot}`}
+            aria-hidden
+          />
+          <span className="text-foreground/50">WS</span>
+          <span className="tabular-nums text-foreground">{WS_PILL[wsStatus].label}</span>
+        </span>
 
       </div>
 

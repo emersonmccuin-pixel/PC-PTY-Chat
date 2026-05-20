@@ -26,6 +26,7 @@ import type {
   UserEvent,
   WsEnvelope,
   WsOutbound,
+  WsStatus,
 } from '@/hooks/use-project-ws';
 import { useViewingSession } from '@/store/viewing-session';
 import { AskCard } from '@/components/AskCard';
@@ -37,6 +38,7 @@ interface OrchestratorProps {
   events: WsEnvelope[];
   send: (msg: WsOutbound) => boolean;
   clearWs: () => void;
+  wsStatus: WsStatus;
 }
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
@@ -492,7 +494,7 @@ async function respondToApproval(
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export function Orchestrator({ project, events, send, clearWs }: OrchestratorProps) {
+export function Orchestrator({ project, events, send, clearWs, wsStatus }: OrchestratorProps) {
   // Viewing a past session? When set, the chat panel renders that session's
   // events.jsonl in read-only mode (composer hidden, "Return to live" button).
   const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
@@ -1012,7 +1014,12 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
           queuedPrompts={queuedPrompts}
         />
       )}
-      <StatusBar model={liveModel} usage={sessionUsage} />
+      <StatusBar
+        model={liveModel}
+        usage={sessionUsage}
+        projectId={project.id}
+        wsStatus={wsStatus}
+      />
     </div>
   );
 }

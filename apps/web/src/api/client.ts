@@ -451,8 +451,12 @@ export const api = {
   getSettings: () =>
     getJson<{ ok: true; settings: GlobalSettings }>('/api/settings').then((r) => r.settings),
 
-  getMcpStatus: () =>
-    getJson<{ alive: boolean; toolCount: number; tools: string[] }>('/api/mcp-status'),
+  getMcpStatus: (projectId?: string) =>
+    getJson<{ alive: boolean; toolCount: number; tools: string[] }>(
+      projectId
+        ? `/api/mcp-status?projectId=${encodeURIComponent(projectId)}`
+        : '/api/mcp-status',
+    ),
 
   patchSettings: (patch: Partial<GlobalSettings>) =>
     postJsonMethod<{ ok: true; settings: GlobalSettings; restartRequired: boolean }>(

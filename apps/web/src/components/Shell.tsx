@@ -36,6 +36,7 @@ interface ShellProps {
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsClear: () => void;
+  wsStatus: WsStatus;
   activityEvents: WsEnvelope[];
   activityStatus: WsStatus;
   showAllProjects: boolean;
@@ -53,6 +54,7 @@ export function Shell({
   wsEvents,
   wsSend,
   wsClear,
+  wsStatus,
   activityEvents,
   activityStatus,
   showAllProjects,
@@ -94,6 +96,7 @@ export function Shell({
           wsEvents={wsEvents}
           wsSend={wsSend}
           wsClear={wsClear}
+          wsStatus={wsStatus}
           onCreateProject={onCreateProject}
           onProjectUpdated={onProjectUpdated}
           onProjectDeleted={onProjectDeleted}
@@ -128,6 +131,7 @@ function Center({
   wsEvents,
   wsSend,
   wsClear,
+  wsStatus,
   onCreateProject,
   onProjectUpdated,
   onProjectDeleted,
@@ -137,6 +141,7 @@ function Center({
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsClear: () => void;
+  wsStatus: WsStatus;
   onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
@@ -160,6 +165,7 @@ function Center({
             events={wsEvents}
             send={wsSend}
             clearWs={wsClear}
+            wsStatus={wsStatus}
           />
         ) : tab === 'workflows' ? (
           <WorkflowList project={activeProject} events={wsEvents} send={wsSend} />

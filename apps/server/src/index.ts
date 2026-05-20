@@ -260,8 +260,15 @@ function deriveTitleFromText(text: string): string {
 
 // ── Global endpoints ──────────────────────────────────────────────────────
 
+// MCP heartbeats are written per-project by `packages/mcp/src/server.ts`
+// (`PC_PROJECT_ID` is set in every project's `.mcp.json`). Pass `?projectId=`
+// to read that project's heartbeat; the legacy global path is the fallback for
+// pre-per-project clients.
 app.get('/api/mcp-status', (c) => {
-  const file = resolve(DATA, 'mcp-status.json');
+  const projectId = c.req.query('projectId');
+  const file = projectId
+    ? resolve(DATA, 'projects', projectId, 'mcp-status.json')
+    : resolve(DATA, 'mcp-status.json');
   if (!existsSync(file)) return c.json({ alive: false, toolCount: 0, tools: [] });
   try {
     const raw = JSON.parse(readFileSync(file, 'utf-8')) as {
