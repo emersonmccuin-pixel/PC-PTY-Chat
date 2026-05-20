@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildAgentApprovalRequestBody,
   buildAgentAsksOrchestratorBody,
+  buildAgentAsksUserBody,
   buildAgentCompletedBody,
   buildAgentEventHeader,
   buildAgentFailedBody,
@@ -133,4 +135,86 @@ test('buildAgentFailedBody falls back to "error" when cause is null + "(no reaso
   });
   assert.match(out, /\[cause: error\]/);
   assert.match(out, /Failure:\n\(no reason recorded\)/);
+});
+
+// ── 16b.5 agent-asks-user body formatter ──────────────────────────────────
+
+test('buildAgentAsksUserBody renders header + tags + question + render-to-user nudge', () => {
+  const out = buildAgentAsksUserBody({
+    pendingAskId: '01ASKU',
+    sessionId: 'sess-u',
+    agentName: 'researcher',
+    runId: null,
+    parentWorkItemId: null,
+    question: 'react-query vs swr?',
+    context: 'project already uses tanstack/router',
+    options: null,
+  });
+  assert.match(out, /^\[pc:agent-event kind=agent-asks-user version=1\]/);
+  assert.match(out, /\[pendingAskId: 01ASKU\]/);
+  assert.match(out, /Question for the user:\nreact-query vs swr\?/);
+  assert.match(out, /Context:\nproject already uses tanstack\/router/);
+  assert.match(out, /Render this question to the user via chat/);
+  assert.doesNotMatch(out, /Options:/);
+});
+
+test('buildAgentAsksUserBody renders Options block when supplied + drops null context', () => {
+  const out = buildAgentAsksUserBody({
+    pendingAskId: '01ASKU2',
+    sessionId: 'sess-u2',
+    agentName: 'planner',
+    runId: '01RUNU',
+    parentWorkItemId: '01WIU',
+    question: 'which lib?',
+    context: null,
+    options: [
+      { value: 'react-query', label: 'TanStack Query' },
+      { value: 'swr', label: 'SWR' },
+    ],
+  });
+  assert.match(out, /\[runId: 01RUNU\]/);
+  assert.match(out, /\[parentWorkItemId: 01WIU\]/);
+  assert.doesNotMatch(out, /Context:/);
+  assert.match(out, /Options:\n1\. TanStack Query \(value: react-query\)\n2\. SWR \(value: swr\)/);
+});
+
+// ── 16b.6 agent-approval-request body formatter ───────────────────────────
+
+test('buildAgentApprovalRequestBody renders decision + options + explicit-approval nudge', () => {
+  const out = buildAgentApprovalRequestBody({
+    pendingAskId: '01APR',
+    sessionId: 'sess-a',
+    agentName: 'reviewer',
+    runId: null,
+    parentWorkItemId: null,
+    decision: 'drop the old users table',
+    context: 'no references in code; 60-day backup retained',
+    options: [
+      { value: 'approve', label: 'Approve' },
+      { value: 'reject', label: 'Reject' },
+    ],
+  });
+  assert.match(out, /^\[pc:agent-event kind=agent-approval-request version=1\]/);
+  assert.match(out, /\[pendingAskId: 01APR\]/);
+  assert.match(out, /Approval requested:\ndrop the old users table/);
+  assert.match(out, /Context:\nno references in code; 60-day backup retained/);
+  assert.match(out, /Options:\n1\. Approve \(value: approve\)\n2\. Reject \(value: reject\)/);
+  assert.match(out, /Render this through the approval surface/);
+});
+
+test('buildAgentApprovalRequestBody drops optional tags + context when absent', () => {
+  const out = buildAgentApprovalRequestBody({
+    pendingAskId: '01APR2',
+    sessionId: 'sess-a2',
+    agentName: 'reviewer',
+    runId: null,
+    parentWorkItemId: null,
+    decision: 'commit and push',
+    context: null,
+    options: [{ value: 'approve', label: 'Approve' }],
+  });
+  assert.doesNotMatch(out, /\[runId:/);
+  assert.doesNotMatch(out, /\[parentWorkItemId:/);
+  assert.doesNotMatch(out, /Context:/);
+  assert.match(out, /Options:\n1\. Approve \(value: approve\)/);
 });

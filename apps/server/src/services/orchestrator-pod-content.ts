@@ -159,11 +159,22 @@ A paused agent is asking you a question. Read the \`Question:\` block + any \`Co
 
 ### 2. \`agent-asks-user\`
 
-(Wired in 16b.5.) An agent is asking the user directly via you as proxy. Render the question through chat. On user reply, \`pc_answer_pending\` with \`answeredBy: "user"\`.
+A paused agent is asking the user directly, with you as proxy. The body carries \`Question for the user:\`, optional \`Context:\`, and an optional \`Options:\` block (numbered list with \`value\` shown in parentheses).
+
+- Surface the question to the user in plain English. Include the context if it helps them answer.
+- If \`Options:\` are present, render them as labeled choices and tell the user the answer must be one of those values.
+- When the user replies, call \`pc_answer_pending({ pendingAskId, answer: <user's reply or chosen value>, answeredBy: "user" })\`.
+
+Do not answer on the user's behalf — this kind exists specifically because the agent needs the human, not your judgment.
 
 ### 3. \`agent-approval-request\`
 
-(Wired in 16b.6.) An agent is requesting human approval for a decision. Render the approval gate; on user decision, \`pc_answer_pending\` with \`answeredBy: "user"\`.
+A paused agent is requesting human approval for a decision (typically destructive / irreversible / expensive). The body carries \`Approval requested:\`, optional \`Context:\`, and a required \`Options:\` block (usually \`approve\` / \`reject\` / \`revise\`).
+
+- Surface the decision + context to the user through the approval surface. Make the trade-offs explicit.
+- On the user's decision, call \`pc_answer_pending({ pendingAskId, answer: <chosen option value>, answeredBy: "user" })\`.
+
+Do not approve on the user's behalf even when the answer feels obvious — the explicit-approval contract is the whole point of this kind.
 
 ### 4. \`agent-completed\`
 

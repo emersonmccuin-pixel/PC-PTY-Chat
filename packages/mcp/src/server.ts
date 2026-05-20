@@ -402,6 +402,69 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_ask_user',
+    description:
+      "Pause your run and route a question to the user via the orchestrator-as-proxy. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator forwards the user's reply. Use this when the question genuinely needs the human (intent / preference / approval-flavoured judgment); use pc_ask_orchestrator first if the orchestrator might know from project context.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'the question to surface to the user' },
+        context: {
+          type: 'string',
+          description:
+            'optional context — what you tried, what you found, why you need the user to weigh in',
+        },
+        options: {
+          type: 'array',
+          description:
+            'optional multi-choice options ([{value, label}, ...]). When supplied, the orchestrator renders them as a numbered list; the user reply will be one of the option values.',
+          items: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: 'machine value returned as the answer' },
+              label: { type: 'string', description: 'user-facing label for this choice' },
+            },
+            required: ['value', 'label'],
+          },
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'pc_request_approval',
+    description:
+      "Pause your run and request explicit human approval for a decision. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the user's decision arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally. Use this when proceeding requires explicit go/no-go (destructive operations, irreversible writes, expensive commits). Options is required and must be non-empty — typically [{value:'approve', label:'Approve'}, {value:'reject', label:'Reject'}, optionally {value:'revise', label:'Revise'}].",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        decision: {
+          type: 'string',
+          description:
+            'the decision the user is being asked to approve — what will happen, in plain English',
+        },
+        options: {
+          type: 'array',
+          description: 'non-empty list of approval choices ([{value, label}, ...])',
+          items: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: 'machine value returned as the answer' },
+              label: { type: 'string', description: 'user-facing label for this choice' },
+            },
+            required: ['value', 'label'],
+          },
+        },
+        context: {
+          type: 'string',
+          description:
+            'optional context — what produced this decision, what the alternatives are, what the user should weigh',
+        },
+      },
+      required: ['decision', 'options'],
+    },
+  },
+  {
     name: 'pc_answer_pending',
     description:
       'Resume a paused agent with an answer. Atomically flips the pending-ask row waiting→answered, re-spawns the agent with --resume <sessionId>, and writes the answer as the next user message. Idempotent: a second call for the same pendingAskId returns ok: false, cause: "already-answered". Orchestrator usage only — agents that need to forward an answer to a different paused agent should use pc_ask_orchestrator instead.',
@@ -1322,6 +1385,123 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_ask_orchestrator failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_ask_user': {
+      const question = typeof args.question === 'string' ? args.question.trim() : '';
+      const context = typeof args.context === 'string' ? args.context : undefined;
+      const options = Array.isArray(args.options) ? args.options : undefined;
+      if (!question) {
+        return {
+          content: [{ type: 'text', text: 'pc_ask_user: question required' }],
+          isError: true,
+        };
+      }
+      const agentName = process.env.PC_AGENT_NAME ?? '';
+      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
+      if (!agentName || !sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_ask_user: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const runId = process.env.PC_AGENT_RUN_ID || undefined;
+      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      try {
+        const payload: Record<string, unknown> = {
+          sessionId,
+          agentName,
+          kind: 'ask-user',
+          question,
+        };
+        if (context !== undefined) payload.context = context;
+        if (options !== undefined) payload.options = options;
+        if (runId !== undefined) payload.runId = runId;
+        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
+        const res = await postServer(projectPath('agent-pending-asks'), payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_ask_user failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_ask_user failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_request_approval': {
+      const decision = typeof args.decision === 'string' ? args.decision.trim() : '';
+      const context = typeof args.context === 'string' ? args.context : undefined;
+      const options = Array.isArray(args.options) ? args.options : [];
+      if (!decision) {
+        return {
+          content: [{ type: 'text', text: 'pc_request_approval: decision required' }],
+          isError: true,
+        };
+      }
+      if (options.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_request_approval: options required (non-empty array)' },
+          ],
+          isError: true,
+        };
+      }
+      const agentName = process.env.PC_AGENT_NAME ?? '';
+      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
+      if (!agentName || !sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_request_approval: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const runId = process.env.PC_AGENT_RUN_ID || undefined;
+      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      try {
+        const payload: Record<string, unknown> = {
+          sessionId,
+          agentName,
+          kind: 'approval',
+          // The pending-ask route uses `question` for the prose; we pass
+          // the decision text under that field. The body builder labels it
+          // "Approval requested:" so the orchestrator surface stays clear.
+          question: decision,
+          options,
+        };
+        if (context !== undefined) payload.context = context;
+        if (runId !== undefined) payload.runId = runId;
+        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
+        const res = await postServer(projectPath('agent-pending-asks'), payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_request_approval failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_request_approval failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

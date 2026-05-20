@@ -85,7 +85,9 @@ import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
 import {
+  buildAgentApprovalRequestBody,
   buildAgentAsksOrchestratorBody,
+  buildAgentAsksUserBody,
   buildAgentCompletedBody,
   buildAgentFailedBody,
 } from './services/agent-event-header.ts';
@@ -2513,6 +2515,14 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     return c.json({ ok: false, error: 'kind must be ask-orchestrator | ask-user | approval' }, 400);
   }
   if (!question.trim()) return c.json({ ok: false, error: 'question required' }, 400);
+  if (kind === 'approval') {
+    if (!Array.isArray(body.options) || body.options.length === 0) {
+      return c.json(
+        { ok: false, error: 'options required (non-empty array) for kind=approval' },
+        400,
+      );
+    }
+  }
 
   const pendingAskId = newId();
   const row = createPendingAsk({
@@ -2529,11 +2539,13 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     now: Date.now(),
   });
 
-  // Only `ask-orchestrator` lights up an actual channel event in this
-  // sub-task (16b.3). `ask-user` and `approval` reuse the same row +
-  // emit different event kinds — wired in 16b.5 + 16b.6.
+  // 16b.3 → 16b.5 → 16b.6: each kind picks a different body builder; all
+  // three reuse the same pending_asks row + the same channel-server emit
+  // path. Approval requires a non-empty options list (validated above for
+  // kind === 'approval').
+  let eventBody: string | null = null;
   if (kind === 'ask-orchestrator') {
-    const eventBody = buildAgentAsksOrchestratorBody({
+    eventBody = buildAgentAsksOrchestratorBody({
       pendingAskId,
       sessionId,
       agentName,
@@ -2542,6 +2554,31 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
       question,
       context: row.context,
     });
+  } else if (kind === 'ask-user') {
+    eventBody = buildAgentAsksUserBody({
+      pendingAskId,
+      sessionId,
+      agentName,
+      runId: row.runId,
+      parentWorkItemId: row.parentWorkItemId,
+      question,
+      context: row.context,
+      options: row.options,
+    });
+  } else if (kind === 'approval') {
+    eventBody = buildAgentApprovalRequestBody({
+      pendingAskId,
+      sessionId,
+      agentName,
+      runId: row.runId,
+      parentWorkItemId: row.parentWorkItemId,
+      decision: question,
+      context: row.context,
+      // Safe: validated as a non-empty array above.
+      options: row.options ?? [],
+    });
+  }
+  if (eventBody) {
     channelServer.emitToProject({
       projectId,
       slug: project.slug,
