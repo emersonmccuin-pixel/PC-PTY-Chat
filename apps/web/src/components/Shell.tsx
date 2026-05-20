@@ -13,7 +13,6 @@ import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
 import type { Project } from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
-// WsStatus is used in props (activityStatus) below.
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { ActivityPanel } from './ActivityPanel';
@@ -37,10 +36,6 @@ interface ShellProps {
   wsSend: (msg: WsOutbound) => boolean;
   wsClear: () => void;
   wsStatus: WsStatus;
-  activityEvents: WsEnvelope[];
-  activityStatus: WsStatus;
-  showAllProjects: boolean;
-  onToggleShowAllProjects: (next: boolean) => void;
 }
 
 export function Shell({
@@ -55,10 +50,6 @@ export function Shell({
   wsSend,
   wsClear,
   wsStatus,
-  activityEvents,
-  activityStatus,
-  showAllProjects,
-  onToggleShowAllProjects,
 }: ShellProps) {
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -113,11 +104,8 @@ export function Shell({
         collapsedSize="0%"
       >
         <ActivityPanel
-          projects={projects}
-          events={activityEvents}
-          status={activityStatus}
-          showAllProjects={showAllProjects}
-          onToggleShowAll={onToggleShowAllProjects}
+          project={activeProject}
+          events={wsEvents}
           onClose={() => onToggleActivityPanelOpen(false)}
         />
       </Panel>

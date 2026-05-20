@@ -4,51 +4,8 @@ import { api, type GlobalSettings, type Project } from '@/api/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { Shell } from '@/components/Shell';
-import { useAllProjectsWs } from '@/hooks/use-all-projects-ws';
-import { useProjectWs, type WsEnvelope, type WsStatus } from '@/hooks/use-project-ws';
+import { useProjectWs } from '@/hooks/use-project-ws';
 import { useActiveProject } from '@/store/active-project';
-
-// Merge two FIFO event streams by inner `ts` if present. Falls back to a
-// simple alternating interleave when ts is absent. Each stream is already
-// in arrival order on its own connection.
-function mergeByOrder(a: WsEnvelope[], b: WsEnvelope[]): WsEnvelope[] {
-  if (a.length === 0) return b;
-  if (b.length === 0) return a;
-  const out: WsEnvelope[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    const ta = tsOf(a[i]!);
-    const tb = tsOf(b[j]!);
-    if (ta !== null && tb !== null) {
-      if (ta <= tb) out.push(a[i++]!);
-      else out.push(b[j++]!);
-    } else {
-      out.push(a[i++]!);
-      out.push(b[j++]!);
-    }
-  }
-  while (i < a.length) out.push(a[i++]!);
-  while (j < b.length) out.push(b[j++]!);
-  return out;
-}
-
-function tsOf(env: WsEnvelope): string | null {
-  const inner = (env.event as Record<string, unknown> | undefined) ?? null;
-  if (inner && typeof inner.ts === 'string') return inner.ts;
-  return null;
-}
-
-const STATUS_RANK: Record<WsStatus, number> = {
-  open: 0,
-  connecting: 1,
-  closed: 2,
-  idle: 3,
-};
-
-function worstStatus(a: WsStatus, b: WsStatus): WsStatus {
-  return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
-}
 
 export default function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -59,10 +16,11 @@ export default function App() {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
 
-  // Activity panel state lives in settings_global.activity_panel (Q12).
-  // Default to `{ open: true, showAllProjects: false }` until settings load.
+  // Activity panel open/closed lives in settings_global.activity_panel.
+  // `showAllProjects` field still in settings schema (additive — Section 7
+  // will re-consume it via the global cross-project bell); the activity
+  // panel itself is per-project scoped since Section 6.
   const activityPanelOpen = settings?.activityPanel.open ?? true;
-  const showAllProjects = settings?.activityPanel.showAllProjects ?? false;
 
   useEffect(() => {
     void api.listProjects().then(setProjects).catch(() => setProjects([]));
@@ -94,25 +52,9 @@ export default function App() {
   );
 
   const ws = useProjectWs(activeProject);
-  const allWs = useAllProjectsWs(
-    projects ?? [],
-    activeProject?.id ?? null,
-    showAllProjects,
-  );
-
-  // ActivityPanel input: merge active-project events with the rest in
-  // all-projects mode; otherwise just the active project's stream.
-  const activityEvents = useMemo(
-    () => (showAllProjects ? mergeByOrder(ws.events, allWs.events) : ws.events),
-    [showAllProjects, ws.events, allWs.events],
-  );
-  const activityStatus =
-    showAllProjects && allWs.status !== 'idle'
-      ? worstStatus(ws.status, allWs.status)
-      : ws.status;
 
   const persistActivityPanelSetting = useCallback(
-    (patch: { open?: boolean; showAllProjects?: boolean }) => {
+    (patch: { open?: boolean }) => {
       // Optimistic update so the UI doesn't lag behind the PATCH.
       setSettings((prev) =>
         prev
@@ -120,7 +62,7 @@ export default function App() {
               ...prev,
               activityPanel: {
                 open: patch.open ?? prev.activityPanel.open,
-                showAllProjects: patch.showAllProjects ?? prev.activityPanel.showAllProjects,
+                showAllProjects: prev.activityPanel.showAllProjects,
               },
             }
           : prev,
@@ -129,8 +71,7 @@ export default function App() {
         .patchSettings({
           activityPanel: {
             open: patch.open ?? settings?.activityPanel.open ?? true,
-            showAllProjects:
-              patch.showAllProjects ?? settings?.activityPanel.showAllProjects ?? false,
+            showAllProjects: settings?.activityPanel.showAllProjects ?? false,
           },
         })
         .catch(() => {
@@ -243,12 +184,6 @@ export default function App() {
           wsSend={ws.send}
           wsClear={ws.clear}
           wsStatus={ws.status}
-          activityEvents={activityEvents}
-          activityStatus={activityStatus}
-          showAllProjects={showAllProjects}
-          onToggleShowAllProjects={(next) =>
-            persistActivityPanelSetting({ showAllProjects: next })
-          }
         />
       </div>
       {createOpen && (

@@ -1,259 +1,143 @@
-// Q12 — full WS event log + all-projects toggle.
+// Section 6 — Activity panel. Five-region layout, per-project scoped:
+//   1. Status line (sticky top)
+//   2. Running workflows
+//   3. Orchestrator status (always-visible card)
+//   4. Workflow human-review inbox
+//   5. Failed recently (collapsed, 7-day window)
 //
-// Consumes events from props (App.tsx picks the source based on
-// showAllProjects: useProjectWs for active mode, useAllProjectsWs for the
-// rest of the rail). The panel is presentational — it doesn't own a hook
-// itself.
-//
-// Raw PTY byte-stream events ('raw') are filtered out as noise. Everything
-// else gets a row with timestamp, optional project slug pill, event kind,
-// and a short summary derived from the envelope.
-
-import { useMemo } from 'react';
+// Sub-task 6.1 lays down the shell with empty-state placeholders for each
+// region. Individual regions are wired in 6.2 → 6.6. Today's flat WS event
+// log is dropped from this surface — events.jsonl on disk + the WS stream
+// preserve the data; Section 8 (Diagnostics tab) will re-derive when it
+// opens.
 
 import type { Project } from '@/api/client';
-import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 interface ActivityPanelProps {
-  projects: Project[];
+  project: Project | null;
   events: WsEnvelope[];
-  status: WsStatus;
-  showAllProjects: boolean;
-  onToggleShowAll: (next: boolean) => void;
   onClose: () => void;
 }
 
-const STATUS_LABEL: Record<WsStatus, string> = {
-  idle: 'idle',
-  connecting: 'connecting…',
-  open: 'live',
-  closed: 'disconnected',
-};
-
-const STATUS_COLOR: Record<WsStatus, string> = {
-  idle: 'text-muted-foreground',
-  connecting: 'text-warning',
-  open: 'text-success',
-  closed: 'text-destructive',
-};
-
-export function ActivityPanel({
-  projects,
-  events,
-  status,
-  showAllProjects,
-  onToggleShowAll,
-  onClose,
-}: ActivityPanelProps) {
-  const slugById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects) m.set(p.id, p.slug);
-    return m;
-  }, [projects]);
-
-  // Newest-first, raw/state stream filtered out.
-  const rows = useMemo(() => {
-    const filtered: WsEnvelope[] = [];
-    for (const env of events) {
-      if (env.type === 'raw' || env.type === 'state') continue;
-      filtered.push(env);
-    }
-    return filtered.slice(-200).reverse();
-  }, [events]);
-
+export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) {
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="text-sm uppercase tracking-wider text-muted-foreground">
-          Activity
+      <Header onClose={onClose} />
+      {project === null ? (
+        <div className="flex-1 px-3 py-2 text-xs text-muted-foreground">
+          No project selected.
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onToggleShowAll(!showAllProjects)}
-            title={showAllProjects ? 'Show active project only' : 'Show all projects'}
-            className={
-              'px-1.5 py-0.5 text-[10px] uppercase tracking-wider ' +
-              (showAllProjects
-                ? 'bg-primary/20 text-primary hover:bg-primary/30'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground')
-            }
-          >
-            All
-          </button>
-          <button
-            onClick={onClose}
-            title="Hide activity panel"
-            aria-label="Hide activity panel"
-            className="px-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            ▸
-          </button>
-        </div>
-      </div>
-      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-xs">
-        <span className={STATUS_COLOR[status]}>{STATUS_LABEL[status]}</span>
-        <span className="text-muted-foreground">{rows.length} events</span>
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {rows.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-muted-foreground">
-            {status === 'idle'
-              ? showAllProjects
-                ? 'No projects.'
-                : 'No project selected.'
-              : 'Waiting for events…'}
+      ) : (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <StatusLine />
+          <div className="flex-1 overflow-y-auto">
+            <RunningWorkflowsRegion project={project} />
+            <OrchestratorStatusRegion project={project} events={events} />
+            <HumanReviewRegion project={project} />
+            <FailedRecentlyRegion project={project} />
           </div>
-        ) : (
-          <ul className="divide-y divide-border">
-            {rows.map((env, i) => (
-              <li
-                key={`${env.type}-${rows.length - i}`}
-                className="px-3 py-1.5"
-              >
-                <EventRow env={env} slug={slugById.get(env.projectId) ?? '?'} showSlug={showAllProjects} />
-              </li>
-            ))}
-          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Header({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      <div className="text-sm uppercase tracking-wider text-muted-foreground">
+        Activity
+      </div>
+      <button
+        onClick={onClose}
+        title="Hide activity panel"
+        aria-label="Hide activity panel"
+        className="px-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        ▸
+      </button>
+    </div>
+  );
+}
+
+function StatusLine() {
+  // 6.2 — derived from region counts. Stub: zero state until wired.
+  return (
+    <div className="border-b border-border bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
+      0 running · 0 waiting · 0 failed today
+    </div>
+  );
+}
+
+function RegionShell({
+  title,
+  badge,
+  children,
+}: {
+  title: string;
+  badge?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-b border-border">
+      <div className="flex items-center justify-between px-3 py-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </div>
+        {badge !== undefined && (
+          <div className="bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+            {badge}
+          </div>
         )}
       </div>
-    </div>
+      <div>{children}</div>
+    </section>
   );
 }
 
-function EventRow({
-  env,
-  slug,
-  showSlug,
-}: {
-  env: WsEnvelope;
-  slug: string;
-  showSlug: boolean;
-}) {
-  const { kind, summary, color } = describeEnvelope(env);
-  const ts = extractTs(env);
-  const hoverText = summary
-    ? `[${ts}${showSlug ? ' ' + slug : ''}] ${kind}: ${summary}`
-    : `[${ts}${showSlug ? ' ' + slug : ''}] ${kind}`;
+function EmptyRegion({ text }: { text: string }) {
+  return <div className="px-3 pb-2 text-[11px] italic text-muted-foreground/70">{text}</div>;
+}
+
+function RunningWorkflowsRegion({ project: _project }: { project: Project }) {
+  // 6.3 wires this region.
   return (
-    <div className="flex items-baseline gap-2 text-[11px]" title={hoverText}>
-      <span className="shrink-0 font-mono text-muted-foreground">{ts}</span>
-      {showSlug && (
-        <span className="shrink-0 bg-muted px-1 font-mono text-[10px] uppercase tracking-wider text-foreground">
-          {slug}
-        </span>
-      )}
-      <span className={`shrink-0 font-mono text-[10px] uppercase tracking-wider ${color}`}>
-        {kind}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-foreground/80">{summary}</span>
-    </div>
+    <RegionShell title="Running workflows" badge="0">
+      <EmptyRegion text="No workflows running." />
+    </RegionShell>
   );
 }
 
-function describeEnvelope(env: WsEnvelope): { kind: string; summary: string; color: string } {
-  switch (env.type) {
-    case 'event': {
-      const event = (env.event ?? {}) as Record<string, unknown>;
-      const kind = String(event.kind ?? 'event');
-      const summary = summarizeChatEvent(kind, event);
-      return { kind, summary, color: chatEventColor(kind) };
-    }
-    case 'work-items-changed': {
-      const change = String(env.change ?? '');
-      const wi = (env.workItem ?? {}) as Record<string, unknown>;
-      const title = typeof wi.title === 'string' ? wi.title : String(wi.id ?? '');
-      return {
-        kind: 'work-item',
-        summary: `${change}: ${title}`,
-        color: 'text-foreground/60',
-      };
-    }
-    case 'channel-event': {
-      const event = (env.event ?? {}) as Record<string, unknown>;
-      const source = typeof event.source === 'string' ? event.source : '?';
-      const body =
-        typeof event.body === 'string'
-          ? event.body
-          : event.body != null
-            ? JSON.stringify(event.body)
-            : '';
-      return {
-        kind: 'channel',
-        summary: `${source}: ${body}`,
-        color: 'text-primary',
-      };
-    }
-    case 'ask': {
-      return {
-        kind: 'ask',
-        summary: `${env.toolName ?? '?'} (${env.toolUseId ?? '?'})`,
-        color: 'text-warning',
-      };
-    }
-    case 'turn-end':
-      return { kind: 'turn-end', summary: '', color: 'text-muted-foreground' };
-    case 'exit':
-      return {
-        kind: 'exit',
-        summary: `code=${env.code ?? '?'} signal=${env.signal ?? '?'}`,
-        color: 'text-destructive',
-      };
-    default:
-      return { kind: env.type, summary: '', color: 'text-muted-foreground' };
-  }
+function OrchestratorStatusRegion({
+  project: _project,
+  events: _events,
+}: {
+  project: Project;
+  events: WsEnvelope[];
+}) {
+  // 6.4 wires this region.
+  return (
+    <RegionShell title="Orchestrator">
+      <div className="px-3 pb-2 text-[11px] text-muted-foreground/70 italic">Idle</div>
+    </RegionShell>
+  );
 }
 
-function summarizeChatEvent(kind: string, event: Record<string, unknown>): string {
-  const text = (k: string): string => (typeof event[k] === 'string' ? (event[k] as string) : '');
-  switch (kind) {
-    case 'user':
-    case 'assistant':
-      return text('text');
-    case 'tool-start':
-    case 'tool-end':
-      return text('tool');
-    case 'todos': {
-      const todos = Array.isArray(event.todos) ? (event.todos as unknown[]) : [];
-      return `${todos.length} todo(s)`;
-    }
-    case 'task-start':
-    case 'task-end':
-      return `${text('subagent')}${text('description') ? `: ${text('description')}` : ''}`;
-    case 'approval-required':
-      return text('message') || text('nodeId');
-    default:
-      return '';
-  }
+function HumanReviewRegion({ project: _project }: { project: Project }) {
+  // 6.5 wires this region.
+  return (
+    <RegionShell title="Waiting on you" badge="0">
+      <EmptyRegion text="Nothing waiting for your input." />
+    </RegionShell>
+  );
 }
 
-function chatEventColor(kind: string): string {
-  switch (kind) {
-    case 'user':
-      return 'text-primary';
-    case 'assistant':
-      return 'text-foreground';
-    case 'tool-start':
-    case 'tool-end':
-      return 'text-muted-foreground';
-    case 'task-start':
-    case 'task-end':
-      return 'text-success';
-    case 'approval-required':
-      return 'text-warning';
-    case 'todos':
-      return 'text-foreground/60';
-    default:
-      return 'text-muted-foreground';
-  }
-}
-
-function extractTs(env: WsEnvelope): string {
-  // event-capture.cjs sets `ts: new Date().toISOString()` on the inner event.
-  const inner = (env.event as Record<string, unknown> | undefined) ?? {};
-  const raw = typeof inner.ts === 'string' ? inner.ts : null;
-  if (!raw) return '--:--:--';
-  // ISO → HH:MM:SS.
-  const m = raw.match(/T(\d\d:\d\d:\d\d)/);
-  return m ? m[1]! : raw;
+function FailedRecentlyRegion({ project: _project }: { project: Project }) {
+  // 6.6 wires this region. Collapsed by default.
+  return (
+    <RegionShell title="Failed recently" badge="0">
+      <EmptyRegion text="No failures in the last 7 days." />
+    </RegionShell>
+  );
 }
