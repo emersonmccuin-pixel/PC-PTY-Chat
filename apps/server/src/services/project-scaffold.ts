@@ -6,8 +6,13 @@
 //   <folder>/.claude/settings.json              (rendered)
 //   <folder>/.claude/hooks/*.cjs                (rendered)
 //   <folder>/.project-companion/workflows/*.yaml (plain copy)
-//   <folder>/.project-companion/orchestrator-prompt.md (rendered)
 //   <folder>/README.md                          (rendered)
+//
+// The orchestrator's identity used to land here as
+// `.project-companion/orchestrator-prompt.md` (rendered + appended at spawn
+// via `--append-system-prompt-file`). Section 16a moved it into the
+// `agents` DB table (pod-resident); the scaffold no longer writes a per-
+// project file. See `apps/server/src/services/orchestrator-pod-content.ts`.
 //
 // Agent copies (`.claude/agents/`) come from the per-user library via
 // AgentLibrary, not from templates — they're handled by ProjectCreate, not here.
@@ -46,12 +51,11 @@ export interface ProjectScaffoldTarget {
 export class ProjectScaffold {
   constructor(private readonly deps: ProjectScaffoldDeps) {}
 
-  /** Full scaffold pass: configs + hooks + workflow seeds + orchestrator prompt + README. */
+  /** Full scaffold pass: configs + hooks + workflow seeds + README. */
   writeAll(target: ProjectScaffoldTarget): void {
     this.writeConfigs(target);
     this.writeHooks(target);
     this.writeWorkflowSeeds(target);
-    this.writeOrchestratorPrompt(target);
     this.writeReadme(target);
   }
 
@@ -61,7 +65,6 @@ export class ProjectScaffold {
     this.writeConfigs(target);
     this.writeHooks(target);
     this.writeWorkflowSeeds(target);
-    this.writeOrchestratorPrompt(target);
   }
 
   /**
@@ -107,17 +110,6 @@ export class ProjectScaffold {
       if (!f.endsWith('.yaml')) continue;
       copyFileSync(resolve(srcDir, f), resolve(destDir, f));
     }
-  }
-
-  /** Render `<folder>/.project-companion/orchestrator-prompt.md` from template.
-   *  Loaded into the orchestrator's system prompt via `--append-system-prompt-file`
-   *  at PtySession spawn time. */
-  writeOrchestratorPrompt(target: ProjectScaffoldTarget): void {
-    this.writeFromTemplate(
-      resolve(this.deps.templatesDir, '.project-companion', 'orchestrator-prompt.md'),
-      resolve(target.folderPath, '.project-companion', 'orchestrator-prompt.md'),
-      this.buildTokens(target),
-    );
   }
 
   /** Render `<folder>/README.md` from template. */

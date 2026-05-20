@@ -629,49 +629,13 @@ export class ProjectRuntime {
         const raw = readFileSync(settingsSrc, 'utf-8');
         writeFileSync(settingsDest, renderTemplate(raw, tokens), 'utf-8');
       }
-      // Section 3 phase 3c: backfill the orchestrator PM prompt for projects
-      // scaffolded before this section. Two cases:
-      //   - File missing → render template into place.
-      //   - File present but missing the 3e.4 agent-creation section → re-render
-      //     (sentinel-based detection on the section heading). This overwrites
-      //     user edits to the file as a tradeoff for keeping the prompt
-      //     current; in the rig users don't hand-edit this file. Add a new
-      //     sentinel string to ORCHESTRATOR_PROMPT_SENTINELS whenever a future
-      //     phase adds a load-bearing section.
-      const ORCHESTRATOR_PROMPT_SENTINELS = [
-        '## When the user wants a new agent', // 3e.4
-        // Bump whenever the section body picks up load-bearing language.
-        // 3e.4 + pc-outputDestination wiring (post-be42b41 follow-on).
-        'pc: { outputDestination: "passthrough"',
-        // 4c.4 — header-tag routing for workflow→orchestrator messages.
-        '[pc:workflow-event kind=',
-      ];
-      const promptSrc = resolve(
-        this.opts.templatesDir,
-        '.project-companion',
-        'orchestrator-prompt.md',
-      );
-      const promptDest = resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'orchestrator-prompt.md',
-      );
-      if (existsSync(promptSrc)) {
-        let needsWrite = !existsSync(promptDest);
-        if (!needsWrite) {
-          try {
-            const current = readFileSync(promptDest, 'utf-8');
-            needsWrite = ORCHESTRATOR_PROMPT_SENTINELS.some((s) => !current.includes(s));
-          } catch {
-            needsWrite = true;
-          }
-        }
-        if (needsWrite) {
-          mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
-          const raw = readFileSync(promptSrc, 'utf-8');
-          writeFileSync(promptDest, renderTemplate(raw, tokens), 'utf-8');
-        }
-      }
+      // Section 16a.4 — orchestrator-prompt.md backfill removed. The
+      // orchestrator's identity now lives in the `agents` DB table as a
+      // pod row (seeded at boot per 16a.2; materialised into the worktree
+      // at spawn per 16a.3). Existing per-project copies of the legacy
+      // `.project-companion/orchestrator-prompt.md` are unused post-16a;
+      // safe to leave on disk (no reader) or manually delete.
+
       // Section 3 phase 3e.3: backfill the agent-creator prompt for the
       // transient Create-Agent modal session. Same write-if-missing rule.
       const creatorSrc = resolve(
@@ -690,9 +654,9 @@ export class ProjectRuntime {
         writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
       }
       // Section 4b phase 4b.3: keep the workflow-creator prompt in lock-step
-      // with the trunk template. Unlike orchestrator-prompt.md (user-edited),
-      // this file backs a transient session that nobody hand-edits — always
-      // re-render so changes to the interview script land on next boot.
+      // with the trunk template. This file backs a transient session that
+      // nobody hand-edits — always re-render so changes to the interview
+      // script land on next boot.
       const wfCreatorSrc = resolve(
         this.opts.templatesDir,
         '.project-companion',
