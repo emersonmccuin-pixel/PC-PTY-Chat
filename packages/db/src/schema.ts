@@ -11,6 +11,7 @@ import type {
   ULID,
   WorkItemHistoryEntry,
   WorkItemStatus,
+  WorkItemType,
   WorkflowRunStatus,
   WorkflowRunTrigger,
   WorktreeStatus,
@@ -70,6 +71,9 @@ export const workItems = sqliteTable(
     stageId: text('stage_id').notNull(),
     status: text('status').notNull().default('pending').$type<WorkItemStatus>(),
     statusReason: text('status_reason'),
+    /** Built-in fixed-set type ('task' | 'bug' | 'feature' | 'spike'). Default 'task'.
+     *  Filed by `pc_log_bug` when value is 'bug'. */
+    type: text('type').notNull().default('task').$type<WorkItemType>(),
     fields: text('fields', { mode: 'json' })
       .notNull()
       .default(sql`'{}'`)

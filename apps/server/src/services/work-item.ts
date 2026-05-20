@@ -21,6 +21,7 @@ import type {
   ULID,
   ValidateFieldsErrors,
   WorkItem,
+  WorkItemType,
 } from '@pc/domain';
 import { validateFields } from '@pc/domain';
 import {
@@ -59,6 +60,7 @@ export interface CreateWorkItemServiceInput {
   body?: string;
   parentId?: ULID | null;
   position?: number;
+  type?: WorkItemType;
   fields?: Record<string, unknown>;
 }
 
@@ -69,6 +71,7 @@ export interface PatchWorkItemServiceInput {
   stageId?: string;
   parentId?: ULID | null;
   position?: number;
+  type?: WorkItemType;
   fields?: Record<string, unknown>;
 }
 
@@ -163,6 +166,7 @@ export class WorkItemService {
       ...(input.body !== undefined ? { body: input.body } : {}),
       ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
       ...(input.position !== undefined ? { position: input.position } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
       fields: validated.value,
     });
     this.opts.broadcast({ type: 'work-items-changed', change: 'created', workItem });
@@ -194,6 +198,7 @@ export class WorkItemService {
       ...(input.stageId !== undefined ? { stageId: input.stageId } : {}),
       ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
       ...(input.position !== undefined ? { position: input.position } : {}),
+      ...(input.type !== undefined ? { type: input.type } : {}),
       ...(fields !== undefined ? { fields } : {}),
     });
     if (!patched) throw new Error(`unknown work item: ${id}`);

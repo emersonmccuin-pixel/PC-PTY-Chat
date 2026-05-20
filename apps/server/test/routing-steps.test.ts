@@ -377,6 +377,7 @@ test('runUpdateWorkItemStep: reads version + sends only changed keys', async () 
     stageId: 'todo',
     parentId: null,
     position: 0,
+    type: 'task',
     fields: { reviewer: 'alice' },
     status: 'pending',
     statusReason: null,

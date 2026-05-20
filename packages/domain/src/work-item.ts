@@ -11,6 +11,15 @@ export type WorkItemStatus =
   | 'failed'
   | 'archived';
 
+/** Built-in, fixed-set work-item types. Extendable later — not per-project
+ *  configurable today (rationale in docs/buildout/work-item-types-and-log-bug.md). */
+export const WORK_ITEM_TYPES = ['task', 'bug', 'feature', 'spike'] as const;
+export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
+
+export function isWorkItemType(value: unknown): value is WorkItemType {
+  return typeof value === 'string' && (WORK_ITEM_TYPES as readonly string[]).includes(value);
+}
+
 export interface WorkItem {
   id: ULID;
   projectId: ULID;
@@ -23,6 +32,8 @@ export interface WorkItem {
   status: WorkItemStatus;
   /** Reason for the current status when not `pending` — surfaced in the UI. */
   statusReason: string | null;
+  /** Built-in type. Default `task` for legacy rows. Bug is the type filed by `pc_log_bug`. */
+  type: WorkItemType;
   fields: Record<string, unknown>;
   /** Optimistic-concurrency counter. Bumped on every mutation; client must echo it on PATCH. */
   version: number;

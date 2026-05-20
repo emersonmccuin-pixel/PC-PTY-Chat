@@ -1,5 +1,11 @@
 import { and, asc, eq, isNull, isNotNull, max } from 'drizzle-orm';
-import type { ULID, WorkItem, WorkItemHistoryEntry, WorkItemStatus } from '@pc/domain';
+import type {
+  ULID,
+  WorkItem,
+  WorkItemHistoryEntry,
+  WorkItemStatus,
+  WorkItemType,
+} from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { workItems } from '../schema.ts';
@@ -26,6 +32,7 @@ interface WorkItemRow {
   stageId: string;
   status: WorkItemStatus;
   statusReason: string | null;
+  type: WorkItemType;
   fields: Record<string, unknown>;
   history: WorkItemHistoryEntry[];
   position: number;
@@ -46,6 +53,7 @@ function toDomain(row: WorkItemRow): WorkItem {
     stageId: row.stageId,
     status: row.status,
     statusReason: row.statusReason,
+    type: row.type,
     fields: row.fields,
     version: row.version,
     createdAt: row.createdAt,
@@ -61,6 +69,7 @@ export interface CreateWorkItemInput {
   body?: string;
   parentId?: ULID | null;
   position?: number;
+  type?: WorkItemType;
   fields?: Record<string, unknown>;
   initialHistory?: WorkItemHistoryEntry[];
 }
@@ -119,6 +128,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     stageId: input.stageId,
     status: 'pending',
     statusReason: null,
+    type: input.type ?? 'task',
     fields: input.fields ?? {},
     history: input.initialHistory ?? [],
     position,
@@ -205,6 +215,7 @@ export interface PatchWorkItemInput {
   stageId?: string;
   parentId?: ULID | null;
   position?: number;
+  type?: WorkItemType;
   /** Replaces the fields map wholesale. Callers wanting merge semantics
    *  should read first + spread. (validateFields is run at the service layer.) */
   fields?: Record<string, unknown>;
@@ -227,6 +238,7 @@ export function patchWorkItem(id: ULID, input: PatchWorkItemInput): WorkItem | n
     stageId: input.stageId ?? row.stageId,
     parentId: input.parentId === undefined ? row.parentId : input.parentId,
     position: input.position ?? row.position,
+    type: input.type ?? row.type,
     fields: input.fields ?? row.fields,
     version: row.version + 1,
     updatedAt: Date.now(),
