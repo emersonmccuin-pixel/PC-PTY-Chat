@@ -21,8 +21,10 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -42,7 +44,12 @@ const {
   closeDb,
   runMigrations,
   createProject,
+  createAgent,
+  createMcpServer,
+  createSecret,
+  listAgentAudit,
 } = await import('@pc/db');
+import type { AuditInput } from '@pc/db';
 const { WorkflowRuntime } = await import('../src/services/workflow-runtime.ts');
 const { WorkItemService } = await import('../src/services/work-item.ts');
 const { ChannelServer } = await import('../src/services/channel-server.ts');
@@ -1162,6 +1169,257 @@ test('4e.3: nodeFailed broadcasts the failed envelope', async () => {
     const last = envelopes[envelopes.length - 1]!;
     assert.equal(last.status, 'failed');
     assert.equal(last.nodeOutputs['investigate']?.status, 'failed');
+  } finally {
+    f.cleanup();
+  }
+});
+
+/** Section 17a.6 / D39. End-to-end smoke for the pod materialisation arc:
+ *  insert pod rows in the DB, fire a workflow with a subagent node whose
+ *  name matches the pod, capture the spawn request, then verify the spawn
+ *  carried the materialised mcp.json + secret env-vars and the on-disk
+ *  state matches what the materialiser claims. Cleanup is verified by
+ *  re-reading the files after the run settles — they must be gone.
+ *
+ *  The fake spawner snapshots files at spawn time (BEFORE wireSpawnHandle's
+ *  finally runs cleanup). Asserts run against the snapshot for material
+ *  content; asserts against the live disk for the post-cleanup state. */
+
+const POD_SMOKE_AGENT_NAME = 'pod-smoke-agent';
+const POD_SMOKE_WORKFLOW_YAML = `id: pod-smoke
+triggers:
+  callable: true
+worktree: none
+nodes:
+  - id: investigate
+    kind: subagent
+    subagent: ${POD_SMOKE_AGENT_NAME}
+    prompt: Take a look.
+`;
+
+const U_AUDIT: AuditInput = { actor: 'user' };
+
+interface PodSpawnSnapshot {
+  mdPath: string;
+  mcpConfigPath: string;
+  mdContent: string;
+  mcpJsonContent: string;
+  extraEnv: Record<string, string> | undefined;
+  agentName: string;
+}
+
+test('17a.6 / D39 e2e smoke: pod row → materialised .md + mcp.json + secret env-vars flow through → cleanup on exit', async () => {
+  // 1. Insert the pod row (agent + secret + pod-declared MCP server). The
+  //    create lands an `agent_audit` row via the 17a.4 wiring — assert that
+  //    too, end-to-end.
+  const agent = createAgent(
+    {
+      name: POD_SMOKE_AGENT_NAME,
+      scope: 'global',
+      prompt: 'You investigate things.',
+      tools: ['Read', 'Grep'],
+      model: 'sonnet',
+      description: 'pod-spawn smoke fixture',
+    },
+    U_AUDIT,
+  );
+  createSecret(
+    {
+      agentId: agent.id,
+      scope: 'global',
+      envVarName: 'POD_SMOKE_TOKEN',
+      valuePlaintext: 'tk-smoke-secret',
+    },
+    U_AUDIT,
+  );
+  createMcpServer(
+    {
+      agentId: agent.id,
+      scope: 'global',
+      name: 'jira',
+      config: { command: 'jira-mcp', env: { JIRA_HOST: 'example.com' } },
+    },
+    U_AUDIT,
+  );
+
+  // 2. Snapshot-capturing fake spawner. preparePodSpawn has already materialised
+  //    by the time the spawner is called; cleanup runs in wireSpawnHandle's
+  //    finally AFTER the handle resolves. Snapshot in the spawner so the
+  //    on-disk content can be asserted regardless of cleanup timing.
+  let snapshot: PodSpawnSnapshot | null = null;
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    if (req.mcpConfigPath) {
+      const mdPath = resolve(req.worktreeDir, '.claude', 'agents', `${req.agentName}.md`);
+      snapshot = {
+        mdPath,
+        mcpConfigPath: req.mcpConfigPath,
+        mdContent: existsSync(mdPath) ? readFileSync(mdPath, 'utf8') : '',
+        mcpJsonContent: existsSync(req.mcpConfigPath)
+          ? readFileSync(req.mcpConfigPath, 'utf8')
+          : '',
+        extraEnv: req.extraEnv,
+        agentName: req.agentName,
+      };
+    }
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'pod-spawn smoke complete',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  // 3. Spin up the fixture + write a baseline `.mcp.json` into the project
+  //    folder so the merge path is exercised. mkFixture doesn't scaffold one;
+  //    we add it post-hoc, then create the workflow YAML afterwards (mkFixture
+  //    writes the YAML before returning).
+  const f = await mkFixture(
+    [{ name: 'pod-smoke', yaml: POD_SMOKE_WORKFLOW_YAML }],
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const baseline = {
+      mcpServers: {
+        'pc-rig': {
+          command: 'node',
+          args: ['/fake/pc-rig.mjs'],
+          env: { PC_PROJECT_ID: f.project.id, PC_SERVER_PORT: '4040' },
+        },
+        webhook: { command: 'node', args: ['/fake/webhook.mjs'] },
+      },
+    };
+    writeFileSync(
+      resolve(f.project.folderPath, '.mcp.json'),
+      JSON.stringify(baseline, null, 2),
+      'utf8',
+    );
+
+    // 4. Fire the workflow. dispatchSubagent will call preparePodSpawn, which
+    //    reads the .mcp.json above and the pod rows we inserted, materialises,
+    //    and passes the result into the spawn request.
+    const run = await f.runtime.runWorkflow('pod-smoke');
+
+    // 5. Wait for the run to settle.
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete' || fresh?.status === 'failed') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.status, 'complete', 'pod-spawn smoke run must reach complete');
+    assert.equal(settled?.nodeOutputs?.['investigate']?.status, 'complete');
+
+    // 6. Spawn snapshot exists → pod path was actually taken.
+    assert.ok(snapshot, 'fake spawner should have captured a pod-materialised snapshot');
+    const snap = snapshot as PodSpawnSnapshot;
+    assert.equal(snap.agentName, POD_SMOKE_AGENT_NAME);
+    // 6a. Materialised .md content shape — frontmatter + prompt body.
+    assert.match(snap.mdContent, new RegExp(`\\nname: ${POD_SMOKE_AGENT_NAME}\\n`));
+    assert.match(snap.mdContent, /\ntools: Read, Grep\n/);
+    assert.match(snap.mdContent, /\nmodel: sonnet\n/);
+    assert.match(snap.mdContent, /\n\nYou investigate things\./);
+    // 6b. mcp.json merges baseline + pod row.
+    const mcp = JSON.parse(snap.mcpJsonContent) as {
+      mcpServers: Record<string, { command: string; env?: Record<string, string> }>;
+    };
+    assert.equal(mcp.mcpServers['pc-rig']?.command, 'node', 'baseline pc-rig survives merge');
+    assert.equal(mcp.mcpServers['pc-rig']?.env?.PC_PROJECT_ID, f.project.id);
+    assert.equal(mcp.mcpServers.webhook?.command, 'node', 'baseline webhook survives merge');
+    assert.equal(mcp.mcpServers.jira?.command, 'jira-mcp', 'pod row adds jira');
+    assert.equal(mcp.mcpServers.jira?.env?.JIRA_HOST, 'example.com');
+    // 6c. Secret env-var flowed through.
+    assert.ok(snap.extraEnv, 'extraEnv must be set when pod has secrets');
+    assert.equal(snap.extraEnv!.POD_SMOKE_TOKEN, 'tk-smoke-secret');
+
+    // 7. Cleanup ran — both the materialised .md and temp mcp.json are gone
+    //    now that the spawn handle has resolved + wireSpawnHandle's finally
+    //    fired. Re-check live disk (NOT the snapshot).
+    assert.ok(
+      !existsSync(snap.mdPath),
+      `expected agent .md to be cleaned up at ${snap.mdPath}`,
+    );
+    assert.ok(
+      !existsSync(snap.mcpConfigPath),
+      `expected temp mcp.json to be cleaned up at ${snap.mcpConfigPath}`,
+    );
+
+    // 8. agent_audit shape — createAgent emitted a `created` row.
+    const auditRows = listAgentAudit({ agentId: agent.id });
+    assert.ok(auditRows.length >= 1, 'createAgent must have landed an audit row');
+    const createdRow = auditRows.find((r) => r.field === 'created');
+    assert.ok(createdRow, 'audit log must include the `created` event');
+    assert.equal(createdRow!.actor, 'user');
+    assert.ok(createdRow!.newValue, '`created` row must carry a snapshot');
+    const auditSnap = JSON.parse(createdRow!.newValue!);
+    assert.equal(auditSnap.name, POD_SMOKE_AGENT_NAME);
+    assert.equal(auditSnap.prompt, 'You investigate things.');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('17a.6 / D39 e2e smoke: no pod row for agent name → spawn proceeds without mcpConfigPath / extraEnv (flat-file fallback)', async () => {
+  // Regression guard: a subagent whose name has no matching pod row in the DB
+  // must still fire. preparePodSpawn returns null → mcpConfigPath stays
+  // undefined → PtySession uses the default `.mcp.json` → existing flat-file
+  // global agents (researcher/writer/etc.) keep working until 17e nukes them.
+  const capturedReqs: SubagentSpawnRequest[] = [];
+  const fakeSpawner = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    capturedReqs.push(req);
+    const success: SubagentSpawnResult = {
+      kind: 'success',
+      lastAssistantText: 'flat-file fallback complete',
+      pcCompletePayload: null,
+      transcriptPath: resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: null,
+    };
+    return {
+      done: Promise.resolve(success),
+      kill: () => {},
+      transcriptPath: () => resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => null,
+    };
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }], // agent name = 'researcher'; no pod row inserted
+    { subagentSpawner: fakeSpawner },
+  );
+  try {
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.status, 'complete');
+
+    assert.equal(capturedReqs.length, 1);
+    const req = capturedReqs[0]!;
+    assert.equal(req.agentName, 'researcher');
+    assert.equal(
+      req.mcpConfigPath,
+      undefined,
+      'no pod row → preparePodSpawn returns null → mcpConfigPath stays undefined',
+    );
+    assert.equal(
+      req.extraEnv,
+      undefined,
+      'no pod row → extraEnv stays undefined → spawn env unchanged',
+    );
+
+    // No materialised .md was written — the flat-file fallback path doesn't
+    // touch .claude/agents/.
+    const fallbackMd = resolve(f.project.folderPath, '.claude', 'agents', 'researcher.md');
+    assert.ok(!existsSync(fallbackMd), 'fallback path must not materialise');
   } finally {
     f.cleanup();
   }
