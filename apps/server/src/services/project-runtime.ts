@@ -18,7 +18,8 @@ import {
   getActiveOrchestratorSession,
   listOrchestratorSessionsForProject,
 } from '@pc/db';
-import { PtySession } from '@pc/runtime';
+import { encodeCwdForClaude, PtySession } from '@pc/runtime';
+import { homedir } from 'node:os';
 import { WorkflowRegistry } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
@@ -247,8 +248,13 @@ export class ProjectRuntime {
       // Resume case: if we have a persisted JSONL path for this row, attach
       // the tailer to it directly at the persisted cursor. Else PtySession
       // runs the discovery loop and finds the file once CC creates it.
-      jsonlPath: session.row.jsonlPath ?? undefined,
-      jsonlStartLine: session.row.jsonlLineCursor,
+      // Mint case (resume=false): ignore the row's persisted jsonlPath even
+      // if set — it points at a JSONL from a PRIOR claude.exe invocation
+      // (different auto-generated UUID), not the one --session-id is about
+      // to create. Letting it through causes bleed-through into the new
+      // session.
+      jsonlPath: session.resume ? (session.row.jsonlPath ?? undefined) : undefined,
+      jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
       excludeJsonlPaths: priorJsonlPaths,
       appendSystemPromptPath: resolve(
         this.project.folderPath,
@@ -477,7 +483,24 @@ export class ProjectRuntime {
   } {
     const active = getActiveOrchestratorSession(this.project.id);
     if (active?.providerSessionId) {
-      return { row: active, providerSessionId: active.providerSessionId, resume: true };
+      // Only resume if claude.exe has a JSONL on disk for this UUID. UUIDs
+      // minted in the DB without a matching JSONL ("phantoms") happen when
+      // a row pre-dates --session-id rollout or was never spawned. Passing
+      // --resume on a phantom UUID makes claude.exe exit with "No
+      // conversation found with session ID..." — pass --session-id to mint
+      // at the recorded UUID instead.
+      const expectedJsonl = active.jsonlPath ?? resolve(
+        homedir(),
+        '.claude',
+        'projects',
+        encodeCwdForClaude(this.project.folderPath),
+        `${active.providerSessionId}.jsonl`,
+      );
+      return {
+        row: active,
+        providerSessionId: active.providerSessionId,
+        resume: existsSync(expectedJsonl),
+      };
     }
     if (active) {
       // Row exists but no provider id — shouldn't happen since we mint at
