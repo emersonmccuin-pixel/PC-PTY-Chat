@@ -24,6 +24,7 @@ import { homedir } from 'node:os';
 import { WorkflowRegistry } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
+import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
 import { evaluateBoolean } from './output-substitution.ts';
@@ -242,6 +243,35 @@ export class ProjectRuntime {
       encodeCwdForClaude(this.project.folderPath),
       `${session.providerSessionId}.jsonl`,
     );
+    // Section 16a.3 — materialise the orchestrator pod into the project's
+    // workspace. Replaces the pre-16a `--append-system-prompt-file` lever
+    // (which layered PC's PM identity on top of CC's coding-assistant
+    // default). `--agent orchestrator` instead REPLACES the default — PC
+    // owns the orchestrator's prompt + tool surface end-to-end via the pod
+    // row seeded at server boot (16a.2).
+    let podPrep: PodSpawnPrep;
+    try {
+      const prep = preparePodSpawn({
+        agentName: 'orchestrator',
+        worktreeDir: this.project.folderPath,
+        scratchDir: sessionDir,
+      });
+      if (!prep) {
+        // Boot-time seed (16a.2) always inserts the row; a null here
+        // means the DB is in an unexpected state (row deleted manually
+        // mid-session?). Fail loud — falling back to a default-CC
+        // orchestrator would silently lose the locked tool allowlist.
+        throw new Error(
+          'orchestrator pod row not found (boot-time seed did not run, or row was deleted)',
+        );
+      }
+      podPrep = prep;
+    } catch (err) {
+      throw new Error(
+        `orchestrator pod materialisation failed: ${(err as Error).message}`,
+      );
+    }
+
     this.pty = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
@@ -249,15 +279,21 @@ export class ProjectRuntime {
       transcriptPath: resolve(sessionDir, 'transcript.log'),
       claudeSessionId: session.providerSessionId,
       resume: session.resume,
-      extraEnv: { PC_SESSION_ID: session.row.id },
+      extraEnv: { PC_SESSION_ID: session.row.id, ...podPrep.extraEnv },
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
-      appendSystemPromptPath: resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'orchestrator-prompt.md',
-      ),
+      agentName: 'orchestrator',
+      mcpConfigPath: podPrep.mcpConfigPath,
     });
+
+    // Tear down the materialised pod when the session exits. PtySession's
+    // 'exit' event fires once per lifecycle (claude.exe exit, kill(), or
+    // fatal). Best-effort — cleanup tolerates ENOENT internally; if PC is
+    // killed forcibly the next ensurePty() re-materialises from scratch.
+    this.pty.once('exit', () => {
+      try { podPrep.cleanup(); } catch { /* best-effort */ }
+    });
+
     return this.pty;
   }
 
