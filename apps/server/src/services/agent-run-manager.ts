@@ -106,6 +106,10 @@ export interface AgentRunRecord {
    *  manager only consults this when emitting terminal events — sync vs.
    *  async dispatch shape is the route handler's concern. */
   wait: boolean;
+  /** Absolute path to the project worktree the agent was spawned in.
+   *  Surfaced for the Activity Panel's live-transcript modal header
+   *  (16b.8.3) so the user can see *where* the agent is running. */
+  worktreeDir: string;
   startedAt: number;
   status: AgentRunStatus;
   /** Accumulating last-assistant-text. Updated on every jsonl-turn-end so
@@ -183,21 +187,40 @@ interface InternalRun extends AgentRunRecord {
   resolveCompletion: ((rec: AgentRunRecord) => void) | null;
 }
 
-export class AgentRunManager {
+/** AgentRunManager is an EventEmitter — Section 16b.8.1.
+ *
+ * Events:
+ *   - `run-changed` — fires once per meaningful state transition (spawning
+ *      → running, → paused, → running, → completed | failed | cancelled),
+ *      plus once at end of `spawn()` so the initial `spawning` record is
+ *      observable. Payload is the `AgentRunRecord` snapshot (no internal
+ *      timer / session refs). Server `index.ts` subscribes and rebroadcasts
+ *      to project WS subscribers as `{ type: 'agent-run-changed', record }`.
+ */
+export class AgentRunManager extends EventEmitter {
   private runs = new Map<ULID, InternalRun>();
 
-  constructor(private deps: AgentRunManagerDeps = {}) {}
+  constructor(private deps: AgentRunManagerDeps = {}) {
+    super();
+  }
 
   /** Look up an active or terminal run by id. */
   get(runId: ULID): AgentRunRecord | null {
     return this.runs.get(runId) ?? null;
   }
 
-  /** Snapshot the currently-tracked runs for a project. */
+  /** Snapshot the currently-tracked runs for a project. Includes terminal
+   *  rows still in the map; callers filter as needed (the Activity Panel
+   *  filters to non-terminal). */
   listForProject(projectId: ULID): AgentRunRecord[] {
     const out: AgentRunRecord[] = [];
-    for (const r of this.runs.values()) if (r.projectId === projectId) out.push(r);
+    for (const r of this.runs.values()) if (r.projectId === projectId) out.push(this.snapshot(r));
     return out;
+  }
+
+  /** Single emit site so the snapshot stays canonical. */
+  private emitRunChanged(rec: InternalRun): void {
+    this.emit('run-changed', this.snapshot(rec));
   }
 
   /** Mint a runId + sessionId, materialise the pod, spawn the agent, and
@@ -336,6 +359,10 @@ export class AgentRunManager {
     this.armWallClockTimer(rec);
     this.armIdleTimer(rec);
 
+    // 16b.8.1 — surface the freshly-spawned record so the Activity Panel
+    // card appears immediately (before the PTY reaches `ready`).
+    this.emitRunChanged(rec);
+
     return { runId, sessionId, startedAt, completion };
   }
 
@@ -352,6 +379,7 @@ export class AgentRunManager {
     rec.initialInputSent = true; // resume's answer-write is the next user message
     this.attachToSession(rec, session);
     this.armIdleTimer(rec);
+    this.emitRunChanged(rec); // paused → running transition
     return true;
   }
 
@@ -431,6 +459,7 @@ export class AgentRunManager {
       if (state === 'ready' && !rec.initialInputSent) {
         rec.initialInputSent = true;
         rec.status = 'running';
+        this.emitRunChanged(rec); // spawning → running
         try {
           session.send(rec.initialInput);
         } catch (err) {
@@ -440,6 +469,7 @@ export class AgentRunManager {
         // attachResumedSession case: initial input was the prior turn's
         // answer-write, not the spawn input. Just flip running.
         rec.status = 'running';
+        this.emitRunChanged(rec);
       }
     });
 
@@ -484,6 +514,7 @@ export class AgentRunManager {
       } catch {
         /* best-effort */
       }
+      this.emitRunChanged(rec);
       return;
     }
     // No outstanding pause → terminal complete.
@@ -501,6 +532,7 @@ export class AgentRunManager {
       /* best-effort */
     }
     this.cleanupOnTerminal(rec);
+    this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
   }
 
@@ -521,6 +553,7 @@ export class AgentRunManager {
       /* best-effort */
     }
     this.cleanupOnTerminal(rec);
+    this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
   }
 
@@ -589,6 +622,7 @@ export class AgentRunManager {
       projectId: rec.projectId,
       parentWorkItemId: rec.parentWorkItemId,
       wait: rec.wait,
+      worktreeDir: rec.worktreeDir,
       startedAt: rec.startedAt,
       status: rec.status,
       result: rec.result,

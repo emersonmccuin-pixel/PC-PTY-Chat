@@ -105,6 +105,7 @@ import {
   getAgentRunManager,
   setAgentRunManager,
   type AgentRunFailureCause,
+  type AgentRunRecord,
 } from './services/agent-run-manager.ts';
 import type { AgentFailedPayload, PendingAskKind, PendingAskOption } from '@pc/domain';
 
@@ -198,7 +199,18 @@ channelServer.start();
 // route consumes it; the resume primitive (agent-resume.ts) consults it
 // via `findRunIdBySession` so resumed sessions re-attach to the tracked
 // run. Test code overrides via `setAgentRunManager(new AgentRunManager(...))`.
-setAgentRunManager(new AgentRunManager());
+//
+// 16b.8.1 — Manager emits `run-changed` on every state transition; rebroadcast
+// to project subscribers as `{ type: 'agent-run-changed', record }` so the
+// Activity Panel's running-agents region updates live. Listener is attached
+// once at boot; the singleton's lifetime matches the process.
+{
+  const mgr = new AgentRunManager();
+  mgr.on('run-changed', (record: AgentRunRecord) => {
+    broadcastTo(record.projectId, { type: 'agent-run-changed', record });
+  });
+  setAgentRunManager(mgr);
+}
 
 const app = new Hono();
 
@@ -2863,6 +2875,42 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     runId: spawn.runId,
     startedAt: spawn.startedAt,
   });
+});
+
+/** Section 16b.8.1 — list this project's active agent runs. The Activity
+ *  Panel calls this on mount + applies subsequent `agent-run-changed` WS
+ *  envelopes as deltas. Returns the in-memory snapshot; terminal-state
+ *  runs filter out (UI's "running agents" region only shows in-flight). */
+app.get('/api/projects/:projectId/agent-runs', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+  const mgr = getAgentRunManager();
+  const all = mgr.listForProject(projectId);
+  const active = all.filter(
+    (r) => r.status !== 'completed' && r.status !== 'failed' && r.status !== 'cancelled',
+  );
+  return c.json({ ok: true, runs: active });
+});
+
+/** Section 16b.8.1 — cancel an in-flight agent run. Matches the workflow-
+ *  run cancel route shape (`POST /workflow-runs/:runId/cancel`). The
+ *  manager's `cancel` flips status → cancelled + kills the active session
+ *  + resolves the completion Promise; the `run-changed` emit at the end of
+ *  `failWithCause` triggers the WS broadcast that removes the card. */
+app.post('/api/projects/:projectId/agent-runs/:runId/cancel', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+  const runId = c.req.param('runId') as ULID;
+  const mgr = getAgentRunManager();
+  const rec = mgr.get(runId);
+  if (!rec) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+  if (rec.projectId !== projectId) {
+    return c.json({ ok: false, error: `run ${runId} not in project ${projectId}` }, 400);
+  }
+  const ok = mgr.cancel(runId, 'cancelled by user via Activity Panel');
+  return c.json({ ok, status: mgr.get(runId)?.status ?? null });
 });
 
 // ── Static / SPA fallback ─────────────────────────────────────────────────

@@ -386,3 +386,126 @@ test('findRunIdBySession returns the live tracked runId; null after terminal', a
 
   assert.equal(mgr.findRunIdBySession(sessionId), null, 'terminal runs are not findable');
 });
+
+// ── 16b.8.1: run-changed event emit + worktreeDir on snapshot + listForProject filter ──
+
+test('emits run-changed at every state transition (spawning → running → completed)', async () => {
+  const p = createProject({
+    slug: 'arm-emit',
+    name: 'ARM Emit',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-emit', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const seen: Array<{ status: string; runId: string }> = [];
+  mgr.on('run-changed', (rec) => {
+    seen.push({ status: rec.status, runId: rec.runId });
+  });
+
+  const { runId } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+
+  // After spawn() returns, the initial spawning snapshot has been emitted.
+  assert.deepEqual(
+    seen.map((s) => s.status),
+    ['spawning'],
+  );
+
+  const s = sessions[0]!;
+  s.becomeReady();
+  // spawning → running emit
+  assert.deepEqual(
+    seen.map((s) => s.status),
+    ['spawning', 'running'],
+  );
+
+  s.emitTurnEnd('done');
+  // running → completed emit
+  assert.deepEqual(
+    seen.map((s) => s.status),
+    ['spawning', 'running', 'completed'],
+  );
+  assert.ok(seen.every((e) => e.runId === runId));
+});
+
+test('snapshot carries worktreeDir for the live-transcript modal', () => {
+  const p = createProject({
+    slug: 'arm-worktree',
+    name: 'ARM Worktree',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-worktree', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+  const myWorktree = join(tmpDataDir, 'arm-worktree-cwd');
+  const { runId } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    worktreeDir: myWorktree,
+  });
+  const snap = mgr.get(runId)!;
+  assert.equal(snap.worktreeDir, myWorktree);
+});
+
+test('listForProject filters out terminal-status runs only when caller asks; raw includes all', async () => {
+  // The HTTP route filters in the handler; the manager itself returns every
+  // tracked run for the project. This test pins the manager's contract.
+  const p = createProject({
+    slug: 'arm-list',
+    name: 'ARM List',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-list', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  // Run 1 → complete it.
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('done');
+  await r1.completion;
+
+  // Run 2 → leave it spawning.
+  mgr.spawn({
+    agentName: 'a2',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+
+  const all = mgr.listForProject(p.id as ULID);
+  assert.equal(all.length, 2);
+  const active = all.filter(
+    (r) => r.status !== 'completed' && r.status !== 'failed' && r.status !== 'cancelled',
+  );
+  assert.equal(active.length, 1);
+  assert.equal(active[0]?.agentName, 'a2');
+});
