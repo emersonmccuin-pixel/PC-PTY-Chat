@@ -71,6 +71,15 @@ export default function App() {
     });
   }, []);
 
+  // Apply the persisted fontScale to documentElement so every rem-based UI
+  // size scales. The slider in AppSettingsModal updates the same variable
+  // live during preview; on Save this useEffect re-syncs from the canonical
+  // settings envelope.
+  useEffect(() => {
+    if (!settings) return;
+    document.documentElement.style.setProperty('--font-scale', String(settings.fontScale));
+  }, [settings?.fontScale]);
+
   // Reconcile activeSlug with the loaded list — pick the first project if the
   // persisted selection no longer exists (e.g. fresh DB or after soft-delete).
   useEffect(() => {

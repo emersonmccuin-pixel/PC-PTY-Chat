@@ -31,7 +31,16 @@ export interface GlobalSettings {
    * Null = Log Bug returns a configuration error.
    */
   bugLogTargetProjectId: ULID | null;
+  /**
+   * Multiplier for the html root font size — every rem-based UI size scales
+   * with this. Slider in App Settings clamps the value to [0.85, 1.5].
+   * Default 1.0 = no change.
+   */
+  fontScale: number;
 }
+
+export const FONT_SCALE_MIN = 0.85;
+export const FONT_SCALE_MAX = 1.5;
 
 /** Defaults for a fresh settings_global row. The DB seeder calls this with
  *  the launch-time data dir and home dir so domain stays I/O-free. */
@@ -45,7 +54,15 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
       showAllProjects: false,
     },
     bugLogTargetProjectId: null,
+    fontScale: 1,
   };
+}
+
+export function clampFontScale(n: number): number {
+  if (!Number.isFinite(n)) return 1;
+  if (n < FONT_SCALE_MIN) return FONT_SCALE_MIN;
+  if (n > FONT_SCALE_MAX) return FONT_SCALE_MAX;
+  return Math.round(n * 100) / 100;
 }
 
 /**
@@ -69,6 +86,7 @@ export function withSettingsDefaults(
         stored.activityPanel?.showAllProjects ?? defaults.activityPanel.showAllProjects,
     },
     bugLogTargetProjectId: stored.bugLogTargetProjectId ?? defaults.bugLogTargetProjectId,
+    fontScale: clampFontScale(stored.fontScale ?? defaults.fontScale),
   };
 }
 

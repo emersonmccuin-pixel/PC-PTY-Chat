@@ -97,9 +97,14 @@
   --destructive: #c74a3a;
   --destructive-foreground: #ffffff;
 
-  --border: rgba(240, 208, 128, 0.22);
-  --input: rgba(240, 208, 128, 0.18);
-  --ring: rgba(240, 208, 128, 0.55);
+  --border: rgba(240, 208, 128, 0.45);
+  --input: rgba(240, 208, 128, 0.40);
+  --ring: rgba(240, 208, 128, 0.65);
+
+  /* App-wide font-scale multiplier — applied to html font-size so every
+     rem-based size in the UI scales. Slider in App Settings writes this
+     variable on documentElement and persists the value in GlobalSettings. */
+  --font-scale: 1;
 
   /* State colors — moss/bronze/cream/rust */
   --success: #8cb06a;
@@ -143,6 +148,7 @@ html {
   color-scheme: dark;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-size: calc(16px * var(--font-scale, 1));
 }
 
 body {

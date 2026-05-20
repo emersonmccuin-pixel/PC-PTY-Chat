@@ -359,6 +359,8 @@ app.patch('/api/settings', async (c) => {
         body.bugLogTargetProjectId === undefined
           ? current.bugLogTargetProjectId
           : body.bugLogTargetProjectId,
+      fontScale:
+        typeof body.fontScale === 'number' ? body.fontScale : current.fontScale,
     },
     getDataDir(),
     homedir(),

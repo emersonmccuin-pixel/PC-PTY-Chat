@@ -215,7 +215,12 @@ export interface GlobalSettings {
   projectsFolder: string;
   activityPanel: ActivityPanelSettings;
   bugLogTargetProjectId: ULID | null;
+  fontScale: number;
 }
+
+export const FONT_SCALE_MIN = 0.85;
+export const FONT_SCALE_MAX = 1.5;
+export const FONT_SCALE_STEP = 0.05;
 
 // ── Orchestrator session ───────────────────────────────────────────────────
 

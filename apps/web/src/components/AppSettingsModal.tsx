@@ -11,7 +11,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type GlobalSettings, type Project, type ULID } from '@/api/client';
+import {
+  api,
+  FONT_SCALE_MAX,
+  FONT_SCALE_MIN,
+  FONT_SCALE_STEP,
+  type GlobalSettings,
+  type Project,
+  type ULID,
+} from '@/api/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface AppSettingsModalProps {
@@ -27,14 +35,27 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
   const [err, setErr] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const initialDataDir = useRef(settings.dataDir);
+  const initialFontScale = useRef(settings.fontScale);
+
+  // Live-preview the font scale as the slider moves. Revert to the persisted
+  // value if the user closes without saving.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-scale', String(draft.fontScale));
+  }, [draft.fontScale]);
+
+  function cancel() {
+    document.documentElement.style.setProperty('--font-scale', String(initialFontScale.current));
+    onClose();
+  }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !pickerOpen) onClose();
+      if (e.key === 'Escape' && !pickerOpen) cancel();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pickerOpen, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,9 +77,11 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         projectsFolder: draft.projectsFolder,
         telemetryOptIn: draft.telemetryOptIn,
         bugLogTargetProjectId: draft.bugLogTargetProjectId,
+        fontScale: draft.fontScale,
       };
       if (dataDirDirty) patch.dataDir = draft.dataDir;
       const r = await api.patchSettings(patch);
+      initialFontScale.current = r.settings.fontScale;
       onSaved(r.settings, r.restartRequired);
     } catch (e) {
       setErr((e as Error).message);
@@ -71,7 +94,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     <>
       <div
         className="fixed inset-0 z-40 grid place-items-center bg-black/40"
-        onClick={onClose}
+        onClick={cancel}
       >
         <div
           className="flex w-[560px] flex-col border border-border bg-card text-foreground"
@@ -80,7 +103,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
           <header className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="text-base font-semibold">App settings</h2>
             <button
-              onClick={onClose}
+              onClick={cancel}
               className="text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
@@ -148,6 +171,36 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
             </FieldRow>
 
             <FieldRow
+              label="Font scale"
+              help={`Scales every text size in the app. ${Math.round(draft.fontScale * 100)}% — drag to preview, Save to keep.`}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={FONT_SCALE_MIN}
+                  max={FONT_SCALE_MAX}
+                  step={FONT_SCALE_STEP}
+                  value={draft.fontScale}
+                  onChange={(e) =>
+                    setDraft({ ...draft, fontScale: parseFloat(e.target.value) })
+                  }
+                  className="flex-1 accent-primary"
+                />
+                <span className="w-12 text-right tabular-nums text-xs text-muted-foreground">
+                  {Math.round(draft.fontScale * 100)}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDraft({ ...draft, fontScale: 1 })}
+                  disabled={draft.fontScale === 1}
+                  className="border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                >
+                  Reset
+                </button>
+              </div>
+            </FieldRow>
+
+            <FieldRow
               label="Data dir"
               help="Where PC stores sqlite, worktrees, events. Changing requires a restart."
             >
@@ -169,7 +222,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={cancel}
                 className="border border-border px-3 py-1.5 text-sm hover:bg-muted"
               >
                 Cancel

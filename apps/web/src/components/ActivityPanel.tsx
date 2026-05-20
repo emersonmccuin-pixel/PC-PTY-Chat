@@ -64,7 +64,7 @@ export function ActivityPanel({
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="text-xs uppercase tracking-wider text-muted-foreground">
+        <div className="text-sm uppercase tracking-wider text-muted-foreground">
           Activity
         </div>
         <div className="flex items-center gap-1">

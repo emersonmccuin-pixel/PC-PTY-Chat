@@ -27,7 +27,7 @@ export function TabBar({
   // doesn't render. Inline styles bypass that.
   const baseStyle: React.CSSProperties = {
     padding: '8px 16px',
-    fontSize: 13,
+    fontSize: 15,
     textTransform: 'uppercase',
     letterSpacing: '0.08em',
     textAlign: 'center',
@@ -82,7 +82,7 @@ export function TabBar({
         style={{
           ...baseStyle,
           padding: '8px 12px',
-          fontSize: 14,
+          fontSize: 16,
           marginLeft: 4,
           ...(value === 'project-settings' ? activeStyle : inactiveStyle),
         }}
