@@ -95,6 +95,19 @@ export type {
 } from './agent-file.ts';
 export { parseAgentFile, serializeAgentFile } from './agent-file.ts';
 export type {
+  PodAgentRow,
+  PodAuditActor,
+  PodAuditField,
+  PodAuditRow,
+  PodKnowledgeKind,
+  PodKnowledgeRow,
+  PodMcpServerConfig,
+  PodMcpServerRow,
+  PodScope,
+  PodSecretRow,
+} from './pod.ts';
+export { POD_AUDIT_ACTORS, POD_AUDIT_FIELDS, POD_KNOWLEDGE_KINDS, POD_SCOPES } from './pod.ts';
+export type {
   AgentBodyContext,
   AgentBodyContextWorkItem,
   AgentBodyTemplateIssue,

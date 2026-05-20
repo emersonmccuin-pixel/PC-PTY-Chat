@@ -1,9 +1,17 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
+  AgentEffort,
+  AgentModel,
+  AgentOutputDestination,
   FieldSchemaType,
   GlobalSettings,
   NodeOutput,
+  PodAuditActor,
+  PodAuditField,
+  PodKnowledgeKind,
+  PodMcpServerConfig,
+  PodScope,
   ProviderId,
   SessionEndedReason,
   SessionStatus,
@@ -301,3 +309,181 @@ export const settingsGlobal = sqliteTable('settings_global', {
     .$type<GlobalSettings>(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+/**
+ * Section 17a — Agent pod tables.
+ *
+ * Five tables (`agents` + four content tables + `agent_audit`). Every content
+ * table carries `scope` + `project_id` from v1 even though v1 is global-only,
+ * so the 17c per-project overlay lands without a migration.
+ *
+ * Conventions:
+ * - ULIDs as `text` PKs.
+ * - `tools_json` / `config_json` are JSON-encoded via Drizzle's `{ mode: 'json' }`.
+ * - Soft delete on `agents` (`deleted_at` nullable); content tables are hard-
+ *   deleted alongside an `agent_audit` row.
+ * - Foreign keys: child tables reference `agents.id`. No CASCADE — application
+ *   layer handles teardown order to ensure audit rows survive.
+ */
+
+export const agents = sqliteTable(
+  'agents',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    /** Kebab-case agent name (CC frontmatter `name:` field). Materialised
+     *  to `<worktree>/.claude/agents/<name>.md` at spawn time. */
+    name: text('name').notNull(),
+    scope: text('scope').notNull().$type<PodScope>(),
+    /** NULL when `scope === 'global'`; required when `scope === 'project'`.
+     *  App-enforced; sqlite doesn't constrain by enum-of-scope. */
+    projectId: text('project_id').$type<ULID | null>(),
+    prompt: text('prompt').notNull().default(''),
+    /** Allowlist of tool names. Wildcards (`mcp__server__*`) are EXPANDED at
+     *  materialisation time — never stored expanded. Empty = allow all. */
+    tools: text('tools_json', { mode: 'json' })
+      .notNull()
+      .default(sql`'[]'`)
+      .$type<string[]>(),
+    model: text('model').$type<AgentModel | null>(),
+    effort: text('effort').$type<AgentEffort | null>(),
+    maxTurns: integer('max_turns'),
+    outputDestination: text('output_destination').$type<AgentOutputDestination | null>(),
+    description: text('description').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    deletedAt: integer('deleted_at'),
+  },
+  (t) => [
+    /** Unique global agent name (live rows only). */
+    uniqueIndex('agents_global_name_idx')
+      .on(t.name)
+      .where(sql`scope = 'global' AND deleted_at IS NULL`),
+    /** Unique per-project agent name (live rows only). 17c lands without
+     *  migration once project-scoped rows start arriving. */
+    uniqueIndex('agents_project_name_idx')
+      .on(t.projectId, t.name)
+      .where(sql`scope = 'project' AND deleted_at IS NULL`),
+    index('agents_scope_project_idx').on(t.scope, t.projectId),
+  ],
+);
+
+export const agentKnowledge = sqliteTable(
+  'agent_knowledge',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    agentId: text('agent_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agents.id),
+    scope: text('scope').notNull().$type<PodScope>(),
+    projectId: text('project_id').$type<ULID | null>(),
+    name: text('name').notNull(),
+    kind: text('kind').notNull().default('knowledge').$type<PodKnowledgeKind>(),
+    content: text('content').notNull().default(''),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    index('agent_knowledge_agent_idx').on(t.agentId),
+    index('agent_knowledge_scope_project_idx').on(t.scope, t.projectId),
+    /** Unique knowledge-doc name per agent. Split into two partial indices
+     *  because sqlite treats NULL as distinct in unique indices — a single
+     *  composite index on `project_id` would let dup names slip through for
+     *  global rows (where project_id is NULL). */
+    uniqueIndex('agent_knowledge_global_name_idx')
+      .on(t.agentId, t.name)
+      .where(sql`scope = 'global'`),
+    uniqueIndex('agent_knowledge_project_name_idx')
+      .on(t.agentId, t.projectId, t.name)
+      .where(sql`scope = 'project'`),
+  ],
+);
+
+export const agentSecrets = sqliteTable(
+  'agent_secrets',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    agentId: text('agent_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agents.id),
+    scope: text('scope').notNull().$type<PodScope>(),
+    projectId: text('project_id').$type<ULID | null>(),
+    envVarName: text('env_var_name').notNull(),
+    /** v1: plaintext. v2 swaps to `encrypted_value` (DPAPI). Warning banner
+     *  in the Secrets tab keeps the user aware of the v1 limitation. */
+    valuePlaintext: text('value_plaintext').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    index('agent_secrets_agent_idx').on(t.agentId),
+    index('agent_secrets_scope_project_idx').on(t.scope, t.projectId),
+    /** Per-scope partial uniqueness — sqlite NULL-distinct gotcha (see
+     *  agent_knowledge note). */
+    uniqueIndex('agent_secrets_global_env_idx')
+      .on(t.agentId, t.envVarName)
+      .where(sql`scope = 'global'`),
+    uniqueIndex('agent_secrets_project_env_idx')
+      .on(t.agentId, t.projectId, t.envVarName)
+      .where(sql`scope = 'project'`),
+  ],
+);
+
+export const agentMcpServers = sqliteTable(
+  'agent_mcp_servers',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    agentId: text('agent_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agents.id),
+    scope: text('scope').notNull().$type<PodScope>(),
+    projectId: text('project_id').$type<ULID | null>(),
+    /** Server name as it lands in the materialised `mcp.json`'s `mcpServers`
+     *  map. Project overlay wins per-server-name (17c). */
+    name: text('name').notNull(),
+    config: text('config_json', { mode: 'json' }).notNull().$type<PodMcpServerConfig>(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    index('agent_mcp_servers_agent_idx').on(t.agentId),
+    index('agent_mcp_servers_scope_project_idx').on(t.scope, t.projectId),
+    /** Per-scope partial uniqueness — sqlite NULL-distinct gotcha (see
+     *  agent_knowledge note). Project overlay wins per-server-name (17c). */
+    uniqueIndex('agent_mcp_servers_global_name_idx')
+      .on(t.agentId, t.name)
+      .where(sql`scope = 'global'`),
+    uniqueIndex('agent_mcp_servers_project_name_idx')
+      .on(t.agentId, t.projectId, t.name)
+      .where(sql`scope = 'project'`),
+  ],
+);
+
+export const agentAudit = sqliteTable(
+  'agent_audit',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    agentId: text('agent_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agents.id),
+    /** Groups multi-field edits (orchestrator change-set touching prompt +
+     *  knowledge in one transaction renders as one expandable History card).
+     *  NULL for solo edits. */
+    changeSetId: text('change_set_id').$type<ULID | null>(),
+    actor: text('actor').notNull().$type<PodAuditActor>(),
+    field: text('field').notNull().$type<PodAuditField>(),
+    /** Disambiguator for list-shaped fields (knowledge row id, secret env-var
+     *  name, mcp server name). NULL for scalar fields. */
+    fieldRef: text('field_ref'),
+    /** Always NULL for `secret` rows — secrets log event-only. */
+    priorValue: text('prior_value'),
+    newValue: text('new_value'),
+    reason: text('reason'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    index('agent_audit_agent_idx').on(t.agentId),
+    index('agent_audit_change_set_idx').on(t.changeSetId),
+  ],
+);

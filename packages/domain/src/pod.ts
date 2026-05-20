@@ -1,0 +1,148 @@
+// Section 17 — Agent pods (DB-resident specialists).
+//
+// Pods are the long-lived storage shape for an agent: prompt + tools + model
+// settings live in `agents`, and per-pod content lives in `agent_knowledge`,
+// `agent_secrets`, and `agent_mcp_servers`. Every mutation writes an
+// `agent_audit` row for the History tab + revert.
+//
+// All content tables carry `scope` + `project_id` from v1 even though v1 is
+// global-only — so 17c (per-project overlay) lands without a schema migration.
+//
+// File-backed `AgentDef` (see `agent.ts`) is a separate shape PC still reads
+// when materialising the pod to disk for `claude.exe`. Pod tables are the
+// source of truth; the .md file is rendered fresh per spawn.
+
+import type { AgentEffort, AgentModel, AgentOutputDestination } from './agent.ts';
+import type { ULID } from './ulid.ts';
+
+export type PodScope = 'global' | 'project';
+
+export const POD_SCOPES: readonly PodScope[] = ['global', 'project'];
+
+export type PodKnowledgeKind = 'knowledge' | 'example';
+
+export const POD_KNOWLEDGE_KINDS: readonly PodKnowledgeKind[] = ['knowledge', 'example'];
+
+export type PodAuditActor = 'orchestrator' | 'user';
+
+export const POD_AUDIT_ACTORS: readonly PodAuditActor[] = ['orchestrator', 'user'];
+
+/** Audit `field` discriminates which slice of the pod changed. `field_ref`
+ *  disambiguates list-shaped fields — e.g. for `knowledge` it's the knowledge
+ *  row id, for `secret` it's the env-var name, for `mcp_server` it's the
+ *  server name. Scalar fields on the `agents` row use `field_ref = null`. */
+export type PodAuditField =
+  | 'prompt'
+  | 'description'
+  | 'model'
+  | 'effort'
+  | 'max_turns'
+  | 'tools'
+  | 'output_destination'
+  | 'name'
+  | 'knowledge'
+  | 'secret'
+  | 'mcp_server'
+  | 'created'
+  | 'deleted';
+
+export const POD_AUDIT_FIELDS: readonly PodAuditField[] = [
+  'prompt',
+  'description',
+  'model',
+  'effort',
+  'max_turns',
+  'tools',
+  'output_destination',
+  'name',
+  'knowledge',
+  'secret',
+  'mcp_server',
+  'created',
+  'deleted',
+];
+
+/** Inline MCP server config stored on `agent_mcp_servers.config_json`.
+ *  Mirrors the on-disk `.mcp.json` `mcpServers` value shape — `command + args
+ *  + env` for stdio, `url` for HTTP/SSE. Validated at materialisation time. */
+export interface PodMcpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+}
+
+/** Row in the `agents` table. Scalar settings + tools allowlist; per-pod
+ *  content lives in the child tables. */
+export interface PodAgentRow {
+  id: ULID;
+  name: string;
+  scope: PodScope;
+  /** Null when `scope === 'global'`. Set to the owning project id when
+   *  `scope === 'project'`. */
+  projectId: ULID | null;
+  prompt: string;
+  /** Allowlist of tool names (exact match — `mcp__server__*` wildcards are
+   *  expanded by the materialiser, NOT stored expanded). */
+  tools: string[];
+  model: AgentModel | null;
+  effort: AgentEffort | null;
+  maxTurns: number | null;
+  outputDestination: AgentOutputDestination | null;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}
+
+export interface PodKnowledgeRow {
+  id: ULID;
+  agentId: ULID;
+  scope: PodScope;
+  projectId: ULID | null;
+  name: string;
+  kind: PodKnowledgeKind;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PodSecretRow {
+  id: ULID;
+  agentId: ULID;
+  scope: PodScope;
+  projectId: ULID | null;
+  envVarName: string;
+  /** v1: plaintext. v2 will swap to `encrypted_value` (DPAPI). */
+  valuePlaintext: string;
+  createdAt: number;
+}
+
+export interface PodMcpServerRow {
+  id: ULID;
+  agentId: ULID;
+  scope: PodScope;
+  projectId: ULID | null;
+  name: string;
+  config: PodMcpServerConfig;
+  createdAt: number;
+}
+
+export interface PodAuditRow {
+  id: ULID;
+  agentId: ULID;
+  /** Groups multi-field edits (e.g. an orchestrator change-set touching
+   *  prompt + 2 knowledge docs in one transaction). Null for solo edits. */
+  changeSetId: ULID | null;
+  actor: PodAuditActor;
+  field: PodAuditField;
+  /** Disambiguator for list-shaped fields (knowledge row id, secret env-var
+   *  name, mcp server name). Null for scalar fields. */
+  fieldRef: string | null;
+  /** Pre-edit value as JSON-or-text. Always NULL for `secret` rows
+   *  (secrets log event-only — values never hit the audit table). */
+  priorValue: string | null;
+  newValue: string | null;
+  reason: string | null;
+  createdAt: number;
+}
