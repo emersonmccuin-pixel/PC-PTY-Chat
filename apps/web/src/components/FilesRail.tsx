@@ -19,6 +19,7 @@ export function FilesRail({ project }: FilesRailProps) {
   // Per-project expand state — paths of directories the user has opened.
   // Rendered fresh on each project switch so a new project starts collapsed.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showHidden, setShowHidden] = useState(false);
   const selectedPath = useViewingFile((s) =>
     project ? s.bySlug[project.slug] ?? null : null,
   );
@@ -49,11 +50,15 @@ export function FilesRail({ project }: FilesRailProps) {
     };
   }, [project?.id]);
 
-  const isEmpty = useMemo(() => !loading && !error && tree.length === 0, [
-    loading,
-    error,
-    tree,
-  ]);
+  const visibleTree = useMemo(
+    () => (showHidden ? tree : filterHidden(tree)),
+    [tree, showHidden],
+  );
+
+  const isEmpty = useMemo(
+    () => !loading && !error && visibleTree.length === 0,
+    [loading, error, visibleTree],
+  );
 
   function toggleDir(path: string) {
     setExpanded((prev) => {
@@ -84,8 +89,19 @@ export function FilesRail({ project }: FilesRailProps) {
 
   return (
     <div className="flex h-full flex-col bg-card text-foreground">
-      <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Files
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Files
+        </div>
+        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground">
+          <input
+            type="checkbox"
+            checked={showHidden}
+            onChange={(e) => setShowHidden(e.target.checked)}
+            className="h-3 w-3 cursor-pointer"
+          />
+          Show hidden
+        </label>
       </div>
       <div className="flex-1 overflow-y-auto">
         {loading && tree.length === 0 && (
@@ -99,7 +115,7 @@ export function FilesRail({ project }: FilesRailProps) {
             No files here (everything got skipped by .gitignore or the hard-skip list).
           </div>
         )}
-        {tree.map((node) => (
+        {visibleTree.map((node) => (
           <TreeRow
             key={node.path}
             node={node}
@@ -113,6 +129,19 @@ export function FilesRail({ project }: FilesRailProps) {
       </div>
     </div>
   );
+}
+
+function filterHidden(nodes: FileTreeNode[]): FileTreeNode[] {
+  const out: FileTreeNode[] = [];
+  for (const node of nodes) {
+    if (node.name.startsWith('.')) continue;
+    if (node.kind === 'dir' && node.children) {
+      out.push({ ...node, children: filterHidden(node.children) });
+    } else {
+      out.push(node);
+    }
+  }
+  return out;
 }
 
 interface TreeRowProps {
