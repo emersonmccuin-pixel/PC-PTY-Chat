@@ -77,6 +77,7 @@ import { ProjectCreate, type CreateProjectMode } from './services/project-create
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
+import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -89,6 +90,16 @@ const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
 runMigrations();
+
+// Section 16a.2 — seed the global orchestrator pod if it doesn't already
+// exist. Idempotent on every boot; user/orchestrator edits to the row
+// survive. 16a.3's spawn path depends on this row being live.
+{
+  const result = seedOrchestratorPodIfMissing();
+  if (result.seeded) {
+    console.log(`[pc] orchestrator pod seeded (id=${result.agentId})`);
+  }
+}
 
 // Agent library — first-run seed from templates/.project-companion/agents/
 // into ~/.project-companion/agents/. Globals surface in every project's
