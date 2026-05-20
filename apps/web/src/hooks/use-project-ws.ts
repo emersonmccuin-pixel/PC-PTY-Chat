@@ -278,7 +278,17 @@ interface UseProjectWsResult {
   send: (msg: WsOutbound) => boolean;
 }
 
-const MAX_BUFFERED = 500;
+// 2026-05-20 — bumped 500 → 10_000 to fix "chat history disappears mid-session"
+// (user description: "the entire chat disappears and it looks like a fresh
+// session with no history"). PC's chat panel ingests TWO streams per logical
+// event (Hook + JSONL tailer), and both halves of every tool call (start +
+// end) land here before any dedup. A turn with 30 tool calls is ~150
+// envelopes; a few busy turns blew past the prior 500 cap and slid the
+// oldest user/assistant entries off the front of the buffer. Refreshing the
+// page rehydrates from events.jsonl on disk, which is why the chat came back
+// on reload. The 10k ceiling gives multi-hour comfort without the dual-stream
+// dedupe refactor.
+const MAX_BUFFERED = 10_000;
 /** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
 export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
 
