@@ -65,11 +65,13 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
     };
   }, [project?.id]);
 
-  // Refetch when the chat fires a session-changed event (new session minted,
-  // title set, etc.).
+  // Refetch when the chat fires a session-changed (new / resume) or
+  // session-title-updated envelope so the row's title + ordering stay live.
   useEffect(() => {
     if (!project) return;
-    const last = [...events].reverse().find((e) => e.type === 'session-changed');
+    const last = [...events].reverse().find(
+      (e) => e.type === 'session-changed' || e.type === 'session-title-updated',
+    );
     if (!last) return;
     api
       .listSessions(project.id)

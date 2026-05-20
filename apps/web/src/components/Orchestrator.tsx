@@ -450,7 +450,8 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   }, [viewingSessionId, project.id]);
 
   // Active session. Fetched once per project, then patched live from WS
-  // session-changed events (server emits these on title set + new-session).
+  // session-changed (new-session / resume) + session-title-updated (title
+  // metadata refresh; doesn't wipe the chat buffer) envelopes.
   // Declared here (above chatEnvelopes) so the ask-envelope filter can scope
   // by sessionId — transient sessions (workflow-creator, agent-creator)
   // broadcast on the same project WS, and without this filter their asks
@@ -525,7 +526,7 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   useEffect(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
-      if (e.type === 'session-changed') {
+      if (e.type === 'session-changed' || e.type === 'session-title-updated') {
         setSession((e as WsEnvelope & { session: OrchestratorSession }).session);
         break;
       }

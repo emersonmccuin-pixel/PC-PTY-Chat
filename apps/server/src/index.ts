@@ -216,6 +216,14 @@ function attachPtyHandlers(
  * If the active session has no title and the event is the first user prompt,
  * derive a title from the prompt text and broadcast the updated session so
  * the UI's chat header re-renders.
+ *
+ * Uses `session-title-updated` (NOT `session-changed`): the client treats
+ * `session-changed` as a hard checkpoint that wipes the chat event buffer
+ * (correct for new-session / resume — claude.exe context just changed).
+ * A title-only metadata update must NOT wipe — would blank the chat panel
+ * mid-conversation. Burned: tool calls right after the first user prompt
+ * caused chat to "go blank" until refresh, because title-set fired
+ * session-changed and the buffer reset just as tool events were landing.
  */
 function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   if (!event || typeof event !== 'object') return;
@@ -227,7 +235,7 @@ function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   if (!title) return;
   setOrchestratorSessionTitle(active.id, title);
   const updated = getActiveOrchestratorSession(projectId);
-  if (updated) broadcastTo(projectId, { type: 'session-changed', session: updated });
+  if (updated) broadcastTo(projectId, { type: 'session-title-updated', session: updated });
 }
 
 /** First non-empty line, collapsed whitespace, truncated to ~60 chars. */
