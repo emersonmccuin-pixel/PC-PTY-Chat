@@ -113,12 +113,12 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
             failedToday={failedToday}
           />
           <div className="flex-1 overflow-y-auto">
+            <OrchestratorStatusRegion state={orchestratorState} />
             <RunningWorkflowsRegion
               project={project}
               runs={activeRuns}
               nowMs={nowMs}
             />
-            <OrchestratorStatusRegion state={orchestratorState} />
             <HumanReviewRegion
               project={project}
               pausedRuns={pausedRuns}
