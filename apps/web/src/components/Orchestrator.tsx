@@ -55,9 +55,10 @@ const SUPPRESSED_TOOLS = new Set([
   'ToolSearch',
 ]);
 
-// Tools whose call detail (input + result) is high-stakes enough to auto-expand
-// in L3 — the user shouldn't have to click to see what changed on disk.
-const AUTO_EXPAND_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+// Tools that get LIFTED OUT of the tool group into their own top-level
+// bubbles — the user sees diffs live as the orchestrator works instead of
+// having them buried in the collapsed L1 "Tool calls" group.
+const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 
 // ── Tool-call grouping ───────────────────────────────────────────────────
 // Per chat.md: each turn's tool calls collapse into a single "Tool calls"
@@ -72,6 +73,10 @@ interface ToolCall {
   result: unknown;
   startedAt: string;
   ended: boolean;
+  // Stable id (orig sourceEvents index) for the envelope that produced this
+  // tool call — used to derive a stable React key downstream so we don't
+  // remount when later events get deduped and shift positions.
+  stableId: number;
 }
 
 interface ToolGroupItem {
@@ -86,7 +91,22 @@ interface EnvItem {
   env: WsEnvelope;
 }
 
-type RenderItem = ToolGroupItem | EnvItem;
+interface EditItem {
+  kind: 'edit';
+  key: string;
+  call: ToolCall;
+}
+
+type RenderItem = ToolGroupItem | EnvItem | EditItem;
+
+// Paired envelope carrying its original index in `sourceEvents`. The original
+// index is stable across dedup passes (sourceEvents only grows at the tail),
+// so using it as a React key prevents the remount-flicker that happens when
+// hook events get suppressed mid-stream and downstream items shift positions.
+interface StableEnvelope {
+  origIdx: number;
+  env: WsEnvelope;
+}
 
 // ── JSONL→hook normalization + cross-channel dedupe (Section 0) ──────────
 // Until Section 0 phase 0f strips the legacy hook path, BOTH `type:'event'`
@@ -236,33 +256,35 @@ function buildSuppressedHookIndices(envelopes: WsEnvelope[]): Set<number> {
   return suppressed;
 }
 
-function synthesizeRenderItems(envelopes: WsEnvelope[]): RenderItem[] {
+function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
   const items: RenderItem[] = [];
   let buffer: ToolCall[] = [];
 
   const flush = () => {
     if (buffer.length > 0) {
-      items.push({ kind: 'tool-group', key: `tg-${buffer[0]!.startedAt}`, calls: buffer });
+      items.push({ kind: 'tool-group', key: `tg-${buffer[0]!.stableId}`, calls: buffer });
       buffer = [];
     }
   };
 
-  for (let i = 0; i < envelopes.length; i++) {
-    const env = envelopes[i]!;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const env = entry.env;
+    const stableId = entry.origIdx;
     if (env.type === 'ask') {
       flush();
-      items.push({ kind: 'env', key: `env-${i}`, env });
+      items.push({ kind: 'env', key: `env-${stableId}`, env });
       continue;
     }
     if (env.type !== 'event') {
       flush();
-      items.push({ kind: 'env', key: `env-${i}`, env });
+      items.push({ kind: 'env', key: `env-${stableId}`, env });
       continue;
     }
     const ev = (env as WsEnvelope & { event: ChatEvent }).event;
     if (!ev || typeof ev !== 'object' || !('kind' in ev)) {
       flush();
-      items.push({ kind: 'env', key: `env-${i}`, env });
+      items.push({ kind: 'env', key: `env-${stableId}`, env });
       continue;
     }
     // Suppressed tool events (Task, Agent, TodoWrite, etc) — let their
@@ -273,22 +295,47 @@ function synthesizeRenderItems(envelopes: WsEnvelope[]): RenderItem[] {
     }
     if (ev.kind === 'tool-start') {
       const t = ev as ToolStartEvent;
-      buffer.push({
+      const call: ToolCall = {
         toolUseId: t.toolUseId ?? null,
         tool: t.tool,
         input: t.input ?? null,
         result: null,
-        startedAt: t.ts ?? `${i}`,
+        startedAt: t.ts ?? `${stableId}`,
         ended: false,
-      });
+        stableId,
+      };
+      // HIGHLIGHT_TOOLS get their own top-level bubble instead of being
+      // bucketed into the per-turn tool-call group. Flush any pending
+      // tools first so the edit bubble lands in chronological order.
+      if (HIGHLIGHT_TOOLS.has(t.tool)) {
+        flush();
+        items.push({
+          kind: 'edit',
+          key: `edit-${stableId}`,
+          call,
+        });
+      } else {
+        buffer.push(call);
+      }
       continue;
     }
     if (ev.kind === 'tool-end') {
       const t = ev as ToolEndEvent;
-      // Find matching call in the current buffer first (tool_use_id match
-      // takes priority; fall back to last unmatched of same tool name).
+      // Find matching call. Check pending EditItems first (walk back through
+      // items, don't break on non-edit items — an edit-end can arrive after
+      // unrelated tool-groups have flushed in between).
       let matched: ToolCall | null = null;
-      if (t.toolUseId) {
+      for (let j = items.length - 1; j >= 0; j--) {
+        const it = items[j]!;
+        if (it.kind !== 'edit') continue;
+        const c = it.call;
+        if (c.ended) continue;
+        if (t.toolUseId && c.toolUseId === t.toolUseId) { matched = c; break; }
+        if (!t.toolUseId && c.tool === t.tool) { matched = c; break; }
+      }
+      // Then current buffer (tool_use_id priority, then last unmatched of
+      // same tool name).
+      if (!matched && t.toolUseId) {
         for (const c of buffer) {
           if (c.toolUseId === t.toolUseId && !c.ended) { matched = c; break; }
         }
@@ -304,6 +351,7 @@ function synthesizeRenderItems(envelopes: WsEnvelope[]): RenderItem[] {
       if (!matched) {
         for (let j = items.length - 1; j >= 0; j--) {
           const it = items[j]!;
+          if (it.kind === 'edit') continue;
           if (it.kind !== 'tool-group') break;
           for (let k = it.calls.length - 1; k >= 0; k--) {
             const c = it.calls[k]!;
@@ -325,14 +373,15 @@ function synthesizeRenderItems(envelopes: WsEnvelope[]): RenderItem[] {
           tool: t.tool,
           input: null,
           result: t.result ?? null,
-          startedAt: t.ts ?? `${i}`,
+          startedAt: t.ts ?? `${stableId}`,
           ended: true,
+          stableId,
         });
       }
       continue;
     }
     flush();
-    items.push({ kind: 'env', key: `env-${i}-${ev.ts ?? ''}`, env });
+    items.push({ kind: 'env', key: `env-${stableId}`, env });
   }
   flush();
   return items;
@@ -464,9 +513,9 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
   // Section 0 phase 0c: dedupe hook-driven events against their jsonl-tailer
   // counterparts (preferring jsonl) and normalize jsonl envelopes into the
   // hook shape the synthesizer + bubble components already understand.
-  const chatEnvelopes = useMemo(() => {
+  const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
     const suppressed = buildSuppressedHookIndices(sourceEvents);
-    const out: WsEnvelope[] = [];
+    const out: StableEnvelope[] = [];
     const orchestratorSessionId = session?.id ?? null;
     for (let i = 0; i < sourceEvents.length; i++) {
       if (suppressed.has(i)) continue;
@@ -482,16 +531,16 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
         if (orchestratorSessionId && askSessionId && askSessionId !== orchestratorSessionId) {
           continue;
         }
-        out.push(env);
+        out.push({ origIdx: i, env });
         continue;
       }
       if (env.type === 'event') {
-        out.push(env);
+        out.push({ origIdx: i, env });
         continue;
       }
       if (env.type === 'jsonl') {
         const normalized = normalizeJsonlEnvelope(env);
-        if (normalized) out.push(normalized);
+        if (normalized) out.push({ origIdx: i, env: normalized });
       }
     }
     return out;
@@ -799,12 +848,42 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
         onScroll={handleChatScroll}
         className="h-full overflow-y-auto px-4 py-3"
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-3">
-          {renderItems.map((item) => {
+        <div className="flex flex-col gap-3">
+          {renderItems.map((item, idx) => {
             if (item.kind === 'tool-group') {
               return <ToolGroupBubble key={item.key} calls={item.calls} />;
             }
+            if (item.kind === 'edit') {
+              return <EditBubble key={item.key} call={item.call} />;
+            }
             const env = item.env;
+            // For an assistant EnvItem, look ahead for the next system event
+            // with subtype `turn_duration` (before any other user/assistant)
+            // and pull its durationMs onto the bubble's tab.
+            let assistantDurationMs: number | undefined;
+            if (env.type === 'event') {
+              const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+              if (ev?.kind === 'assistant') {
+                for (let j = idx + 1; j < renderItems.length; j++) {
+                  const next = renderItems[j]!;
+                  if (next.kind !== 'env') continue;
+                  if (next.env.type !== 'event') continue;
+                  const nev = (next.env as WsEnvelope & { event: ChatEvent }).event;
+                  if (!nev || typeof nev !== 'object') continue;
+                  if (nev.kind === 'user' || nev.kind === 'assistant') break;
+                  if (nev.kind === 'system') {
+                    const sys = nev as SystemEvent;
+                    if (sys.subtype === 'turn_duration') {
+                      const raw = sys.raw as { durationMs?: number } | undefined;
+                      if (typeof raw?.durationMs === 'number') {
+                        assistantDurationMs = raw.durationMs;
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
+            }
             if (env.type === 'ask') {
               const askEnv = env as WsEnvelope & {
                 toolName: string;
@@ -836,6 +915,7 @@ export function Orchestrator({ project, events, send, clearWs }: OrchestratorPro
                 projectId={project.id}
                 resolvedApprovals={resolvedApprovals}
                 onApprovalResolved={markApprovalResolved}
+                assistantDurationMs={assistantDurationMs}
               />
             );
           })}
@@ -903,19 +983,29 @@ interface EventBubbleProps {
     approved: boolean,
     response: string,
   ) => void;
+  assistantDurationMs?: number;
 }
+
+// System subtypes we deliberately hide from chat:
+//   - `stop_hook_summary`: CC's "ran N stop hooks" footer. Pure noise.
+//   - `turn_duration`: extracted onto the assistant tab as a "· 36s" suffix
+//     instead of a footer row.
+const SUPPRESSED_SYSTEM_SUBTYPES = new Set(['stop_hook_summary', 'turn_duration']);
 
 function EventBubble({
   event,
   projectId,
   resolvedApprovals,
   onApprovalResolved,
+  assistantDurationMs,
 }: EventBubbleProps) {
   switch (event.kind) {
     case 'user':
       return <UserBubble event={event as UserEvent} />;
     case 'assistant':
-      return <AssistantBubble event={event as AssistantEvent} />;
+      return (
+        <AssistantBubble event={event as AssistantEvent} durationMs={assistantDurationMs} />
+      );
     // tool-start / tool-end never reach here — synthesizeRenderItems
     // folds them into a ToolGroup. Suppressed tools (Task/TodoWrite/etc)
     // route to their dedicated bubbles below.
@@ -943,8 +1033,11 @@ function EventBubble({
       );
     case 'subagent-failure':
       return <FailureBubble event={event as SubagentFailureEvent} />;
-    case 'system':
-      return <SystemBubble event={event as SystemEvent} />;
+    case 'system': {
+      const sys = event as SystemEvent;
+      if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) return null;
+      return <SystemBubble event={sys} />;
+    }
     // session-end renders as a footer notice on the chat panel (not inline);
     // subagent-stop is captured but not rendered in chat (Section 2 owns it).
     case 'session-end':
@@ -1209,13 +1302,23 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-// ── Role label (small text header on top of each user / assistant bubble) ─
+// ── Role tab (folder-tab style indicator sitting above each user / assistant
+// bubble). `-mb-px` + `border-b-0` lets the tab visually merge with the
+// bubble's top border so it reads as one shape.
 
-function RoleLabel({ role }: { role: 'user' | 'claude' }) {
+function RoleTab({ role, suffix }: { role: 'user' | 'claude'; suffix?: string }) {
   const text = role === 'user' ? 'You' : 'Claude';
-  const tone = role === 'user' ? 'text-primary/80' : 'text-muted-foreground';
+  const styles =
+    role === 'user'
+      ? 'border-primary/60 bg-primary/30 text-primary/90'
+      : 'border-border bg-card text-muted-foreground';
   return (
-    <div className={`mb-1 text-[10px] uppercase tracking-wider ${tone}`}>{text}</div>
+    <div
+      className={`relative z-10 -mb-px inline-block border border-b-0 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${styles}`}
+    >
+      {text}
+      {suffix && <span className="ml-1.5 font-mono normal-case opacity-70">· {suffix}</span>}
+    </div>
   );
 }
 
@@ -1240,15 +1343,14 @@ function UserBubble({ event }: { event: UserEvent }) {
             <CopyButton text={part.text} />
           </div>
         ) : (
-          <div
-            key={idx}
-            className="group relative self-end max-w-[85%] border border-primary/60 bg-primary/30 px-3 py-2 text-sm text-foreground"
-          >
-            <RoleLabel role="user" />
-            <div className="whitespace-pre-wrap break-words">
-              {part.text || '(empty prompt)'}
+          <div key={idx} className="group">
+            <RoleTab role="user" />
+            <div className="relative border border-primary/60 bg-primary/30 px-3 py-2 text-sm text-foreground">
+              <div className="whitespace-pre-wrap break-words">
+                {part.text || '(empty prompt)'}
+              </div>
+              <CopyButton text={part.text} />
             </div>
-            <CopyButton text={part.text} />
           </div>
         ),
       )}
@@ -1258,25 +1360,36 @@ function UserBubble({ event }: { event: UserEvent }) {
 
 // ── Assistant bubble (markdown via react-markdown) ───────────────────────
 
-function AssistantBubble({ event }: { event: AssistantEvent }) {
+function AssistantBubble({
+  event,
+  durationMs,
+}: {
+  event: AssistantEvent;
+  durationMs?: number;
+}) {
   const text = event.text ?? '';
+  const durationSuffix = typeof durationMs === 'number' ? formatElapsed(durationMs) : undefined;
   if (!text) {
     return (
-      <div className="self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm italic text-muted-foreground">
-        <RoleLabel role="claude" />
-        {event.transcriptPath
-          ? `(no assistant text — transcript empty or missing at ${event.transcriptPath})`
-          : '(no transcript path provided by Stop hook)'}
+      <div>
+        <RoleTab role="claude" suffix={durationSuffix} />
+        <div className="border border-border bg-card px-3 py-2 text-sm italic text-muted-foreground">
+          {event.transcriptPath
+            ? `(no assistant text — transcript empty or missing at ${event.transcriptPath})`
+            : '(no transcript path provided by Stop hook)'}
+        </div>
       </div>
     );
   }
   return (
-    <div className="group relative self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm text-foreground">
-      <RoleLabel role="claude" />
-      <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
+    <div className="group">
+      <RoleTab role="claude" suffix={durationSuffix} />
+      <div className="relative border border-border bg-card px-3 py-2 text-sm text-foreground">
+        <div className="markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
+        </div>
+        <CopyButton text={text} />
       </div>
-      <CopyButton text={text} />
     </div>
   );
 }
@@ -1376,6 +1489,57 @@ function ToolCallDetails({ call }: { call: ToolCall }) {
         )
       ) : (
         <div className="text-[11px] italic text-muted-foreground">running…</div>
+      )}
+    </div>
+  );
+}
+
+// ── Edit / Write / NotebookEdit live activity row ─────────────────────────
+// One-line row showing the file being edited, with a running spinner / done
+// check. Click to expand the full diff via the shared ToolCallDetails. Kept
+// visually subdued so it signals "real work happening" during Thinking
+// without competing with chat content.
+
+function EditBubble({ call }: { call: ToolCall }) {
+  const [open, setOpen] = useState(false);
+  const input = (call.input ?? {}) as Record<string, unknown>;
+  const path =
+    typeof input.file_path === 'string'
+      ? (input.file_path as string)
+      : typeof input.notebook_path === 'string'
+        ? (input.notebook_path as string)
+        : '';
+  const running = !call.ended;
+
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 text-left text-muted-foreground hover:text-foreground"
+      >
+        <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
+        <span className="font-medium uppercase tracking-wider">{call.tool}</span>
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[11px]"
+          title={path}
+        >
+          {path || '(no path)'}
+        </span>
+        {running ? (
+          <span className="thinking-dots inline-flex shrink-0 items-center gap-0.5">
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+          </span>
+        ) : (
+          <span className="shrink-0 font-mono text-[10px] text-success">✓</span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-1.5 border border-border bg-card px-3 py-2">
+          <ToolCallDetails call={call} />
+        </div>
       )}
     </div>
   );
@@ -1568,7 +1732,9 @@ function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
   const rowKey = (c: ToolCall) => `${c.toolUseId ?? c.startedAt}`;
   const isRowOpen = (c: ToolCall) => {
     const k = rowKey(c);
-    return k in rowsOpen ? rowsOpen[k]! : AUTO_EXPAND_TOOLS.has(c.tool);
+    // Edit/Write/NotebookEdit are lifted out into their own EditBubble; rows
+    // in the tool group default closed.
+    return k in rowsOpen ? rowsOpen[k]! : false;
   };
   const toggleRow = (c: ToolCall) => {
     const k = rowKey(c);
