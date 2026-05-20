@@ -70,7 +70,7 @@ export function Shell({
       id="pc-shell-v3"
       className="h-full"
     >
-      <Panel id="rail" defaultSize="14%" minSize="14%" maxSize="14%">
+      <Panel id="rail" defaultSize="15%" minSize="15%" maxSize="15%">
         <LeftRail
           projects={projects}
           activeProject={activeProject}
@@ -81,7 +81,7 @@ export function Shell({
         />
       </Panel>
       <Separator className="w-px bg-border" />
-      <Panel id="center" defaultSize="72%" minSize="30%">
+      <Panel id="center" defaultSize="70%" minSize="30%">
         <Center
           activeProject={activeProject}
           projectCount={projects.length}
@@ -98,9 +98,9 @@ export function Shell({
       <Panel
         id="activity"
         panelRef={activityRef}
-        defaultSize="14%"
-        minSize="14%"
-        maxSize="14%"
+        defaultSize="15%"
+        minSize="15%"
+        maxSize="15%"
         collapsible
         collapsedSize="0%"
       >
