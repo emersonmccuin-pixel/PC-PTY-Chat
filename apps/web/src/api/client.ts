@@ -863,6 +863,15 @@ export const api = {
       { nodeId },
     ).then((r) => r.runId),
 
+  /** Cancel a single in-flight workflow run (kills in-flight subagents +
+   *  flips status to `cancelled`). 404 unknown / cross-project; 400 if the
+   *  run is already terminal. Used by the activity panel's Cancel button. */
+  cancelWorkflowRun: (projectId: ULID, runId: string, reason?: string) =>
+    postJson<{ ok: true }>(
+      `/api/projects/${projectId}/workflow-runs/${runId}/cancel`,
+      reason ? { reason } : {},
+    ),
+
   // ── Orchestrator sessions ──────────────────────────────────────────────
   getActiveSession: (projectId: ULID) =>
     getJson<{ ok: true; session: OrchestratorSession | null }>(

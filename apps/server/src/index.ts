@@ -2202,6 +2202,27 @@ app.post('/api/projects/:projectId/workflow-runs/:runId/retry-from', async (c) =
   return c.json({ ok: true, runId: result.runId });
 });
 
+// 6.3 — cancel a single in-flight run from the activity panel. Re-uses the
+// runtime's `cancelRunExternal` (kills in-flight subagents, flips status to
+// `cancelled`, sets `lastReason`). 404 for unknown project / cross-project
+// runs; 400 if already terminal.
+app.post('/api/projects/:projectId/workflow-runs/:runId/cancel', async (c) => {
+  const id = c.req.param('projectId');
+  const runId = c.req.param('runId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
+  const reason = typeof body.reason === 'string' && body.reason.trim()
+    ? body.reason.trim()
+    : 'cancelled from activity panel';
+  const result = await runtime.workflowRuntime().cancelRunExternal(runId, reason);
+  if (!result.ok) {
+    const status = result.error.startsWith('unknown run:') ? 404 : 400;
+    return c.json({ ok: false, error: result.error }, status);
+  }
+  return c.json({ ok: true });
+});
+
 app.get('/api/projects/:projectId/worktrees', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);

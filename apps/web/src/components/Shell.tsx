@@ -23,6 +23,7 @@ import { Orchestrator } from './Orchestrator';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
+import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
 interface ShellProps {
   projects: Project[];
@@ -109,6 +110,9 @@ export function Shell({
           onClose={() => onToggleActivityPanelOpen(false)}
         />
       </Panel>
+      {activeProject && (
+        <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
+      )}
     </Group>
   );
 }

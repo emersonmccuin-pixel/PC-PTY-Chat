@@ -16,7 +16,6 @@ import { CreateWorkflowModal } from './CreateWorkflowModal';
 import { DeleteWorkflowDialog } from './workflows/DeleteWorkflowDialog';
 import { DuplicateWorkflowModal } from './workflows/DuplicateWorkflowModal';
 import { RunNowModal } from './workflows/RunNowModal';
-import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
 interface WorkflowSummary {
   id: string;
@@ -320,7 +319,6 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           }}
         />
       )}
-      <WorkflowDrawer projectId={project.id} events={events} />
     </div>
   );
 }
