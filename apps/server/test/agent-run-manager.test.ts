@@ -509,3 +509,48 @@ test('listForProject filters out terminal-status runs only when caller asks; raw
   assert.equal(active.length, 1);
   assert.equal(active[0]?.agentName, 'a2');
 });
+
+// ── 16b.8.3: run-jsonl-event forwarding for the live-transcript modal ──
+
+test('forwards every jsonl-event as run-jsonl-event with {runId, projectId, event}', async () => {
+  const p = createProject({
+    slug: 'arm-jsonl-forward',
+    name: 'ARM Jsonl Forward',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-jsonl-forward', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const seen: Array<{ runId: string; projectId: string; kind: string }> = [];
+  mgr.on('run-jsonl-event', (payload: { runId: string; projectId: string; event: JsonlEvent }) => {
+    seen.push({ runId: payload.runId, projectId: payload.projectId, kind: payload.event.kind });
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+  const s = sessions[0]!;
+  s.becomeReady();
+
+  // Forward a tool call + a turn-end (the terminal one). Both must land in
+  // the modal so the user sees the closing assistant text.
+  s.emitToolCall('Read', { file_path: '/tmp/foo' });
+  s.emitTurnEnd('all done');
+  await completion;
+
+  assert.deepEqual(
+    seen.map((e) => e.kind),
+    ['jsonl-tool-call', 'jsonl-turn-end'],
+  );
+  assert.ok(seen.every((e) => e.runId === runId));
+  assert.ok(seen.every((e) => e.projectId === p.id));
+});

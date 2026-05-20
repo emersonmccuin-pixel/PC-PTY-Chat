@@ -107,6 +107,7 @@ import {
   type AgentRunFailureCause,
   type AgentRunRecord,
 } from './services/agent-run-manager.ts';
+import type { JsonlEvent } from '@pc/runtime';
 import type { AgentFailedPayload, PendingAskKind, PendingAskOption } from '@pc/domain';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -204,11 +205,26 @@ channelServer.start();
 // to project subscribers as `{ type: 'agent-run-changed', record }` so the
 // Activity Panel's running-agents region updates live. Listener is attached
 // once at boot; the singleton's lifetime matches the process.
+//
+// 16b.8.3 — Manager also emits `run-jsonl-event` for every JSONL event
+// from a run's PtySession; rebroadcast as `{ type: 'agent-jsonl-event',
+// runId, event }` so the Activity Panel's live-transcript modal can
+// filter by runId.
 {
   const mgr = new AgentRunManager();
   mgr.on('run-changed', (record: AgentRunRecord) => {
     broadcastTo(record.projectId, { type: 'agent-run-changed', record });
   });
+  mgr.on(
+    'run-jsonl-event',
+    (payload: { runId: ULID; projectId: ULID; event: JsonlEvent }) => {
+      broadcastTo(payload.projectId, {
+        type: 'agent-jsonl-event',
+        runId: payload.runId,
+        event: payload.event,
+      });
+    },
+  );
   setAgentRunManager(mgr);
 }
 

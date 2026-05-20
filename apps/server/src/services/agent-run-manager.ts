@@ -187,7 +187,7 @@ interface InternalRun extends AgentRunRecord {
   resolveCompletion: ((rec: AgentRunRecord) => void) | null;
 }
 
-/** AgentRunManager is an EventEmitter — Section 16b.8.1.
+/** AgentRunManager is an EventEmitter — Section 16b.8.1 + 16b.8.3.
  *
  * Events:
  *   - `run-changed` — fires once per meaningful state transition (spawning
@@ -196,6 +196,13 @@ interface InternalRun extends AgentRunRecord {
  *      observable. Payload is the `AgentRunRecord` snapshot (no internal
  *      timer / session refs). Server `index.ts` subscribes and rebroadcasts
  *      to project WS subscribers as `{ type: 'agent-run-changed', record }`.
+ *   - `run-jsonl-event` — Section 16b.8.3. Fires for every `jsonl-event`
+ *      emitted by the run's PtySession, tagged with `{ runId, projectId,
+ *      event }`. Server `index.ts` subscribes + rebroadcasts to project WS
+ *      subscribers as `{ type: 'agent-jsonl-event', runId, event }`. Feeds
+ *      the Activity Panel's live-transcript modal. Terminal-state runs stop
+ *      forwarding (the session's `jsonl-event` listener is gated on
+ *      `isTerminal(rec.status)` upstream).
  */
 export class AgentRunManager extends EventEmitter {
   private runs = new Map<ULID, InternalRun>();
@@ -476,6 +483,10 @@ export class AgentRunManager extends EventEmitter {
     session.on('jsonl-event', (ev: JsonlEvent) => {
       if (this.isTerminal(rec.status)) return;
       this.armIdleTimer(rec); // reset on every event
+      // 16b.8.3 — forward every event for the live-transcript modal.
+      // Emits before the turn-end branch so the closing `jsonl-turn-end`
+      // also lands in the modal.
+      this.emit('run-jsonl-event', { runId: rec.runId, projectId: rec.projectId, event: ev });
       if (ev.kind === 'jsonl-turn-end') {
         this.onTurnEnd(rec, ev.text);
       }

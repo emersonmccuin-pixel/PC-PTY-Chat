@@ -20,6 +20,7 @@ import { useProjectWorkflowRuns } from '@/hooks/use-project-workflow-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
+import { AgentTranscriptModal } from '@/components/AgentTranscriptModal';
 
 interface PendingApproval {
   workflowRunId: string;
@@ -48,6 +49,12 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     return () => clearInterval(id);
   }, []);
 
+  // 16b.8.3 — runId of the currently-open transcript modal (if any). The
+  // displayed AgentRunRecord is derived below from events + agentRuns so
+  // the modal keeps showing terminal status even after `useProjectAgentRuns`
+  // drops the row from its map.
+  const [openTranscriptRunId, setOpenTranscriptRunId] = useState<string | null>(null);
+
   const { runs } = useProjectWorkflowRuns(project, events);
   const activeRuns = useMemo(
     () => runs.filter((r) => ACTIVE_STATUSES.has(r.status)),
@@ -62,6 +69,20 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     () => agentRuns.filter((r) => r.status === 'paused'),
     [agentRuns],
   );
+
+  // Displayed run for the open transcript modal. Falls back to the latest
+  // matching `agent-run-changed` envelope when the run no longer appears in
+  // `agentRuns` (terminal-state rows are dropped from the hook's map).
+  const transcriptRun = useMemo<AgentRunRecord | null>(() => {
+    if (!openTranscriptRunId) return null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i];
+      if (!env || env.type !== 'agent-run-changed') continue;
+      const record = (env as { record?: AgentRunRecord }).record;
+      if (record && record.runId === openTranscriptRunId) return record;
+    }
+    return agentRuns.find((r) => r.runId === openTranscriptRunId) ?? null;
+  }, [openTranscriptRunId, events, agentRuns]);
   const approvals = usePendingApprovals(project, events);
   const orchestratorState = useOrchestratorState(events);
 
@@ -125,6 +146,7 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
               project={project}
               runs={agentRuns}
               nowMs={nowMs}
+              onOpenTranscript={(runId) => setOpenTranscriptRunId(runId)}
             />
             <RunningWorkflowsRegion
               project={project}
@@ -144,6 +166,13 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
             />
           </div>
         </div>
+      )}
+      {transcriptRun && (
+        <AgentTranscriptModal
+          run={transcriptRun}
+          events={events}
+          onClose={() => setOpenTranscriptRunId(null)}
+        />
       )}
     </div>
   );
@@ -422,10 +451,12 @@ function RunningAgentsRegion({
   project,
   runs,
   nowMs,
+  onOpenTranscript,
 }: {
   project: Project;
   runs: AgentRunRecord[];
   nowMs: number;
+  onOpenTranscript: (runId: string) => void;
 }) {
   return (
     <RegionShell title="Running agents" badge={String(runs.length)}>
@@ -439,6 +470,7 @@ function RunningAgentsRegion({
               run={run}
               projectId={project.id}
               nowMs={nowMs}
+              onOpenTranscript={onOpenTranscript}
             />
           ))}
         </ul>
@@ -451,10 +483,12 @@ function RunningAgentCard({
   run,
   projectId,
   nowMs,
+  onOpenTranscript,
 }: {
   run: AgentRunRecord;
   projectId: string;
   nowMs: number;
+  onOpenTranscript: (runId: string) => void;
 }) {
   const [cancelling, setCancelling] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
@@ -482,34 +516,39 @@ function RunningAgentCard({
     // envelope drops the row from the map, unmounting this card.
   }
 
-  // Click-to-modal lands in 16b.8.3; for v1 the card is non-interactive
-  // outside the Cancel button.
   return (
-    <li className="px-3 py-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-          {run.agentName}
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpenTranscript(run.runId)}
+        className="block w-full px-3 py-2 text-left hover:bg-muted/40"
+        aria-label={`Open transcript for ${run.agentName}`}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+            {run.agentName}
+          </div>
+          <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            {elapsed}
+          </div>
         </div>
-        <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {elapsed}
+        <div className="mt-0.5 flex items-baseline justify-between gap-2">
+          <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+            {statusLabel}
+          </div>
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={cancelling}
+            className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
+          >
+            {cancelling ? '…' : 'Cancel'}
+          </button>
         </div>
-      </div>
-      <div className="mt-0.5 flex items-baseline justify-between gap-2">
-        <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-          {statusLabel}
-        </div>
-        <button
-          type="button"
-          onClick={handleCancel}
-          disabled={cancelling}
-          className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
-        >
-          {cancelling ? '…' : 'Cancel'}
-        </button>
-      </div>
-      {cancelErr && (
-        <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
-      )}
+        {cancelErr && (
+          <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
+        )}
+      </button>
     </li>
   );
 }
