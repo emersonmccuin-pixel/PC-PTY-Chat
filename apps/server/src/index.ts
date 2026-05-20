@@ -920,11 +920,11 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
   return c.json({ ok: true, session });
 });
 
-/** Resume a past orchestrator session. Ends the current active row, creates
- *  a new active row pointing at the target's claude.exe conversation
- *  (providerSessionId), respawns the PTY with --resume so claude.exe loads
- *  the prior context. The chat panel re-renders by tailing the existing
- *  JSONL from its start. */
+/** Resume a past orchestrator session. Re-activates the target row, respawns
+ *  the PTY with --resume so claude.exe loads the prior context, then replays
+ *  the row's events.jsonl to every subscriber so the chat panel re-populates
+ *  immediately (no refresh required). The JSONL tailer also fires on the
+ *  new spawn; client dedupes against the events.jsonl entries. */
 app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
   const id = c.req.param('projectId') as ULID;
   const targetId = c.req.param('targetId') as ULID;
@@ -939,8 +939,29 @@ app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
   const pty = runtime.ensurePty();
   attachPtyHandlers(id, runtime, pty);
   broadcastTo(id, { type: 'session-changed', session });
+  replayActiveSessionEvents(id, runtime);
   return c.json({ ok: true, session });
 });
+
+/** Replay the active session's events.jsonl to all WS subscribers. Mirrors
+ *  the per-socket replay in the WS-connect handler so a same-page resume
+ *  shows the prior chat history without needing a browser refresh. */
+function replayActiveSessionEvents(projectId: ULID, runtime: ProjectRuntime): void {
+  const active = getActiveOrchestratorSession(projectId);
+  if (!active) return;
+  const eventsFile = resolve(runtime.sessionDataPath(active.id), 'events.jsonl');
+  if (!existsSync(eventsFile)) return;
+  try {
+    const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
+    for (const line of lines) {
+      let event: unknown;
+      try { event = JSON.parse(line); } catch { continue; }
+      broadcastTo(projectId, { type: 'event', event });
+    }
+  } catch {
+    /* best-effort replay */
+  }
+}
 
 // ── Agent-creator transient session (Section 3 phase 3e.3) ─────────────────
 //
