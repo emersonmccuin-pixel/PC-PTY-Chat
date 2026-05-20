@@ -356,6 +356,35 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_invoke_agent',
+    description:
+      "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. With wait: true (default for background agents) the call blocks until the child finishes and returns { ok, mode: 'sync', sessionId, runId, result }; with wait: false (orchestrator default — don't block the chat composer) the call returns { ok, mode: 'async', sessionId, runId, startedAt } immediately and the terminal agent-completed / agent-failed channel event lands on your next turn (orchestrator handler protocol entries #4 + #5). Optional parentWorkItemId pins the child to a work-item — defaults to PC_AGENT_PARENT_WORK_ITEM_ID when called from inside another agent. The project route URL is derived from PC_PROJECT_ID.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'pod-row name of the agent to dispatch (kebab-case)',
+        },
+        input: {
+          type: 'string',
+          description: "free-form input — becomes the child's first user message",
+        },
+        wait: {
+          type: 'boolean',
+          description:
+            'true → block until the child finishes; false → return immediately + terminal event lands on next turn. Orchestrator defaults to false; background agents default to true.',
+        },
+        parentWorkItemId: {
+          type: 'string',
+          description:
+            'optional work-item ULID to attach the child to; defaults to PC_AGENT_PARENT_WORK_ITEM_ID',
+        },
+      },
+      required: ['name', 'input'],
+    },
+  },
+  {
     name: 'pc_ask_orchestrator',
     description:
       "Pause your run and ask the orchestrator a question. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator answers. agentName + sessionId are read from PC_AGENT_NAME / PC_AGENT_SESSION_ID env vars set at spawn time; agents not spawned via pc_invoke_agent cannot call this.",
@@ -1187,6 +1216,51 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_attach_to_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_invoke_agent': {
+      const name = typeof args.name === 'string' ? args.name.trim() : '';
+      const input = typeof args.input === 'string' ? args.input : '';
+      if (!name || !input.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_invoke_agent: name and input required' }],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_invoke_agent: PC_PROJECT_ID not set — cannot route invoke' },
+          ],
+          isError: true,
+        };
+      }
+      const wait = args.wait === undefined ? undefined : args.wait === true;
+      const parentWorkItemId =
+        typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
+          ? args.parentWorkItemId.trim()
+          : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      const payload: Record<string, unknown> = { input };
+      if (wait !== undefined) payload.wait = wait;
+      if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/agents/${encodeURIComponent(name)}/invoke`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_invoke_agent failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_invoke_agent failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

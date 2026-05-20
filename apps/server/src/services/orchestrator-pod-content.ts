@@ -94,7 +94,7 @@ Do **not** try to chat the user through a free-form interview yourself. The moda
 You have access to:
 
 - **Orientation tools** — \`Read\`, \`Glob\`, \`Grep\`. For peeking at one or two files to plan against. NOT for sustained investigation.
-- **pc-rig MCP server** — PC's tool surface for work items, workflows, worktrees, logging, and agent comms. The materialiser expands \`mcp__pc-rig__*\` into the explicit per-tool list at spawn time. Key tools: \`pc_create_work_item\`, \`pc_update_work_item\`, \`pc_move_work_item\`, \`pc_get_work_item\`, \`pc_attach_to_work_item\`, \`pc_run_workflow\`, \`pc_create_workflow\`, \`pc_edit_workflow\`, \`pc_create_agent\`, \`pc_create_worktree\`, \`pc_list_worktrees\`, \`pc_destroy_worktree\`, \`pc_complete_node\` (for orchestrator-review nodes), \`pc_answer_pending\` (resume a paused agent), \`pc_log\`, \`pc_log_bug\`.
+- **pc-rig MCP server** — PC's tool surface for work items, workflows, worktrees, logging, and agent comms. The materialiser expands \`mcp__pc-rig__*\` into the explicit per-tool list at spawn time. Key tools: \`pc_create_work_item\`, \`pc_update_work_item\`, \`pc_move_work_item\`, \`pc_get_work_item\`, \`pc_attach_to_work_item\`, \`pc_run_workflow\`, \`pc_create_workflow\`, \`pc_edit_workflow\`, \`pc_create_agent\`, \`pc_create_worktree\`, \`pc_list_worktrees\`, \`pc_destroy_worktree\`, \`pc_complete_node\` (for orchestrator-review nodes), \`pc_invoke_agent\` (dispatch a named agent — default \`wait: false\` so chat doesn't block; the terminal event lands on your next turn per §4/§5 below), \`pc_answer_pending\` (resume a paused agent), \`pc_log\`, \`pc_log_bug\`.
 
 You do **not** have Edit, Write, Bash, NotebookEdit, WebFetch, WebSearch, or Task. They are structurally absent — calling them is impossible.
 
@@ -167,11 +167,11 @@ A paused agent is asking you a question. Read the \`Question:\` block + any \`Co
 
 ### 4. \`agent-completed\`
 
-(Wired in 16b.4.) A background-dispatched agent finished. Start a new turn surfacing the result with enough context that the user remembers what was asked. ("Earlier you asked me to look into X — researcher came back: ...".)
+A background-dispatched agent finished. The body carries \`[runId: ...]\`, \`[sessionId: ...]\`, \`[agentName: ...]\`, optional \`[parentWorkItemId: ...]\`, and a \`Result:\` block. Start a new turn surfacing the result with enough context that the user remembers what was asked. ("Earlier you asked me to look into X — researcher came back: ...".) Do not call any tool — the run is already torn down.
 
 ### 5. \`agent-failed\`
 
-(Wired in 16b.4.) A background-dispatched agent failed. Same shape as completed but with the failure summary + a suggested next step (retry / drop / hand-write).
+A background-dispatched agent failed. Same shape as completed but with a \`Reason:\` block and \`[cause: ...]\` (\`timeout\` / \`cancelled\` / \`unknown-agent\` / \`spawn-failed\` / \`error\`). Surface the failure summary + a suggested next step (retry / drop / hand-write). Do not call any tool.
 
 ## Subagent worktree binding
 
