@@ -1883,6 +1883,23 @@ function Composer({
   const [interruptFeedback, setInterruptFeedback] = useState<'sent' | 'failed' | null>(null);
   const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Auto-grow textarea. Min ~2 lines (matches the historical rows={2} feel),
+  // max ~10 lines (≈5× the resting height), then becomes scrollable. After
+  // submit clears `text`, the effect re-runs and shrinks back to min. Mirrors
+  // claude.exe terminal composer behavior — content stays visible as you type,
+  // nothing gets hidden behind the chat panel.
+  const COMPOSER_MIN_PX = 56;
+  const COMPOSER_MAX_PX = 200;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const resizeTextarea = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto'; // reset so scrollHeight reflects current content
+    const next = Math.max(COMPOSER_MIN_PX, Math.min(el.scrollHeight, COMPOSER_MAX_PX));
+    el.style.height = `${next}px`;
+  }, []);
+  useEffect(() => { resizeTextarea(); }, [text, resizeTextarea]);
+
   function clickInterrupt() {
     if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
     const ok = onInterrupt();
@@ -1945,6 +1962,7 @@ function Composer({
   return (
     <div className="flex flex-col gap-2 border-t border-border bg-card px-4 py-3">
       <textarea
+        ref={textareaRef}
         value={text}
         onChange={(e) => {
           setText(e.target.value);
@@ -1975,9 +1993,9 @@ function Composer({
             return;
           }
         }}
-        rows={2}
         placeholder="Message the orchestrator (Enter to send, Shift+Enter for newline, ↑/↓ for history)"
-        className="resize-none border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none"
+        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none"
+        style={{ minHeight: COMPOSER_MIN_PX, maxHeight: COMPOSER_MAX_PX }}
       />
       {queuedPrompts.length > 0 && (
         <div className="flex flex-col gap-1 border border-dashed border-border bg-muted/30 px-2 py-1.5">
