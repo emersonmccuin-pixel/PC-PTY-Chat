@@ -355,6 +355,42 @@ const TOOLS = [
       required: ['workItemId', 'name', 'content'],
     },
   },
+  {
+    name: 'pc_ask_orchestrator',
+    description:
+      "Pause your run and ask the orchestrator a question. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator answers. agentName + sessionId are read from PC_AGENT_NAME / PC_AGENT_SESSION_ID env vars set at spawn time; agents not spawned via pc_invoke_agent cannot call this.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'the question to ask the orchestrator' },
+        context: {
+          type: 'string',
+          description:
+            'optional context — recent transcript snippet, files inspected, candidate options. Helps the orchestrator decide whether it can answer directly or needs to escalate to the user.',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'pc_answer_pending',
+    description:
+      'Resume a paused agent with an answer. Atomically flips the pending-ask row waiting→answered, re-spawns the agent with --resume <sessionId>, and writes the answer as the next user message. Idempotent: a second call for the same pendingAskId returns ok: false, cause: "already-answered". Orchestrator usage only — agents that need to forward an answer to a different paused agent should use pc_ask_orchestrator instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pendingAskId: { type: 'string', description: 'pending-ask ULID from the agent-asks-* event' },
+        answer: { type: 'string', description: 'the answer to thread back into the paused agent' },
+        answeredBy: {
+          type: 'string',
+          enum: ['orchestrator', 'user'],
+          description:
+            '"orchestrator" when answered from your own context, "user" when forwarding the user\'s reply (typically after a pc_ask_user round-trip)',
+        },
+      },
+      required: ['pendingAskId', 'answer', 'answeredBy'],
+    },
+  },
 ] as const;
 
 function projectPath(suffix: string): string {
@@ -1151,6 +1187,102 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_attach_to_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_ask_orchestrator': {
+      const question = typeof args.question === 'string' ? args.question.trim() : '';
+      const context = typeof args.context === 'string' ? args.context : undefined;
+      if (!question) {
+        return {
+          content: [{ type: 'text', text: 'pc_ask_orchestrator: question required' }],
+          isError: true,
+        };
+      }
+      // PC sets these at agent spawn time (16b.4). If they're not in env,
+      // this isn't a paused-able agent — fail loud rather than mint a row
+      // pointing at a session we can't resume.
+      const agentName = process.env.PC_AGENT_NAME ?? '';
+      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
+      if (!agentName || !sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_ask_orchestrator: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const runId = process.env.PC_AGENT_RUN_ID || undefined;
+      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      try {
+        const payload: Record<string, unknown> = {
+          sessionId,
+          agentName,
+          kind: 'ask-orchestrator',
+          question,
+        };
+        if (context !== undefined) payload.context = context;
+        if (runId !== undefined) payload.runId = runId;
+        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
+        const res = await postServer(projectPath('agent-pending-asks'), payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_ask_orchestrator failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_ask_orchestrator failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_answer_pending': {
+      const pendingAskId = typeof args.pendingAskId === 'string' ? args.pendingAskId.trim() : '';
+      const answer = typeof args.answer === 'string' ? args.answer : '';
+      const answeredByRaw = typeof args.answeredBy === 'string' ? args.answeredBy : '';
+      if (!pendingAskId || !answer) {
+        return {
+          content: [{ type: 'text', text: 'pc_answer_pending: pendingAskId and answer required' }],
+          isError: true,
+        };
+      }
+      if (answeredByRaw !== 'orchestrator' && answeredByRaw !== 'user') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_answer_pending: answeredBy must be "orchestrator" or "user"',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(
+          projectPath(`agent-pending-asks/${encodeURIComponent(pendingAskId)}/answer`),
+          { answer, answeredBy: answeredByRaw },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_answer_pending failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

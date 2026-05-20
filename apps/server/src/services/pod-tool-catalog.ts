@@ -31,4 +31,6 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_list_workflows',
   'mcp__pc-rig__pc_list_field_schemas',
   'mcp__pc-rig__pc_attach_to_work_item',
+  'mcp__pc-rig__pc_ask_orchestrator',
+  'mcp__pc-rig__pc_answer_pending',
 ] as const;
