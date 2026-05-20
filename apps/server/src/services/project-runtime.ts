@@ -17,6 +17,7 @@ import {
   endOrchestratorSession,
   getActiveOrchestratorSession,
   getOrchestratorSession,
+  reactivateOrchestratorSession,
 } from '@pc/db';
 import { encodeCwdForClaude, PtySession } from '@pc/runtime';
 import { homedir } from 'node:os';
@@ -289,14 +290,18 @@ export class ProjectRuntime {
   }
 
   /**
-   * Resume a past orchestrator session. Ends the current active row, creates
-   * a new active row backed by the target's providerSessionId, kills the
-   * current PtySession. Next ensurePty() spawns claude.exe with --resume
-   * <uuid> and loads the prior conversation. The chat panel re-renders by
-   * tailing the existing JSONL from its start.
+   * Resume a past orchestrator session by re-activating its row. Ends the
+   * current active row (if different), kills the current PtySession,
+   * flips the target's status back to 'active' + bumps its startedAt so it
+   * sorts to the top of the Sessions list. Next ensurePty() picks up the
+   * re-activated row and spawns claude.exe with --resume <uuid>.
+   *
+   * Identity is preserved — same row id, same title, same conversation. The
+   * chat panel re-renders by tailing the existing JSONL from its start.
    *
    * Errors if the target doesn't exist, belongs to another project, has no
    * providerSessionId, or has no JSONL on disk (would fail at spawn anyway).
+   * If the target is already the active row, returns it unchanged (no-op).
    */
   resumeSession(targetId: ULID): OrchestratorSession {
     const target = getOrchestratorSession(targetId);
@@ -307,6 +312,7 @@ export class ProjectRuntime {
     if (!target.providerSessionId) {
       throw new Error('session has no claude.exe conversation associated');
     }
+    if (target.status === 'active') return target;
     const jsonlPath = resolve(
       homedir(),
       '.claude',
@@ -325,11 +331,9 @@ export class ProjectRuntime {
     }
     try { this.pty?.kill(); } catch { /* best-effort */ }
     this.pty = null;
-    const fresh = createOrchestratorSession({
-      projectId: this.project.id,
-      providerSessionId: target.providerSessionId,
-    });
-    return fresh;
+    const reactivated = reactivateOrchestratorSession(targetId);
+    if (!reactivated) throw new Error('reactivation failed');
+    return reactivated;
   }
 
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */

@@ -78,6 +78,7 @@ export {
   getActiveOrchestratorSession,
   getOrchestratorSession,
   listOrchestratorSessionsForProject,
+  reactivateOrchestratorSession,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,

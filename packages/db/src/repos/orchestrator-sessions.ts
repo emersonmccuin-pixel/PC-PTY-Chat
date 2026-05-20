@@ -158,6 +158,27 @@ export function endOrchestratorSession(
   return row ? toDomain(row) : null;
 }
 
+/** Flip an ended session back to active. Used by ProjectRuntime.resumeSession
+ *  so clicking a past session in the LeftRail brings THAT row back to life
+ *  (keeps its title + claude.exe conversation), instead of minting a new
+ *  row that just references the conversation. `startedAt` is bumped to now
+ *  so the row sorts to the top of the Sessions list (ordered desc by
+ *  startedAt) — semantically "started a new continuation at this moment." */
+export function reactivateOrchestratorSession(id: ULID): OrchestratorSession | null {
+  const now = Date.now();
+  getDb()
+    .update(orchestratorSessions)
+    .set({ status: 'active', endedReason: null, endedAt: null, startedAt: now })
+    .where(eq(orchestratorSessions.id, id))
+    .run();
+  const row = getDb()
+    .select()
+    .from(orchestratorSessions)
+    .where(eq(orchestratorSessions.id, id))
+    .get() as SessionRow | undefined;
+  return row ? toDomain(row) : null;
+}
+
 /** Set or update the title. Caller decides when (first user message today). */
 export function setOrchestratorSessionTitle(id: ULID, title: string): void {
   getDb()
