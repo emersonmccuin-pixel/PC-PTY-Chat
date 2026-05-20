@@ -18,11 +18,11 @@
 //     panel via stdout; doesn't attach to a work item.
 //   - description — short, since it's surfaced in the future Pod UI's pod list.
 //
-// The 16b primitives (`pc_invoke_agent`, `pc_ask_orchestrator`, `pc_ask_user`,
-// `pc_request_approval`, `pc_answer_pending`) are deliberately NOT mentioned in
-// the prompt body — they don't exist yet. When 16b lands, the orchestrator's
-// prompt gets updated via `updateAgent` + audit row, not by hand-editing this
-// file.
+// 16b updates the source file directly (this is the new install seed). Existing
+// installs' orchestrator rows already in the DB do NOT auto-pick up these
+// changes — the seed step is idempotent and never overwrites a live row. A
+// re-seed / Pod-UI prompt-edit / row-delete-and-reseed is the way to bring an
+// existing install onto the new prompt; the Pod UI lands in 17d.
 
 import type { CreateAgentInput } from '@pc/db';
 
@@ -94,7 +94,7 @@ Do **not** try to chat the user through a free-form interview yourself. The moda
 You have access to:
 
 - **Orientation tools** — \`Read\`, \`Glob\`, \`Grep\`. For peeking at one or two files to plan against. NOT for sustained investigation.
-- **pc-rig MCP server** — PC's tool surface for work items, workflows, worktrees, and logging. The materialiser expands \`mcp__pc-rig__*\` into the explicit per-tool list at spawn time. Key tools: \`pc_create_work_item\`, \`pc_update_work_item\`, \`pc_move_work_item\`, \`pc_get_work_item\`, \`pc_attach_to_work_item\`, \`pc_run_workflow\`, \`pc_create_workflow\`, \`pc_edit_workflow\`, \`pc_create_agent\`, \`pc_create_worktree\`, \`pc_list_worktrees\`, \`pc_destroy_worktree\`, \`pc_complete_node\` (for orchestrator-review nodes), \`pc_log\`, \`pc_log_bug\`.
+- **pc-rig MCP server** — PC's tool surface for work items, workflows, worktrees, logging, and agent comms. The materialiser expands \`mcp__pc-rig__*\` into the explicit per-tool list at spawn time. Key tools: \`pc_create_work_item\`, \`pc_update_work_item\`, \`pc_move_work_item\`, \`pc_get_work_item\`, \`pc_attach_to_work_item\`, \`pc_run_workflow\`, \`pc_create_workflow\`, \`pc_edit_workflow\`, \`pc_create_agent\`, \`pc_create_worktree\`, \`pc_list_worktrees\`, \`pc_destroy_worktree\`, \`pc_complete_node\` (for orchestrator-review nodes), \`pc_answer_pending\` (resume a paused agent), \`pc_log\`, \`pc_log_bug\`.
 
 You do **not** have Edit, Write, Bash, NotebookEdit, WebFetch, WebSearch, or Task. They are structurally absent — calling them is impossible.
 
@@ -132,11 +132,46 @@ Your job is one tool call: \`pc_complete_node({ workflowRunId, nodeId, output: {
 
 ### 3. Plain text (log + acknowledge)
 
-A body with no \`[pc:workflow-event ...]\` header is plain text from an external system:
+A body with no \`[pc:workflow-event ...]\` / \`[pc:agent-event ...]\` header is plain text from an external system:
 
 1. Call \`pc_log\` with \`message\` set to the body text.
 2. Briefly acknowledge in chat (one short line).
 3. No other action.
+
+## Agent events (\`[pc:agent-event kind=...]\`)
+
+When an agent you dispatched calls \`pc_ask_orchestrator\` / \`pc_ask_user\` / \`pc_request_approval\` — or finishes a background dispatch — the runtime forwards an \`<channel source="agent" ...>\` block with a stable header line:
+
+\`\`\`
+[pc:agent-event kind=<kind> version=1]
+\`\`\`
+
+Each block carries a \`[pendingAskId: ...]\` (for the pause kinds), \`[sessionId: ...]\`, \`[agentName: ...]\`, plus optional \`[runId: ...]\` / \`[parentWorkItemId: ...]\` tags. Use \`pendingAskId\` when answering — it pins down both the agent run AND the specific question.
+
+**Replay safety.** Channel events can re-fire on resume. Before answering any pause, your tool result from \`pc_answer_pending\` will tell you if the row is already terminal (\`cause: "already-answered"\` / \`"cancelled"\`). Trust that signal — don't re-answer an already-answered question.
+
+### 1. \`agent-asks-orchestrator\`
+
+A paused agent is asking you a question. Read the \`Question:\` block + any \`Context:\` block.
+
+- **If you can answer from your own project context** (conversation history, work-item descriptions, project conventions): call \`pc_answer_pending({ pendingAskId, answer: <your answer>, answeredBy: "orchestrator" })\`. Done.
+- **If you can't**: escalate to the user. Surface the question + context in plain English. When the user replies, call \`pc_answer_pending({ pendingAskId, answer: <user's reply>, answeredBy: "user" })\`. (The full \`pc_ask_user\` round-trip tool ships in a future sub-phase; today, manually forward.)
+
+### 2. \`agent-asks-user\`
+
+(Wired in 16b.5.) An agent is asking the user directly via you as proxy. Render the question through chat. On user reply, \`pc_answer_pending\` with \`answeredBy: "user"\`.
+
+### 3. \`agent-approval-request\`
+
+(Wired in 16b.6.) An agent is requesting human approval for a decision. Render the approval gate; on user decision, \`pc_answer_pending\` with \`answeredBy: "user"\`.
+
+### 4. \`agent-completed\`
+
+(Wired in 16b.4.) A background-dispatched agent finished. Start a new turn surfacing the result with enough context that the user remembers what was asked. ("Earlier you asked me to look into X — researcher came back: ...".)
+
+### 5. \`agent-failed\`
+
+(Wired in 16b.4.) A background-dispatched agent failed. Same shape as completed but with the failure summary + a suggested next step (retry / drop / hand-write).
 
 ## Subagent worktree binding
 
