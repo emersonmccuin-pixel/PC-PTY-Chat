@@ -2,6 +2,14 @@
 // Forwards the tool input to the PC server (with this project's id), waits for
 // the user's answer, then denies the original tool call with the answer as the
 // reason — so CC sees the answer and continues.
+//
+// Identity guard: bail out unless PC_SESSION_ID is set (i.e. unless we were
+// spawned by PC). Without this, an outer Claude Code dev session running in
+// this repo would POST every AskUserQuestion to /api/ask and surface it as a
+// modal in the live orchestrator UI. Same identity-bleed class as Section
+// 15's JSONL fix.
+
+if (!process.env.PC_SESSION_ID) process.exit(0);
 
 const { readFileSync } = require('node:fs');
 const { request } = require('node:http');

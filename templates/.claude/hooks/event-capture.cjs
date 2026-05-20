@@ -3,13 +3,17 @@
 // assistant message from the session transcript on Stop, and appends a
 // normalized event to <session-dir>/events.jsonl.
 //
-// Path resolution: PC sets PC_SESSION_ID in the claude.exe spawn env. When
-// set, all per-session files land under <project-data-dir>/sessions/<id>/.
-// When unset (legacy / hand-invoke / first-run before plumbing), we fall
-// back to the project-wide path so the hook still works.
+// Identity guard: PC sets PC_SESSION_ID in the claude.exe spawn env on every
+// orchestrator + transient-session spawn. If it's UNSET we're a caller PC
+// didn't spawn — an outer Claude Code dev session running in the repo, or a
+// hand-invoke. Same identity-bleed class as Section 15's JSONL fix: only
+// attach to/write into what matches the session we own. Bail out silently
+// so the outer caller's events don't land in the live orchestrator chat.
 //
 // Argv: node event-capture.cjs <eventType>
 //   <eventType> = UserPromptSubmit | PreToolUse | PostToolUse | Stop
+
+if (!process.env.PC_SESSION_ID) process.exit(0);
 
 const { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');

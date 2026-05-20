@@ -1,5 +1,10 @@
-// Stop hook — appends a turn-end marker. PC_SESSION_ID env var routes the
-// marker to the per-session dir; falls back to project-wide if unset.
+// Stop hook — appends a turn-end marker.
+//
+// Identity guard: bail out unless PC_SESSION_ID is set. Outer Claude Code
+// dev sessions running in this repo would otherwise drop stop markers into
+// PC's project data dir. Same identity-bleed class as Section 15's JSONL fix.
+
+if (!process.env.PC_SESSION_ID) process.exit(0);
 
 const { appendFileSync, mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
