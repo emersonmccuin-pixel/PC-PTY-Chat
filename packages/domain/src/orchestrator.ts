@@ -13,6 +13,7 @@ export type SessionEndedReason =
   | 'user_ended'
   | 'provider_error'
   | 'provider_session_lost'
+  | 'pty_exit'
   | 'archived';
 
 export interface OrchestratorSession {

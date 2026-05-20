@@ -286,12 +286,20 @@ export class ProjectRuntime {
       mcpConfigPath: podPrep.mcpConfigPath,
     });
 
-    // Tear down the materialised pod when the session exits. PtySession's
-    // 'exit' event fires once per lifecycle (claude.exe exit, kill(), or
-    // fatal). Best-effort — cleanup tolerates ENOENT internally; if PC is
-    // killed forcibly the next ensurePty() re-materialises from scratch.
+    // Tear down the materialised pod + flip the session row to ended when the
+    // PTY exits. 'exit' fires once per lifecycle (claude.exe exit, kill(), or
+    // fatal). Explicit-end paths (startNewSession / resumeSession) flip the
+    // row BEFORE calling kill(), so by the time this fires they no-op out via
+    // getActiveOrchestratorSession returning null. Natural exits (Ctrl+D,
+    // claude.exe crash, idle timeout) had no row-flip before this — leaving
+    // the DB stuck at status='active' while the chat panel correctly saw the
+    // session-end hook event. SessionsRail and Orchestrator disagreed.
     this.pty.once('exit', () => {
       try { podPrep.cleanup(); } catch { /* best-effort */ }
+      try {
+        const active = getActiveOrchestratorSession(this.project.id);
+        if (active) endOrchestratorSession(active.id, 'pty_exit');
+      } catch { /* best-effort */ }
     });
 
     return this.pty;

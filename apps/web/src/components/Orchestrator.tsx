@@ -825,6 +825,25 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     setPinnedToBottom(true);
   }, [session?.id, viewingSessionId]);
 
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  async function onResume() {
+    if (!session?.id || resuming) return;
+    setResuming(true);
+    setResumeError(null);
+    try {
+      await api.resumeSession(project.id, session.id);
+      setViewing(project.slug, null);
+      setPastEvents([]);
+      clearWs();
+    } catch (err) {
+      setResumeError((err as Error).message);
+    } finally {
+      setResuming(false);
+    }
+  }
+
   async function onNewSession() {
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
     try {
@@ -996,8 +1015,24 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
         )}
       </div>
       {!isViewingPast && sessionEnded && (
-        <div className="border-t border-border bg-warning/10 px-4 py-2 text-center text-xs text-warning">
-          This session ended. Click <span className="font-semibold">+ New session</span> above to start a fresh chat.
+        <div className="flex items-center justify-between gap-3 border-t border-border bg-warning/10 px-4 py-2 text-xs text-warning">
+          <span>
+            This session ended. Resume it, or click{' '}
+            <span className="font-semibold">+ New session</span> above for a fresh chat.
+          </span>
+          <div className="flex items-center gap-2">
+            {resumeError && (
+              <span className="text-red-400">Couldn't resume: {resumeError}</span>
+            )}
+            <button
+              onClick={onResume}
+              disabled={resuming || !session?.id}
+              title="Resume this conversation as the live chat"
+              className="rounded border border-warning/40 bg-card px-3 py-1 text-xs font-medium text-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
+            >
+              {resuming ? 'Resuming…' : 'Resume session'}
+            </button>
+          </div>
         </div>
       )}
       {!isViewingPast && !sessionEnded && (
