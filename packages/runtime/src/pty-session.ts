@@ -129,6 +129,11 @@ export interface PtySessionOptions {
    *  the dev-channels boot-prompt auto-press. Defaults to true (orchestrator
    *  shape). Section 4d subagents pass false — they don't listen on channels. */
   loadDevChannels?: boolean;
+  /** Override the `--mcp-config` path. Defaults to `'.mcp.json'` (relative to
+   *  cwd — the project-scaffolded pc-rig + webhook config). Section 17a.5
+   *  passes a materialised pod's temp `mcp.json` here so pod-declared MCP
+   *  servers merge in alongside the baseline. */
+  mcpConfigPath?: string;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -207,12 +212,13 @@ export class PtySession extends EventEmitter {
       // Subagents pick their own model via YAML (`opts.model`).
       '--model',
       opts.model ?? 'opus',
-      // Scope MCP to ONLY workspace/.mcp.json (pc-rig + webhook). Without
-      // --strict-mcp-config the orchestrator merges global user-level MCPs
-      // (e.g. WCP, archon) and tries to use them — confusing and leaks
-      // unrelated capabilities into the rig.
+      // Scope MCP to ONLY the supplied config (default: workspace/.mcp.json,
+      // pc-rig + webhook). Without --strict-mcp-config the orchestrator merges
+      // global user-level MCPs (e.g. WCP, archon) and tries to use them —
+      // confusing and leaks unrelated capabilities into the rig. Section 17a.5
+      // overrides this with a materialised pod's temp mcp.json.
       '--mcp-config',
-      '.mcp.json',
+      opts.mcpConfigPath ?? '.mcp.json',
       '--strict-mcp-config',
     ];
     // Section 4d: subagent dispatches load the agent body via `--agent <name>`.

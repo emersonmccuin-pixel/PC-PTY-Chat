@@ -92,6 +92,7 @@ import { runWriteToWorktreeStep } from './write-to-worktree-step.ts';
 import { runOrchestratorReviewStep } from './orchestrator-review-step.ts';
 import { detectRetryCause, shouldRetry } from './retry-policy.ts';
 import { buildWorkflowEventHeader } from './workflow-event-header.ts';
+import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import {
   applyTypedPortEdges,
   makeTemplateSubstituter,
@@ -242,6 +243,10 @@ export class WorkflowRuntime {
    *  so a future cancel-run path (4f) can kill helpers mid-flight. Cleared
    *  once the node settles. */
   private readonly inflightSubagentHandles: Map<string, SubagentSpawnHandle> = new Map();
+  /** Section 17a.5. Pod-materialisation cleanups keyed the same way. Resolved
+   *  on spawn-handle settlement (success or failure) — removes the temp
+   *  `.claude/agents/<name>.md` + `mcp.json`. Cleared with the entry. */
+  private readonly inflightPodPreps: Map<string, PodSpawnPrep> = new Map();
   private readonly dispatchers: Record<DagNode['kind'], Dispatcher>;
 
   constructor(private readonly opts: WorkflowRuntimeOptions) {
@@ -1957,6 +1962,25 @@ export class WorkflowRuntime {
       prompt: rendered,
     });
 
+    // Section 17a.5: when a pod row exists for this agent name, materialise
+    // it (writes .claude/agents/<name>.md + temp mcp.json into sessionDataDir
+    // + folds the secret env-var map onto the spawn env). Returns null when
+    // no pod row matches — falls back to the existing flat-file + project
+    // .mcp.json path. Cleanup runs on handle resolution.
+    let podPrep: PodSpawnPrep | null = null;
+    try {
+      podPrep = preparePodSpawn({
+        agentName: resolvedAgent,
+        worktreeDir,
+        scratchDir: sessionDataDir,
+      });
+    } catch (err) {
+      return failedSync(
+        `pod materialisation failed: ${(err as Error).message}`,
+        new Date().toISOString(),
+      );
+    }
+
     const spawnReq: SubagentSpawnRequest = {
       agentName: resolvedAgent,
       worktreeDir,
@@ -1965,6 +1989,8 @@ export class WorkflowRuntime {
       pcSessionId,
       excludeJsonlPaths: this.snapshotExistingJsonl(worktreeDir),
       idleTimeoutMs: node.timeout,
+      mcpConfigPath: podPrep?.mcpConfigPath,
+      extraEnv: podPrep?.extraEnv,
     };
 
     let handle: SubagentSpawnHandle;
@@ -1974,12 +2000,14 @@ export class WorkflowRuntime {
       // spawnSubagent's defined contract never throws; this guards a custom
       // injected spawner that does. Fail the node sync so the executor's
       // recompute drives downstream skip / retry logic.
+      podPrep?.cleanup();
       return failedSync(`subagent spawn threw: ${(err as Error).message}`, new Date().toISOString());
     }
 
     const key = transcriptKey(ctx.run.id, node.id);
     this.inflightSubagentHandles.set(key, handle);
     this.subagentTranscriptsByNode.set(key, handle.transcriptPath());
+    if (podPrep) this.inflightPodPreps.set(key, podPrep);
 
     this.wireSpawnHandle(ctx.run.id, node.id, handle);
     return { kind: 'async' };
@@ -2047,6 +2075,14 @@ export class WorkflowRuntime {
             `[workflow-runtime] subagent done-handler failed for ${runId}/${nodeId}: ${(err as Error).message}`,
           );
         } finally {
+          // Section 17a.5: tear down the materialised pod (best-effort).
+          // Removes the temp `.claude/agents/<name>.md` + `mcp.json`. Session
+          // data dir (transcripts, events.jsonl) survives — owned by caller.
+          const prep = this.inflightPodPreps.get(key);
+          if (prep) {
+            try { prep.cleanup(); } catch { /* best-effort */ }
+            this.inflightPodPreps.delete(key);
+          }
           this.inflightSubagentHandles.delete(key);
           this.subagentTranscriptsByNode.delete(key);
         }

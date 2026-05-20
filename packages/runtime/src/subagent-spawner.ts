@@ -57,6 +57,11 @@ export interface SubagentSpawnRequest {
   /** JSONL paths claimed by prior or sibling dispatches in the same worktree.
    *  Threads through to PtySession so the discovery loop ignores them. */
   excludeJsonlPaths?: readonly string[];
+  /** Override `--mcp-config` for the spawn. Section 17a.5: when the workflow
+   *  runtime materialises a pod for this subagent, the temp mcp.json path
+   *  threads through here. Unset = subagent inherits the project's
+   *  `<cwd>/.mcp.json`. */
+  mcpConfigPath?: string;
 }
 
 export interface SubagentSpawnSuccess {
@@ -241,6 +246,7 @@ export function spawnSubagent(
     agentName: req.agentName,
     model: req.model,
     loadDevChannels: false,
+    mcpConfigPath: req.mcpConfigPath,
   };
 
   try {
