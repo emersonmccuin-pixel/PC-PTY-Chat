@@ -9,8 +9,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { api, type Project } from '@/api/client';
+import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
-import { usePerProjectTab } from '@/store/per-project-tab';
 import {
   DeleteProjectFilesModal,
   SoftDeleteProjectModal,
@@ -41,7 +41,7 @@ export function ProjectRail({
 }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
-  const setTab = usePerProjectTab((s) => s.setTab);
+  const setTab = useActiveCenterTab((s) => s.setTab);
   const [menu, setMenu] = useState<MenuPos | null>(null);
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
@@ -91,7 +91,7 @@ export function ProjectRail({
   function openProjectSettings(project: Project) {
     setMenu(null);
     setActiveSlug(project.slug);
-    setTab(project.slug, 'project-settings');
+    setTab('project-settings');
   }
 
   async function revealInExplorer(project: Project) {

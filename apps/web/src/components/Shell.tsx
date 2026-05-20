@@ -14,15 +14,15 @@ import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 import type { Project } from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 // WsStatus is used in props (activityStatus) below.
+import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
-import { usePerProjectTab } from '@/store/per-project-tab';
 import { ActivityPanel } from './ActivityPanel';
 import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
 import { Orchestrator } from './Orchestrator';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
-import { TabBar, TABS, type Tab } from './Tabs';
+import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 
 interface ShellProps {
@@ -141,20 +141,16 @@ function Center({
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
 }) {
-  const storedTab = usePerProjectTab((s) =>
-    activeProject ? s.tabBySlug[activeProject.slug] : undefined,
-  );
-  const setTab = usePerProjectTab((s) => s.setTab);
+  const tab = useActiveCenterTab((s) => s.tab);
+  const setTab = useActiveCenterTab((s) => s.setTab);
 
   if (!activeProject) {
     return <EmptyState projectCount={projectCount} onCreateProject={onCreateProject} />;
   }
 
-  const tab: Tab = storedTab ?? TABS[1]; // default to work-items
-
   return (
     <div className="flex h-full flex-col bg-background">
-      <TabBar value={tab} onChange={(t) => setTab(activeProject.slug, t)} />
+      <TabBar value={tab} onChange={setTab} />
       <div className="flex-1 overflow-hidden">
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />

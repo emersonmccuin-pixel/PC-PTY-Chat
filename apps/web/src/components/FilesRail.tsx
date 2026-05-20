@@ -6,7 +6,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { api, type FileTreeNode, type Project } from '@/api/client';
-import { usePerProjectTab } from '@/store/per-project-tab';
 import { useViewingFile } from '@/store/viewing-file';
 
 interface FilesRailProps {
@@ -24,7 +23,6 @@ export function FilesRail({ project }: FilesRailProps) {
     project ? s.bySlug[project.slug] ?? null : null,
   );
   const setViewing = useViewingFile((s) => s.setViewing);
-  const setTab = usePerProjectTab((s) => s.setTab);
 
   useEffect(() => {
     setExpanded(new Set());
@@ -69,7 +67,6 @@ export function FilesRail({ project }: FilesRailProps) {
   function pickFile(path: string) {
     if (!project) return;
     setViewing(project.slug, path);
-    setTab(project.slug, 'files');
   }
 
   if (!project) {
