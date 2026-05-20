@@ -12,9 +12,10 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import type { ChatEvent, JsonlEvent } from '@/hooks/use-project-ws';
-import type { Project, WorkflowRun } from '@/api/client';
+import type { AgentRunRecord, Project, WorkflowRun } from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useProjectWorkflowRuns } from '@/hooks/use-project-workflow-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
@@ -56,11 +57,17 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     () => runs.filter((r) => r.status === 'paused'),
     [runs],
   );
+  const { runs: agentRuns } = useProjectAgentRuns(project, events);
+  const pausedAgentRuns = useMemo(
+    () => agentRuns.filter((r) => r.status === 'paused'),
+    [agentRuns],
+  );
   const approvals = usePendingApprovals(project, events);
   const orchestratorState = useOrchestratorState(events);
 
   const askWaiting = orchestratorState === 'waiting-on-you' ? 1 : 0;
-  const waitingCount = askWaiting + pausedRuns.length;
+  const waitingCount = askWaiting + pausedRuns.length + pausedAgentRuns.length;
+  const runningCount = activeRuns.length + agentRuns.length;
 
   const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
   const todayStartMs = useMemo(() => {
@@ -108,12 +115,17 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden">
           <StatusLine
-            running={activeRuns.length}
+            running={runningCount}
             waiting={waitingCount}
             failedToday={failedToday}
           />
           <div className="flex-1 overflow-y-auto">
             <OrchestratorStatusRegion state={orchestratorState} />
+            <RunningAgentsRegion
+              project={project}
+              runs={agentRuns}
+              nowMs={nowMs}
+            />
             <RunningWorkflowsRegion
               project={project}
               runs={activeRuns}
@@ -402,6 +414,102 @@ function RunningWorkflowCard({
           <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
         )}
       </button>
+    </li>
+  );
+}
+
+function RunningAgentsRegion({
+  project,
+  runs,
+  nowMs,
+}: {
+  project: Project;
+  runs: AgentRunRecord[];
+  nowMs: number;
+}) {
+  return (
+    <RegionShell title="Running agents" badge={String(runs.length)}>
+      {runs.length === 0 ? (
+        <EmptyRegion text="No agents running." />
+      ) : (
+        <ul className="divide-y divide-border/50">
+          {runs.map((run) => (
+            <RunningAgentCard
+              key={run.runId}
+              run={run}
+              projectId={project.id}
+              nowMs={nowMs}
+            />
+          ))}
+        </ul>
+      )}
+    </RegionShell>
+  );
+}
+
+function RunningAgentCard({
+  run,
+  projectId,
+  nowMs,
+}: {
+  run: AgentRunRecord;
+  projectId: string;
+  nowMs: number;
+}) {
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelErr, setCancelErr] = useState<string | null>(null);
+
+  const elapsed = formatElapsed(nowMs - run.startedAt);
+  const statusLabel =
+    run.status === 'spawning'
+      ? 'starting…'
+      : run.status === 'paused'
+        ? 'paused'
+        : 'running';
+
+  async function handleCancel(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (cancelling) return;
+    setCancelling(true);
+    setCancelErr(null);
+    try {
+      await api.cancelAgentRun(projectId, run.runId);
+    } catch (err) {
+      setCancelErr((err as Error).message);
+      setCancelling(false);
+    }
+    // No setCancelling(false) on success — the terminal `agent-run-changed`
+    // envelope drops the row from the map, unmounting this card.
+  }
+
+  // Click-to-modal lands in 16b.8.3; for v1 the card is non-interactive
+  // outside the Cancel button.
+  return (
+    <li className="px-3 py-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+          {run.agentName}
+        </div>
+        <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
+          {elapsed}
+        </div>
+      </div>
+      <div className="mt-0.5 flex items-baseline justify-between gap-2">
+        <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+          {statusLabel}
+        </div>
+        <button
+          type="button"
+          onClick={handleCancel}
+          disabled={cancelling}
+          className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
+        >
+          {cancelling ? '…' : 'Cancel'}
+        </button>
+      </div>
+      {cancelErr && (
+        <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
+      )}
     </li>
   );
 }

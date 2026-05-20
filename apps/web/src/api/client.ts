@@ -902,6 +902,24 @@ export const api = {
       reason ? { reason } : {},
     ),
 
+  // ── Agent runs (Section 16b.8) ────────────────────────────────────────
+  /** Active agent runs for a project. Server filters terminal-state rows
+   *  out; the activity panel applies subsequent `agent-run-changed` WS
+   *  envelopes as deltas. */
+  listAgentRuns: (projectId: ULID) =>
+    getJson<{ ok: true; runs: AgentRunRecord[] }>(
+      `/api/projects/${projectId}/agent-runs`,
+    ).then((r) => r.runs),
+
+  /** Cancel an in-flight agent run. Kills the active session + flips
+   *  status to `cancelled`. The terminal `agent-run-changed` envelope is
+   *  what removes the card from the Running agents region. */
+  cancelAgentRun: (projectId: ULID, runId: string) =>
+    postJson<{ ok: boolean; status: string | null }>(
+      `/api/projects/${projectId}/agent-runs/${runId}/cancel`,
+      {},
+    ),
+
   /** Section 6.6 — list run-ids the user has dismissed from the activity
    *  panel's failed-recently region. Server-scoped to this project via the
    *  workflow_runs join. */
@@ -1380,6 +1398,41 @@ export interface NodeOutput {
    *  reports jsonlPath (4d D48 / 4e D55). Powers the run-detail "View
    *  transcript" link. Undefined for non-subagent kinds and pre-4e rows. */
   transcriptPath?: string;
+}
+
+/** Section 16b.8 — public snapshot of an agent run. Mirrors `AgentRunRecord`
+ *  in apps/server/src/services/agent-run-manager.ts. Internal timer / session
+ *  fields are stripped server-side before the shape leaves the manager. */
+export type AgentRunStatus =
+  | 'spawning'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type AgentRunFailureCause =
+  | 'timeout'
+  | 'idle-timeout'
+  | 'spawn-failed'
+  | 'spawn-exit'
+  | 'cancelled'
+  | 'unknown-agent';
+
+export interface AgentRunRecord {
+  runId: ULID;
+  sessionId: string;
+  agentName: string;
+  projectId: ULID;
+  parentWorkItemId: ULID | null;
+  wait: boolean;
+  worktreeDir: string;
+  startedAt: number;
+  status: AgentRunStatus;
+  result: string;
+  failureReason: string | null;
+  failureCause: AgentRunFailureCause | null;
+  endedAt: number | null;
 }
 
 export interface WorkflowRun {
