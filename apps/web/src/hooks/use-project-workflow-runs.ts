@@ -1,97 +1,43 @@
-// Shared hook for the activity panel's region 2 (running workflows) and
-// region 5 (failed recently). Fetches the project's full run list once on
-// mount and updates the in-memory map from `workflow-run-changed` WS
-// envelopes. Per-region filtering happens at the call site.
+// Activity-panel feeder for workflow runs (regions 2 + 5).
 //
-// Read model: a Map keyed by run id so live deltas patch in place. The
-// envelope's `status` + `nodeOutputs` are the minimum fields needed to
-// drive both regions' rendering; the drawer re-fetches the full record on
-// demand if the user clicks through.
-
-import { useEffect, useMemo, useState } from 'react';
+// Section 18.10: now a thin wrapper around the generic `useResourceList<T>`.
+// Server emits the full `WorkflowRun` snapshot in the `workflow-run-changed`
+// envelope (Topic 5 lock); we read from `snapshot` and treat the local map
+// as a cache keyed by run id. Terminal transitions trigger a refetch so
+// `completedAt` (omitted by the envelope's legacy fields) stays accurate.
 
 import type { Project, WorkflowRun } from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useResourceList } from '@/hooks/use-resource-list';
 
 interface RunChangedEnvelope extends WsEnvelope {
   type: 'workflow-run-changed';
-  runId: string;
-  workflowId: string;
-  status: string;
-  nodeOutputs: Record<string, unknown>;
+  projectId: string;
+  snapshot?: WorkflowRun;
 }
 
-function isRunChangedEnvelope(env: WsEnvelope): env is RunChangedEnvelope {
-  return env.type === 'workflow-run-changed';
-}
+const TERMINAL = new Set<WorkflowRun['status']>([
+  'complete',
+  'failed',
+  'cancelled',
+]);
 
 export function useProjectWorkflowRuns(
   project: Project | null,
   events: WsEnvelope[],
 ): { runs: WorkflowRun[]; refetch: () => void } {
-  const [runMap, setRunMap] = useState<Map<string, WorkflowRun>>(() => new Map());
-
-  // Initial fetch + project switch.
-  useEffect(() => {
-    if (!project) {
-      setRunMap(new Map());
-      return;
-    }
-    let cancelled = false;
-    void api.listWorkflowRuns(project.id).then((list) => {
-      if (cancelled) return;
-      setRunMap(new Map(list.map((r) => [r.id, r])));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [project?.id]);
-
-  // Live tick: patch in place when `workflow-run-changed` arrives. New runs
-  // (not in the map) need a full fetch — the envelope only carries the
-  // minimum subset. Terminal-status transitions also trigger a refetch so
-  // `completedAt` stays accurate (the envelope omits it).
-  useEffect(() => {
-    if (!project || events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last || !isRunChangedEnvelope(last)) return;
-    const isTerminal =
-      last.status === 'complete' ||
-      last.status === 'failed' ||
-      last.status === 'cancelled';
-    setRunMap((prev) => {
-      const existing = prev.get(last.runId);
-      if (!existing) {
-        void api.listWorkflowRuns(project.id).then((list) => {
-          setRunMap(new Map(list.map((r) => [r.id, r])));
-        });
-        return prev;
-      }
-      const next = new Map(prev);
-      next.set(last.runId, {
-        ...existing,
-        status: last.status as WorkflowRun['status'],
-        nodeOutputs: last.nodeOutputs as WorkflowRun['nodeOutputs'],
-      });
-      return next;
-    });
-    if (isTerminal) {
-      void api.listWorkflowRuns(project.id).then((list) => {
-        setRunMap(new Map(list.map((r) => [r.id, r])));
-      });
-    }
-  }, [events, project?.id]);
-
-  const runs = useMemo(() => Array.from(runMap.values()), [runMap]);
-
-  return {
-    runs,
-    refetch: () => {
-      if (!project) return;
-      void api.listWorkflowRuns(project.id).then((list) => {
-        setRunMap(new Map(list.map((r) => [r.id, r])));
-      });
+  const { records, refetch } = useResourceList<WorkflowRun>(project, events, {
+    envelopeKind: 'workflow-run-changed',
+    extractSnapshot: (env, projectId) => {
+      const e = env as RunChangedEnvelope;
+      if (e.projectId !== projectId) return null;
+      return e.snapshot ?? null;
     },
-  };
+    getId: (r) => r.id,
+    isTerminal: (r) => TERMINAL.has(r.status),
+    dropOnTerminal: false,
+    list: (projectId) => api.listWorkflowRuns(projectId),
+  });
+  return { runs: records, refetch };
 }

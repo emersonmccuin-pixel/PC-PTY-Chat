@@ -130,7 +130,10 @@ export interface WorkflowRuntimeOptions {
    *  - the subagent failure path → `event` wrappers around D10 SubagentFailureSignals;
    *  - the work-items mirror → `work-items-changed` on stage moves;
    *  - **Section 4e.3 / D52** — every run-state transition fires
-   *    `{ type: 'workflow-run-changed', projectId, workflowId, runId, status, nodeOutputs }`.
+   *    `{ type: 'workflow-run-changed', projectId, workflowId, runId, status, nodeOutputs, snapshot }`.
+   *    `snapshot` (Section 18.10 / Topic 5 lock) is the full `WorkflowRun` post-persist —
+   *    clients should read from it; `status` + `nodeOutputs` are retained as additive
+   *    fields for backward compatibility (drop in a follow-up once consumers migrate).
    *    Invariant: broadcast immediately AFTER each `dbPersistRun(run)` call inside this
    *    class (use `persistAndBroadcast`) so subscribers only ever see envelopes that
    *    reflect the row as-persisted. The runs drawer (4e.5) subscribes on open and
@@ -317,6 +320,7 @@ export class WorkflowRuntime {
         runId: run.id,
         status: run.status,
         nodeOutputs: run.nodeOutputs,
+        snapshot: run,
       });
     } catch (err) {
       console.warn(
