@@ -11,6 +11,10 @@ import type { BroadcastFn } from './workflow-runtime.ts';
 export interface ProjectRegistryDeps {
   dataDir: string;
   templatesDir: string;
+  /** Trunk repo root. 18.4 — threaded into ProjectRuntime so the
+   *  refresh-hooks template substitution can resolve `{{PC_TRUNK_PATH}}` for
+   *  the inbox-drain hook's `createRequire` of `better-sqlite3`. */
+  trunkPath: string;
   channelPort: number;
   /** Factory: produces a broadcast fn pre-bound to the given project id. */
   broadcastFor: (projectId: ULID) => BroadcastFn;
@@ -93,6 +97,7 @@ export class ProjectRegistry {
     return new ProjectRuntime(project, {
       dataDir: this.deps.dataDir,
       templatesDir: this.deps.templatesDir,
+      trunkPath: this.deps.trunkPath,
       channelPort: this.deps.channelPort,
       broadcast: this.deps.broadcastFor(project.id),
     });

@@ -43,6 +43,10 @@ export interface ProjectRuntimeOptions {
   broadcast: BroadcastFn;
   /** Templates dir for hook re-render (per-session paths via env var). */
   templatesDir: string;
+  /** Trunk repo root. 18.4 — substituted as `{{PC_TRUNK_PATH}}` into the
+   *  inbox-drain hook so it can `createRequire` better-sqlite3 from the
+   *  trunk's pnpm-managed `node_modules`. */
+  trunkPath: string;
 }
 
 export class ProjectRuntime {
@@ -619,6 +623,12 @@ export class ProjectRuntime {
       PROJECT_SLUG: this.project.slug,
       PROJECT_NAME: this.project.name,
       PROJECT_FOLDER: this.project.folderPath.replace(/\\/g, '/'),
+      // 18.4 — added so refresh-on-boot picks up the inbox-drain hook template
+      // for projects scaffolded pre-18.4. Trunk path resolves better-sqlite3
+      // via createRequire from the hook script; db path is the global
+      // PC sqlite file the drain query reads from.
+      PC_TRUNK_PATH: this.opts.trunkPath.replace(/\\/g, '/'),
+      PC_DB_PATH: resolve(this.opts.dataDir, 'pc.sqlite').replace(/\\/g, '/'),
     };
     try {
       mkdirSync(destDir, { recursive: true });

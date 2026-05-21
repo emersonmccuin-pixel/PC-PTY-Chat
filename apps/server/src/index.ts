@@ -186,6 +186,7 @@ function broadcastTo(projectId: ULID, msg: unknown): void {
 const projectRegistry = new ProjectRegistry({
   dataDir: DATA,
   templatesDir: TEMPLATES,
+  trunkPath: ROOT,
   channelPort: CHANNEL_PORT,
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
