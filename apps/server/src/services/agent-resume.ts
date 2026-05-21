@@ -68,8 +68,11 @@ export interface RespawnAgentDeps {
    *  for tests. */
   resolveJsonlPath?: (folderPath: string, sessionId: string) => string;
   /** Timeout (ms) for the spawned session to reach `ready` before we bail.
-   *  Defaults to 30s — banner boot is normally <2s, but cold-start over a
-   *  slow disk has run ~10s. */
+   *  Bumped to 60s after V-4 surfaced a false-negative at ~32s on resume —
+   *  the resume actually completed end-to-end 2s after the 30s timeout
+   *  fired, but the route had already returned `resume-failed`. Resume's
+   *  cold-path is slower than fresh spawn (--resume reads + replays JSONL
+   *  before banner-render on Windows). */
   readyTimeoutMs?: number;
   /** AgentRunManager to consult for an active run keyed by the paused
    *  session-id. Defaults to the process-wide singleton. Tests pass a fresh
@@ -77,7 +80,7 @@ export interface RespawnAgentDeps {
   agentRunManager?: AgentRunManager;
 }
 
-const DEFAULT_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_READY_TIMEOUT_MS = 60_000;
 
 export function defaultSessionDataDir(
   dataRoot: string,

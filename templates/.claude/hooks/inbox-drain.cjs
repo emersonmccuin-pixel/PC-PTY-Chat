@@ -36,15 +36,16 @@ function drainInbox(opts) {
 
   if (!dbPath || !existsSync(dbPath)) return { rows: [], drained: 0 };
 
-  // Resolve better-sqlite3 via the trunk's pnpm-managed node_modules. The
-  // hook script lives in the project worktree, where better-sqlite3 isn't
-  // installed; createRequire anchored on the trunk's package.json walks
-  // node_modules from there. (Anchoring on a real file is more portable
-  // than a directory path, especially on Windows.)
+  // Resolve better-sqlite3 via packages/db's pnpm-managed node_modules.
+  // The hook script lives in the project worktree, where better-sqlite3
+  // isn't installed; createRequire anchored on packages/db/package.json
+  // walks the workspace dep graph from there. (Trunk-root anchor fails
+  // because trunk's package.json doesn't declare better-sqlite3 as a
+  // direct dep; @pc/db does.)
   let Database;
   try {
-    const trunkRequire = createRequire(join(trunkPath, 'package.json'));
-    Database = trunkRequire('better-sqlite3');
+    const dbPkgRequire = createRequire(join(trunkPath, 'packages/db/package.json'));
+    Database = dbPkgRequire('better-sqlite3');
   } catch {
     // Native binding missing or trunk path wrong — fail silent (drain skipped,
     // event delivery still works via the channel push or the next prompt).
