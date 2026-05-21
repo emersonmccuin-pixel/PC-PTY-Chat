@@ -13,7 +13,7 @@ export interface ActivityPanelSettings {
   showAllProjects: boolean;
 }
 
-/** Section 18.6 — dispatch-side controls for `pc_invoke_agent`. */
+/** Section 18.6 + 18.7 — dispatch-side controls for `pc_invoke_agent`. */
 export interface AgentDispatchSettings {
   /**
    * Async-dispatch ack window. `pc_invoke_agent` (wait: false) blocks until
@@ -22,10 +22,21 @@ export interface AgentDispatchSettings {
    * confirmation + initial prompt read.
    */
   ackTimeoutMs: number;
+  /**
+   * Section 18.7 — maximum number of agent runs PC will hold in
+   * non-terminal states (spawning / running / paused) at any one time,
+   * across ALL projects. Dispatches at or over the cap queue FIFO and
+   * spawn when a running run terminates. Global (not per-project) because
+   * the subscription burn-rate cap is global; per-project sub-caps may
+   * land post-v1. Default 5.
+   */
+  maxConcurrent: number;
 }
 
 export const AGENT_ACK_TIMEOUT_MS_MIN = 1_000;
 export const AGENT_ACK_TIMEOUT_MS_MAX = 5 * 60 * 1000;
+export const AGENT_MAX_CONCURRENT_MIN = 1;
+export const AGENT_MAX_CONCURRENT_MAX = 50;
 
 export interface GlobalSettings {
   /** Active data dir at last write. */
@@ -73,6 +84,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     fontScale: 1,
     agentDispatch: {
       ackTimeoutMs: 30_000,
+      maxConcurrent: 5,
     },
   };
 }
@@ -89,6 +101,14 @@ export function clampAckTimeoutMs(n: number): number {
   if (!Number.isFinite(n)) return 30_000;
   if (n < AGENT_ACK_TIMEOUT_MS_MIN) return AGENT_ACK_TIMEOUT_MS_MIN;
   if (n > AGENT_ACK_TIMEOUT_MS_MAX) return AGENT_ACK_TIMEOUT_MS_MAX;
+  return Math.floor(n);
+}
+
+/** Clamp `maxConcurrent` to [1, 50]. Default 5 on non-finite / out-of-band. */
+export function clampMaxConcurrent(n: number): number {
+  if (!Number.isFinite(n)) return 5;
+  if (n < AGENT_MAX_CONCURRENT_MIN) return AGENT_MAX_CONCURRENT_MIN;
+  if (n > AGENT_MAX_CONCURRENT_MAX) return AGENT_MAX_CONCURRENT_MAX;
   return Math.floor(n);
 }
 
@@ -117,6 +137,9 @@ export function withSettingsDefaults(
     agentDispatch: {
       ackTimeoutMs: clampAckTimeoutMs(
         stored.agentDispatch?.ackTimeoutMs ?? defaults.agentDispatch.ackTimeoutMs,
+      ),
+      maxConcurrent: clampMaxConcurrent(
+        stored.agentDispatch?.maxConcurrent ?? defaults.agentDispatch.maxConcurrent,
       ),
     },
   };

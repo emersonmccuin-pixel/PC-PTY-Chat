@@ -170,6 +170,40 @@ export function buildAgentCompletedBody(args: {
   return lines.join('\n');
 }
 
+/** Section 18.7 — compose the channel-event body for `agent-queued-started`.
+ *  Fires when a dispatch that was previously queued (because the global
+ *  concurrent cap was full) actually starts. Lets the orchestrator update
+ *  its mental model — "the agent you queued earlier is now running" — so
+ *  the user doesn't think the dispatch was lost. The terminal event (
+ *  `agent-completed` / `agent-failed`) still lands separately when the
+ *  spawned run finishes. */
+export function buildAgentQueuedStartedBody(args: {
+  runId: string;
+  sessionId: string;
+  agentName: string;
+  parentWorkItemId: string | null;
+  queuedAt: number;
+  startedAt: number;
+}): string {
+  const waitedMs = Math.max(0, args.startedAt - args.queuedAt);
+  const waitedSec = Math.round(waitedMs / 1000);
+  const lines: string[] = [
+    buildAgentEventHeader('agent-queued-started'),
+    `[runId: ${args.runId}]`,
+    `[sessionId: ${args.sessionId}]`,
+    `[agentName: ${args.agentName}]`,
+    `[queuedAt: ${args.queuedAt}]`,
+    `[startedAt: ${args.startedAt}]`,
+    `[waitedMs: ${waitedMs}]`,
+  ];
+  if (args.parentWorkItemId) lines.push(`[parentWorkItemId: ${args.parentWorkItemId}]`);
+  lines.push('');
+  lines.push(
+    `The ${args.agentName} agent you queued earlier just started (waited ~${waitedSec}s in the dispatch queue). You'll see its terminal event when it finishes.`,
+  );
+  return lines.join('\n');
+}
+
 /** Compose the channel-event body for `agent-failed` (handler protocol
  *  entry #5). Same shape as `agent-completed` but with a failure summary
  *  + structured cause so the orchestrator can suggest a next step (retry

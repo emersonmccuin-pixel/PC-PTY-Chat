@@ -17,7 +17,13 @@
 //     accumulated last-assistant-text.
 //
 // Lifecycle:
-//   spawn → spawning → ready → running → (paused → running)* → completed | failed | cancelled
+//   spawn → (queued →)? spawning → ready → running → (paused → running)* → completed | failed | cancelled
+//
+// Section 18.7 — `queued` is the optional first state when the global
+// concurrent cap (`agentDispatch.maxConcurrent`) is full at dispatch. The
+// FIFO queue drains its head whenever a non-terminal run reaches terminal.
+// Cancelled-while-queued just flips to `cancelled` and the queue's
+// `processQueue` skips the stale entry next pass.
 //
 // Failure causes:
 //   - 'timeout' (wall-clock cap)
@@ -34,8 +40,13 @@ import { resolve } from 'node:path';
 
 import { defaultLibraryDir } from './agent-library.ts';
 
-import { getAgentByName, listWaitingPendingAsksForSession, newId } from '@pc/db';
-import type { ULID } from '@pc/domain';
+import {
+  getAgentByName,
+  getGlobalSettings,
+  listWaitingPendingAsksForSession,
+  newId,
+} from '@pc/db';
+import { clampMaxConcurrent, type ULID } from '@pc/domain';
 import {
   encodeCwdForClaude,
   PtySession,
@@ -49,6 +60,7 @@ import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT = 5;
 
 /** 16b.4.5 — maximum nested `pc_invoke_agent` depth. Orchestrator dispatches
  *  at depth 1; an agent dispatched by that one runs at depth 2; etc. At depth
@@ -82,6 +94,7 @@ export function checkInvokeDepth(
 }
 
 export type AgentRunStatus =
+  | 'queued'
   | 'spawning'
   | 'running'
   | 'paused'
@@ -161,8 +174,23 @@ export interface AgentRunSpawnInput {
 export interface AgentRunSpawnResult {
   runId: ULID;
   sessionId: string;
+  /** When the dispatch landed. For under-cap spawns this is also the real
+   *  spawn-start time. For queued dispatches it's the queue-entry time;
+   *  the actual spawn-start time arrives later via `record.startedAt` once
+   *  the queue drains (manager updates the record + emits `run-changed`). */
   startedAt: number;
   completion: AgentRunCompletion;
+  /** Section 18.7 — true when the global concurrent cap was full at
+   *  dispatch and the run was enqueued. The completion Promise still
+   *  resolves on terminal — but the spawn happens whenever the queue
+   *  drains, not immediately. */
+  queued: boolean;
+  /** Section 18.7 — 1-based queue position at dispatch time (1 = head of
+   *  queue, will spawn next). Null when not queued. Position is a
+   *  snapshot, not a live counter — by the time the orchestrator surfaces
+   *  it to the user, the real position may have decreased as runs ahead
+   *  drained. */
+  position: number | null;
 }
 
 /** Subset of PtySession the manager needs. Real PtySession satisfies it;
@@ -183,6 +211,12 @@ export interface AgentRunManagerDeps {
   resolveJsonlPath?: (folderPath: string, sessionId: string) => string;
   setTimeout?: (cb: () => void, ms: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
+  /** Section 18.7 — read the global cap on concurrent non-terminal runs.
+   *  Defaults to reading `agentDispatch.maxConcurrent` from the DB-backed
+   *  global settings (with the `clampMaxConcurrent` clamp) and falling
+   *  back to 5 on any DB error. Tests pass a constant for deterministic
+   *  cap behaviour. */
+  getMaxConcurrent?: () => number;
 }
 
 interface InternalRun extends AgentRunRecord {
@@ -205,6 +239,15 @@ interface InternalRun extends AgentRunRecord {
   /** Section 18.6 — pending `waitForFirstJsonl` resolvers. Flushed when
    *  `firstJsonlAt` is first set. */
   firstJsonlResolvers: Array<() => void>;
+  /** Section 18.7 — when this run entered the queue (status='queued').
+   *  Null for runs that started under cap. Carried into the
+   *  `agent-queued-started` event when the queue drains so the orchestrator
+   *  can surface "waited ~Xs" to the user. */
+  queuedAt: number | null;
+  /** Section 18.7 — prepared sessionOpts stashed at pre-flight time. The
+   *  under-cap path consumes them immediately via `finishSpawn`; the queued
+   *  path stashes them on the record + consumes when the queue drains. */
+  pendingSessionOpts: PtySessionOptions | null;
 }
 
 /** AgentRunManager is an EventEmitter — Section 16b.8.1 + 16b.8.3.
@@ -226,6 +269,12 @@ interface InternalRun extends AgentRunRecord {
  */
 export class AgentRunManager extends EventEmitter {
   private runs = new Map<ULID, InternalRun>();
+  /** Section 18.7 — FIFO queue of runIds parked because the global
+   *  concurrent cap was full at dispatch. Drained from the head whenever a
+   *  non-terminal run reaches terminal (`complete` / `failWithCause`). Stale
+   *  entries (cancelled-while-queued) are skipped in `processQueue` rather
+   *  than removed eagerly, so cancel doesn't pay an O(N) array splice. */
+  private queue: ULID[] = [];
 
   constructor(private deps: AgentRunManagerDeps = {}) {
     super();
@@ -290,7 +339,7 @@ export class AgentRunManager extends EventEmitter {
         'unknown-agent',
         `no agent named "${input.agentName}" found in pod registry, in <worktree>/.claude/agents/${input.agentName}.md, or in the global library at ~/.project-companion/agents/${input.agentName}.md`,
       );
-      return { runId, sessionId, startedAt, completion };
+      return { runId, sessionId, startedAt, completion, queued: false, position: null };
     }
 
     const scratchDir =
@@ -317,7 +366,7 @@ export class AgentRunManager extends EventEmitter {
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
       this.fail(rec, 'spawn-failed', `scratchDir mkdir failed: ${(err as Error).message}`);
-      return { runId, sessionId, startedAt, completion };
+      return { runId, sessionId, startedAt, completion, queued: false, position: null };
     }
 
     // Section 17a.5 — when a pod row exists, materialise it (writes the
@@ -356,7 +405,7 @@ export class AgentRunManager extends EventEmitter {
         'spawn-failed',
         `pod materialisation failed for "${input.agentName}": ${(err as Error).message}`,
       );
-      return { runId, sessionId, startedAt, completion };
+      return { runId, sessionId, startedAt, completion, queued: false, position: null };
     }
 
     // B7 (2026-05-21) — when the agent resolves only via the global library
@@ -393,7 +442,7 @@ export class AgentRunManager extends EventEmitter {
           'spawn-failed',
           `global agent materialisation failed for "${input.agentName}": ${(err as Error).message}`,
         );
-        return { runId, sessionId, startedAt, completion };
+        return { runId, sessionId, startedAt, completion, queued: false, position: null };
       }
     }
 
@@ -423,14 +472,13 @@ export class AgentRunManager extends EventEmitter {
           }
         : podCleanup ?? globalMaterializeCleanup;
     const completion = this.installCompletionPromise(rec);
-    this.runs.set(runId, rec);
 
     const jsonlPath = (this.deps.resolveJsonlPath ?? defaultResolveJsonlPath)(
       input.worktreeDir,
       sessionId,
     );
 
-    const sessionOpts: PtySessionOptions = {
+    rec.pendingSessionOpts = {
       workspaceDir: input.worktreeDir,
       stopMarkerPath: resolve(scratchDir, 'stop-markers.txt'),
       eventsPath: resolve(scratchDir, 'events.jsonl'),
@@ -461,23 +509,37 @@ export class AgentRunManager extends EventEmitter {
       },
     };
 
-    let session: AgentSessionLike;
-    try {
-      session = (this.deps.createSession ?? defaultCreateSession)(sessionOpts);
-    } catch (err) {
-      this.fail(rec, 'spawn-failed', `pty spawn failed: ${(err as Error).message}`);
-      return { runId, sessionId, startedAt, completion };
+    // Section 18.7 — cap check happens BEFORE inserting into `this.runs`, so
+    // the count excludes the run we're about to dispatch (otherwise the
+    // default `status: 'spawning'` from `makeRecord` would always make the
+    // count include the current dispatch and bump every first-after-cap run
+    // into the queue erroneously). Pre-flight side effects (scratchDir, pod
+    // materialisation, global flat-file copy) already ran — they live in the
+    // worktree until cleanup-on-terminal regardless of whether we spawn now
+    // or later. podCleanup is wired even for queued runs so cancel-while-
+    // queued still removes the materialised files.
+    const cap = this.getCapValue();
+    const atCap = this.countRunningOrPaused() >= cap;
+    if (atCap) {
+      rec.status = 'queued';
+      rec.queuedAt = startedAt;
+    }
+    this.runs.set(runId, rec);
+    if (atCap) {
+      this.queue.push(runId);
+      this.emitRunChanged(rec);
+      return {
+        runId,
+        sessionId,
+        startedAt,
+        completion,
+        queued: true,
+        position: this.queue.length,
+      };
     }
 
-    this.attachToSession(rec, session);
-    this.armWallClockTimer(rec);
-    this.armIdleTimer(rec);
-
-    // 16b.8.1 — surface the freshly-spawned record so the Activity Panel
-    // card appears immediately (before the PTY reaches `ready`).
-    this.emitRunChanged(rec);
-
-    return { runId, sessionId, startedAt, completion };
+    this.finishSpawn(rec);
+    return { runId, sessionId, startedAt, completion, queued: false, position: null };
   }
 
   /** 16b.4.2 — wire a freshly-resumed PtySession into an existing run.
@@ -599,6 +661,8 @@ export class AgentRunManager extends EventEmitter {
       resolveCompletion: null,
       firstJsonlAt: null,
       firstJsonlResolvers: [],
+      queuedAt: null,
+      pendingSessionOpts: null,
     };
   }
 
@@ -717,6 +781,8 @@ export class AgentRunManager extends EventEmitter {
     this.flushFirstJsonlResolvers(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
+    // Section 18.7 — this run freed a cap slot. Drain queue head if any.
+    this.processQueue();
   }
 
   private fail(rec: InternalRun, cause: AgentRunFailureCause, reason: string): void {
@@ -725,6 +791,13 @@ export class AgentRunManager extends EventEmitter {
 
   private failWithCause(rec: InternalRun, cause: AgentRunFailureCause, reason: string): void {
     if (this.isTerminal(rec.status)) return;
+    // Section 18.7 — record whether this run was holding a cap slot before
+    // terminal. Queued runs don't occupy a slot; their cancel doesn't free
+    // one, so we skip the queue drain in that case. (Queued runs are still
+    // dropped from the queue via the `processQueue` stale-skip guard the
+    // next time it runs.)
+    const wasHoldingSlot =
+      rec.status === 'spawning' || rec.status === 'running' || rec.status === 'paused';
     rec.status = cause === 'cancelled' ? 'cancelled' : 'failed';
     rec.failureCause = cause;
     rec.failureReason = reason;
@@ -739,6 +812,7 @@ export class AgentRunManager extends EventEmitter {
     this.flushFirstJsonlResolvers(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
+    if (wasHoldingSlot) this.processQueue();
   }
 
   private cleanupOnTerminal(rec: InternalRun): void {
@@ -774,6 +848,99 @@ export class AgentRunManager extends EventEmitter {
         `agent exceeded wall-clock cap of ${Math.round(rec.wallClockTimeoutMs / 1000)}s`,
       );
     }, rec.wallClockTimeoutMs);
+  }
+
+  // ── Section 18.7: cap + queue ────────────────────────────────────────
+
+  /** Resolve the global cap. Test override > live DB read > 5 fallback. */
+  private getCapValue(): number {
+    if (this.deps.getMaxConcurrent) {
+      try {
+        return clampMaxConcurrent(this.deps.getMaxConcurrent());
+      } catch {
+        return DEFAULT_MAX_CONCURRENT;
+      }
+    }
+    try {
+      const stored = getGlobalSettings();
+      const raw = stored?.agentDispatch?.maxConcurrent;
+      return typeof raw === 'number' ? clampMaxConcurrent(raw) : DEFAULT_MAX_CONCURRENT;
+    } catch {
+      return DEFAULT_MAX_CONCURRENT;
+    }
+  }
+
+  /** How many tracked runs currently occupy a cap slot. `paused` counts —
+   *  a paused agent will respawn when its pending-ask answer lands, and we
+   *  don't want a wave of resumes to bust the cap. Queued / completed /
+   *  failed / cancelled don't count. */
+  private countRunningOrPaused(): number {
+    let n = 0;
+    for (const r of this.runs.values()) {
+      if (r.status === 'spawning' || r.status === 'running' || r.status === 'paused') n++;
+    }
+    return n;
+  }
+
+  /** Drain the queue head into real spawns while we're under cap. Stale
+   *  entries (cancelled-while-queued) are silently skipped. */
+  private processQueue(): void {
+    while (this.queue.length > 0 && this.countRunningOrPaused() < this.getCapValue()) {
+      const nextId = this.queue.shift()!;
+      const rec = this.runs.get(nextId);
+      if (!rec || rec.status !== 'queued') continue;
+      this.dequeueAndStart(rec);
+    }
+  }
+
+  /** Transition `queued` → `spawning`, emit the queued-started event for
+   *  the messaging system, hand off to `finishSpawn`. Refreshes
+   *  `rec.startedAt` to actual spawn time so the wall-clock cap doesn't
+   *  count the time the run spent in the queue. */
+  private dequeueAndStart(rec: InternalRun): void {
+    const queuedAt = rec.queuedAt ?? rec.startedAt;
+    rec.status = 'spawning';
+    rec.startedAt = Date.now();
+    this.emitRunChanged(rec);
+    this.emit('agent-queued-started', {
+      runId: rec.runId,
+      sessionId: rec.sessionId,
+      agentName: rec.agentName,
+      projectId: rec.projectId,
+      dispatcherSessionId: rec.dispatcherSessionId,
+      parentWorkItemId: rec.parentWorkItemId,
+      queuedAt,
+      startedAt: rec.startedAt,
+    });
+    this.finishSpawn(rec);
+  }
+
+  /** Consume the stashed sessionOpts, create the underlying session,
+   *  attach listeners, arm timers, emit. Called once per run, either
+   *  immediately from `spawn` (under-cap path) or from `dequeueAndStart`
+   *  (queued path). */
+  private finishSpawn(rec: InternalRun): void {
+    const sessionOpts = rec.pendingSessionOpts;
+    rec.pendingSessionOpts = null;
+    if (!sessionOpts) {
+      // Defensive — shouldn't happen. Fail loudly so we don't silently hang
+      // the dispatch.
+      this.fail(rec, 'spawn-failed', 'finishSpawn called without pendingSessionOpts');
+      return;
+    }
+    let session: AgentSessionLike;
+    try {
+      session = (this.deps.createSession ?? defaultCreateSession)(sessionOpts);
+    } catch (err) {
+      this.fail(rec, 'spawn-failed', `pty spawn failed: ${(err as Error).message}`);
+      return;
+    }
+    this.attachToSession(rec, session);
+    this.armWallClockTimer(rec);
+    this.armIdleTimer(rec);
+    // 16b.8.1 — surface the freshly-spawned record so the Activity Panel
+    // card appears immediately (before the PTY reaches `ready`).
+    this.emitRunChanged(rec);
   }
 
   private clearIdleTimer(rec: InternalRun): void {

@@ -981,3 +981,505 @@ test('waitForFirstJsonl for unknown runId resolves immediately (defensive)', asy
   ]);
   assert.equal(winner, 'acked');
 });
+
+// ── Section 18.7: max-concurrent cap + FIFO queue ──
+
+function makeCapMgr(cap: number, slug: string) {
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, slug, pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+    getMaxConcurrent: () => cap,
+  });
+  return { mgr, sessions };
+}
+
+test('under cap → direct spawn; result.queued=false, position=null', async () => {
+  const p = createProject({
+    slug: 'arm-cap-under',
+    name: 'ARM Cap Under',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(2, 'arm-cap-under');
+
+  const r1 = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-under-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r1.queued, false);
+  assert.equal(r1.position, null);
+  assert.equal(sessions.length, 1, 'under-cap spawn must create a session synchronously');
+  // The record should be in `spawning` (then `running` after becomeReady).
+  const rec = mgr.get(r1.runId)!;
+  assert.equal(rec.status, 'spawning');
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('done');
+  await r1.completion;
+});
+
+test('at cap → queued shape with position; no session created until dequeue', async () => {
+  const p = createProject({
+    slug: 'arm-cap-queue',
+    name: 'ARM Cap Queue',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(1, 'arm-cap-queue');
+
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-queue-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r1.queued, false, 'first dispatch under cap');
+  assert.equal(sessions.length, 1);
+
+  // Second dispatch — cap = 1, one running → must queue.
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: 'second',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-queue-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r2.queued, true, 'second dispatch must queue (cap=1)');
+  assert.equal(r2.position, 1, 'first in queue → position 1');
+  assert.equal(sessions.length, 1, 'no session created for queued runs until dequeue');
+  assert.equal(mgr.get(r2.runId)!.status, 'queued');
+
+  // Third dispatch — also queued, position 2.
+  const r3 = mgr.spawn({
+    agentName: 'a1',
+    input: 'third',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-queue-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r3.queued, true);
+  assert.equal(r3.position, 2);
+  assert.equal(sessions.length, 1);
+
+  // Clean up — terminate the running one + drain queue.
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('done1');
+  await r1.completion;
+  // After r1's terminal, r2's session was created via dequeue.
+  assert.equal(sessions.length, 2);
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('done2');
+  await r2.completion;
+  // After r2's terminal, r3's session was created.
+  assert.equal(sessions.length, 3);
+  sessions[2]!.becomeReady();
+  sessions[2]!.emitTurnEnd('done3');
+  await r3.completion;
+});
+
+test('queued → dequeue on terminal → emits agent-queued-started with carried-forward timestamps', async () => {
+  const p = createProject({
+    slug: 'arm-cap-queued-event',
+    name: 'ARM Cap Queued Event',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(1, 'arm-cap-queued-event');
+
+  const queuedEvents: Array<Record<string, unknown>> = [];
+  mgr.on('agent-queued-started', (payload: Record<string, unknown>) => {
+    queuedEvents.push(payload);
+  });
+
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: 'first',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-event-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r1.queued, false);
+
+  const r2DispatchAt = Date.now();
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: 'second',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cap-event-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r2.queued, true);
+
+  // Snapshot the queued record's startedAt before dequeue (will get bumped).
+  const r2QueuedRec = mgr.get(r2.runId)!;
+  assert.equal(r2QueuedRec.status, 'queued');
+
+  // No queued-started events fire on enqueue — only on dequeue.
+  assert.equal(queuedEvents.length, 0, 'queued-started fires on dequeue, not enqueue');
+
+  // Terminate r1 → drain r2.
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('done');
+  await r1.completion;
+
+  // Manager fires `agent-queued-started` synchronously inside the terminal
+  // path's processQueue. By the time `r1.completion` resolves, the event has
+  // already landed.
+  assert.equal(queuedEvents.length, 1, 'one queued-started event for r2');
+  const ev = queuedEvents[0]!;
+  assert.equal(ev.runId, r2.runId);
+  assert.equal(ev.sessionId, r2.sessionId);
+  assert.equal(ev.agentName, 'a2');
+  assert.equal(ev.projectId, p.id);
+  assert.equal(ev.dispatcherSessionId, 'cap-event-disp');
+  assert.ok(typeof ev.queuedAt === 'number');
+  assert.ok(typeof ev.startedAt === 'number');
+  assert.ok(
+    (ev.queuedAt as number) >= r2DispatchAt - 5,
+    'queuedAt should be the dispatch-time timestamp',
+  );
+  assert.ok(
+    (ev.startedAt as number) >= (ev.queuedAt as number),
+    'startedAt should be >= queuedAt',
+  );
+  // r2's record startedAt got bumped to actual spawn time (was dispatch time when queued).
+  const r2RunningRec = mgr.get(r2.runId)!;
+  assert.equal(r2RunningRec.startedAt, ev.startedAt);
+
+  // Tidy.
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('done');
+  await r2.completion;
+});
+
+test('cancel-while-queued → status=cancelled, completion resolves, queue stays consistent', async () => {
+  const p = createProject({
+    slug: 'arm-cap-cancel',
+    name: 'ARM Cap Cancel',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(1, 'arm-cap-cancel');
+
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cancel-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cancel-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r3 = mgr.spawn({
+    agentName: 'a1',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'cancel-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r2.queued, true);
+  assert.equal(r3.queued, true);
+  assert.equal(r3.position, 2);
+
+  // Cancel r2 (the queued one at position 1). r3 stays in the queue; when
+  // the running r1 terminates, r3 should spawn next (skipping the stale r2).
+  const cancelled = mgr.cancel(r2.runId, 'user cancelled queued');
+  assert.equal(cancelled, true);
+  const r2Rec = await r2.completion;
+  assert.equal(r2Rec.status, 'cancelled');
+  assert.equal(r2Rec.failureCause, 'cancelled');
+  assert.equal(sessions.length, 1, 'cancel-while-queued must not spawn a session');
+
+  // Terminate r1 — processQueue should skip the stale r2 entry and pick r3.
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('done1');
+  await r1.completion;
+  assert.equal(sessions.length, 2, 'r3 should now have a session');
+  // r3 must be the one running now (not r2).
+  const r3Rec = mgr.get(r3.runId)!;
+  assert.equal(r3Rec.status, 'spawning');
+
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('done3');
+  await r3.completion;
+});
+
+test('paused run counts toward the cap (occupies a slot)', async () => {
+  const p = createProject({
+    slug: 'arm-cap-paused',
+    name: 'ARM Cap Paused',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(1, 'arm-cap-paused');
+
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'paused-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const s = sessions[0]!;
+  s.becomeReady();
+
+  // Mint a waiting pending-ask + simulate a turn-end so the manager transitions
+  // r1 to `paused`.
+  const pendingId = newId();
+  createPendingAsk({
+    id: pendingId,
+    sessionId: r1.sessionId,
+    agentName: 'a1',
+    projectId: p.id as ULID,
+    kind: 'ask-orchestrator',
+    question: 'q',
+    now: Date.now(),
+  });
+  s.emitTurnEnd('asking');
+  assert.equal(mgr.get(r1.runId)!.status, 'paused');
+
+  // Now dispatch a second run — paused should count as occupying the cap
+  // slot, so this must queue.
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'paused-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r2.queued, true, 'paused run must occupy a cap slot');
+  assert.equal(r2.position, 1);
+  assert.equal(sessions.length, 1, 'no session created for queued r2');
+
+  // Cancel paused r1 to free the slot + drain queue.
+  mgr.cancel(r1.runId, 'cleanup');
+  await r1.completion;
+  assert.equal(sessions.length, 2, 'r2 should now have a session');
+
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('done2');
+  await r2.completion;
+});
+
+test('multiple terminals drain queue in FIFO order', async () => {
+  const p = createProject({
+    slug: 'arm-cap-fifo',
+    name: 'ARM Cap FIFO',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(1, 'arm-cap-fifo');
+
+  // Dispatch 4 — 1 runs, 3 queue.
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: '1',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'fifo-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: '2',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'fifo-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r3 = mgr.spawn({
+    agentName: 'a1',
+    input: '3',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'fifo-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r4 = mgr.spawn({
+    agentName: 'a2',
+    input: '4',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'fifo-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.deepEqual(
+    [r1.queued, r2.queued, r3.queued, r4.queued],
+    [false, true, true, true],
+  );
+  assert.deepEqual([r2.position, r3.position, r4.position], [1, 2, 3]);
+
+  // Drain — each terminal pulls the next queued head.
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('d1');
+  await r1.completion;
+  assert.equal(sessions.length, 2);
+  assert.equal(mgr.get(r2.runId)!.status, 'spawning');
+
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('d2');
+  await r2.completion;
+  assert.equal(sessions.length, 3);
+  assert.equal(mgr.get(r3.runId)!.status, 'spawning');
+
+  sessions[2]!.becomeReady();
+  sessions[2]!.emitTurnEnd('d3');
+  await r3.completion;
+  assert.equal(sessions.length, 4);
+  assert.equal(mgr.get(r4.runId)!.status, 'spawning');
+
+  sessions[3]!.becomeReady();
+  sessions[3]!.emitTurnEnd('d4');
+  await r4.completion;
+});
+
+test('queued dispatch is durable across multiple terminals before its turn', async () => {
+  // Regression: confirm a queued run survives several other terminals + waits
+  // for its actual FIFO slot. Also tests that `agent-queued-started` fires
+  // exactly once per queued run (not once per terminal-drain pass).
+  const p = createProject({
+    slug: 'arm-cap-fifo-durable',
+    name: 'ARM Cap FIFO Durable',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(2, 'arm-cap-fifo-durable');
+
+  const queuedEvents: string[] = [];
+  mgr.on('agent-queued-started', (p: { runId: string }) => {
+    queuedEvents.push(p.runId);
+  });
+
+  // Two run immediately (cap=2).
+  const r1 = mgr.spawn({
+    agentName: 'a1',
+    input: '1',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'dur-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r2 = mgr.spawn({
+    agentName: 'a2',
+    input: '2',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'dur-disp',
+    worktreeDir: tmpDataDir,
+  });
+  // Two queue.
+  const r3 = mgr.spawn({
+    agentName: 'a1',
+    input: '3',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'dur-disp',
+    worktreeDir: tmpDataDir,
+  });
+  const r4 = mgr.spawn({
+    agentName: 'a2',
+    input: '4',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'dur-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(r1.queued, false);
+  assert.equal(r2.queued, false);
+  assert.equal(r3.queued, true);
+  assert.equal(r4.queued, true);
+
+  // Terminate r1 → r3 spawns. r2 is still running.
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('d1');
+  await r1.completion;
+  assert.deepEqual(queuedEvents, [r3.runId]);
+
+  // Terminate r2 → r4 spawns.
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('d2');
+  await r2.completion;
+  assert.deepEqual(queuedEvents, [r3.runId, r4.runId]);
+
+  // Drain.
+  sessions[2]!.becomeReady();
+  sessions[2]!.emitTurnEnd('d3');
+  await r3.completion;
+  sessions[3]!.becomeReady();
+  sessions[3]!.emitTurnEnd('d4');
+  await r4.completion;
+
+  // No duplicate emissions across the back-to-back terminals.
+  assert.equal(queuedEvents.length, 2);
+});
+
+test('getMaxConcurrent dep override beats DB-backed default', async () => {
+  // Pin the test to a cap of 3 regardless of what the DB-backed default
+  // would return. Spawn 3 → all run; spawn 4th → queues.
+  const p = createProject({
+    slug: 'arm-cap-dep',
+    name: 'ARM Cap Dep',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { mgr, sessions } = makeCapMgr(3, 'arm-cap-dep');
+
+  const handles: Array<ReturnType<typeof mgr.spawn>> = [];
+  for (let i = 0; i < 3; i++) {
+    handles.push(
+      mgr.spawn({
+        agentName: i % 2 === 0 ? 'a1' : 'a2',
+        input: `r${i}`,
+        wait: false,
+        projectId: p.id as ULID,
+        dispatcherSessionId: 'dep-disp',
+        worktreeDir: tmpDataDir,
+      }),
+    );
+  }
+  for (const h of handles) assert.equal(h.queued, false);
+  assert.equal(sessions.length, 3);
+
+  const overflow = mgr.spawn({
+    agentName: 'a1',
+    input: 'overflow',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'dep-disp',
+    worktreeDir: tmpDataDir,
+  });
+  assert.equal(overflow.queued, true);
+  assert.equal(overflow.position, 1);
+
+  // Clean up.
+  for (let i = 0; i < 3; i++) {
+    sessions[i]!.becomeReady();
+    sessions[i]!.emitTurnEnd(`done${i}`);
+    await handles[i]!.completion;
+  }
+  assert.equal(sessions.length, 4, 'overflow drained when cap freed');
+  sessions[3]!.becomeReady();
+  sessions[3]!.emitTurnEnd('done-overflow');
+  await overflow.completion;
+});

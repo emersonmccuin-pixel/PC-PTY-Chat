@@ -99,6 +99,7 @@ import {
   buildAgentAsksUserBody,
   buildAgentCompletedBody,
   buildAgentFailedBody,
+  buildAgentQueuedStartedBody,
 } from './services/agent-event-header.ts';
 import {
   AgentRunManager,
@@ -250,6 +251,43 @@ channelServer.start();
         type: 'agent-jsonl-event',
         runId: payload.runId,
         event: payload.event,
+      });
+    },
+  );
+  // Section 18.7 — emit `agent-queued-started` to the dispatching
+  // orchestrator's stream whenever a previously-queued dispatch actually
+  // fires. Rides the hybrid transport (inbox + best-effort channel) like
+  // the terminal events so post-restart catch-up still works. Slug lookup
+  // happens at fire time because the project's slug isn't on the payload.
+  mgr.on(
+    'agent-queued-started',
+    (payload: {
+      runId: ULID;
+      sessionId: string;
+      agentName: string;
+      projectId: ULID;
+      dispatcherSessionId: string;
+      parentWorkItemId: ULID | null;
+      queuedAt: number;
+      startedAt: number;
+    }) => {
+      const project = getProjectById(payload.projectId);
+      if (!project) return; // defensive — project soft-deleted mid-flight
+      enqueueAndPush(channelServer, {
+        projectId: payload.projectId,
+        recipientSessionId: payload.dispatcherSessionId,
+        eventKind: 'agent-queued-started',
+        slug: project.slug,
+        source: 'agent',
+        body: buildAgentQueuedStartedBody({
+          runId: payload.runId,
+          sessionId: payload.sessionId,
+          agentName: payload.agentName,
+          parentWorkItemId: payload.parentWorkItemId,
+          queuedAt: payload.queuedAt,
+          startedAt: payload.startedAt,
+        }),
+        sender: 'pc',
       });
     },
   );
@@ -457,6 +495,10 @@ app.patch('/api/settings', async (c) => {
           typeof body.agentDispatch?.ackTimeoutMs === 'number'
             ? body.agentDispatch.ackTimeoutMs
             : current.agentDispatch.ackTimeoutMs,
+        maxConcurrent:
+          typeof body.agentDispatch?.maxConcurrent === 'number'
+            ? body.agentDispatch.maxConcurrent
+            : current.agentDispatch.maxConcurrent,
       },
     },
     getDataDir(),
@@ -2977,6 +3019,24 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
       });
     }
   });
+
+  // Section 18.7 — queued dispatches return immediately with the queue
+  // position; no ack-wait because there's no agent yet. The
+  // `agent-queued-started` event fires later when the queue drains and
+  // the run actually spawns; the terminal `agent-completed` /
+  // `agent-failed` event still flows via the background emit above.
+  if (spawn.queued) {
+    return c.json({
+      ok: true,
+      mode: 'async',
+      status: 'queued',
+      sessionId: spawn.sessionId,
+      runId: spawn.runId,
+      agentName,
+      startedAt: spawn.startedAt,
+      position: spawn.position,
+    });
+  }
 
   // Section 18.6 — brief ack-wait. Block the caller until the spawned agent
   // emits its first non-system JSONL event (confirms CC booted, read the

@@ -58,8 +58,11 @@ export type { ActivityPanelSettings, AgentDispatchSettings, GlobalSettings } fro
 export {
   AGENT_ACK_TIMEOUT_MS_MAX,
   AGENT_ACK_TIMEOUT_MS_MIN,
+  AGENT_MAX_CONCURRENT_MAX,
+  AGENT_MAX_CONCURRENT_MIN,
   clampAckTimeoutMs,
   clampFontScale,
+  clampMaxConcurrent,
   defaultGlobalSettings,
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,

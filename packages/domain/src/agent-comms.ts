@@ -99,17 +99,20 @@ export interface PendingAskOption {
 
 // ─── Channel-event kinds (`agent-*` envelope on `<channel ...>` blocks) ───
 
-/** Five new event kinds emitted by the agent runtime to either the
- *  orchestrator's stream (when an agent is asking) or the caller's stream
- *  (when a background-dispatched agent terminates). All ride the existing
- *  channel-server forwarder — agent processes register against
- *  `/channel-register` exactly like the per-project orchestrator does. */
+/** Event kinds the orchestrator parses out of `<channel ...>` blocks. Five
+ *  originate from a child agent (the asks / approval / terminal trio plus
+ *  the two terminal events); `agent-queued-started` originates from PC
+ *  itself (Section 18.7) when a previously-queued dispatch finally fires.
+ *  All ride the existing channel-server forwarder — agent processes register
+ *  against `/channel-register` exactly like the per-project orchestrator does;
+ *  PC-originated events emit directly through `enqueueAndPush`. */
 export type AgentChannelEventKind =
   | 'agent-asks-orchestrator'
   | 'agent-asks-user'
   | 'agent-approval-request'
   | 'agent-completed'
-  | 'agent-failed';
+  | 'agent-failed'
+  | 'agent-queued-started';
 
 export const AGENT_CHANNEL_EVENT_KINDS: readonly AgentChannelEventKind[] = [
   'agent-asks-orchestrator',
@@ -117,6 +120,7 @@ export const AGENT_CHANNEL_EVENT_KINDS: readonly AgentChannelEventKind[] = [
   'agent-approval-request',
   'agent-completed',
   'agent-failed',
+  'agent-queued-started',
 ];
 
 /** Common fields every `agent-*` event carries. Concrete payloads extend
