@@ -9,7 +9,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,6 +36,14 @@ const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
 
 before(() => {
   runMigrations();
+  // B4 (2026-05-21) — agent-name resolution check requires a pod row OR a
+  // flat-file agent .md in the worktree. Tests pass `worktreeDir: tmpDataDir`
+  // and various names (`researcher`, `a1`, `a2`); write stubs so the spawn
+  // doesn't fail-fast with cause='unknown-agent'.
+  mkdirSync(join(tmpDataDir, '.claude', 'agents'), { recursive: true });
+  for (const name of ['researcher', 'a1', 'a2']) {
+    writeFileSync(join(tmpDataDir, '.claude', 'agents', `${name}.md`), `# ${name} (test stub)\n`);
+  }
 });
 
 after(() => {
@@ -140,6 +148,166 @@ test('spawn → ready → turn-end with no pending-ask → completed', async () 
   assert.equal(result.failureCause, null);
   assert.equal(result.runId, runId);
   await tick(); // let kill→exit fire
+  assert.equal(s.killed, true);
+});
+
+// B7 regression (2026-05-21) — agents that live ONLY in the global library
+// at `~/.project-companion/agents/<name>.md` (Section 3 stock globals) must
+// be materialised into `<worktree>/.claude/agents/<name>.md` at spawn time
+// so CC's `--agent` flag can find them, and cleaned up on terminal.
+test('global flat-file agent → materialised into worktree before spawn; cleaned up on terminal', async () => {
+  const p = createProject({
+    slug: 'arm-b7',
+    name: 'ARM B7',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+
+  // Use an isolated worktree that does NOT have a `.claude/agents/` set up
+  // from the before() block — that's the trigger for the global-flat-file
+  // path (worktree has no project override).
+  const isolatedWorktree = join(tmpDataDir, 'arm-b7-worktree');
+  mkdirSync(isolatedWorktree, { recursive: true });
+
+  // Set up a global library with our test agent.
+  const libDir = join(tmpDataDir, 'arm-b7-lib');
+  mkdirSync(libDir, { recursive: true });
+  writeFileSync(join(libDir, 'b7-global.md'), '# b7-global agent (library fixture)\n');
+  const prevLibEnv = process.env.PC_AGENT_LIBRARY_DIR;
+  process.env.PC_AGENT_LIBRARY_DIR = libDir;
+
+  try {
+    const mgr = new AgentRunManager({
+      createSession: factory,
+      scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-b7', pid, rid),
+      resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+    });
+
+    const { runId, completion } = mgr.spawn({
+      agentName: 'b7-global',
+      input: 'go',
+      wait: true,
+      projectId: p.id as ULID,
+      worktreeDir: isolatedWorktree,
+    });
+
+    // Materialisation must land BEFORE the PtySession reaches ready (CC reads
+    // `.claude/agents/` at startup). Assert immediately after spawn().
+    const materializedPath = join(isolatedWorktree, '.claude', 'agents', 'b7-global.md');
+    assert.equal(
+      existsSync(materializedPath),
+      true,
+      'b7-global.md should be materialised into the worktree at spawn time',
+    );
+
+    sessions[0]!.becomeReady();
+    sessions[0]!.emitTurnEnd('done');
+    const result = await completion;
+    assert.equal(result.status, 'completed');
+    assert.equal(result.runId, runId);
+
+    // Cleanup on terminal: the materialised file should be gone.
+    await tick();
+    assert.equal(
+      existsSync(materializedPath),
+      false,
+      'materialised b7-global.md should be removed on terminal',
+    );
+  } finally {
+    if (prevLibEnv === undefined) delete process.env.PC_AGENT_LIBRARY_DIR;
+    else process.env.PC_AGENT_LIBRARY_DIR = prevLibEnv;
+  }
+});
+
+// B4 regression (2026-05-21) — unknown agent names must fail fast with
+// cause='unknown-agent'. Without this, `--agent <unknown>` silently falls
+// through to CC's default coding-assistant prompt and the dispatch returns
+// whatever that CC happens to say (looks like agent-completed to the caller).
+test('unknown agent name → fail immediately with cause=unknown-agent (no session spawned)', async () => {
+  const p = createProject({
+    slug: 'arm-unknown',
+    name: 'ARM Unknown',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-unknown', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'no-such-agent',
+    input: 'anything',
+    wait: false,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+
+  const result = await completion;
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureCause, 'unknown-agent');
+  assert.match(
+    result.failureReason ?? '',
+    /no agent named "no-such-agent"/,
+    `expected failure reason to name the missing agent, got: ${result.failureReason}`,
+  );
+  assert.equal(sessions.length, 0, 'no PtySession should be created for an unknown agent');
+});
+
+// B1 regression (2026-05-20) — Opus 4.7 interleaved thinking emits a
+// thinking-only assistant message (no text content blocks → turn-end with
+// `text === ''`) followed by a text-only assistant message; the manager must
+// keep waiting on the first and complete on the second. Pre-fix bug: first
+// empty turn-end was treated as terminal, killing the session before the
+// reply landed.
+test('text-empty turn-end (thinking-only) → keep waiting; subsequent text turn-end → completed', async () => {
+  const p = createProject({
+    slug: 'arm-b1',
+    name: 'ARM B1',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-b1', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'read CLAUDE.md',
+    wait: true,
+    projectId: p.id as ULID,
+    worktreeDir: tmpDataDir,
+  });
+
+  const s = sessions[0]!;
+  s.becomeReady();
+
+  // First turn-end: thinking-only (text === '').
+  s.emitTurnEnd('');
+  let rec = mgr.get(runId)!;
+  assert.equal(rec.status, 'running', 'thinking-only turn-end must NOT terminate');
+  assert.equal(rec.result, '', 'no text to record yet');
+  assert.equal(s.killed, false, 'session must stay alive for the real reply');
+
+  // Completion must still be pending.
+  const racePending = await Promise.race([
+    completion.then(() => 'resolved' as const),
+    new Promise<'pending'>((r) => setImmediate(() => r('pending'))),
+  ]);
+  assert.equal(racePending, 'pending');
+
+  // Second turn-end: the actual text reply.
+  s.emitTurnEnd('Project Companion is a local-first companion app.');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.result, 'Project Companion is a local-first companion app.');
+  await tick();
   assert.equal(s.killed, true);
 });
 

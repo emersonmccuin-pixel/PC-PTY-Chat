@@ -27,12 +27,14 @@
 //   - 'cancelled' (cancel() called)
 
 import { EventEmitter } from 'node:events';
-import { mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
-import { listWaitingPendingAsksForSession, newId } from '@pc/db';
+import { defaultLibraryDir } from './agent-library.ts';
+
+import { getAgentByName, listWaitingPendingAsksForSession, newId } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import {
   encodeCwdForClaude,
@@ -239,6 +241,39 @@ export class AgentRunManager extends EventEmitter {
     const sessionId = randomUUID();
     const startedAt = Date.now();
 
+    // B4 (2026-05-21) — fail-fast on unknown agent names. Without this,
+    // `--agent <unknown>` falls through to CC's default coding-assistant
+    // prompt + full tool surface and the dispatch returns whatever that
+    // CC happens to say — looks like `agent-completed` to the caller, with
+    // no indication the requested agent never existed. Resolution checks
+    // (in priority order): pod row → project flat-file → global flat-file.
+    const agentSource = resolveAgentSource(input.agentName, input.worktreeDir);
+    if (!agentSource) {
+      const rec = this.makeRecord({
+        runId,
+        sessionId,
+        agentName: input.agentName,
+        projectId: input.projectId,
+        parentWorkItemId: input.parentWorkItemId ?? null,
+        wait: input.wait,
+        startedAt,
+        scratchDir: '',
+        worktreeDir: input.worktreeDir,
+        initialInput: input.input,
+        idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+        wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
+        readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+      });
+      const completion = this.installCompletionPromise(rec);
+      this.runs.set(runId, rec);
+      this.fail(
+        rec,
+        'unknown-agent',
+        `no agent named "${input.agentName}" found in pod registry, in <worktree>/.claude/agents/${input.agentName}.md, or in the global library at ~/.project-companion/agents/${input.agentName}.md`,
+      );
+      return { runId, sessionId, startedAt, completion };
+    }
+
     const scratchDir =
       (this.deps.scratchDirFor ?? defaultScratchDirFor)(input.projectId, runId);
     try {
@@ -303,6 +338,43 @@ export class AgentRunManager extends EventEmitter {
       return { runId, sessionId, startedAt, completion };
     }
 
+    // B7 (2026-05-21) — when the agent resolves only via the global library
+    // (`~/.project-companion/agents/<name>.md`), copy the .md into the
+    // worktree so CC's `--agent` flag finds it. Cleanup removes the copy
+    // on terminal so the worktree stays clean. Skipped when the worktree
+    // already has a same-named file (= project override or pod-materialised
+    // file from above).
+    let globalMaterializeCleanup: (() => void) | null = null;
+    if (agentSource === 'global-flat-file') {
+      try {
+        globalMaterializeCleanup = materializeGlobalFlatFileAgent(input.agentName, input.worktreeDir);
+      } catch (err) {
+        const rec = this.makeRecord({
+          runId,
+          sessionId,
+          agentName: input.agentName,
+          projectId: input.projectId,
+          parentWorkItemId: input.parentWorkItemId ?? null,
+          wait: input.wait,
+          startedAt,
+          scratchDir,
+          worktreeDir: input.worktreeDir,
+          initialInput: input.input,
+          idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+          wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
+          readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+        });
+        const completion = this.installCompletionPromise(rec);
+        this.runs.set(runId, rec);
+        this.fail(
+          rec,
+          'spawn-failed',
+          `global agent materialisation failed for "${input.agentName}": ${(err as Error).message}`,
+        );
+        return { runId, sessionId, startedAt, completion };
+      }
+    }
+
     const rec = this.makeRecord({
       runId,
       sessionId,
@@ -318,7 +390,15 @@ export class AgentRunManager extends EventEmitter {
       wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
       readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     });
-    rec.podCleanup = podPrep?.cleanup ?? null;
+    // Chain pod-cleanup + global-materialize-cleanup so both run on terminal.
+    const podCleanup = podPrep?.cleanup ?? null;
+    rec.podCleanup =
+      podCleanup && globalMaterializeCleanup
+        ? () => {
+            try { podCleanup(); } catch { /* best-effort */ }
+            try { globalMaterializeCleanup!(); } catch { /* best-effort */ }
+          }
+        : podCleanup ?? globalMaterializeCleanup;
     const completion = this.installCompletionPromise(rec);
     this.runs.set(runId, rec);
 
@@ -517,7 +597,9 @@ export class AgentRunManager extends EventEmitter {
     const waiting = listWaitingPendingAsksForSession(rec.sessionId);
     if (waiting.length > 0) {
       // Paused — keep wall-clock running, stop idle timer (process exits
-      // naturally), keep record alive for resume.
+      // naturally), keep record alive for resume. Pause detection is
+      // session-state-driven; doesn't care whether the closing assistant
+      // message had text or was thinking-only.
       this.clearIdleTimer(rec);
       rec.status = 'paused';
       try {
@@ -528,7 +610,19 @@ export class AgentRunManager extends EventEmitter {
       this.emitRunChanged(rec);
       return;
     }
-    // No outstanding pause → terminal complete.
+    // B1 (2026-05-20) — Opus 4.7 emits TWO consecutive `stop_reason: end_turn`
+    // assistant messages on one logical turn when interleaved thinking is on:
+    // a thinking-only message (no text content blocks) followed by a text-only
+    // message. The tailer correctly fires one `jsonl-turn-end` per assistant
+    // message; treating the first one as terminal kills the session before
+    // the actual reply lands, leaving `result` empty + the modal blank. Fix:
+    // empty `text` from a non-paused run means the assistant produced no text
+    // content (thinking-only); keep the idle timer armed and wait for the
+    // next jsonl-turn-end. Reference: [[cc-interleaved-thinking-dual-end-turn]].
+    if (!text) {
+      return;
+    }
+    // Text-bearing end_turn + no pending pauses → terminal complete.
     this.complete(rec);
   }
 
@@ -642,6 +736,54 @@ export class AgentRunManager extends EventEmitter {
       endedAt: rec.endedAt,
     };
   }
+}
+
+export type AgentSource = 'pod' | 'project-flat-file' | 'global-flat-file' | null;
+
+/** Resolve an agent name to a source. Three places to look, in priority order:
+ *   1. `pod` — live global pod row in the DB (canonical post-17a).
+ *   2. `project-flat-file` — `<worktree>/.claude/agents/<name>.md` (a per-
+ *      project override OR a custom project-only agent).
+ *   3. `global-flat-file` — `~/.project-companion/agents/<name>.md` (Section 3
+ *      stock globals: researcher / writer / planner / reviewer / extractor).
+ *      These surface in `listResolvedAgents` for the UI but are NOT physically
+ *      copied into the project at create time — see project-create.ts. The
+ *      spawn path materialises them on the fly so CC's `--agent` flag can
+ *      find them under `<cwd>/.claude/agents/`.
+ *
+ *  Returns null when none match — caller fails the spawn with
+ *  `cause: 'unknown-agent'`. Per-project pod overlays land in 17c; flat-file
+ *  globals sunset in 17e (migrated to pod rows). */
+export function resolveAgentSource(agentName: string, worktreeDir: string): AgentSource {
+  if (getAgentByName({ name: agentName, scope: 'global' })) return 'pod';
+  if (existsSync(resolve(worktreeDir, '.claude', 'agents', `${agentName}.md`))) return 'project-flat-file';
+  if (existsSync(resolve(defaultLibraryDir(), `${agentName}.md`))) return 'global-flat-file';
+  return null;
+}
+
+/** B7 (2026-05-21) — materialize a flat-file global agent into the worktree's
+ *  `.claude/agents/` directory so CC's `--agent` flag can find it. Returns a
+ *  cleanup that removes the in-worktree copy on terminal. No-op (returns a
+ *  no-op cleanup) if a same-named file already exists in the worktree, which
+ *  preserves any project override the user has authored. */
+function materializeGlobalFlatFileAgent(agentName: string, worktreeDir: string): () => void {
+  const destDir = resolve(worktreeDir, '.claude', 'agents');
+  const destPath = resolve(destDir, `${agentName}.md`);
+  if (existsSync(destPath)) {
+    return () => {
+      /* user-owned file; don't touch on cleanup */
+    };
+  }
+  const srcPath = resolve(defaultLibraryDir(), `${agentName}.md`);
+  mkdirSync(destDir, { recursive: true });
+  copyFileSync(srcPath, destPath);
+  return () => {
+    try {
+      unlinkSync(destPath);
+    } catch {
+      /* best-effort: tolerate missing file (e.g. someone deleted between spawn + cleanup) */
+    }
+  };
 }
 
 function defaultCreateSession(opts: PtySessionOptions): AgentSessionLike {

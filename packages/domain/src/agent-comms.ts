@@ -181,8 +181,18 @@ export interface AgentFailedPayload extends AgentEventCommon {
   runId: ULID;
   /** One-line failure summary. */
   reason: string;
-  /** Optional structured error code (`timeout` / `loop-cap` / `error`). */
-  cause: 'timeout' | 'loop-cap' | 'depth-cap' | 'cancelled' | 'error' | null;
+  /** Optional structured error code. Matches the values the orchestrator pod
+   *  prompt's handler-protocol §5 documents. `error` stays as the catch-all
+   *  for anything the runtime can't classify (e.g. unexpected exceptions). */
+  cause:
+    | 'timeout'
+    | 'loop-cap'
+    | 'depth-cap'
+    | 'cancelled'
+    | 'unknown-agent'
+    | 'spawn-failed'
+    | 'error'
+    | null;
 }
 
 export type AgentChannelEventPayload =

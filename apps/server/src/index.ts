@@ -123,12 +123,27 @@ const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 runMigrations();
 
 // Section 16a.2 — seed the global orchestrator pod if it doesn't already
-// exist. Idempotent on every boot; user/orchestrator edits to the row
-// survive. 16a.3's spawn path depends on this row being live.
+// exist. Idempotent on every boot; user/MCP edits to the row survive (the
+// reseed path skips when any non-system audit row is present). 16a.3's
+// spawn path depends on this row being live.
 {
   const result = seedOrchestratorPodIfMissing();
-  if (result.seeded) {
-    console.log(`[pc] orchestrator pod seeded (id=${result.agentId})`);
+  switch (result.action) {
+    case 'inserted':
+      console.log(`[pc] orchestrator pod seeded (id=${result.agentId})`);
+      break;
+    case 'reseeded':
+      console.log(
+        `[pc] orchestrator pod auto-reseeded (id=${result.agentId}, fields=[${result.reseededFields.join(', ')}])`,
+      );
+      break;
+    case 'skipped-user-edited':
+      console.warn(
+        `[pc] orchestrator pod has drifted from ORCHESTRATOR_POD_CONTENT on fields [${result.reseededFields.join(', ')}] but the row has user-authored audit rows — leaving it alone. Apply the latest seed manually via the Pod UI (17d) or by clearing user edits.`,
+      );
+      break;
+    case 'unchanged':
+      break;
   }
 }
 
@@ -2707,8 +2722,11 @@ app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) 
 
 /** Map `AgentRunFailureCause` → the structured `agent-failed` payload
  *  `cause` field (the narrow domain enum the orchestrator pod prompt
- *  parses). `spawn-failed` and `spawn-exit` collapse to `error` —
- *  orchestrator handler protocol entry #5 treats them the same. */
+ *  parses). The pod prompt's handler-protocol §5 documents `timeout` /
+ *  `cancelled` / `unknown-agent` / `spawn-failed` / `error` as the
+ *  distinguishable causes the orchestrator suggests next steps from;
+ *  collapse only the runtime-internal `spawn-exit` (process died mid-turn
+ *  with no clearer reason) and `null` to the generic `'error'` bucket. */
 function agentFailureCauseToPayload(
   cause: AgentRunFailureCause | null,
 ): AgentFailedPayload['cause'] {
@@ -2719,7 +2737,9 @@ function agentFailureCauseToPayload(
     case 'cancelled':
       return 'cancelled';
     case 'unknown-agent':
+      return 'unknown-agent';
     case 'spawn-failed':
+      return 'spawn-failed';
     case 'spawn-exit':
     case null:
     default:
