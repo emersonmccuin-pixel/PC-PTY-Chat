@@ -177,6 +177,7 @@ export async function respawnAgentWithAnswer(
       agentName: ask.agentName,
       worktreeDir: project.folderPath,
       scratchDir: sessionDir,
+      filterMcpToReferencedTools: true,
     });
   } catch (err) {
     return {

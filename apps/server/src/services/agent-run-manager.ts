@@ -380,6 +380,7 @@ export class AgentRunManager extends EventEmitter {
         agentName: input.agentName,
         worktreeDir: input.worktreeDir,
         scratchDir,
+        filterMcpToReferencedTools: true,
       });
     } catch (err) {
       const rec = this.makeRecord({

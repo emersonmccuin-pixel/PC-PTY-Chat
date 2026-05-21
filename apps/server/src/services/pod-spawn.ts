@@ -34,6 +34,15 @@ export interface PreparePodSpawnInput {
   /** Per-spawn scratch dir — temp `mcp.json` lands here. Caller owns the dir
    *  lifecycle; cleanup() removes the file but NOT the dir. */
   scratchDir: string;
+  /** When true, the rendered `mcp.json` is filtered to only include MCP
+   *  servers referenced by the pod's tool list. Agent dispatches pass true
+   *  to prevent the project-baseline `webhook` server (which never loads
+   *  for agent spawns since they don't pass `--dangerously-load-development
+   *  -channels`) from poisoning CC's strict-mcp-config and dropping all
+   *  pc-rig tools. Orchestrator spawns leave this false: the orchestrator
+   *  needs webhook in mcp.json so CC spawns its dev-channel stdio child.
+   *  Defaults to false. */
+  filterMcpToReferencedTools?: boolean;
 }
 
 export interface PodSpawnPrep {
@@ -63,6 +72,7 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
     scratchDir: input.scratchDir,
     baselineMcpServers: baseline,
     mcpToolCatalog: { 'pc-rig': PC_RIG_TOOL_NAMES },
+    filterMcpToReferencedTools: input.filterMcpToReferencedTools ?? false,
   });
 
   return {

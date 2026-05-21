@@ -45,6 +45,16 @@ export interface MaterializePodOptions {
   /** Resolution table for `mcp__<server>__*` tool wildcards. Each key is an
    *  MCP server name; each value is the explicit tool list to expand into. */
   mcpToolCatalog?: Record<string, readonly string[]>;
+  /** When true, the rendered `mcp.json` is filtered to only include MCP
+   *  servers actually referenced by the pod's tool list (i.e. names appearing
+   *  in `mcp__<server>__<tool>` entries). Agent-dispatch callers set this
+   *  true so unreferenced baseline servers like `webhook` (which silently
+   *  refuse to load without `--dangerously-load-development-channels` and
+   *  cause CC's `--strict-mcp-config` to drop ALL MCP tools) don't poison
+   *  the agent's tool surface. Orchestrator-spawn callers leave this false:
+   *  the orchestrator depends on `webhook` being in mcp.json so CC spawns
+   *  its dev-channel-registered stdio child. Defaults to false. */
+  filterMcpToReferencedTools?: boolean;
 }
 
 export interface MaterializedPod {
@@ -69,7 +79,14 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
 
   const mcpConfigPath = resolve(scratchDir, 'mcp.json');
   mkdirSync(scratchDir, { recursive: true });
-  writeFileSync(mcpConfigPath, renderMcpConfig(bundle.mcpServers, baselineMcp), 'utf8');
+  const referencedServers = opts.filterMcpToReferencedTools
+    ? collectReferencedMcpServers(expandedTools)
+    : undefined;
+  writeFileSync(
+    mcpConfigPath,
+    renderMcpConfig(bundle.mcpServers, baselineMcp, referencedServers),
+    'utf8',
+  );
 
   return {
     agentMdPath,
@@ -98,16 +115,41 @@ export function renderAgentMd(agent: PodAgentRow, tools: readonly string[]): str
 }
 
 /** Render the temp `mcp.json` content. Pod's MCP rows merge on top of the
- *  caller-supplied baseline (pod wins per-server-name on conflict). */
+ *  caller-supplied baseline (pod wins per-server-name on conflict). When
+ *  `referencedServers` is supplied, the final mcpServers map is filtered
+ *  to only that set — used to avoid CC's strict-mcp-config fail-closed when
+ *  unreferenced servers in the baseline (e.g. webhook) can't load. */
 export function renderMcpConfig(
   podMcpServers: readonly PodMcpServerRow[],
   baseline: Record<string, PodMcpServerConfig>,
+  referencedServers?: ReadonlySet<string>,
 ): string {
-  const mcpServers: Record<string, PodMcpServerConfig> = { ...baseline };
+  const merged: Record<string, PodMcpServerConfig> = { ...baseline };
   for (const row of podMcpServers) {
-    mcpServers[row.name] = row.config;
+    merged[row.name] = row.config;
   }
+  const mcpServers: Record<string, PodMcpServerConfig> = referencedServers
+    ? Object.fromEntries(
+        Object.entries(merged).filter(([name]) => referencedServers.has(name)),
+      )
+    : merged;
   return JSON.stringify({ mcpServers }, null, 2);
+}
+
+/** Scan an agent's expanded tool list for `mcp__<server>__<tool>` patterns
+ *  and return the unique set of server names referenced. Used by the
+ *  materialiser to filter the agent's mcp.json down to only the MCP
+ *  servers actually needed. */
+export function collectReferencedMcpServers(tools: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of tools) {
+    if (!t.startsWith('mcp__')) continue;
+    const rest = t.slice('mcp__'.length);
+    const sep = rest.indexOf('__');
+    if (sep < 1) continue;
+    out.add(rest.slice(0, sep));
+  }
+  return out;
 }
 
 /** Build the env-var map the spawn caller folds into the child env. v1 = plain

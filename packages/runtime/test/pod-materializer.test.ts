@@ -287,6 +287,46 @@ test('materializePod writes .md + mcp.json + returns env map', () => {
   }
 });
 
+test('materializePod filters mcp.json to referenced servers when filterMcpToReferencedTools: true', () => {
+  const dirs = freshDirs();
+  try {
+    // Researcher-style bundle: tools reference pc-rig but NOT webhook.
+    // Baseline carries pc-rig + webhook (matches PC's project .mcp.json
+    // scaffold). Pod adds a jira server. Tools reference jira too.
+    const bundle = makeBundle({
+      agent: makeAgent({
+        tools: [
+          'Read', 'Glob', 'Grep',
+          'mcp__pc-rig__pc_log',
+          'mcp__jira__create_issue',
+        ],
+      }),
+      mcpServers: [makeMcpRow('jira', { command: 'jira-server' })],
+    });
+    const baseline = {
+      'pc-rig': { command: 'node', args: ['pc-rig.mjs'] },
+      'webhook': { command: 'node', args: ['channel-server.js'] },
+    };
+    const result = materializePod({
+      bundle,
+      worktreeDir: dirs.worktree,
+      scratchDir: dirs.scratch,
+      baselineMcpServers: baseline,
+      filterMcpToReferencedTools: true,
+    });
+
+    const mcp = JSON.parse(readFileSync(result.mcpConfigPath, 'utf8'));
+    // pc-rig + jira survive (referenced by tools).
+    assert.deepEqual(mcp.mcpServers['pc-rig'], { command: 'node', args: ['pc-rig.mjs'] });
+    assert.deepEqual(mcp.mcpServers.jira, { command: 'jira-server' });
+    // webhook is dropped (no `mcp__webhook__*` in tools).
+    assert.equal(mcp.mcpServers.webhook, undefined);
+    assert.equal(Object.keys(mcp.mcpServers).length, 2);
+  } finally {
+    dirs.cleanup();
+  }
+});
+
 test('materializePod expands mcp__pc-rig__* against the supplied catalog', () => {
   const dirs = freshDirs();
   try {

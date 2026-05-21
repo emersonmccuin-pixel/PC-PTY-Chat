@@ -1977,6 +1977,7 @@ export class WorkflowRuntime {
         agentName: resolvedAgent,
         worktreeDir,
         scratchDir: sessionDataDir,
+        filterMcpToReferencedTools: true,
       });
     } catch (err) {
       return failedSync(
