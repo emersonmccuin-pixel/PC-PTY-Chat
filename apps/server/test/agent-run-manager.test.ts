@@ -736,3 +736,248 @@ test('forwards every jsonl-event as run-jsonl-event with {runId, projectId, even
   assert.ok(seen.every((e) => e.runId === runId));
   assert.ok(seen.every((e) => e.projectId === p.id));
 });
+
+// ── Section 18.6: ack pattern — waitForFirstJsonl + getFirstJsonlAt ──
+
+test('waitForFirstJsonl resolves on first non-system jsonl event; getFirstJsonlAt returns the timestamp', async () => {
+  const p = createProject({
+    slug: 'arm-ack-happy',
+    name: 'ARM Ack Happy',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-happy', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
+    worktreeDir: tmpDataDir,
+  });
+
+  assert.equal(mgr.getFirstJsonlAt(runId), null, 'no ack yet');
+
+  const s = sessions[0]!;
+  s.becomeReady();
+
+  // Race waitForFirstJsonl against a 1s sentinel; the jsonl event below
+  // must settle the wait. The sentinel proves we don't dangle.
+  const ackP = mgr
+    .waitForFirstJsonl(runId)
+    .then(() => 'acked' as const);
+  const sentinelP = new Promise<'sentinel'>((r) => setTimeout(() => r('sentinel'), 1000));
+
+  // jsonl-user lands first — confirms CC accepted + echoed the prompt.
+  const before = Date.now();
+  s.emit('jsonl-event', { kind: 'jsonl-user', text: 'go' } satisfies JsonlEvent);
+
+  const winner = await Promise.race([ackP, sentinelP]);
+  assert.equal(winner, 'acked', 'waitForFirstJsonl must settle on first non-system event');
+
+  const firstAt = mgr.getFirstJsonlAt(runId);
+  assert.ok(firstAt !== null, 'getFirstJsonlAt must record the timestamp');
+  assert.ok(firstAt! >= before, 'timestamp should be at or after the emit');
+
+  // Subsequent jsonl events don't move the timestamp.
+  const firstAtSnapshot = firstAt;
+  s.emitToolCall('Read', { file_path: '/tmp/x' });
+  assert.equal(mgr.getFirstJsonlAt(runId), firstAtSnapshot);
+
+  // Clean up so the test doesn't hang on terminal.
+  s.emitTurnEnd('done');
+  await completion;
+});
+
+test('jsonl-system events do NOT count as ack; first non-system event does', async () => {
+  const p = createProject({
+    slug: 'arm-ack-system',
+    name: 'ARM Ack System',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-system', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
+    worktreeDir: tmpDataDir,
+  });
+
+  const s = sessions[0]!;
+  s.becomeReady();
+
+  // A jsonl-system event arrives first — CC's "init" / hook-fired bookkeeping
+  // log lines. These must NOT count as ack.
+  s.emit('jsonl-event', {
+    kind: 'jsonl-system',
+    subtype: 'init',
+    level: 'info',
+    message: 'starting',
+    timestamp: null,
+    raw: {},
+  } satisfies JsonlEvent);
+  assert.equal(mgr.getFirstJsonlAt(runId), null, 'jsonl-system must not ack');
+
+  // Now the real ack signal — a tool call.
+  s.emitToolCall('Read', { file_path: '/tmp/x' });
+  assert.ok(mgr.getFirstJsonlAt(runId) !== null, 'jsonl-tool-call must ack');
+
+  s.emitTurnEnd('done');
+  await completion;
+});
+
+test('waitForFirstJsonl resolves immediately when the first event already arrived', async () => {
+  const p = createProject({
+    slug: 'arm-ack-late-wait',
+    name: 'ARM Ack Late Wait',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-late-wait', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
+    worktreeDir: tmpDataDir,
+  });
+
+  const s = sessions[0]!;
+  s.becomeReady();
+  s.emitToolCall('Read', { file_path: '/tmp/x' });
+
+  // Wait registers AFTER the first event already landed — must resolve
+  // immediately without depending on any further emit.
+  const winner = await Promise.race([
+    mgr.waitForFirstJsonl(runId).then(() => 'acked' as const),
+    new Promise<'sentinel'>((r) => setTimeout(() => r('sentinel'), 1000)),
+  ]);
+  assert.equal(winner, 'acked');
+
+  s.emitTurnEnd('done');
+  await completion;
+});
+
+test('terminal-without-ack flushes pending waiters; getFirstJsonlAt stays null', async () => {
+  // The route races `waitForFirstJsonl` against an ack timer. When a spawn
+  // fails synchronously (unknown-agent), the wait must still resolve so the
+  // caller doesn't hang for the full ack window. `getFirstJsonlAt` stays
+  // null so the route reports `acked: false`.
+  const p = createProject({
+    slug: 'arm-ack-terminal-flush',
+    name: 'ARM Ack Terminal Flush',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-terminal-flush', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'no-such-agent-for-ack-test',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
+    worktreeDir: tmpDataDir,
+  });
+
+  // Spawn synchronously failed via the unknown-agent path, which calls
+  // `failWithCause` → `flushFirstJsonlResolvers`. `waitForFirstJsonl` for
+  // an already-terminal run resolves immediately.
+  const winner = await Promise.race([
+    mgr.waitForFirstJsonl(runId).then(() => 'acked' as const),
+    new Promise<'sentinel'>((r) => setTimeout(() => r('sentinel'), 1000)),
+  ]);
+  assert.equal(winner, 'acked', 'must not hang on terminal-without-ack');
+  assert.equal(mgr.getFirstJsonlAt(runId), null, 'no first jsonl event ever arrived');
+
+  const rec = await completion;
+  assert.equal(rec.status, 'failed');
+  assert.equal(rec.failureCause, 'unknown-agent');
+});
+
+test('terminal flushes a waiter that registered pre-terminal', async () => {
+  // Variant covering the case where someone is already awaiting
+  // waitForFirstJsonl when the spawn terminates — the wait must resolve.
+  const p = createProject({
+    slug: 'arm-ack-pre-flush',
+    name: 'ARM Ack Pre Flush',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-pre-flush', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: false,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
+    worktreeDir: tmpDataDir,
+  });
+
+  // Caller registers a waiter BEFORE the session reaches ready / emits anything.
+  const ackP = mgr.waitForFirstJsonl(runId).then(() => 'acked' as const);
+
+  // Session dies before any jsonl event arrives.
+  const s = sessions[0]!;
+  s.becomeReady();
+  s.emit('exit', 1, null);
+
+  // Waiter must resolve; getFirstJsonlAt stays null.
+  const winner = await Promise.race([
+    ackP,
+    new Promise<'sentinel'>((r) => setTimeout(() => r('sentinel'), 1000)),
+  ]);
+  assert.equal(winner, 'acked');
+  assert.equal(mgr.getFirstJsonlAt(runId), null);
+
+  const rec = await completion;
+  assert.equal(rec.status, 'failed');
+  assert.equal(rec.failureCause, 'spawn-exit');
+});
+
+test('waitForFirstJsonl for unknown runId resolves immediately (defensive)', async () => {
+  const { factory } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-unknown', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+  const winner = await Promise.race([
+    mgr.waitForFirstJsonl('01XXXXXXXXXXXXXXXXXXXXXXXX' as ULID).then(() => 'acked' as const),
+    new Promise<'sentinel'>((r) => setTimeout(() => r('sentinel'), 500)),
+  ]);
+  assert.equal(winner, 'acked');
+});

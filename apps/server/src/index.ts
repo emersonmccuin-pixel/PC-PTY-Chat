@@ -452,6 +452,12 @@ app.patch('/api/settings', async (c) => {
           : body.bugLogTargetProjectId,
       fontScale:
         typeof body.fontScale === 'number' ? body.fontScale : current.fontScale,
+      agentDispatch: {
+        ackTimeoutMs:
+          typeof body.agentDispatch?.ackTimeoutMs === 'number'
+            ? body.agentDispatch.ackTimeoutMs
+            : current.agentDispatch.ackTimeoutMs,
+      },
     },
     getDataDir(),
     homedir(),
@@ -2892,6 +2898,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         mode: 'sync',
         sessionId: rec.sessionId,
         runId: rec.runId,
+        agentName: rec.agentName,
         result: rec.result,
       });
     }
@@ -2971,13 +2978,33 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     }
   });
 
-  return c.json({
+  // Section 18.6 — brief ack-wait. Block the caller until the spawned agent
+  // emits its first non-system JSONL event (confirms CC booted, read the
+  // prompt, model is engaged) OR the ack timer fires. The full terminal
+  // event still flows via the background channel emit above; this only
+  // confirms the dispatch landed. Sync-failing spawns (unknown-agent etc.)
+  // flush the resolver via terminal — `firstJsonlAt` stays null so the
+  // response correctly reports `acked: false`.
+  const ackTimeoutMs = readSettings().agentDispatch.ackTimeoutMs;
+  let ackTimer: NodeJS.Timeout | undefined;
+  const ackTimerP = new Promise<void>((r) => {
+    ackTimer = setTimeout(r, ackTimeoutMs);
+  });
+  await Promise.race([mgr.waitForFirstJsonl(spawn.runId), ackTimerP]);
+  if (ackTimer) clearTimeout(ackTimer);
+
+  const acked = mgr.getFirstJsonlAt(spawn.runId) !== null;
+  const ackResponse: Record<string, unknown> = {
     ok: true,
     mode: 'async',
     sessionId: spawn.sessionId,
     runId: spawn.runId,
+    agentName,
     startedAt: spawn.startedAt,
-  });
+    acked,
+  };
+  if (!acked) ackResponse.cause = 'ack-timeout';
+  return c.json(ackResponse);
 });
 
 /** Section 16b.8.1 — list this project's active agent runs. The Activity

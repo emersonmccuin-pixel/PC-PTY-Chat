@@ -13,6 +13,20 @@ export interface ActivityPanelSettings {
   showAllProjects: boolean;
 }
 
+/** Section 18.6 — dispatch-side controls for `pc_invoke_agent`. */
+export interface AgentDispatchSettings {
+  /**
+   * Async-dispatch ack window. `pc_invoke_agent` (wait: false) blocks until
+   * the spawned agent emits its first non-system JSONL event OR this timer
+   * fires. Default 30s — gut-feel for spawn + CC boot + dev-channels
+   * confirmation + initial prompt read.
+   */
+  ackTimeoutMs: number;
+}
+
+export const AGENT_ACK_TIMEOUT_MS_MIN = 1_000;
+export const AGENT_ACK_TIMEOUT_MS_MAX = 5 * 60 * 1000;
+
 export interface GlobalSettings {
   /** Active data dir at last write. */
   dataDir: string;
@@ -37,6 +51,8 @@ export interface GlobalSettings {
    * Default 1.0 = no change.
    */
   fontScale: number;
+  /** Section 18.6 — dispatch-side controls for `pc_invoke_agent`. */
+  agentDispatch: AgentDispatchSettings;
 }
 
 export const FONT_SCALE_MIN = 0.85;
@@ -55,6 +71,9 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     },
     bugLogTargetProjectId: null,
     fontScale: 1,
+    agentDispatch: {
+      ackTimeoutMs: 30_000,
+    },
   };
 }
 
@@ -63,6 +82,14 @@ export function clampFontScale(n: number): number {
   if (n < FONT_SCALE_MIN) return FONT_SCALE_MIN;
   if (n > FONT_SCALE_MAX) return FONT_SCALE_MAX;
   return Math.round(n * 100) / 100;
+}
+
+/** Clamp `ackTimeoutMs` to [1s, 5min]. Default 30s on non-finite / out-of-band. */
+export function clampAckTimeoutMs(n: number): number {
+  if (!Number.isFinite(n)) return 30_000;
+  if (n < AGENT_ACK_TIMEOUT_MS_MIN) return AGENT_ACK_TIMEOUT_MS_MIN;
+  if (n > AGENT_ACK_TIMEOUT_MS_MAX) return AGENT_ACK_TIMEOUT_MS_MAX;
+  return Math.floor(n);
 }
 
 /**
@@ -87,6 +114,11 @@ export function withSettingsDefaults(
     },
     bugLogTargetProjectId: stored.bugLogTargetProjectId ?? defaults.bugLogTargetProjectId,
     fontScale: clampFontScale(stored.fontScale ?? defaults.fontScale),
+    agentDispatch: {
+      ackTimeoutMs: clampAckTimeoutMs(
+        stored.agentDispatch?.ackTimeoutMs ?? defaults.agentDispatch.ackTimeoutMs,
+      ),
+    },
   };
 }
 

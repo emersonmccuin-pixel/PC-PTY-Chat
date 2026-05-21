@@ -54,8 +54,17 @@ export type {
   SessionEndedReason,
   SessionStatus,
 } from './orchestrator.ts';
-export type { ActivityPanelSettings, GlobalSettings } from './settings.ts';
-export { defaultGlobalSettings, withSettingsDefaults } from './settings.ts';
+export type { ActivityPanelSettings, AgentDispatchSettings, GlobalSettings } from './settings.ts';
+export {
+  AGENT_ACK_TIMEOUT_MS_MAX,
+  AGENT_ACK_TIMEOUT_MS_MIN,
+  clampAckTimeoutMs,
+  clampFontScale,
+  defaultGlobalSettings,
+  FONT_SCALE_MAX,
+  FONT_SCALE_MIN,
+  withSettingsDefaults,
+} from './settings.ts';
 export type { Worktree, WorktreeStatus } from './worktree.ts';
 export type {
   AgentColor,

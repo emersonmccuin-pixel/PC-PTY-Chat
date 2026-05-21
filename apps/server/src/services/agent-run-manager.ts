@@ -198,6 +198,13 @@ interface InternalRun extends AgentRunRecord {
   readyTimeoutMs: number;
   initialInputSent: boolean;
   resolveCompletion: ((rec: AgentRunRecord) => void) | null;
+  /** Section 18.6 — timestamp of the first non-system JSONL event from this
+   *  run's underlying CC process. Confirms the agent booted, read the prompt,
+   *  and the model is engaged. Null until the first such event lands. */
+  firstJsonlAt: number | null;
+  /** Section 18.6 — pending `waitForFirstJsonl` resolvers. Flushed when
+   *  `firstJsonlAt` is first set. */
+  firstJsonlResolvers: Array<() => void>;
 }
 
 /** AgentRunManager is an EventEmitter — Section 16b.8.1 + 16b.8.3.
@@ -500,6 +507,45 @@ export class AgentRunManager extends EventEmitter {
     return true;
   }
 
+  /** Section 18.6 — resolves when the run's first non-system JSONL event
+   *  arrives. Callers (the `pc_invoke_agent` HTTP route) race this against
+   *  an external ack timer. Resolves immediately if the first event already
+   *  landed. Resolves on terminal too so racing callers don't dangle when a
+   *  spawn fails before any event lands — post-resolve, callers check
+   *  `getFirstJsonlAt(runId)` to disambiguate acked vs. terminal-without-ack. */
+  waitForFirstJsonl(runId: ULID): Promise<void> {
+    const rec = this.runs.get(runId);
+    if (!rec) return Promise.resolve();
+    if (rec.firstJsonlAt !== null) return Promise.resolve();
+    if (this.isTerminal(rec.status)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      rec.firstJsonlResolvers.push(resolve);
+    });
+  }
+
+  /** Section 18.6 — timestamp the run's first non-system JSONL event landed,
+   *  or null if no such event has arrived (spawn still booting, spawn failed
+   *  before any event, or run never existed). The `pc_invoke_agent` route
+   *  reads this after `waitForFirstJsonl` resolves to decide the response's
+   *  `acked` field. */
+  getFirstJsonlAt(runId: ULID): number | null {
+    const rec = this.runs.get(runId);
+    return rec?.firstJsonlAt ?? null;
+  }
+
+  private flushFirstJsonlResolvers(rec: InternalRun): void {
+    if (rec.firstJsonlResolvers.length === 0) return;
+    const resolvers = rec.firstJsonlResolvers;
+    rec.firstJsonlResolvers = [];
+    for (const r of resolvers) {
+      try {
+        r();
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+
   /** Look up the most-recent tracked run for a CC session id. Used by
    *  `respawnAgentWithAnswer` to find the runId to re-attach. */
   findRunIdBySession(sessionId: string): ULID | null {
@@ -551,6 +597,8 @@ export class AgentRunManager extends EventEmitter {
       readyTimeoutMs: args.readyTimeoutMs,
       initialInputSent: false,
       resolveCompletion: null,
+      firstJsonlAt: null,
+      firstJsonlResolvers: [],
     };
   }
 
@@ -585,6 +633,13 @@ export class AgentRunManager extends EventEmitter {
     session.on('jsonl-event', (ev: JsonlEvent) => {
       if (this.isTerminal(rec.status)) return;
       this.armIdleTimer(rec); // reset on every event
+      // Section 18.6 — the first non-system JSONL event from this run is the
+      // ack signal. Confirms CC booted, read the prompt, and the model is
+      // engaged. Async-dispatch routes await it via `waitForFirstJsonl`.
+      if (rec.firstJsonlAt === null && ev.kind !== 'jsonl-system') {
+        rec.firstJsonlAt = Date.now();
+        this.flushFirstJsonlResolvers(rec);
+      }
       // 16b.8.3 — forward every event for the live-transcript modal.
       // Emits before the turn-end branch so the closing `jsonl-turn-end`
       // also lands in the modal.
@@ -659,6 +714,7 @@ export class AgentRunManager extends EventEmitter {
       /* best-effort */
     }
     this.cleanupOnTerminal(rec);
+    this.flushFirstJsonlResolvers(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
   }
@@ -680,6 +736,7 @@ export class AgentRunManager extends EventEmitter {
       /* best-effort */
     }
     this.cleanupOnTerminal(rec);
+    this.flushFirstJsonlResolvers(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
   }
