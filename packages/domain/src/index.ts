@@ -54,18 +54,26 @@ export type {
   SessionEndedReason,
   SessionStatus,
 } from './orchestrator.ts';
-export type { ActivityPanelSettings, AgentDispatchSettings, GlobalSettings } from './settings.ts';
+export type {
+  ActivityPanelSettings,
+  AgentDispatchSettings,
+  GlobalSettings,
+  JsonlSettings,
+} from './settings.ts';
 export {
   AGENT_ACK_TIMEOUT_MS_MAX,
   AGENT_ACK_TIMEOUT_MS_MIN,
   AGENT_MAX_CONCURRENT_MAX,
   AGENT_MAX_CONCURRENT_MIN,
+  JSONL_RETENTION_DAYS_MAX,
+  JSONL_RETENTION_DAYS_MIN,
   clampAckTimeoutMs,
   clampFontScale,
   clampMaxConcurrent,
   defaultGlobalSettings,
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
+  normalizeJsonlRetention,
   withSettingsDefaults,
 } from './settings.ts';
 export type { Worktree, WorktreeStatus } from './worktree.ts';

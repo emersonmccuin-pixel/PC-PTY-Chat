@@ -53,6 +53,7 @@ import { getDataDir } from '@pc/utils';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { drainPendingForSession, enqueueAndPush } from './services/agent-inbox-emit.ts';
+import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
 import { listCustomCommands } from './services/custom-commands.ts';
@@ -224,6 +225,26 @@ const channelServer = new ChannelServer({
   },
 });
 channelServer.start();
+
+// Section 18.8 — JSONL retention sweep at boot. Fire-and-forget so a slow
+// or failing sweep can't block startup. Reads `jsonl.retentionDays` from
+// the current settings envelope (default 30 days, `'never'` opts out).
+{
+  const retention = readSettings().jsonl.retentionDays;
+  void sweepStaleJsonl({ retention })
+    .then((result) => {
+      if (retention === 'never') {
+        console.log('[pc] jsonl-sweep skipped (retention=never)');
+        return;
+      }
+      console.log(
+        `[pc] jsonl-sweep: scanned ${result.scanned}, deleted ${result.deleted}, skipped ${result.skipped}, freed ${result.bytesFreed} bytes (retention=${retention}d)`,
+      );
+    })
+    .catch((err) => {
+      console.warn(`[pc] jsonl-sweep failed: ${(err as Error).message}`);
+    });
+}
 
 // Section 16b.4 — Singleton AgentRunManager. The `pc_invoke_agent` HTTP
 // route consumes it; the resume primitive (agent-resume.ts) consults it
@@ -499,6 +520,13 @@ app.patch('/api/settings', async (c) => {
           typeof body.agentDispatch?.maxConcurrent === 'number'
             ? body.agentDispatch.maxConcurrent
             : current.agentDispatch.maxConcurrent,
+      },
+      jsonl: {
+        retentionDays:
+          body.jsonl?.retentionDays === 'never' ||
+          typeof body.jsonl?.retentionDays === 'number'
+            ? body.jsonl.retentionDays
+            : current.jsonl.retentionDays,
       },
     },
     getDataDir(),

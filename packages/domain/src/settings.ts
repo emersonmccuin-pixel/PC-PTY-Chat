@@ -38,6 +38,17 @@ export const AGENT_ACK_TIMEOUT_MS_MAX = 5 * 60 * 1000;
 export const AGENT_MAX_CONCURRENT_MIN = 1;
 export const AGENT_MAX_CONCURRENT_MAX = 50;
 
+/** Section 18.8 — retention for CC's per-session JSONL files (the source of
+ *  truth for PC's chat replay + agent run history). Stored as either a
+ *  positive integer (days) or the literal string `'never'` to opt out of
+ *  sweeping entirely. */
+export interface JsonlSettings {
+  retentionDays: number | 'never';
+}
+
+export const JSONL_RETENTION_DAYS_MIN = 1;
+export const JSONL_RETENTION_DAYS_MAX = 3650;
+
 export interface GlobalSettings {
   /** Active data dir at last write. */
   dataDir: string;
@@ -64,6 +75,8 @@ export interface GlobalSettings {
   fontScale: number;
   /** Section 18.6 — dispatch-side controls for `pc_invoke_agent`. */
   agentDispatch: AgentDispatchSettings;
+  /** Section 18.8 — JSONL retention sweep settings. */
+  jsonl: JsonlSettings;
 }
 
 export const FONT_SCALE_MIN = 0.85;
@@ -85,6 +98,9 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     agentDispatch: {
       ackTimeoutMs: 30_000,
       maxConcurrent: 5,
+    },
+    jsonl: {
+      retentionDays: 30,
     },
   };
 }
@@ -110,6 +126,18 @@ export function clampMaxConcurrent(n: number): number {
   if (n < AGENT_MAX_CONCURRENT_MIN) return AGENT_MAX_CONCURRENT_MIN;
   if (n > AGENT_MAX_CONCURRENT_MAX) return AGENT_MAX_CONCURRENT_MAX;
   return Math.floor(n);
+}
+
+/** Normalize a stored JSONL retention value. Accepts the literal `'never'`
+ *  to opt out (returned as-is) or a positive integer (days, clamped to
+ *  [1, 3650]). Anything else (NaN, negative, non-number-non-'never')
+ *  falls back to 30. */
+export function normalizeJsonlRetention(v: unknown): number | 'never' {
+  if (v === 'never') return 'never';
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 30;
+  if (v < JSONL_RETENTION_DAYS_MIN) return JSONL_RETENTION_DAYS_MIN;
+  if (v > JSONL_RETENTION_DAYS_MAX) return JSONL_RETENTION_DAYS_MAX;
+  return Math.floor(v);
 }
 
 /**
@@ -140,6 +168,11 @@ export function withSettingsDefaults(
       ),
       maxConcurrent: clampMaxConcurrent(
         stored.agentDispatch?.maxConcurrent ?? defaults.agentDispatch.maxConcurrent,
+      ),
+    },
+    jsonl: {
+      retentionDays: normalizeJsonlRetention(
+        stored.jsonl?.retentionDays ?? defaults.jsonl.retentionDays,
       ),
     },
   };
