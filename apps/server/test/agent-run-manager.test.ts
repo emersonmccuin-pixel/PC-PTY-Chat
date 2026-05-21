@@ -124,6 +124,7 @@ test('spawn → ready → turn-end with no pending-ask → completed', async () 
     input: 'find a lib for date math',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -189,6 +190,7 @@ test('global flat-file agent → materialised into worktree before spawn; cleane
       input: 'go',
       wait: true,
       projectId: p.id as ULID,
+      dispatcherSessionId: 'test-dispatcher-session',
       worktreeDir: isolatedWorktree,
     });
 
@@ -243,6 +245,7 @@ test('unknown agent name → fail immediately with cause=unknown-agent (no sessi
     input: 'anything',
     wait: false,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -282,6 +285,7 @@ test('text-empty turn-end (thinking-only) → keep waiting; subsequent text turn
     input: 'read CLAUDE.md',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -330,6 +334,7 @@ test('turn-end with a waiting pending-ask → paused (no terminal yet); resume �
     input: 'find a lib',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -417,6 +422,7 @@ test('cancel before terminal → status=cancelled, completion resolves', async (
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -470,6 +476,7 @@ test('idle-timeout → failed with cause=idle-timeout', async () => {
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
     idleTimeoutMs: 1000,
     wallClockTimeoutMs: 60_000,
@@ -510,6 +517,7 @@ test('session exit before turn-end → failed with cause=spawn-exit', async () =
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -542,6 +550,7 @@ test('findRunIdBySession returns the live tracked runId; null after terminal', a
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -581,6 +590,7 @@ test('emits run-changed at every state transition (spawning → running → comp
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -626,6 +636,7 @@ test('snapshot carries worktreeDir for the live-transcript modal', () => {
     input: 'go',
     wait: false,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: myWorktree,
   });
   const snap = mgr.get(runId)!;
@@ -654,6 +665,7 @@ test('listForProject filters out terminal-status runs only when caller asks; raw
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
   sessions[0]!.becomeReady();
@@ -666,6 +678,7 @@ test('listForProject filters out terminal-status runs only when caller asks; raw
     input: 'go',
     wait: false,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 
@@ -704,6 +717,7 @@ test('forwards every jsonl-event as run-jsonl-event with {runId, projectId, even
     input: 'go',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
   const s = sessions[0]!;

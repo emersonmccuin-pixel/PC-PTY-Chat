@@ -1301,6 +1301,27 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
+      // Section 18.5a — forward the caller's CC sessionId so the route can
+      // route terminal channel events back to the right orchestrator. PC sets
+      // PC_SESSION_ID on every orchestrator spawn (project-runtime); child
+      // MCP processes inherit it. Agents-as-callers also inherit
+      // PC_DISPATCHER_SESSION_ID — when the orchestrator's sessionId isn't
+      // in env, fall back to the dispatcher's so nested invocations route
+      // to the original orchestrator (not the parent agent, which can't
+      // process channel events itself).
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_invoke_agent: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot route terminal events back',
+            },
+          ],
+          isError: true,
+        };
+      }
       const wait = args.wait === undefined ? undefined : args.wait === true;
       const parentWorkItemId =
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
@@ -1312,7 +1333,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // values clamp at the route via `checkInvokeDepth`.
       const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
       const parentInvokeDepth = Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
-      const payload: Record<string, unknown> = { input, parentInvokeDepth };
+      const payload: Record<string, unknown> = { input, parentInvokeDepth, dispatcherSessionId };
       if (wait !== undefined) payload.wait = wait;
       if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
       try {
@@ -1362,12 +1383,28 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       const runId = process.env.PC_AGENT_RUN_ID || undefined;
       const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      // Section 18.5a — forward dispatcher's CC sessionId so the route can
+      // emit the pause channel event back to the orchestrator that originally
+      // dispatched this agent.
+      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_ask_orchestrator: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const payload: Record<string, unknown> = {
           sessionId,
           agentName,
           kind: 'ask-orchestrator',
           question,
+          dispatcherSessionId,
         };
         if (context !== undefined) payload.context = context;
         if (runId !== undefined) payload.runId = runId;
@@ -1415,12 +1452,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       const runId = process.env.PC_AGENT_RUN_ID || undefined;
       const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_ask_user: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const payload: Record<string, unknown> = {
           sessionId,
           agentName,
           kind: 'ask-user',
           question,
+          dispatcherSessionId,
         };
         if (context !== undefined) payload.context = context;
         if (options !== undefined) payload.options = options;
@@ -1475,6 +1525,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       const runId = process.env.PC_AGENT_RUN_ID || undefined;
       const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_request_approval: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const payload: Record<string, unknown> = {
           sessionId,
@@ -1485,6 +1547,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           // "Approval requested:" so the orchestrator surface stays clear.
           question: decision,
           options,
+          dispatcherSessionId,
         };
         if (context !== undefined) payload.context = context;
         if (runId !== undefined) payload.runId = runId;

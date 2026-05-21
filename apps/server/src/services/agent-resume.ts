@@ -188,6 +188,28 @@ export async function respawnAgentWithAnswer(
 
   const jsonlPath = resolveJsonlPath(project.folderPath, ask.sessionId);
 
+  // Section 18.5a — re-establish PC_AGENT_* env vars on resume so the
+  // resumed agent can pause again (its pc-rig MCP child reads them on
+  // every pause emit). When the AgentRunManager is tracking this run, the
+  // dispatcherSessionId lives on the record; otherwise the only path to
+  // pause-after-resume is broken (no orchestrator to route back to), so
+  // fall through with the field empty and let the agent's pc-rig surface
+  // the missing-env error if it tries.
+  const manager = deps.agentRunManager ?? getAgentRunManager();
+  const trackedRunId = manager.findRunIdBySession(ask.sessionId);
+  const trackedRun = trackedRunId ? manager.get(trackedRunId) : null;
+  const resumedExtraEnv: Record<string, string> = {
+    ...(podPrep?.extraEnv ?? {}),
+    PC_AGENT_NAME: ask.agentName,
+    PC_AGENT_SESSION_ID: ask.sessionId,
+    PC_PROJECT_ID: ask.projectId,
+    ...(ask.runId ? { PC_AGENT_RUN_ID: ask.runId } : {}),
+    ...(ask.parentWorkItemId ? { PC_AGENT_PARENT_WORK_ITEM_ID: ask.parentWorkItemId } : {}),
+    ...(trackedRun?.dispatcherSessionId
+      ? { PC_DISPATCHER_SESSION_ID: trackedRun.dispatcherSessionId }
+      : {}),
+  };
+
   const sessionOpts: PtySessionOptions = {
     workspaceDir: project.folderPath,
     stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
@@ -195,7 +217,7 @@ export async function respawnAgentWithAnswer(
     transcriptPath: resolve(sessionDir, 'transcript.log'),
     claudeSessionId: ask.sessionId,
     resume: true,
-    extraEnv: podPrep?.extraEnv ?? {},
+    extraEnv: resumedExtraEnv,
     jsonlPath,
     jsonlStartLine: 0, // Resume tails from the top; caller-side dedup is the orchestrator's job.
     agentName: ask.agentName,
@@ -231,8 +253,8 @@ export async function respawnAgentWithAnswer(
   // across the pause boundary (status flip, idle timer, jsonl-event, exit).
   // When no run is tracked (orchestrator-side resume, ad-hoc resume in
   // tests), the resume stands alone — same shape as pre-16b.4.
-  const manager = deps.agentRunManager ?? getAgentRunManager();
-  const trackedRunId = manager.findRunIdBySession(ask.sessionId);
+  // (manager + trackedRunId resolved earlier so resumedExtraEnv could read
+  // the run record's dispatcherSessionId.)
   if (trackedRunId) {
     manager.attachResumedSession(trackedRunId, session as AgentSessionLike);
   }

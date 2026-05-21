@@ -103,6 +103,12 @@ export interface AgentRunRecord {
   agentName: string;
   projectId: ULID;
   parentWorkItemId: ULID | null;
+  /** Section 18.5a — CC sessionId of the orchestrator that dispatched this
+   *  agent. Terminal channel events route back to THIS session (not just
+   *  "the project's most-recent registrant" as pre-18.5a). Required —
+   *  every legitimate caller of `pc_invoke_agent` is an orchestrator that
+   *  knows its own sessionId via `PC_SESSION_ID`. */
+  dispatcherSessionId: string;
   /** Whether the caller requested an inline result (`true`) or a fire-and-
    *  forget dispatch that emits a terminal channel event (`false`). The
    *  manager only consults this when emitting terminal events — sync vs.
@@ -133,6 +139,11 @@ export interface AgentRunSpawnInput {
   input: string;
   wait: boolean;
   projectId: ULID;
+  /** Section 18.5a — CC sessionId of the orchestrator dispatching this
+   *  agent. Required: terminal channel events route back to this session.
+   *  The route handler reads `dispatcherSessionId` from the MCP tool's
+   *  HTTP body, which the pc-rig MCP server forwards from `PC_SESSION_ID`. */
+  dispatcherSessionId: string;
   /** Absolute path to the project's worktree (cwd for the spawn). */
   worktreeDir: string;
   parentWorkItemId?: ULID | null;
@@ -255,6 +266,7 @@ export class AgentRunManager extends EventEmitter {
         agentName: input.agentName,
         projectId: input.projectId,
         parentWorkItemId: input.parentWorkItemId ?? null,
+        dispatcherSessionId: input.dispatcherSessionId,
         wait: input.wait,
         startedAt,
         scratchDir: '',
@@ -285,6 +297,7 @@ export class AgentRunManager extends EventEmitter {
         agentName: input.agentName,
         projectId: input.projectId,
         parentWorkItemId: input.parentWorkItemId ?? null,
+        dispatcherSessionId: input.dispatcherSessionId,
         wait: input.wait,
         startedAt,
         scratchDir,
@@ -319,6 +332,7 @@ export class AgentRunManager extends EventEmitter {
         agentName: input.agentName,
         projectId: input.projectId,
         parentWorkItemId: input.parentWorkItemId ?? null,
+        dispatcherSessionId: input.dispatcherSessionId,
         wait: input.wait,
         startedAt,
         scratchDir,
@@ -355,6 +369,7 @@ export class AgentRunManager extends EventEmitter {
           agentName: input.agentName,
           projectId: input.projectId,
           parentWorkItemId: input.parentWorkItemId ?? null,
+          dispatcherSessionId: input.dispatcherSessionId,
           wait: input.wait,
           startedAt,
           scratchDir,
@@ -381,6 +396,7 @@ export class AgentRunManager extends EventEmitter {
       agentName: input.agentName,
       projectId: input.projectId,
       parentWorkItemId: input.parentWorkItemId ?? null,
+      dispatcherSessionId: input.dispatcherSessionId,
       wait: input.wait,
       startedAt,
       scratchDir,
@@ -424,6 +440,10 @@ export class AgentRunManager extends EventEmitter {
         PC_AGENT_NAME: input.agentName,
         PC_AGENT_SESSION_ID: sessionId,
         PC_AGENT_RUN_ID: runId,
+        // Section 18.5a — pass the dispatching orchestrator's sessionId so the
+        // agent's pc-rig MCP child can forward it on pause emits (pc_ask_*
+        // routes use it as the recipientSessionId for the channel push).
+        PC_DISPATCHER_SESSION_ID: input.dispatcherSessionId,
         ...(input.parentWorkItemId ? { PC_AGENT_PARENT_WORK_ITEM_ID: input.parentWorkItemId } : {}),
         PC_PROJECT_ID: input.projectId,
         PC_AGENT_INVOKE_DEPTH: String(
@@ -495,6 +515,7 @@ export class AgentRunManager extends EventEmitter {
     agentName: string;
     projectId: ULID;
     parentWorkItemId: ULID | null;
+    dispatcherSessionId: string;
     wait: boolean;
     startedAt: number;
     scratchDir: string;
@@ -510,6 +531,7 @@ export class AgentRunManager extends EventEmitter {
       agentName: args.agentName,
       projectId: args.projectId,
       parentWorkItemId: args.parentWorkItemId,
+      dispatcherSessionId: args.dispatcherSessionId,
       wait: args.wait,
       startedAt: args.startedAt,
       status: 'spawning',
@@ -726,6 +748,7 @@ export class AgentRunManager extends EventEmitter {
       agentName: rec.agentName,
       projectId: rec.projectId,
       parentWorkItemId: rec.parentWorkItemId,
+      dispatcherSessionId: rec.dispatcherSessionId,
       wait: rec.wait,
       worktreeDir: rec.worktreeDir,
       startedAt: rec.startedAt,

@@ -276,6 +276,7 @@ test('respawn primitive re-attaches resumed session to the tracked run (16b.4.2)
     input: 'find a lib for date math',
     wait: true,
     projectId: p.id as ULID,
+    dispatcherSessionId: 'test-dispatcher-session',
     worktreeDir: tmpDataDir,
   });
 

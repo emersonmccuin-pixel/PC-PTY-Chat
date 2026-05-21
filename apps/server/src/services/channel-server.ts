@@ -1,13 +1,19 @@
 // Channel server. Single multiplexed HTTP listener on :8788 plus a WS registry
-// of per-project channel-stdio children. Replaces the rig-era per-process model
+// of per-CC channel-stdio children. Replaces the rig-era per-process model
 // where each channel-server.js bound its own port — see docs/design/multi-tenancy.md
 // §3 for the locked routing.
 //
 // External callers POST to `/channel/<slug>/<source>` with a plain text body.
-// We resolve the slug → projectId via the registry, fan the event to the
-// matching child's WS so it can re-emit it as an MCP notification to its
-// claude.exe. UI subscribers are notified separately via the project's WS
-// broadcast envelope.
+// We resolve the slug → projectId via the registry, fan the event to every
+// registered child of that project (external webhooks have no sessionId, so
+// fan-to-all preserves the "every orchestrator sees external traffic" intent).
+// UI subscribers are notified separately via the project's WS broadcast envelope.
+//
+// Section 18.5a re-keyed `registrants` by `(projectId, sessionId)`. Multi-CC
+// scenarios used to silently route to whichever CC registered most recently
+// (project-only key — newer kicks older). Now each CC's bridge registers with
+// its CC's deterministic sessionId; programmatic emits target a specific
+// recipient session via `emitToSession`.
 
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
@@ -36,11 +42,17 @@ export interface ChannelEvent {
 interface RegisteredChild {
   ws: WebSocket;
   projectId: ULID;
+  sessionId: string;
   slug: string;
 }
 
+/** Composite Map key built from `(projectId, sessionId)`. */
+function registrantKey(projectId: ULID, sessionId: string): string {
+  return `${projectId}::${sessionId}`;
+}
+
 export class ChannelServer {
-  private readonly registrants = new Map<ULID, RegisteredChild>();
+  private readonly registrants = new Map<string, RegisteredChild>();
   private httpServer: ReturnType<typeof serve> | null = null;
   private wss: WebSocketServer | null = null;
 
@@ -51,8 +63,8 @@ export class ChannelServer {
     const app = new Hono();
 
     // POST /channel/:slug/:source — external webhook entry. Looks up the
-    // project by slug, validates the sender, routes the body to the registered
-    // child for that project, and emits a UI broadcast.
+    // project by slug, validates the sender, fans the body to every
+    // registered child for that project, and emits a UI broadcast.
     app.post('/channel/:slug/:source', async (c) => {
       const slug = c.req.param('slug');
       const source = c.req.param('source');
@@ -72,13 +84,20 @@ export class ChannelServer {
         sender,
         at: Date.now(),
       };
-      this.forwardToChild(project, event);
+      this.forwardToProjectChildren(project, event);
       this.deps.onEvent(project.id, event);
       return c.text('ok', 200);
     });
 
     app.get('/health', (c) =>
-      c.json({ ok: true, registrants: Array.from(this.registrants.keys()) }),
+      c.json({
+        ok: true,
+        registrants: Array.from(this.registrants.values()).map((r) => ({
+          projectId: r.projectId,
+          sessionId: r.sessionId,
+          slug: r.slug,
+        })),
+      }),
     );
 
     this.httpServer = serve(
@@ -92,41 +111,68 @@ export class ChannelServer {
     this.wss.on('connection', (ws, req) => {
       const url = new URL(req.url ?? '/channel-register', 'http://127.0.0.1');
       const projectId = url.searchParams.get('projectId') as ULID | null;
+      const sessionId = url.searchParams.get('sessionId') ?? '';
       const slug = url.searchParams.get('slug') ?? '';
-      if (!projectId || !slug) {
-        try { ws.close(1008, 'projectId and slug required'); } catch { /* best effort */ }
+      if (!projectId || !sessionId || !slug) {
+        try {
+          ws.close(1008, 'projectId, sessionId, and slug required');
+        } catch {
+          /* best effort */
+        }
         return;
       }
-      const prior = this.registrants.get(projectId);
+      const key = registrantKey(projectId, sessionId);
+      const prior = this.registrants.get(key);
       if (prior) {
-        try { prior.ws.close(1000, 'superseded by newer registrant'); } catch { /* best effort */ }
+        // Same (projectId, sessionId) re-registering — the prior CC presumably
+        // died and a fresh bridge is reconnecting. Same-session collision IS
+        // a real supersede; cross-session no longer collides because the key
+        // includes sessionId.
+        try {
+          prior.ws.close(1000, 'superseded by newer registrant');
+        } catch {
+          /* best effort */
+        }
       }
-      this.registrants.set(projectId, { ws, projectId, slug });
-      console.log(`[channel] registered ${slug} (${projectId})`);
+      this.registrants.set(key, { ws, projectId, sessionId, slug });
+      console.log(`[channel] registered ${slug} (${projectId} / ${sessionId})`);
       ws.on('close', () => {
-        const cur = this.registrants.get(projectId);
-        if (cur && cur.ws === ws) this.registrants.delete(projectId);
+        const cur = this.registrants.get(key);
+        if (cur && cur.ws === ws) this.registrants.delete(key);
       });
     });
   }
 
   shutdown(): void {
     for (const r of this.registrants.values()) {
-      try { r.ws.close(1001, 'channel server shutting down'); } catch { /* best effort */ }
+      try {
+        r.ws.close(1001, 'channel server shutting down');
+      } catch {
+        /* best effort */
+      }
     }
     this.registrants.clear();
-    try { this.wss?.close(); } catch { /* best effort */ }
-    try { this.httpServer?.close(); } catch { /* best effort */ }
+    try {
+      this.wss?.close();
+    } catch {
+      /* best effort */
+    }
+    try {
+      this.httpServer?.close();
+    } catch {
+      /* best effort */
+    }
   }
 
-  /** Section 16b — Programmatic emit. Server-side code (agent comms,
-   *  workflow runtime) calls this to deliver a synthesised event directly
-   *  to the registered child + UI subscribers, without round-tripping
-   *  through the HTTP listener. Returns true if a registered child
-   *  received the forward; false if no child was registered (event still
-   *  propagates to UI subscribers via `onEvent`). */
-  emitToProject(args: {
+  /** Section 16b / 18.5a — Programmatic emit. Server-side code (agent comms,
+   *  workflow runtime) calls this to deliver a synthesised event to a
+   *  specific recipient CC session, without round-tripping through the HTTP
+   *  listener. Returns true if the matching registrant received the forward;
+   *  false if no registrant is currently bound for that (projectId, sessionId)
+   *  pair (event still propagates to UI subscribers via `onEvent`). */
+  emitToSession(args: {
     projectId: ULID;
+    recipientSessionId: string;
     slug: string;
     source: string;
     body: string;
@@ -140,35 +186,41 @@ export class ChannelServer {
       sender: args.sender ?? 'pc',
       at: Date.now(),
     };
-    const child = this.registrants.get(args.projectId);
+    const child = this.registrants.get(registrantKey(args.projectId, args.recipientSessionId));
     const delivered = !!(child && child.ws.readyState === child.ws.OPEN);
     if (delivered) {
-      child!.ws.send(
-        JSON.stringify({
-          type: 'channel-event',
-          content: event.body,
-          path: `/channel/${event.slug}/${event.source}`,
-          method: 'POST',
-          source: event.source,
-        }),
-      );
+      this.sendEnvelope(child!, event);
     } else {
       console.warn(
-        `[channel] emitToProject: no registered child for ${args.projectId}; UI broadcast only`,
+        `[channel] emitToSession: no registered child for ${args.projectId} / ${args.recipientSessionId}; UI broadcast only`,
       );
     }
     this.deps.onEvent(args.projectId, event);
     return delivered;
   }
 
-  private forwardToChild(project: Project, event: ChannelEvent): void {
-    const child = this.registrants.get(project.id);
-    if (!child || child.ws.readyState !== child.ws.OPEN) {
+  /** Fan an event to every registered child for a project. Used by the
+   *  external webhook HTTP path — external callers don't know about
+   *  per-session routing; "deliver to every orchestrator in the project"
+   *  is the documented intent. Returns the number of children that received
+   *  the forward. */
+  private forwardToProjectChildren(project: Project, event: ChannelEvent): number {
+    let delivered = 0;
+    for (const child of this.registrants.values()) {
+      if (child.projectId !== project.id) continue;
+      if (child.ws.readyState !== child.ws.OPEN) continue;
+      this.sendEnvelope(child, event);
+      delivered += 1;
+    }
+    if (delivered === 0) {
       console.warn(
         `[channel] no registered child for ${project.id} (${project.name}); dropping event from ${event.source}`,
       );
-      return;
     }
+    return delivered;
+  }
+
+  private sendEnvelope(child: RegisteredChild, event: ChannelEvent): void {
     child.ws.send(
       JSON.stringify({
         type: 'channel-event',

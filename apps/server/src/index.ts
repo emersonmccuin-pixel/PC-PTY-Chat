@@ -2554,14 +2554,30 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     options?: PendingAskOption[];
     runId?: ULID | null;
     parentWorkItemId?: ULID | null;
+    /** Section 18.5a — dispatching orchestrator's CC sessionId, forwarded
+     *  from the agent's pc-rig MCP server's `PC_DISPATCHER_SESSION_ID`
+     *  env. The pause channel event routes back to THIS session. */
+    dispatcherSessionId?: string;
   }>();
 
   const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
   const agentName = typeof body.agentName === 'string' ? body.agentName.trim() : '';
   const kind = body.kind;
   const question = typeof body.question === 'string' ? body.question : '';
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
   if (!sessionId) return c.json({ ok: false, error: 'sessionId required' }, 400);
   if (!agentName) return c.json({ ok: false, error: 'agentName required' }, 400);
+  if (!dispatcherSessionId) {
+    return c.json(
+      {
+        ok: false,
+        error:
+          'dispatcherSessionId required (agent must forward PC_DISPATCHER_SESSION_ID — only agents spawned via pc_invoke_agent can pause-and-ask)',
+      },
+      400,
+    );
+  }
   if (kind !== 'ask-orchestrator' && kind !== 'ask-user' && kind !== 'approval') {
     return c.json({ ok: false, error: 'kind must be ask-orchestrator | ask-user | approval' }, 400);
   }
@@ -2630,8 +2646,9 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     });
   }
   if (eventBody) {
-    channelServer.emitToProject({
+    channelServer.emitToSession({
       projectId,
+      recipientSessionId: dispatcherSessionId,
       slug: project.slug,
       source: 'agent',
       body: eventBody,
@@ -2770,6 +2787,10 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     wait?: boolean;
     parentWorkItemId?: ULID;
     parentInvokeDepth?: number;
+    /** Section 18.5a — orchestrator's CC sessionId, forwarded from the
+     *  pc-rig MCP server's `PC_SESSION_ID` env. Terminal channel events
+     *  route back to this session. */
+    dispatcherSessionId?: string;
   }>();
 
   const input = typeof body.input === 'string' ? body.input : '';
@@ -2777,6 +2798,14 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   const wait = body.wait !== false; // default true per the contract
   const parentWorkItemId =
     typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
+      400,
+    );
+  }
 
   // 16b.4.5 — depth cap. Caller forwards `parentInvokeDepth` from
   // `PC_AGENT_INVOKE_DEPTH`; orchestrator-initiated calls omit it (parent
@@ -2795,6 +2824,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     input,
     wait,
     projectId,
+    dispatcherSessionId,
     worktreeDir: project.folderPath,
     parentWorkItemId,
     invokeDepth: depthCheck.childDepth,
@@ -2862,8 +2892,9 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         result: rec.result ?? '',
         now: Date.now(),
       });
-      channelServer.emitToProject({
+      channelServer.emitToSession({
         projectId,
+        recipientSessionId: rec.dispatcherSessionId,
         slug: project.slug,
         source: 'agent',
         body: buildAgentCompletedBody({
@@ -2886,8 +2917,9 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         cause: rec.failureCause ?? rec.status,
         now: Date.now(),
       });
-      channelServer.emitToProject({
+      channelServer.emitToSession({
         projectId,
+        recipientSessionId: rec.dispatcherSessionId,
         slug: project.slug,
         source: 'agent',
         body: buildAgentFailedBody({
