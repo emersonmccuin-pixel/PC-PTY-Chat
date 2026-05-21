@@ -86,6 +86,7 @@ import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
+import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
 import {
   recordAgentAnswer,
@@ -143,6 +144,33 @@ runMigrations();
     case 'skipped-user-edited':
       console.warn(
         `[pc] orchestrator pod has drifted from ORCHESTRATOR_POD_CONTENT on fields [${result.reseededFields.join(', ')}] but the row has user-authored audit rows — leaving it alone. Apply the latest seed manually via the Pod UI (17d) or by clearing user edits.`,
+      );
+      break;
+    case 'unchanged':
+      break;
+  }
+}
+
+// Section 17e starter (2026-05-21) — seed the global researcher pod if
+// missing. Pulled forward from full 17e as a Section 18 dependency: V-3 +
+// V-4 need a worker agent that can call pc_ask_orchestrator +
+// pc_request_approval, and the flat-file researcher lacks those tools. The
+// other four worker pods (writer / reviewer / planner / extractor) stay on
+// the flat-file fallback path until 17e ships in full.
+{
+  const result = seedResearcherPodIfMissing();
+  switch (result.action) {
+    case 'inserted':
+      console.log(`[pc] researcher pod seeded (id=${result.agentId})`);
+      break;
+    case 'reseeded':
+      console.log(
+        `[pc] researcher pod auto-reseeded (id=${result.agentId}, fields=[${result.reseededFields.join(', ')}])`,
+      );
+      break;
+    case 'skipped-user-edited':
+      console.warn(
+        `[pc] researcher pod has drifted from RESEARCHER_POD_CONTENT on fields [${result.reseededFields.join(', ')}] but the row has user-authored audit rows — leaving it alone.`,
       );
       break;
     case 'unchanged':
