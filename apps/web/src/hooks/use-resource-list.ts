@@ -8,10 +8,13 @@
 //     for an unknown id (covers WS-batched / out-of-order arrivals).
 //   - Hooks never reduce over the event stream alone. B5's "only inspect
 //     last event in buffer" anti-pattern is structurally impossible here:
-//     the per-envelope branch only PATCHES; the refetch is the source of
-//     truth on every uncertain transition.
+//     the per-envelope branch scans EVERY new envelope since the last
+//     processed index, and refetch fires on any terminal observation or
+//     unknown-id snapshot. Bury the terminal envelope under fifty
+//     orchestrator-reply envelopes in a single React batch and we still
+//     catch it.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
@@ -49,11 +52,16 @@ export function useResourceList<T>(
   config: ResourceListConfig<T>,
 ): { records: T[]; refetch: () => void } {
   const [map, setMap] = useState<Map<string, T>>(() => new Map());
+  /** Index into `events` we've already processed. Lets us scan only new
+   *  envelopes per render — O(new events), not O(total events). Resets on
+   *  project switch and on any apparent buffer reset (length shrank). */
+  const lastProcessedIdx = useRef<number>(0);
 
   // Initial fetch + project switch.
   useEffect(() => {
     if (!project) {
       setMap(new Map());
+      lastProcessedIdx.current = 0;
       return;
     }
     let cancelled = false;
@@ -61,45 +69,59 @@ export function useResourceList<T>(
       if (cancelled) return;
       setMap(new Map(list.map((r) => [config.getId(r), r])));
     });
+    // New project = fresh scan window for new envelopes.
+    lastProcessedIdx.current = events.length;
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id]);
 
-  // Per-envelope patch + refetch trigger.
-  //
-  // Only the LAST envelope is inspected per render — same as the previous
-  // hooks. The refetch on terminal / unknown-id handles WS-batched arrivals
-  // where the per-envelope branch missed an intermediate state.
+  // Scan all NEW envelopes (since last processed index) for matching kind.
+  // Apply each matching snapshot in order; if any was terminal OR
+  // introduced an unknown id, fire a refetch as the source of truth.
   useEffect(() => {
-    if (!project || events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last || last.type !== config.envelopeKind) return;
-    const record = config.extractSnapshot(last, project.id);
-    if (!record) return;
+    if (!project || events.length === 0) {
+      lastProcessedIdx.current = events.length;
+      return;
+    }
+    // If the buffer shrank (rare — generally only on full reconnect /
+    // replay reset), restart the scan from 0 to avoid skipping anything.
+    if (events.length < lastProcessedIdx.current) {
+      lastProcessedIdx.current = 0;
+    }
+    const start = lastProcessedIdx.current;
+    if (start >= events.length) return;
 
-    const id = config.getId(record);
-    const isTerminal = config.isTerminal(record);
+    let sawTerminal = false;
+    let sawUnknown = false;
+    const updates: Array<{ id: string; record: T; drop: boolean }> = [];
 
-    let unknown = false;
-    setMap((prev) => {
-      const known = prev.has(id);
-      if (!known) unknown = true;
-      const next = new Map(prev);
-      if (isTerminal && config.dropOnTerminal) {
-        next.delete(id);
-      } else {
-        next.set(id, record);
-      }
-      return next;
-    });
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (!env || env.type !== config.envelopeKind) continue;
+      const record = config.extractSnapshot(env, project.id);
+      if (!record) continue;
+      const id = config.getId(record);
+      const terminal = config.isTerminal(record);
+      if (terminal) sawTerminal = true;
+      updates.push({ id, record, drop: terminal && config.dropOnTerminal });
+    }
+    lastProcessedIdx.current = events.length;
 
-    // Refetch on terminal transition OR on unknown id. Terminal: server
-    // list may omit fields the envelope skips (completedAt) or filter the
-    // row out entirely; refetch normalises. Unknown id: WS batching can
-    // hide the prior `created` envelope; refetch picks up siblings.
-    if (isTerminal || unknown) {
+    if (updates.length > 0) {
+      setMap((prev) => {
+        const next = new Map(prev);
+        for (const u of updates) {
+          if (!next.has(u.id) && !u.drop) sawUnknown = true;
+          if (u.drop) next.delete(u.id);
+          else next.set(u.id, u.record);
+        }
+        return next;
+      });
+    }
+
+    if (sawTerminal || sawUnknown) {
       void config.list(project.id).then((list) => {
         setMap(new Map(list.map((r) => [config.getId(r), r])));
       });
