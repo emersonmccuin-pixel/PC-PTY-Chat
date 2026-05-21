@@ -1218,12 +1218,23 @@ test('17a.6 / D39 e2e smoke: pod row → materialised .md + mcp.json + secret en
   // 1. Insert the pod row (agent + secret + pod-declared MCP server). The
   //    create lands an `agent_audit` row via the 17a.4 wiring — assert that
   //    too, end-to-end.
+  // Pod tools reference all three MCP servers so the
+  // `filterMcpToReferencedTools: true` pass in workflow-runtime (commit
+  // 66340ff) passes them through — the test's intent is to verify the
+  // baseline-merge + pod-overlay logic still produces all three servers
+  // when the agent's tool surface actually needs them.
   const agent = createAgent(
     {
       name: POD_SMOKE_AGENT_NAME,
       scope: 'global',
       prompt: 'You investigate things.',
-      tools: ['Read', 'Grep'],
+      tools: [
+        'Read',
+        'Grep',
+        'mcp__pc-rig__pc_log',
+        'mcp__webhook__post',
+        'mcp__jira__issue',
+      ],
       model: 'sonnet',
       description: 'pod-spawn smoke fixture',
     },
@@ -1328,7 +1339,10 @@ test('17a.6 / D39 e2e smoke: pod row → materialised .md + mcp.json + secret en
     assert.equal(snap.agentName, POD_SMOKE_AGENT_NAME);
     // 6a. Materialised .md content shape — frontmatter + prompt body.
     assert.match(snap.mdContent, new RegExp(`\\nname: ${POD_SMOKE_AGENT_NAME}\\n`));
-    assert.match(snap.mdContent, /\ntools: Read, Grep\n/);
+    assert.match(
+      snap.mdContent,
+      /\ntools: Read, Grep, mcp__pc-rig__pc_log, mcp__webhook__post, mcp__jira__issue\n/,
+    );
     assert.match(snap.mdContent, /\nmodel: sonnet\n/);
     assert.match(snap.mdContent, /\n\nYou investigate things\./);
     // 6b. mcp.json merges baseline + pod row.

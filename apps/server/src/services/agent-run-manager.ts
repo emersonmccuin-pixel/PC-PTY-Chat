@@ -62,6 +62,15 @@ const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT = 5;
 
+/** 18.B-mcp-race — minimal warmup prompt sent on first ready. CC's MCP child
+ *  (pc-rig under `npx -y tsx ...`) takes 1–3s to register tools; the first
+ *  user turn fires before that finishes, so the model sees a partial tool
+ *  surface (built-ins only). Subsequent turns re-bind tools and pick up the
+ *  MCP entries. The warmup burns the race: one cheap turn so the real input
+ *  ships against a fully-bound tool surface. Disable by passing
+ *  `warmupPrompt: null` in `AgentRunManagerDeps` (tests + emergency knob). */
+const DEFAULT_WARMUP_PROMPT = 'Reply with only the word OK.';
+
 /** 16b.4.5 — maximum nested `pc_invoke_agent` depth. Orchestrator dispatches
  *  at depth 1; an agent dispatched by that one runs at depth 2; etc. At depth
  *  5, further nesting is rejected with `cause: 'depth-cap'` so a runaway
@@ -217,6 +226,13 @@ export interface AgentRunManagerDeps {
    *  back to 5 on any DB error. Tests pass a constant for deterministic
    *  cap behaviour. */
   getMaxConcurrent?: () => number;
+  /** 18.B-mcp-race — warmup prompt sent on first ready, before the real
+   *  initial input. `undefined` → use `DEFAULT_WARMUP_PROMPT`. `null` →
+   *  disable warmup entirely (tests + emergency override; the legacy
+   *  "send initialInput immediately on ready" path is restored). The
+   *  warmup turn is visible in the JSONL transcript and the live-
+   *  transcript modal, but is otherwise transparent to callers. */
+  warmupPrompt?: string | null;
 }
 
 interface InternalRun extends AgentRunRecord {
@@ -231,6 +247,15 @@ interface InternalRun extends AgentRunRecord {
   wallClockTimeoutMs: number;
   readyTimeoutMs: number;
   initialInputSent: boolean;
+  /** 18.B-mcp-race — true once the warmup turn has been sent. The real
+   *  `initialInput` is held back until the warmup's `jsonl-turn-end` lands
+   *  so the model's tool surface re-binds against a connected pc-rig. On
+   *  the resume path warmupSent is initialised true (MCP tools are already
+   *  bound from the prior session). When the manager runs with
+   *  `warmupPrompt: null`, the constructor presets this to true so the
+   *  ready-state handler falls through to the legacy "send initialInput
+   *  immediately" path. */
+  warmupSent: boolean;
   resolveCompletion: ((rec: AgentRunRecord) => void) | null;
   /** Section 18.6 — timestamp of the first non-system JSONL event from this
    *  run's underlying CC process. Confirms the agent booted, read the prompt,
@@ -276,8 +301,15 @@ export class AgentRunManager extends EventEmitter {
    *  than removed eagerly, so cancel doesn't pay an O(N) array splice. */
   private queue: ULID[] = [];
 
+  /** 18.B-mcp-race — resolved warmup prompt. `null` disables warmup; any
+   *  string (including the default) enables it. Resolved once at
+   *  construction so per-spawn paths don't re-check `deps`. */
+  private warmupPrompt: string | null;
+
   constructor(private deps: AgentRunManagerDeps = {}) {
     super();
+    this.warmupPrompt =
+      deps.warmupPrompt === undefined ? DEFAULT_WARMUP_PROMPT : deps.warmupPrompt;
   }
 
   /** Look up an active or terminal run by id. */
@@ -554,6 +586,10 @@ export class AgentRunManager extends EventEmitter {
     if (this.isTerminal(rec.status)) return false;
     rec.status = 'running';
     rec.initialInputSent = true; // resume's answer-write is the next user message
+    // 18.B-mcp-race — the resumed CC re-attaches to a session whose MCP tool
+    // surface was bound during the prior turn. Skip warmup so we don't burn
+    // an extra LLM call (and don't double-respond to the pending answer).
+    rec.warmupSent = true;
     this.attachToSession(rec, session);
     this.armIdleTimer(rec);
     this.emitRunChanged(rec); // paused → running transition
@@ -659,6 +695,9 @@ export class AgentRunManager extends EventEmitter {
       wallClockTimeoutMs: args.wallClockTimeoutMs,
       readyTimeoutMs: args.readyTimeoutMs,
       initialInputSent: false,
+      // 18.B-mcp-race — pre-set when warmup is disabled so the ready-state
+      // handler falls through to the legacy send-initialInput path.
+      warmupSent: this.warmupPrompt === null,
       resolveCompletion: null,
       firstJsonlAt: null,
       firstJsonlResolvers: [],
@@ -678,7 +717,22 @@ export class AgentRunManager extends EventEmitter {
 
     session.on('state', (state: SessionState) => {
       if (this.isTerminal(rec.status)) return;
-      if (state === 'ready' && !rec.initialInputSent) {
+      if (state === 'ready' && !rec.warmupSent && this.warmupPrompt !== null) {
+        // 18.B-mcp-race — CC's MCP child (pc-rig under `npx -y tsx ...`)
+        // hasn't finished registering tools at the welcome banner. Send a
+        // warmup turn so the second turn (the real initialInput) re-binds
+        // the model's tool surface against connected MCP servers. Status
+        // stays 'spawning' through the warmup so callers can't see a
+        // transient 'running' that's actually pre-real-prompt.
+        rec.warmupSent = true;
+        try {
+          session.send(this.warmupPrompt);
+        } catch (err) {
+          this.fail(rec, 'spawn-failed', `send warmup failed: ${(err as Error).message}`);
+        }
+      } else if (state === 'ready' && !rec.initialInputSent) {
+        // Legacy path: warmup disabled (tests + emergency knob). Send the
+        // real initialInput immediately on ready.
         rec.initialInputSent = true;
         rec.status = 'running';
         this.emitRunChanged(rec); // spawning → running
@@ -698,10 +752,39 @@ export class AgentRunManager extends EventEmitter {
     session.on('jsonl-event', (ev: JsonlEvent) => {
       if (this.isTerminal(rec.status)) return;
       this.armIdleTimer(rec); // reset on every event
+
+      // 18.B-mcp-race — warmup's turn-end is our cue to send the real
+      // initialInput. By now CC has bound the model's tool surface against
+      // a connected pc-rig (the warmup turn forced a tools_changed pass).
+      // Suppress all downstream handlers for this event: it isn't the
+      // agent's real first event (no ack), it isn't a terminal turn (no
+      // complete/pause), and we don't want it in firstJsonlAt math.
+      if (
+        rec.warmupSent &&
+        !rec.initialInputSent &&
+        ev.kind === 'jsonl-turn-end'
+      ) {
+        rec.initialInputSent = true;
+        rec.status = 'running';
+        this.emitRunChanged(rec); // spawning → running
+        try {
+          rec.session?.send(rec.initialInput);
+        } catch (err) {
+          this.fail(rec, 'spawn-failed', `send initialInput failed: ${(err as Error).message}`);
+        }
+        return;
+      }
+
       // Section 18.6 — the first non-system JSONL event from this run is the
       // ack signal. Confirms CC booted, read the prompt, and the model is
       // engaged. Async-dispatch routes await it via `waitForFirstJsonl`.
-      if (rec.firstJsonlAt === null && ev.kind !== 'jsonl-system') {
+      // 18.B-mcp-race — gated on initialInputSent so the warmup turn's
+      // events don't accidentally fulfil the ack contract.
+      if (
+        rec.initialInputSent &&
+        rec.firstJsonlAt === null &&
+        ev.kind !== 'jsonl-system'
+      ) {
         rec.firstJsonlAt = Date.now();
         this.flushFirstJsonlResolvers(rec);
       }

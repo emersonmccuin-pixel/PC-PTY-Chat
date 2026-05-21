@@ -266,7 +266,7 @@ test('respawn primitive re-attaches resumed session to the tracked run (16b.4.2)
     return s;
   };
   const mgr = new AgentRunManager({
-    createSession: spawnFactory,
+    warmupPrompt: null, createSession: spawnFactory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'ar-mgr-attach', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -383,6 +383,7 @@ test('respawn primitive runs ungoverned when no run is tracked (16b.4.2)', async
   // Fresh manager that has NEVER seen this session-id — findRunIdBySession
   // returns null and respawn skips the attach.
   const mgr = new AgentRunManager({
+    warmupPrompt: null,
     createSession: () => {
       throw new Error('manager.createSession should not be called on the untracked path');
     },

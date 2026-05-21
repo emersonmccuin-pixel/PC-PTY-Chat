@@ -114,7 +114,7 @@ test('spawn → ready → turn-end with no pending-ask → completed', async () 
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -152,6 +152,70 @@ test('spawn → ready → turn-end with no pending-ask → completed', async () 
   assert.equal(s.killed, true);
 });
 
+// 18.B-mcp-race (2026-05-21) — CC's `--agent` mode binds the model's tool
+// surface before MCP children finish registering. PC's agent dispatch
+// previously fired the user prompt at PTY-ready and hit the race every
+// time. Fix: send a warmup turn first; send the real initialInput on the
+// warmup's `jsonl-turn-end`. The warmup turn shouldn't satisfy the 18.6
+// ack contract either — `firstJsonlAt` is gated on `initialInputSent`.
+test('warmup turn defers initialInput until first turn-end (18.B-mcp-race)', async () => {
+  const p = createProject({
+    slug: 'arm-warmup',
+    name: 'ARM Warmup',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    // No `warmupPrompt:` override → default warmup is active.
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-warmup', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a lib for date math',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'warmup-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+
+  assert.equal(sessions.length, 1);
+  const s = sessions[0]!;
+
+  // Ready → warmup sent first (NOT the real input). Status stays
+  // 'spawning' through the warmup; firstJsonlAt is still null.
+  s.becomeReady();
+  assert.equal(s.sent.length, 1, 'only the warmup is queued after ready');
+  assert.equal(
+    s.sent[0],
+    'Reply with only the word OK.',
+    'first send is the canonical warmup prompt',
+  );
+  const recAfterReady = mgr.get(runId);
+  assert.equal(recAfterReady?.status, 'spawning', 'status held at spawning through warmup');
+
+  // Simulate the warmup turn-end. Manager now sends the real input + flips
+  // to running.
+  s.emitTurnEnd('OK');
+  assert.deepEqual(
+    s.sent,
+    ['Reply with only the word OK.', 'find a lib for date math'],
+    'real initialInput sent on warmup turn-end',
+  );
+  assert.equal(mgr.get(runId)?.status, 'running', 'status now running');
+
+  // Real turn-end completes the run.
+  s.emitTurnEnd('use date-fns');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.result, 'use date-fns');
+  await tick();
+  assert.equal(s.killed, true);
+});
+
 // B7 regression (2026-05-21) — agents that live ONLY in the global library
 // at `~/.project-companion/agents/<name>.md` (Section 3 stock globals) must
 // be materialised into `<worktree>/.claude/agents/<name>.md` at spawn time
@@ -180,7 +244,7 @@ test('global flat-file agent → materialised into worktree before spawn; cleane
 
   try {
     const mgr = new AgentRunManager({
-      createSession: factory,
+      warmupPrompt: null, createSession: factory,
       scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-b7', pid, rid),
       resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
     });
@@ -235,7 +299,7 @@ test('unknown agent name → fail immediately with cause=unknown-agent (no sessi
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-unknown', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -275,7 +339,7 @@ test('text-empty turn-end (thinking-only) → keep waiting; subsequent text turn
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-b1', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -324,7 +388,7 @@ test('turn-end with a waiting pending-ask → paused (no terminal yet); resume �
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-pause', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -412,7 +476,7 @@ test('cancel before terminal → status=cancelled, completion resolves', async (
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-cancel', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -456,7 +520,7 @@ test('idle-timeout → failed with cause=idle-timeout', async () => {
   const handles = new Map<unknown, { cb: () => void }>();
   let nextHandle = 1;
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-idle', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
     setTimeout: (cb, ms) => {
@@ -507,7 +571,7 @@ test('session exit before turn-end → failed with cause=spawn-exit', async () =
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-exit', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -540,7 +604,7 @@ test('findRunIdBySession returns the live tracked runId; null after terminal', a
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-find', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -575,7 +639,7 @@ test('emits run-changed at every state transition (spawning → running → comp
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-emit', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -626,7 +690,7 @@ test('snapshot carries worktreeDir for the live-transcript modal', () => {
   });
   const { factory } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-worktree', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -654,7 +718,7 @@ test('listForProject filters out terminal-status runs only when caller asks; raw
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-list', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -702,7 +766,7 @@ test('forwards every jsonl-event as run-jsonl-event with {runId, projectId, even
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-jsonl-forward', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -748,7 +812,7 @@ test('waitForFirstJsonl resolves on first non-system jsonl event; getFirstJsonlA
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-happy', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -804,7 +868,7 @@ test('jsonl-system events do NOT count as ack; first non-system event does', asy
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-system', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -850,7 +914,7 @@ test('waitForFirstJsonl resolves immediately when the first event already arrive
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-late-wait', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -893,7 +957,7 @@ test('terminal-without-ack flushes pending waiters; getFirstJsonlAt stays null',
   });
   const { factory } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-terminal-flush', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -933,7 +997,7 @@ test('terminal flushes a waiter that registered pre-terminal', async () => {
   });
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-pre-flush', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -971,7 +1035,7 @@ test('terminal flushes a waiter that registered pre-terminal', async () => {
 test('waitForFirstJsonl for unknown runId resolves immediately (defensive)', async () => {
   const { factory } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ack-unknown', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
@@ -987,7 +1051,7 @@ test('waitForFirstJsonl for unknown runId resolves immediately (defensive)', asy
 function makeCapMgr(cap: number, slug: string) {
   const { factory, sessions } = makeFactory();
   const mgr = new AgentRunManager({
-    createSession: factory,
+    warmupPrompt: null, createSession: factory,
     scratchDirFor: (pid, rid) => join(tmpDataDir, slug, pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
     getMaxConcurrent: () => cap,
