@@ -52,6 +52,7 @@ import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
+import { drainPendingForSession, enqueueAndPush } from './services/agent-inbox-emit.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
 import { listCustomCommands } from './services/custom-commands.ts';
@@ -207,6 +208,17 @@ const channelServer = new ChannelServer({
   allowedSenders: new Set((process.env.CHANNEL_ALLOWED_SENDERS ?? 'test').split(',').filter(Boolean)),
   onEvent: (projectId, event) => {
     broadcastTo(projectId, { type: 'channel-event', projectId, event });
+  },
+  // 18.3 — When a fresh bridge registers (post-restart / post-respawn),
+  // drain any pending inbox rows for the (projectId, sessionId) pair so the
+  // orchestrator catches up autonomously.
+  onRegister: ({ projectId, sessionId, slug }) => {
+    const result = drainPendingForSession(channelServer, projectId, sessionId, slug);
+    if (result.attempted > 0) {
+      console.log(
+        `[channel] auto-flush ${projectId} / ${sessionId}: drained ${result.drained}/${result.attempted}`,
+      );
+    }
   },
 });
 channelServer.start();
@@ -2646,14 +2658,34 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     });
   }
   if (eventBody) {
-    channelServer.emitToSession({
-      projectId,
-      recipientSessionId: dispatcherSessionId,
-      slug: project.slug,
-      source: 'agent',
-      body: eventBody,
-      sender: 'pc',
-    });
+    // 18.3 — hybrid emit: inbox row + best-effort channel push + audit.
+    // `ask-user` stays on the channel-only path (no inbox kind) — the
+    // architecture-review lock merges it into `ask-orchestrator` in the
+    // 16b.E2E close; until then, ask-user channel events don't have a
+    // matching `AgentInboxEventKind`. Loss of channel push for ask-user
+    // is recoverable via the pending-asks list endpoint.
+    if (kind === 'ask-user') {
+      channelServer.emitToSession({
+        projectId,
+        recipientSessionId: dispatcherSessionId,
+        slug: project.slug,
+        source: 'agent',
+        body: eventBody,
+        sender: 'pc',
+      });
+    } else {
+      enqueueAndPush(channelServer, {
+        projectId,
+        recipientSessionId: dispatcherSessionId,
+        eventKind: kind === 'ask-orchestrator'
+          ? 'agent-asks-orchestrator'
+          : 'agent-approval-request',
+        slug: project.slug,
+        source: 'agent',
+        body: eventBody,
+        sender: 'pc',
+      });
+    }
   }
 
   // 16b.7 — audit row on the parent work item.
@@ -2892,9 +2924,10 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         result: rec.result ?? '',
         now: Date.now(),
       });
-      channelServer.emitToSession({
+      enqueueAndPush(channelServer, {
         projectId,
         recipientSessionId: rec.dispatcherSessionId,
+        eventKind: 'agent-completed',
         slug: project.slug,
         source: 'agent',
         body: buildAgentCompletedBody({
@@ -2917,9 +2950,10 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
         cause: rec.failureCause ?? rec.status,
         now: Date.now(),
       });
-      channelServer.emitToSession({
+      enqueueAndPush(channelServer, {
         projectId,
         recipientSessionId: rec.dispatcherSessionId,
+        eventKind: 'agent-failed',
         slug: project.slug,
         source: 'agent',
         body: buildAgentFailedBody({

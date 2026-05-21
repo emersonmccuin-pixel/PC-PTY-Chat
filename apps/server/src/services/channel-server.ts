@@ -28,6 +28,11 @@ export interface ChannelServerDeps {
   allowedSenders: Set<string>;
   /** Pushes a UI-side broadcast for a channel event arriving at this project. */
   onEvent: (projectId: ULID, payload: ChannelEvent) => void;
+  /** Section 18.3 — Fires after a fresh WS registrant is accepted. Used to
+   *  drain pending inbox rows for the (projectId, sessionId) pair so a
+   *  post-restart / post-respawn bridge catches up autonomously without
+   *  waiting on a user prompt. Best-effort: handler must not throw. */
+  onRegister?: (args: { projectId: ULID; sessionId: string; slug: string }) => void;
 }
 
 export interface ChannelEvent {
@@ -136,6 +141,22 @@ export class ChannelServer {
       }
       this.registrants.set(key, { ws, projectId, sessionId, slug });
       console.log(`[channel] registered ${slug} (${projectId} / ${sessionId})`);
+      // 18.3 — auto-flush hook. Defer to next tick so the drain (which uses
+      // `emitToSession` against the map we just wrote to) runs after the
+      // current register handler unwinds. Any throw is logged + swallowed
+      // so a bad drain can't break registration.
+      const onRegister = this.deps.onRegister;
+      if (onRegister) {
+        setImmediate(() => {
+          try {
+            onRegister({ projectId, sessionId, slug });
+          } catch (err) {
+            console.error(
+              `[channel] onRegister handler threw for ${projectId} / ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        });
+      }
       ws.on('close', () => {
         const cur = this.registrants.get(key);
         if (cur && cur.ws === ws) this.registrants.delete(key);
