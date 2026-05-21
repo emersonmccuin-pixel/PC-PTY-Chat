@@ -442,11 +442,15 @@ interface UserPart {
 
 const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
 // Section 1 chat-noise cleanup: render-only hide for workflow→orchestrator
-// channel blocks. The orchestrator still receives the raw block in its context
-// (it needs the [workflowRunId: ...] tokens to dispatch / close nodes); only
-// the user-visible chat panel filters. Plain-text channel events (no header)
-// stay visible.
+// AND agent→orchestrator channel blocks. The orchestrator still receives the
+// raw blocks in its context (it needs the [workflowRunId: ...] / [runId: ...]
+// tokens to dispatch / close / answer); only the user-visible chat panel
+// filters. Plain-text channel events (no recognised header) stay visible.
+//
+// Section 18.10 follow-up (2026-05-21): added `[pc:agent-event kind=...]`
+// alongside the workflow variant — surfaced during V-1 validation.
 const WORKFLOW_EVENT_RE = /^\[pc:workflow-event\s+kind=/;
+const AGENT_EVENT_RE = /^\[pc:agent-event\s+kind=/;
 
 function parseUserText(text: string): UserPart[] {
   if (!text) return [{ kind: 'text', text: '' }];
@@ -463,7 +467,7 @@ function parseUserText(text: string): UserPart[] {
     const attrs = m[1] ?? '';
     const body = (m[2] ?? '').trim();
     last = idx + m[0].length;
-    if (WORKFLOW_EVENT_RE.test(body)) continue;
+    if (WORKFLOW_EVENT_RE.test(body) || AGENT_EVENT_RE.test(body)) continue;
     const sourceMatch = attrs.match(/source\s*=\s*"([^"]+)"/);
     parts.push({ kind: 'channel', text: body, source: sourceMatch?.[1] ?? 'channel' });
   }
