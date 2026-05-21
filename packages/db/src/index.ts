@@ -140,6 +140,20 @@ export {
 export type { AnswerPendingAskInput, CreatePendingAskInput } from './repos/pending-asks.ts';
 
 export {
+  enqueueInboxRow,
+  getAuditForInbox,
+  getInboxRow,
+  listPendingForSession,
+  markInboxDelivered,
+  recordChannelPushAttempt,
+} from './repos/agent-inbox.ts';
+export type {
+  EnqueueInboxRowInput,
+  MarkInboxDeliveredInput,
+  RecordChannelPushAttemptInput,
+} from './repos/agent-inbox.ts';
+
+export {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,

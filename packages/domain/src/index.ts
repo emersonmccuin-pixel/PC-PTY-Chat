@@ -150,7 +150,12 @@ export type {
   AgentChannelEventKind,
   AgentChannelEventPayload,
   AgentCompletedPayload,
+  AgentDeliveryAuditRow,
+  AgentDeliveryDriver,
   AgentFailedPayload,
+  AgentInboxEventKind,
+  AgentInboxRow,
+  AgentInboxStatus,
   PcAnswerPendingInput,
   PcAnswerPendingResult,
   PcAnswerPendingResultError,
@@ -173,6 +178,9 @@ export type {
 } from './agent-comms.ts';
 export {
   AGENT_CHANNEL_EVENT_KINDS,
+  AGENT_DELIVERY_DRIVERS,
+  AGENT_INBOX_EVENT_KINDS,
+  AGENT_INBOX_STATUSES,
   PENDING_ASK_KINDS,
   PENDING_ASK_STATUSES,
 } from './agent-comms.ts';

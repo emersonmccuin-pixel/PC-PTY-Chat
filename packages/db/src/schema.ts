@@ -1,7 +1,10 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
+  AgentDeliveryDriver,
   AgentEffort,
+  AgentInboxEventKind,
+  AgentInboxStatus,
   AgentModel,
   AgentOutputDestination,
   FieldSchemaType,
@@ -564,4 +567,80 @@ export const pendingAsks = sqliteTable(
     index('pending_asks_session_idx').on(t.sessionId),
     index('pending_asks_work_item_idx').on(t.parentWorkItemId),
   ],
+);
+
+/**
+ * Section 18 — Hybrid delivery transport (inbox + audit).
+ *
+ * `agent_inbox` is the durability layer of the hybrid: every agent →
+ * orchestrator event lands here as a row before any best-effort channel push.
+ * `agent_delivery_audit` is observational — one row per inbox row capturing
+ * how the event eventually reached the orchestrator (autonomous channel
+ * push wake-up vs UserPromptSubmit-hook prepend on the next user prompt).
+ *
+ * Inbox rows are drained by two paths:
+ * 1. Auto-flush on bridge registration / live channel push — orchestrator
+ *    wakes autonomously, row flips `pending → delivered`, audit row
+ *    records `driver = 'autonomous'`.
+ * 2. UserPromptSubmit hook drain — when channel didn't deliver in time,
+ *    the hook prepends pending rows as preamble, marks them delivered,
+ *    audit row records `driver = 'user-prompt'`.
+ *
+ * Cross-row guarantees: status flips are atomic; audit row is written in the
+ * same transaction as the inbox status flip so observer queries never see
+ * a delivered inbox row without its audit partner.
+ */
+
+export const agentInbox = sqliteTable(
+  'agent_inbox',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    /** CC sessionId of the orchestrator that should receive this event. */
+    recipientSessionId: text('recipient_session_id').notNull(),
+    eventKind: text('event_kind').notNull().$type<AgentInboxEventKind>(),
+    /** Pre-rendered `<channel>...</channel>` body, ready to splice into a
+     *  prompt or push via channel. Authored at enqueue time so the drain
+     *  paths don't re-render. */
+    payloadBody: text('payload_body').notNull(),
+    status: text('status').notNull().default('pending').$type<AgentInboxStatus>(),
+    createdAt: integer('created_at').notNull(),
+    /** null until status flips to `delivered`. */
+    deliveredAt: integer('delivered_at'),
+  },
+  (t) => [
+    /** Hot read: "what's pending for this orchestrator session?" — drained
+     *  by both auto-flush on bridge register and UserPromptSubmit hook. */
+    index('agent_inbox_project_session_status_idx').on(
+      t.projectId,
+      t.recipientSessionId,
+      t.status,
+    ),
+    /** Ordered drain: rows surface oldest-first for both transports. */
+    index('agent_inbox_session_created_idx').on(t.recipientSessionId, t.createdAt),
+  ],
+);
+
+export const agentDeliveryAudit = sqliteTable(
+  'agent_delivery_audit',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    inboxId: text('inbox_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agentInbox.id),
+    /** null when channel push was skipped (e.g. transport disabled via the
+     *  emergency kill switch in `PC_DELIVERY_TRANSPORT`). */
+    channelPushAttemptedAt: integer('channel_push_attempted_at'),
+    /** 0/1 when attempted; null when not attempted. */
+    channelPushSucceeded: integer('channel_push_succeeded', { mode: 'boolean' }),
+    /** null when channel push delivered autonomously and the hook never had
+     *  to drain this row. */
+    hookDrainedAt: integer('hook_drained_at'),
+    driver: text('driver').notNull().default('unknown').$type<AgentDeliveryDriver>(),
+  },
+  (t) => [index('agent_delivery_audit_inbox_idx').on(t.inboxId)],
 );

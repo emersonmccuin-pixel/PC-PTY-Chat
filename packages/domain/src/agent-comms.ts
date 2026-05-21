@@ -202,6 +202,94 @@ export type AgentChannelEventPayload =
   | AgentCompletedPayload
   | AgentFailedPayload;
 
+// ─── Section 18 — Inbox + delivery audit (hybrid transport) ───────────────
+//
+// The inbox is the durability layer of the hybrid: every agent → orchestrator
+// event lands as an `agent_inbox` row before any best-effort channel push.
+// The `agent_delivery_audit` table records per-event delivery telemetry —
+// how the event eventually reached the orchestrator (autonomous channel push
+// vs caught on the next user prompt by the UserPromptSubmit hook drain).
+//
+// `AgentInboxEventKind` is a superset of `AgentChannelEventKind`: drops
+// `agent-asks-user` (architecture-review merge into `agent-asks-orchestrator`)
+// and adds two dispatch-contract events (`agent-acked` for ack-pattern
+// fire-after-confirm, `agent-queued-started` for over-cap dispatches that
+// fire later when the queue drains).
+
+/** Event-kind tag stored in `agent_inbox.event_kind`. Superset of the wire
+ *  `AgentChannelEventKind` — adds dispatch-contract events that are
+ *  inbox-only (never originate from a child agent). */
+export type AgentInboxEventKind =
+  | 'agent-acked'
+  | 'agent-completed'
+  | 'agent-failed'
+  | 'agent-asks-orchestrator'
+  | 'agent-approval-request'
+  | 'agent-queued-started';
+
+export const AGENT_INBOX_EVENT_KINDS: readonly AgentInboxEventKind[] = [
+  'agent-acked',
+  'agent-completed',
+  'agent-failed',
+  'agent-asks-orchestrator',
+  'agent-approval-request',
+  'agent-queued-started',
+];
+
+/** Lifecycle of an inbox row. `pending` admits draining (channel push or hook
+ *  prepend); `delivered` is terminal. Status check prevents double-delivery
+ *  when both transports race. */
+export type AgentInboxStatus = 'pending' | 'delivered';
+
+export const AGENT_INBOX_STATUSES: readonly AgentInboxStatus[] = [
+  'pending',
+  'delivered',
+];
+
+/** How an inbox row eventually reached the orchestrator. `'autonomous'` =
+ *  channel push delivered while the orchestrator was idle (woke it up).
+ *  `'user-prompt'` = channel didn't deliver in time; UserPromptSubmit hook
+ *  drained the row as preamble on the next prompt. `'unknown'` covers
+ *  recorded-but-not-yet-routed rows (e.g. immediately after enqueue). */
+export type AgentDeliveryDriver = 'autonomous' | 'user-prompt' | 'unknown';
+
+export const AGENT_DELIVERY_DRIVERS: readonly AgentDeliveryDriver[] = [
+  'autonomous',
+  'user-prompt',
+  'unknown',
+];
+
+/** One inbox row. Matches the `agent_inbox` table shape. */
+export interface AgentInboxRow {
+  id: ULID;
+  projectId: ULID;
+  /** CC sessionId of the orchestrator that should receive this event. */
+  recipientSessionId: string;
+  eventKind: AgentInboxEventKind;
+  /** Pre-rendered `<channel>...</channel>` body, ready to splice into a
+   *  prompt or push via channel. Authored at enqueue time so the drain
+   *  paths don't have to re-render. */
+  payloadBody: string;
+  status: AgentInboxStatus;
+  createdAt: number;
+  /** null until status flips to `'delivered'`. */
+  deliveredAt: number | null;
+}
+
+/** One audit row. Matches the `agent_delivery_audit` table shape. Records
+ *  the validation-pass's success metric: how often does the channel push
+ *  autonomously wake the orchestrator vs the user-prompt fallback. */
+export interface AgentDeliveryAuditRow {
+  id: ULID;
+  inboxId: ULID;
+  channelPushAttemptedAt: number | null;
+  /** 0/1 when attempted; null when not attempted (skipped or transport
+   *  unavailable). */
+  channelPushSucceeded: boolean | null;
+  hookDrainedAt: number | null;
+  driver: AgentDeliveryDriver;
+}
+
 // ─── MCP tool input / output shapes ───────────────────────────────────────
 
 // pc_invoke_agent ─────────────────────────────────────────────────────────
