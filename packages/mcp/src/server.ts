@@ -352,6 +352,96 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_create_agent_secret',
+    description:
+      "Attach a plaintext env-var secret to an agent. The value is stored in plain text in v1 (encryption lands in v2) — the user has been warned via the UI banner. Pod gets `envVarName=value` materialised into its environment at spawn. Use for things like API keys / tokens needed by per-pod MCP servers. Audits event-only (value never logged). Accepts either { agentId } or { agentName }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        envVarName: { type: 'string', description: 'environment variable name (e.g. GMAIL_TOKEN)' },
+        valuePlaintext: { type: 'string', description: 'secret value (stored plaintext in v1)' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['envVarName', 'valuePlaintext'],
+    },
+  },
+  {
+    name: 'pc_delete_agent_secret',
+    description:
+      "Detach a secret env-var from an agent. Audits as actor='orchestrator'. Accepts either { agentId } or { agentName } plus { secretId }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        secretId: { type: 'string', description: 'secret ULID id' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['secretId'],
+    },
+  },
+  {
+    name: 'pc_add_agent_mcp_server',
+    description:
+      "Configure a per-pod MCP server (e.g. gmail, jira, custom). The pod's materialised mcp.json will merge this server into the baseline at spawn time; pod entry wins per-server-name. Pass the standard MCP config shape: { command, args, env } OR { url } (for HTTP transports). Accepts either { agentId } or { agentName }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        serverName: { type: 'string', description: 'MCP server name (e.g. "gmail")' },
+        config: {
+          type: 'object',
+          description: 'MCP server config: { command, args?, env? } or { url }',
+          properties: {
+            command: { type: 'string' },
+            args: { type: 'array', items: { type: 'string' } },
+            env: { type: 'object', additionalProperties: { type: 'string' } },
+            url: { type: 'string' },
+          },
+        },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['serverName', 'config'],
+    },
+  },
+  {
+    name: 'pc_delete_agent_mcp_server',
+    description:
+      "Detach a per-pod MCP server. Audits as actor='orchestrator'. Accepts either { agentId } or { agentName } plus { mcpServerId }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        mcpServerId: { type: 'string', description: 'MCP server row ULID id' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['mcpServerId'],
+    },
+  },
+  {
+    name: 'pc_list_agent_audit',
+    description:
+      "Read an agent's change history. Returns audit rows newest-first. Filter by actor ('orchestrator' / 'user'), field ('prompt' / 'model' / 'effort' / 'tools' / 'description' / 'name' / 'maxTurns' / 'outputDestination' / 'knowledge' / 'secret' / 'mcp-server'), limit (default 50), beforeCreatedAt (epoch ms — for paging). Use when reasoning about 'why does this agent behave this way?' or auditing recent changes. Accepts either { agentId } or { agentName }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        actor: { type: 'string', description: "filter by actor ('orchestrator' / 'user')" },
+        field: { type: 'string', description: 'filter by audit field key' },
+        limit: { type: 'integer', description: 'max rows returned (default 50)' },
+        beforeCreatedAt: {
+          type: 'integer',
+          description: 'page boundary (epoch ms); rows older than this',
+        },
+      },
+    },
+  },
+  {
     name: 'pc_get_work_item',
     description:
       'Fetch the full work item by id — title, body, fields, stage, status, parent. Use this when an agent needs to read the work item it is operating on without filesystem digging. Returns { ok: true, workItem } or { ok: false, error } for unknown / archived ids.',
@@ -1593,6 +1683,254 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [
             { type: 'text', text: `pc_knowledge_read failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_agent_secret': {
+      const envVarName = typeof args.envVarName === 'string' ? args.envVarName.trim() : '';
+      const valuePlaintext = typeof args.valuePlaintext === 'string' ? args.valuePlaintext : '';
+      if (!envVarName) {
+        return {
+          content: [{ type: 'text', text: 'pc_create_agent_secret: envVarName required' }],
+          isError: true,
+        };
+      }
+      if (typeof args.valuePlaintext !== 'string') {
+        return {
+          content: [
+            { type: 'text', text: 'pc_create_agent_secret: valuePlaintext required (string)' },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_create_agent_secret: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          envVarName,
+          valuePlaintext,
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-create-secret',
+        };
+        const res = await postServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/secrets`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_create_agent_secret failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_create_agent_secret failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_delete_agent_secret': {
+      const secretId = typeof args.secretId === 'string' ? args.secretId.trim() : '';
+      if (!secretId) {
+        return {
+          content: [{ type: 'text', text: 'pc_delete_agent_secret: secretId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_delete_agent_secret: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const reason =
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-delete-secret';
+        const qs = `actor=orchestrator&reason=${encodeURIComponent(reason)}`;
+        const res = await deleteServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/secrets/${encodeURIComponent(secretId)}?${qs}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_delete_agent_secret failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_delete_agent_secret failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_add_agent_mcp_server': {
+      const serverName = typeof args.serverName === 'string' ? args.serverName.trim() : '';
+      const config = args.config && typeof args.config === 'object' ? args.config : null;
+      if (!serverName) {
+        return {
+          content: [{ type: 'text', text: 'pc_add_agent_mcp_server: serverName required' }],
+          isError: true,
+        };
+      }
+      if (!config) {
+        return {
+          content: [{ type: 'text', text: 'pc_add_agent_mcp_server: config required (object)' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_add_agent_mcp_server: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          name: serverName,
+          config,
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-add-server',
+        };
+        const res = await postServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/mcp-servers`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_add_agent_mcp_server failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_add_agent_mcp_server failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_agent_audit': {
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_list_agent_audit: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const params: string[] = [];
+        if (typeof args.actor === 'string' && args.actor.trim()) {
+          params.push(`actor=${encodeURIComponent(args.actor.trim())}`);
+        }
+        if (typeof args.field === 'string' && args.field.trim()) {
+          params.push(`field=${encodeURIComponent(args.field.trim())}`);
+        }
+        if (typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0) {
+          params.push(`limit=${args.limit}`);
+        }
+        if (
+          typeof args.beforeCreatedAt === 'number' &&
+          Number.isFinite(args.beforeCreatedAt)
+        ) {
+          params.push(`beforeCreatedAt=${args.beforeCreatedAt}`);
+        }
+        const qs = params.length > 0 ? `?${params.join('&')}` : '';
+        const res = await getServer(`/api/agents/pods/${encodeURIComponent(id.id)}/audit${qs}`);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_list_agent_audit failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_list_agent_audit failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_delete_agent_mcp_server': {
+      const mcpServerId = typeof args.mcpServerId === 'string' ? args.mcpServerId.trim() : '';
+      if (!mcpServerId) {
+        return {
+          content: [{ type: 'text', text: 'pc_delete_agent_mcp_server: mcpServerId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_delete_agent_mcp_server: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const reason =
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-delete-server';
+        const qs = `actor=orchestrator&reason=${encodeURIComponent(reason)}`;
+        const res = await deleteServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/mcp-servers/${encodeURIComponent(mcpServerId)}?${qs}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `pc_delete_agent_mcp_server failed (${res.status}): ${res.body}`,
+            },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `pc_delete_agent_mcp_server failed: ${(err as Error).message}`,
+            },
           ],
           isError: true,
         };
