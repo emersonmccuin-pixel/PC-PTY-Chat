@@ -3326,6 +3326,24 @@ app.post('/api/projects/:projectId/agent-runs/:runId/cancel', (c) => {
   return c.json({ ok, status: mgr.get(runId)?.status ?? null });
 });
 
+/** Section 22 — internal endpoint posted by pc-rig (the per-spawn MCP
+ *  child) when CC's MCP client finishes the JSON-RPC handshake (the
+ *  `initialized` notification). Routes the signal to AgentRunManager
+ *  which gates its programmatic spawn-time warmup-send on this instead
+ *  of on the banner-render `state: 'ready'` — closing the per-spawn race
+ *  where the warmup's submit Enter got eaten by the in-progress
+ *  handshake. Fire-and-forget from pc-rig's side; this route just
+ *  acknowledges the routing happened. */
+app.post('/api/internal/mcp-handshake', async (c) => {
+  const body = await c.req.json<{ projectId?: string; agentSessionId?: string }>();
+  if (!body.projectId || !body.agentSessionId) {
+    return c.json({ ok: false, error: 'projectId + agentSessionId required' }, 400);
+  }
+  const mgr = getAgentRunManager();
+  const found = mgr.notifyMcpConnected(body.projectId as ULID, body.agentSessionId);
+  return c.json({ ok: true, found });
+});
+
 // ── Static / SPA fallback ─────────────────────────────────────────────────
 
 const STATIC_MIME: Record<string, string> = {

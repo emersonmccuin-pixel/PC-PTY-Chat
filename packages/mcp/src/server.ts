@@ -21,6 +21,10 @@ const ROOT = resolve(__dirname, '..', '..', '..');
 const DATA = process.env.PC_DATA_DIR ? resolve(process.env.PC_DATA_DIR) : resolve(ROOT, 'data');
 const PROJECT_ID = process.env.PC_PROJECT_ID ?? '';
 const SERVER_PORT = Number(process.env.PC_SERVER_PORT ?? 4040);
+// Section 22 — set by agent-run-manager for dispatched-agent spawns. Absent
+// for orchestrator + agent-designer paths (those set PC_SESSION_ID instead;
+// they don't suffer the spawn-time race so we skip the handshake POST).
+const AGENT_SESSION_ID = process.env.PC_AGENT_SESSION_ID ?? '';
 
 // Per-project log + heartbeat — keep each project's MCP signals isolated.
 const PROJECT_DATA = PROJECT_ID ? resolve(DATA, 'projects', PROJECT_ID) : DATA;
@@ -203,7 +207,7 @@ export const TOOLS = [
   {
     name: 'pc_create_agent',
     description:
-      "Create a NEW agent pod (DB-resident). Returns the new pod row with its ULID id. Defaults to scope='project' (pod is owned by the current project — set via PC_PROJECT_ID). Pass scope='global' only when the user explicitly says this agent should be reusable across every project. Use this for fresh agent design — the user said 'build me an agent that does X'. For structural design from scratch you should usually dispatch agent-designer first (pc_invoke_agent agent='agent-designer') so the design conversation happens in its specialised pod; call pc_create_agent directly only for trivial extractors / utilities or when continuing a design conversation. Stock-pod names (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are reserved — 400 if name collides with a global. Broadcasts pod-changed on success.",
+      "Create a NEW agent pod (DB-resident). Returns the new pod row with its ULID id. Defaults to scope='project' (pod is owned by the current project — set via PC_PROJECT_ID). Pass scope='global' only when the user explicitly says this agent should be reusable across every project. Use this for fresh agent design — the user said 'build me an agent that does X'. For structural design from scratch you should usually dispatch agent-designer first (pc_invoke_agent agent='agent-designer') so the design conversation happens in its specialised pod; call pc_create_agent directly only for trivial extractors / utilities or when continuing a design conversation. Stock-pod names (orchestrator/researcher/writer/code-writer/reviewer/planner/extractor/agent-designer) are reserved — 400 if name collides with a global. Broadcasts pod-changed on success.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -281,7 +285,7 @@ export const TOOLS = [
   {
     name: 'pc_delete_agent',
     description:
-      "Soft-delete an agent pod. Stock pods (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are NOT deletable — returns 409. The pod can be restored via the History tab. Audits as actor='orchestrator'. Accepts either { id } or { name }.",
+      "Soft-delete an agent pod. Stock pods (orchestrator/researcher/writer/code-writer/reviewer/planner/extractor/agent-designer) are NOT deletable — returns 409. The pod can be restored via the History tab. Audits as actor='orchestrator'. Accepts either { id } or { name }.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -956,6 +960,42 @@ const server = new Server(
   { name: 'pc-rig', version: '0.0.0' },
   { capabilities: { tools: {} } },
 );
+
+// Section 22 — fire when CC's MCP client finishes the JSON-RPC handshake
+// (the `initialized` notification, last step before tools are safely
+// callable). Lets agent-run-manager gate its programmatic spawn-time
+// warmup-send on the real handshake-complete signal rather than the
+// banner-render `state: 'ready'` (which fires before MCP is connected
+// and used to drop the warmup's Enter under concurrent spawn). Dispatched-
+// agent path only — orchestrator + agent-designer don't suffer the race.
+// Fire-once guard at the AbortController level: pc-rig is a fresh process
+// per spawn, so oninitialized should only ever fire once anyway, but
+// defense-in-depth.
+let handshakeNotified = false;
+server.oninitialized = () => {
+  if (handshakeNotified) return;
+  if (!PROJECT_ID || !AGENT_SESSION_ID) return;
+  handshakeNotified = true;
+  const payload = JSON.stringify({
+    projectId: PROJECT_ID,
+    agentSessionId: AGENT_SESSION_ID,
+  });
+  const req = httpRequest({
+    host: '127.0.0.1',
+    port: SERVER_PORT,
+    method: 'POST',
+    path: '/api/internal/mcp-handshake',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+    },
+  });
+  // Fire-and-forget. Failure is non-fatal — agent-run-manager's timeout
+  // fallback catches us if this POST never lands.
+  req.on('error', () => { /* best-effort */ });
+  req.write(payload);
+  req.end();
+};
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS as unknown as typeof TOOLS,

@@ -185,6 +185,10 @@ test('warmup turn defers initialInput until first turn-end (18.B-mcp-race)', asy
     projectId: p.id as ULID,
     dispatcherSessionId: 'warmup-dispatcher',
     worktreeDir: tmpDataDir,
+    // Section 22 — this test exercises the warmup-then-real-input flow
+    // (18.B-mcp-race), not the new handshake-gate. Skip the handshake
+    // wait so warmup fires immediately on ready, same as pre-Section-22.
+    mcpHandshakeTimeoutMs: 0,
   });
 
   assert.equal(sessions.length, 1);
@@ -1688,6 +1692,10 @@ test('warmup kick: re-sends Enter on interval while warmup unanswered; stops on 
     warmupKickIntervalMs: 25,
     // Keep spawn-stuck out of the way (well past anything this test does).
     spawnStuckTimeoutMs: 5_000,
+    // Section 22 — this test exercises the no-handshake fallback path
+    // explicitly (warmup sent at ready + kicks armed). Skip the handshake
+    // wait entirely so we don't have to time-travel to fire the timeout.
+    mcpHandshakeTimeoutMs: 0,
   });
   const s = sessions[0]!;
 
@@ -1719,6 +1727,223 @@ test('warmup kick: re-sends Enter on interval while warmup unanswered; stops on 
   s.emitTurnEnd('done');
   const result = await completion;
   assert.equal(result.status, 'completed');
+});
+
+// Section 22 — when pc-rig's mcp-connected POST has already arrived by the
+// time PtySession reaches `ready`, the warmup fires immediately and the
+// kick timer is NOT armed (handshake is confirmed; the typed-text-no-Enter
+// symptom can't happen because MCP isn't fighting for the input buffer).
+test('mcp-connected arrives before ready: warmup fires immediately, no kicks', async () => {
+  const p = createProject({
+    slug: 'arm-mcp-fast',
+    name: 'ARM MCP Fast',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-mcp-fast', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'real input',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'mcp-fast',
+    worktreeDir: tmpDataDir,
+    warmupKickIntervalMs: 25, // would be visible if kick armed
+    mcpHandshakeTimeoutMs: 5_000, // generous; we should not hit it
+  });
+  const s = sessions[0]!;
+  const sessionId = s.lastOpts.claudeSessionId!;
+
+  // pc-rig handshake POST races us to ready.
+  const found = mgr.notifyMcpConnected(p.id as ULID, sessionId);
+  assert.equal(found, true);
+  assert.equal(s.sent.length, 0, 'warmup must not fire before ready');
+
+  // Ready: fast-path triggers warmup immediately, no kick armed.
+  s.becomeReady();
+  assert.deepEqual(s.sent, ['Reply with only the word OK.']);
+
+  await new Promise<void>((r) => setTimeout(r, 80));
+  assert.equal(s.kicks, 0, 'kick must not arm when mcp-connected was confirmed');
+
+  // Warmup turn-end → real input lands.
+  s.emitTurnEnd('OK');
+  assert.deepEqual(s.sent, ['Reply with only the word OK.', 'real input']);
+  s.emitTurnEnd('done');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.runId, runId);
+});
+
+// Section 22 — when ready fires first and mcp-connected arrives later (the
+// common case under load), the warmup is deferred until the POST lands —
+// no warmup at ready, no kick, then warmup the moment notify fires.
+test('ready then mcp-connected: warmup deferred until POST arrives, no kicks', async () => {
+  const p = createProject({
+    slug: 'arm-mcp-late',
+    name: 'ARM MCP Late',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-mcp-late', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'real input',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'mcp-late',
+    worktreeDir: tmpDataDir,
+    warmupKickIntervalMs: 25,
+    mcpHandshakeTimeoutMs: 5_000,
+  });
+  const s = sessions[0]!;
+  const sessionId = s.lastOpts.claudeSessionId!;
+
+  // Ready arrives first; warmup must NOT fire yet (waiting on handshake).
+  s.becomeReady();
+  assert.equal(s.sent.length, 0, 'warmup must defer until mcp-connected');
+  await new Promise<void>((r) => setTimeout(r, 80));
+  assert.equal(s.kicks, 0, 'no kicks during the handshake wait');
+  assert.equal(s.sent.length, 0, 'still no warmup during handshake wait');
+
+  // POST arrives → warmup fires now, no kick.
+  mgr.notifyMcpConnected(p.id as ULID, sessionId);
+  assert.deepEqual(s.sent, ['Reply with only the word OK.']);
+  await new Promise<void>((r) => setTimeout(r, 80));
+  assert.equal(s.kicks, 0, 'kick must not arm when handshake confirmed');
+
+  s.emitTurnEnd('OK');
+  assert.deepEqual(s.sent, ['Reply with only the word OK.', 'real input']);
+  s.emitTurnEnd('done');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+});
+
+// Section 22 — if mcp-connected NEVER arrives (pc-rig POST failure, stale
+// bundle, network flake), the handshake timer fires the legacy path:
+// warmup at deadline + kicks armed for the typed-text-no-Enter case.
+// Defense-in-depth — no regression from pre-Section-22 behavior.
+test('mcp-connected never arrives: handshake timer fires fallback (warmup + kick)', async () => {
+  const p = createProject({
+    slug: 'arm-mcp-timeout',
+    name: 'ARM MCP Timeout',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-mcp-timeout', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'real input',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'mcp-timeout',
+    worktreeDir: tmpDataDir,
+    warmupKickIntervalMs: 25,
+    mcpHandshakeTimeoutMs: 40, // small; we want the timeout to fire
+    spawnStuckTimeoutMs: 5_000,
+  });
+  const s = sessions[0]!;
+
+  // Ready arrives; warmup deferred waiting on handshake.
+  s.becomeReady();
+  assert.equal(s.sent.length, 0);
+
+  // Wait past the handshake timeout: warmup fires + kick arms.
+  await new Promise<void>((r) => setTimeout(r, 90));
+  assert.deepEqual(s.sent, ['Reply with only the word OK.']);
+  // Kick should have fired ≥ once by now (warmupKickIntervalMs: 25).
+  assert.ok(s.kicks >= 1, `expected ≥1 kick after fallback, got ${s.kicks}`);
+
+  // Warmup eventually completes; kick stops; real input ships.
+  s.emitTurnEnd('OK');
+  assert.deepEqual(s.sent, ['Reply with only the word OK.', 'real input']);
+  s.emitTurnEnd('done');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+});
+
+// Section 22 — notifyMcpConnected for an unknown sessionId returns false
+// and doesn't throw. apps/server's route forwards every pc-rig POST; we
+// shouldn't crash on a stale or unmatched id.
+test('notifyMcpConnected returns false for unknown sessionId (no throw)', () => {
+  const p = createProject({
+    slug: 'arm-mcp-unknown',
+    name: 'ARM MCP Unknown',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null, createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-mcp-unknown', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const found = mgr.notifyMcpConnected(p.id as ULID, 'no-such-session');
+  assert.equal(found, false);
+});
+
+// Section 22 — duplicate handshake POSTs are idempotent: a second notify
+// for the same session doesn't re-fire warmup.
+test('notifyMcpConnected is idempotent across duplicate POSTs', async () => {
+  const p = createProject({
+    slug: 'arm-mcp-dup',
+    name: 'ARM MCP Dup',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-mcp-dup', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'real input',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'mcp-dup',
+    worktreeDir: tmpDataDir,
+    mcpHandshakeTimeoutMs: 5_000,
+  });
+  const s = sessions[0]!;
+  const sessionId = s.lastOpts.claudeSessionId!;
+
+  s.becomeReady();
+  mgr.notifyMcpConnected(p.id as ULID, sessionId);
+  assert.deepEqual(s.sent, ['Reply with only the word OK.']);
+
+  // Second notify — must NOT re-fire warmup.
+  mgr.notifyMcpConnected(p.id as ULID, sessionId);
+  assert.deepEqual(
+    s.sent,
+    ['Reply with only the word OK.'],
+    'duplicate handshake POSTs must be idempotent',
+  );
+
+  s.emitTurnEnd('OK');
+  s.emitTurnEnd('done');
+  await completion;
 });
 
 // Section 20.B.1 — spawn-stuck timer must be cleared the moment a run flips

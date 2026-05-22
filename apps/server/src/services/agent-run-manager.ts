@@ -89,6 +89,14 @@ const DEFAULT_WARMUP_KICK_INTERVAL_MS = 30_000;
  *  `warmupPrompt: null` in `AgentRunManagerDeps` (tests + emergency knob). */
 const DEFAULT_WARMUP_PROMPT = 'Reply with only the word OK.';
 
+/** Section 22 — wait at most this long after PtySession `ready` for the
+ *  `mcp-connected` notification (posted by pc-rig's `oninitialized`) before
+ *  falling back to the pre-Section-22 behavior (send warmup at ready + arm
+ *  kick). 10s is well above the typical 1-3s pc-rig handshake; the fallback
+ *  is defense-in-depth in case pc-rig's POST never lands (network flake,
+ *  cold-start delay beyond budget, stale bundle, etc). */
+const DEFAULT_MCP_HANDSHAKE_TIMEOUT_MS = 10_000;
+
 /** 16b.4.5 — maximum nested `pc_invoke_agent` depth. Orchestrator dispatches
  *  at depth 1; an agent dispatched by that one runs at depth 2; etc. At depth
  *  5, further nesting is rejected with `cause: 'depth-cap'` so a runaway
@@ -201,6 +209,10 @@ export interface AgentRunSpawnInput {
   spawnStuckTimeoutMs?: number;
   /** Section 20.C — override the warmup-kick interval for this run. */
   warmupKickIntervalMs?: number;
+  /** Section 22 — override the MCP-handshake wait window. Pass 0 to skip
+   *  the wait entirely (immediate fallback to the pre-Section-22 path —
+   *  used by the existing warmup-kick test to preserve its semantics). */
+  mcpHandshakeTimeoutMs?: number;
 }
 
 export interface AgentRunSpawnResult {
@@ -259,6 +271,11 @@ export interface AgentRunManagerDeps {
    *  warmup turn is visible in the JSONL transcript and the live-
    *  transcript modal, but is otherwise transparent to callers. */
   warmupPrompt?: string | null;
+  /** Section 22 — default MCP-handshake wait window used by all spawns
+   *  unless the per-spawn `mcpHandshakeTimeoutMs` overrides it. Tests pass
+   *  small values for fast iteration; production uses
+   *  `DEFAULT_MCP_HANDSHAKE_TIMEOUT_MS`. */
+  mcpHandshakeTimeoutMs?: number;
 }
 
 interface InternalRun extends AgentRunRecord {
@@ -273,6 +290,17 @@ interface InternalRun extends AgentRunRecord {
   spawnStuckTimer: unknown;
   /** Section 20.C — periodic "kick" (bare Enter) while warmup is unanswered. */
   warmupKickTimer: unknown;
+  /** Section 22 — pc-rig's `oninitialized` callback has POSTed to
+   *  `/api/internal/mcp-handshake` for this session. Set by
+   *  `notifyMcpConnected`. Resumed sessions pre-set to true (they re-attach
+   *  to an already-bound tool registry). When true at `ready`-state time
+   *  the warmup ships immediately without arming the kick. */
+  mcpConnected: boolean;
+  /** Section 22 — armed at `ready` if `mcpConnected` hasn't fired yet.
+   *  Fires the legacy "send warmup + arm kick" fallback at
+   *  `mcpHandshakeTimeoutMs`. Cleared by either `notifyMcpConnected`
+   *  arriving or the timer itself firing. */
+  mcpHandshakeTimer: unknown;
   idleTimeoutMs: number;
   wallClockTimeoutMs: number;
   readyTimeoutMs: number;
@@ -280,6 +308,10 @@ interface InternalRun extends AgentRunRecord {
   spawnStuckTimeoutMs: number;
   /** Section 20.C — interval between warmup kicks. */
   warmupKickIntervalMs: number;
+  /** Section 22 — bound on how long after `ready` we wait for
+   *  `mcp-connected` before falling back to the pre-Section-22 send-warmup
+   *  + arm-kick path. */
+  mcpHandshakeTimeoutMs: number;
   initialInputSent: boolean;
   /** 18.B-mcp-race — true once the warmup turn has been sent. The real
    *  `initialInput` is held back until the warmup's `jsonl-turn-end` lands
@@ -339,11 +371,16 @@ export class AgentRunManager extends EventEmitter {
    *  string (including the default) enables it. Resolved once at
    *  construction so per-spawn paths don't re-check `deps`. */
   private warmupPrompt: string | null;
+  /** Section 22 — resolved default MCP-handshake wait window. Per-spawn
+   *  override via `SpawnInput.mcpHandshakeTimeoutMs`. */
+  private defaultMcpHandshakeTimeoutMs: number;
 
   constructor(private deps: AgentRunManagerDeps = {}) {
     super();
     this.warmupPrompt =
       deps.warmupPrompt === undefined ? DEFAULT_WARMUP_PROMPT : deps.warmupPrompt;
+    this.defaultMcpHandshakeTimeoutMs =
+      deps.mcpHandshakeTimeoutMs ?? DEFAULT_MCP_HANDSHAKE_TIMEOUT_MS;
   }
 
   /** Look up an active or terminal run by id. */
@@ -399,6 +436,8 @@ export class AgentRunManager extends EventEmitter {
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
         warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+        mcpHandshakeTimeoutMs:
+          input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -432,6 +471,8 @@ export class AgentRunManager extends EventEmitter {
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
         warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+        mcpHandshakeTimeoutMs:
+          input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -470,6 +511,8 @@ export class AgentRunManager extends EventEmitter {
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
         warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+        mcpHandshakeTimeoutMs:
+          input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -509,6 +552,8 @@ export class AgentRunManager extends EventEmitter {
           readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
           spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
           warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+          mcpHandshakeTimeoutMs:
+            input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
         });
         const completion = this.installCompletionPromise(rec);
         this.runs.set(runId, rec);
@@ -538,6 +583,8 @@ export class AgentRunManager extends EventEmitter {
       readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
       spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
       warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+      mcpHandshakeTimeoutMs:
+        input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
     });
     // Chain pod-cleanup + global-materialize-cleanup so both run on terminal.
     const podCleanup = podPrep?.cleanup ?? null;
@@ -634,6 +681,11 @@ export class AgentRunManager extends EventEmitter {
     // surface was bound during the prior turn. Skip warmup so we don't burn
     // an extra LLM call (and don't double-respond to the pending answer).
     rec.warmupSent = true;
+    // Section 22 — defensive: resumed sessions have a fully-bound tool
+    // registry from the prior turn, so consider MCP connected. The warmup-
+    // gate logic short-circuits on warmupSent anyway, but mcpConnected is
+    // the semantically-correct state.
+    rec.mcpConnected = true;
     this.attachToSession(rec, session);
     this.armIdleTimer(rec);
     this.emitRunChanged(rec); // paused → running transition
@@ -715,6 +767,7 @@ export class AgentRunManager extends EventEmitter {
     readyTimeoutMs: number;
     spawnStuckTimeoutMs: number;
     warmupKickIntervalMs: number;
+    mcpHandshakeTimeoutMs: number;
   }): InternalRun {
     return {
       runId: args.runId,
@@ -739,11 +792,14 @@ export class AgentRunManager extends EventEmitter {
       wallClockTimer: null,
       spawnStuckTimer: null,
       warmupKickTimer: null,
+      mcpConnected: false,
+      mcpHandshakeTimer: null,
       idleTimeoutMs: args.idleTimeoutMs,
       wallClockTimeoutMs: args.wallClockTimeoutMs,
       readyTimeoutMs: args.readyTimeoutMs,
       spawnStuckTimeoutMs: args.spawnStuckTimeoutMs,
       warmupKickIntervalMs: args.warmupKickIntervalMs,
+      mcpHandshakeTimeoutMs: args.mcpHandshakeTimeoutMs,
       initialInputSent: false,
       // 18.B-mcp-race — pre-set when warmup is disabled so the ready-state
       // handler falls through to the legacy send-initialInput path.
@@ -768,21 +824,30 @@ export class AgentRunManager extends EventEmitter {
     session.on('state', (state: SessionState) => {
       if (this.isTerminal(rec.status)) return;
       if (state === 'ready' && !rec.warmupSent && this.warmupPrompt !== null) {
-        // 18.B-mcp-race — CC's MCP child (pc-rig under `npx -y tsx ...`)
-        // hasn't finished registering tools at the welcome banner. Send a
-        // warmup turn so the second turn (the real initialInput) re-binds
-        // the model's tool surface against connected MCP servers. Status
-        // stays 'spawning' through the warmup so callers can't see a
-        // transient 'running' that's actually pre-real-prompt.
-        rec.warmupSent = true;
-        try {
-          session.send(this.warmupPrompt);
-          // 20.C — arm the recurring kick timer. If the warmup's submit
-          // gets dropped (typed-text-no-Enter symptom), bare-Enter kicks
-          // at warmupKickIntervalMs nudge CC into draining the buffer.
-          this.armWarmupKick(rec);
-        } catch (err) {
-          this.fail(rec, 'spawn-failed', `send warmup failed: ${(err as Error).message}`);
+        // Section 22 — gate warmup on pc-rig's `mcp-connected` POST. Banner-
+        // render (state === 'ready') fires BEFORE CC's MCP client finishes
+        // its handshake with the pc-rig child, and warmup-text's submit
+        // Enter intermittently gets dropped during that handshake window.
+        // The real handshake-complete signal is pc-rig's `oninitialized`,
+        // forwarded here via `notifyMcpConnected`.
+        if (rec.mcpConnected) {
+          // Fast path: handshake already arrived (POST raced us to ready).
+          this.fireWarmup(rec, { armKick: false });
+        } else if (rec.mcpHandshakeTimeoutMs === 0) {
+          // Test / emergency knob: skip the wait entirely. Falls back to
+          // pre-Section-22 behavior (send warmup + arm kick immediately).
+          this.fireWarmup(rec, { armKick: true });
+        } else {
+          // Wait for the handshake POST. If it doesn't land within the
+          // timeout window, fall back to the pre-Section-22 path
+          // (send-warmup + arm-kick). Defense-in-depth: if pc-rig's POST
+          // never arrives, we don't hang.
+          rec.mcpHandshakeTimer = this.scheduleTimeout(() => {
+            rec.mcpHandshakeTimer = null;
+            if (this.isTerminal(rec.status)) return;
+            if (rec.warmupSent) return; // notify-then-fire raced us
+            this.fireWarmup(rec, { armKick: true });
+          }, rec.mcpHandshakeTimeoutMs);
         }
       } else if (state === 'ready' && !rec.initialInputSent) {
         // Legacy path: warmup disabled (tests + emergency knob). Send the
@@ -1064,6 +1129,76 @@ export class AgentRunManager extends EventEmitter {
     }
   }
 
+  /** Section 22 — helper for the warmup-send path. Shared by the three
+   *  trigger points: (a) ready-state with mcp already connected, (b)
+   *  notifyMcpConnected arriving after ready, (c) handshake-timeout
+   *  fallback fire. `armKick: true` only on the fallback path — the
+   *  handshake-confirmed paths know CC is ready to accept input and
+   *  don't need the kick. */
+  private fireWarmup(rec: InternalRun, opts: { armKick: boolean }): void {
+    if (this.isTerminal(rec.status)) return;
+    if (rec.warmupSent) return;
+    if (!rec.session) return;
+    if (this.warmupPrompt === null) return;
+    rec.warmupSent = true;
+    this.clearMcpHandshakeTimer(rec);
+    try {
+      rec.session.send(this.warmupPrompt);
+      if (opts.armKick) {
+        this.armWarmupKick(rec);
+      }
+    } catch (err) {
+      this.fail(rec, 'spawn-failed', `send warmup failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Section 22 — schedule a one-shot timer via the deps-injected setTimeout
+   *  (tests pass a fake clock). Returns the handle so callers can stash it
+   *  on InternalRun + clear it later. */
+  private scheduleTimeout(cb: () => void, ms: number): unknown {
+    const setT = this.deps.setTimeout ?? ((c, m) => globalThis.setTimeout(c, m));
+    return setT(cb, ms);
+  }
+
+  private clearMcpHandshakeTimer(rec: InternalRun): void {
+    if (rec.mcpHandshakeTimer) {
+      const clearT =
+        this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
+      clearT(rec.mcpHandshakeTimer);
+      rec.mcpHandshakeTimer = null;
+    }
+  }
+
+  /** Section 22 — called by the apps/server `/api/internal/mcp-handshake`
+   *  route when pc-rig's `oninitialized` POSTs in. Locates the run by
+   *  `sessionId`, marks it MCP-connected, and (if the PtySession has
+   *  already hit `ready`) fires the warmup immediately without arming the
+   *  kick. Idempotent — a second POST is a no-op. Returns true if we
+   *  found a matching run, false otherwise (run-not-found is non-fatal —
+   *  the timeout fallback in attachToSession catches all cases). */
+  notifyMcpConnected(projectId: ULID, sessionId: string): boolean {
+    let target: InternalRun | null = null;
+    for (const r of this.runs.values()) {
+      if (r.sessionId !== sessionId) continue;
+      if (r.projectId !== projectId) continue;
+      if (this.isTerminal(r.status)) continue;
+      target = r;
+      break;
+    }
+    if (!target) return false;
+    if (target.mcpConnected) return true; // idempotent
+    target.mcpConnected = true;
+    this.clearMcpHandshakeTimer(target);
+    // If the session is already at 'ready', the state handler is waiting
+    // on us — fire the warmup now (no kick; handshake confirmed). If
+    // ready hasn't fired yet, the state handler will see mcpConnected=true
+    // and take the fast path when it does.
+    if (target.session && target.session.getState() === 'ready') {
+      this.fireWarmup(target, { armKick: false });
+    }
+    return true;
+  }
+
   // ── Section 18.7: cap + queue ────────────────────────────────────────
 
   /** Resolve the global cap. Test override > live DB read > 5 fallback. */
@@ -1170,6 +1305,7 @@ export class AgentRunManager extends EventEmitter {
     this.clearIdleTimer(rec);
     this.clearSpawnStuckTimer(rec);
     this.clearWarmupKick(rec);
+    this.clearMcpHandshakeTimer(rec);
     if (rec.wallClockTimer) {
       const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
       clearT(rec.wallClockTimer);
