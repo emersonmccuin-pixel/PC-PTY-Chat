@@ -2842,7 +2842,16 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
       options: row.options ?? [],
     });
   }
-  if (eventBody) {
+  // 17b.11a — agent-designer is the dedicated pod for new-agent design
+  // flows. Its questions land in the AgentDesignerSessionModal (the UI's
+  // dedicated design surface), NOT in the orchestrator chat. Suppress the
+  // orchestrator-channel push for agent-designer runs; the pending_ask DB
+  // row + the `pending-ask-changed` WS broadcast (17b.11b) drive the
+  // modal. If the user dismisses the modal mid-conversation, the row
+  // stays in pending_asks and can be answered later via the same modal
+  // (auto-reopens) or via the pending-asks list endpoint.
+  const suppressOrchestratorChannel = agentName === 'agent-designer';
+  if (eventBody && !suppressOrchestratorChannel) {
     // 18.3 — hybrid emit: inbox row + best-effort channel push + audit.
     // `ask-user` stays on the channel-only path (no inbox kind) — the
     // architecture-review lock merges it into `ask-orchestrator` in the
@@ -2883,6 +2892,17 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     kind,
     prompt: question,
     now: Date.now(),
+  });
+
+  // 17b.11b — broadcast pending-ask-changed so the AgentDesignerSessionModal
+  // (and any other UI subscribed to pending-ask state) can react without
+  // polling. Carries the full row so the modal renders the question + options
+  // immediately. `change: 'created'` distinguishes from the answered/cancelled
+  // broadcasts fired by the answer endpoint.
+  broadcastTo(projectId, {
+    type: 'pending-ask-changed',
+    change: 'created',
+    pendingAsk: row,
   });
 
   return c.json({ ok: true, pendingAskId, status: 'waiting' });
@@ -2943,6 +2963,19 @@ app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) 
       answeredBy,
       answer,
       now,
+    });
+  }
+
+  // 17b.11b — broadcast pending-ask-changed so the AgentDesignerSessionModal
+  // (and any other subscriber) clears the question + transitions the agent
+  // back to running. Only broadcast on actual landed answers; already-answered
+  // / unknown-id paths shouldn't fire spurious envelopes.
+  if (result.ok && askBefore) {
+    broadcastTo(projectId, {
+      type: 'pending-ask-changed',
+      change: 'answered',
+      pendingAskId: askId,
+      runId: askBefore.runId,
     });
   }
 

@@ -1045,6 +1045,29 @@ export const api = {
       {},
     ),
 
+  /** 17b.11 — list waiting pending-asks for a project. Feeds the
+   *  AgentDesignerSessionModal's first-render pull when it opens onto a
+   *  run that's already paused (e.g. after browser refresh while the
+   *  conversation is in-flight). */
+  listAgentPendingAsks: (projectId: ULID) =>
+    getJson<{ ok: true; pendingAsks: PendingAsk[] }>(
+      `/api/projects/${projectId}/agent-pending-asks`,
+    ).then((r) => r.pendingAsks),
+
+  /** 17b.11 — submit an answer to a paused agent. `answeredBy: 'user'` for
+   *  modal-driven answers; `'orchestrator'` for the orchestrator-proxy
+   *  path (unused by the modal but kept symmetric with the MCP tool). */
+  answerAgentPendingAsk: (
+    projectId: ULID,
+    askId: string,
+    answer: string,
+    answeredBy: 'user' | 'orchestrator' = 'user',
+  ) =>
+    postJson<{ ok: boolean; cause?: string }>(
+      `/api/projects/${projectId}/agent-pending-asks/${askId}/answer`,
+      { answer, answeredBy },
+    ),
+
   /** Section 6.6 — list run-ids the user has dismissed from the activity
    *  panel's failed-recently region. Server-scoped to this project via the
    *  workflow_runs join. */
@@ -1661,6 +1684,33 @@ export type AgentRunFailureCause =
   | 'spawn-exit'
   | 'cancelled'
   | 'unknown-agent';
+
+// 17b.11 — mirrors packages/domain/src/agent-comms.ts PendingAsk shape.
+// Kept inline so the browser bundle stays @pc/domain-free.
+export type PendingAskKind = 'ask-orchestrator' | 'ask-user' | 'approval';
+export type PendingAskStatus = 'waiting' | 'answered' | 'cancelled';
+export interface PendingAskOption {
+  value: string;
+  label: string;
+}
+export interface PendingAsk {
+  id: ULID;
+  sessionId: string;
+  agentName: string;
+  projectId: ULID;
+  runId: ULID | null;
+  parentWorkItemId: ULID | null;
+  kind: PendingAskKind;
+  question: string;
+  context: string | null;
+  options: PendingAskOption[] | null;
+  status: PendingAskStatus;
+  answer: string | null;
+  answeredBy: 'orchestrator' | 'user' | null;
+  createdAt: number;
+  answeredAt: number | null;
+  cancelledAt: number | null;
+}
 
 export interface AgentRunRecord {
   runId: ULID;
