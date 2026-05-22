@@ -407,6 +407,67 @@ test('queue-operation remove (CC ≥2.1) collapses into jsonl-queue-dequeue', ()
   ]);
 });
 
+test('attachment with queued_command surfaces as jsonl-user', () => {
+  // CC persists a processed queued command as `type: "attachment"` with
+  // `attachment.type === "queued_command"`. There is NO separate type:"user"
+  // row for queued commands — the attachment is the only carrier of the
+  // prompt body. Without surfacing it, queued messages disappear silently
+  // from the chat panel even though CC processes them. Burned 2026-05-22.
+  const f = freshFile([
+    {
+      type: 'attachment',
+      attachment: {
+        type: 'queued_command',
+        prompt: 'follow-up question while busy',
+        commandMode: 'prompt',
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, [
+    { kind: 'jsonl-user', text: 'follow-up question while busy' },
+  ]);
+});
+
+test('attachment queued_command with ContentBlockParam[] prompt extracts text', () => {
+  // When the user pastes images alongside text, CC stores prompt as a
+  // ContentBlockParam[] array — text blocks + image blocks. Concatenate
+  // the text blocks; ignore images for chat rendering (they're not
+  // bubble-renderable through this path today).
+  const f = freshFile([
+    {
+      type: 'attachment',
+      attachment: {
+        type: 'queued_command',
+        prompt: [
+          { type: 'text', text: 'check this screenshot:' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '...' } },
+        ],
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, [
+    { kind: 'jsonl-user', text: 'check this screenshot:' },
+  ]);
+});
+
+test('attachment with non-queued_command subtype is dropped silently', () => {
+  // Other attachment subtypes (deferred_tools_delta, diagnostics,
+  // task_reminder, mcp_instructions_delta, skill_listing, …) are
+  // metadata — not chat content. They must not surface as user bubbles.
+  const f = freshFile([
+    { type: 'attachment', attachment: { type: 'diagnostics', files: [] } },
+    { type: 'attachment', attachment: { type: 'task_reminder', content: [] } },
+    { type: 'attachment', attachment: { type: 'deferred_tools_delta', addedNames: [] } },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, []);
+});
+
 test('isSidechain: true short-circuits → only jsonl-sidechain event', () => {
   // Subagent JSONL lines have isSidechain: true. The tailer must NOT also
   // emit jsonl-user / jsonl-turn-end for them — the chat panel renders

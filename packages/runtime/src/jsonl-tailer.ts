@@ -179,6 +179,42 @@ export class JsonlTailer extends EventEmitter {
       return;
     }
 
+    // CC persists a processed queued command as a `type: "attachment"` row
+    // with `attachment.type === "queued_command"`. There is NO separate
+    // `type: "user"` row — the attachment is the only place the prompt body
+    // lives in JSONL. Without surfacing it, the user types a message while
+    // CC is busy, the queue chip pops on remove, but the message itself
+    // never appears in chat. Synthesize a `jsonl-user` envelope from the
+    // attachment's `prompt` field so the chat renders the queued message
+    // as a fresh user bubble. (attachments.ts:1046 getQueuedCommandAttachments
+    // in CC source confirms the shape.)
+    if (type === 'attachment') {
+      const a = entry.attachment as Record<string, unknown> | undefined;
+      if (a && a.type === 'queued_command') {
+        const prompt = a.prompt;
+        let text = '';
+        if (typeof prompt === 'string') {
+          text = prompt;
+        } else if (Array.isArray(prompt)) {
+          // ContentBlockParam[] shape: text + image blocks. Collect text parts.
+          for (const block of prompt) {
+            if (
+              block &&
+              typeof block === 'object' &&
+              (block as { type?: unknown }).type === 'text' &&
+              typeof (block as { text?: unknown }).text === 'string'
+            ) {
+              text += (block as { text: string }).text;
+            }
+          }
+        }
+        if (text) {
+          this.emit('event', { kind: 'jsonl-user', text } satisfies JsonlEvent);
+        }
+      }
+      return;
+    }
+
     if (type === 'user') {
       const message = entry.message as Record<string, unknown> | undefined;
       if (!message) return;
