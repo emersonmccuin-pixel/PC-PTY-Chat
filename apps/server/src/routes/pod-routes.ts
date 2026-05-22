@@ -66,6 +66,7 @@ export const STOCK_POD_NAMES = new Set([
   'reviewer',
   'planner',
   'extractor',
+  'agent-designer',
 ]);
 
 export type PodMutationKind = 'created' | 'updated' | 'deleted';

@@ -33,7 +33,7 @@ after(() => {
   rmSync(tmpDataDir, { recursive: true, force: true });
 });
 
-test('first call on empty DB inserts all 5 stock pod rows', () => {
+test('first call on empty DB inserts all 6 stock pod rows', () => {
   for (const name of STOCK_POD_NAMES) {
     assert.equal(
       getAgentByName({ name, scope: 'global' }),
@@ -43,8 +43,8 @@ test('first call on empty DB inserts all 5 stock pod rows', () => {
   }
 
   const result = seedStockPods();
-  assert.equal(result.insertedCount, 5);
-  assert.equal(result.entries.length, 5);
+  assert.equal(result.insertedCount, STOCK_POD_NAMES.length);
+  assert.equal(result.entries.length, STOCK_POD_NAMES.length);
   for (const entry of result.entries) {
     assert.equal(entry.action, 'inserted', `${entry.name} should be inserted on fresh DB`);
     assert.notEqual(entry.agentId, '');
@@ -76,18 +76,19 @@ test('first call on empty DB inserts all 5 stock pod rows', () => {
   }
 });
 
-test('second call is a no-op — 0 inserts, 5 rows total, no extra audit rows', () => {
+test('second call is a no-op — 0 inserts, full roster present, no extra audit rows', () => {
+  const expected = STOCK_POD_NAMES.length;
   const rowsBefore = listAgents({ scope: 'global' });
   const stockRowsBefore = rowsBefore.filter((r) => STOCK_POD_NAMES.includes(r.name));
   assert.equal(
     stockRowsBefore.length,
-    5,
-    'previous test should have left exactly 5 stock rows in place',
+    expected,
+    `previous test should have left exactly ${expected} stock rows in place`,
   );
 
   const result = seedStockPods();
   assert.equal(result.insertedCount, 0);
-  assert.equal(result.entries.length, 5);
+  assert.equal(result.entries.length, expected);
   for (const entry of result.entries) {
     assert.equal(entry.action, 'unchanged', `${entry.name} should be unchanged on second call`);
   }
@@ -95,7 +96,7 @@ test('second call is a no-op — 0 inserts, 5 rows total, no extra audit rows', 
   // No new rows.
   const rowsAfter = listAgents({ scope: 'global' });
   const stockRowsAfter = rowsAfter.filter((r) => STOCK_POD_NAMES.includes(r.name));
-  assert.equal(stockRowsAfter.length, 5, 'still exactly 5 stock rows after no-op call');
+  assert.equal(stockRowsAfter.length, expected, `still exactly ${expected} stock rows after no-op call`);
 
   // No extra audit rows on any pod.
   for (const row of stockRowsAfter) {
