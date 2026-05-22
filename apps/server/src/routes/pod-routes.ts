@@ -456,6 +456,20 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     return c.json({ ok: true, knowledge: row }, 201);
   });
 
+  /** Read a single knowledge doc (17b.4). Worker agents call this at runtime
+   *  to pull reference material; the orchestrator uses it to show knowledge
+   *  content inline ("what does cold-emailer know about pricing?"). */
+  app.get('/api/agents/pods/:id/knowledge/:knowledgeId', (c) => {
+    const id = c.req.param('id') as ULID;
+    const knowledgeId = c.req.param('knowledgeId') as ULID;
+    if (!getAgentById(id)) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
+    const row = getKnowledge(knowledgeId);
+    if (!row || row.agentId !== id) {
+      return c.json({ ok: false, error: `unknown knowledge: ${knowledgeId}` }, 404);
+    }
+    return c.json({ ok: true, knowledge: row });
+  });
+
   app.patch('/api/agents/pods/:id/knowledge/:knowledgeId', async (c) => {
     const id = c.req.param('id') as ULID;
     const knowledgeId = c.req.param('knowledgeId') as ULID;

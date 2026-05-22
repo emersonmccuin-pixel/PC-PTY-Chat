@@ -287,6 +287,71 @@ const TOOLS = [
     },
   },
   {
+    name: 'pc_create_knowledge',
+    description:
+      "Attach a knowledge document to an agent (reference material the agent can read at runtime via pc_knowledge_read). Low-friction add path: paste the content, omit the docName and we'll auto-derive from the first markdown heading or first non-empty line. Use this when the user says 'teach <agent> about <topic>: …'. Accepts either { agentId } or { agentName }. Audits as actor='orchestrator'. Returns the new knowledge row including its id.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        content: { type: 'string', description: 'document body (markdown / plain text)' },
+        docName: {
+          type: 'string',
+          description: 'optional doc name — auto-derived from H1 / first line if omitted',
+        },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'pc_update_knowledge',
+    description:
+      "Wholesale-replace a knowledge document's content (and optionally its name). The prior version is preserved in the audit log for revert. Use for 'the pricing tiers changed — update <agent>'s pricing doc: …'. Audits as actor='orchestrator'. Accepts either { agentId } or { agentName } plus { knowledgeId }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        knowledgeId: { type: 'string', description: 'knowledge doc ULID id' },
+        content: { type: 'string', description: 'new document body' },
+        docName: { type: 'string', description: 'optional rename' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['knowledgeId'],
+    },
+  },
+  {
+    name: 'pc_delete_knowledge',
+    description:
+      "Remove a knowledge document from an agent. Audits as actor='orchestrator'. Accepts either { agentId } or { agentName } plus { knowledgeId }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        knowledgeId: { type: 'string', description: 'knowledge doc ULID id' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['knowledgeId'],
+    },
+  },
+  {
+    name: 'pc_knowledge_read',
+    description:
+      "Read a single knowledge document's full content by id. Worker agents call this at runtime to pull reference material (the agent's spawn-time prompt lists available docs + their ids). The orchestrator uses it to surface knowledge content inline ('what does <agent> know about <topic>?'). Accepts either { agentId } or { agentName } plus { knowledgeId }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'pod ULID id (mutually exclusive with agentName)' },
+        agentName: { type: 'string', description: 'pod name (looked up if agentId absent)' },
+        knowledgeId: { type: 'string', description: 'knowledge doc ULID id' },
+      },
+      required: ['knowledgeId'],
+    },
+  },
+  {
     name: 'pc_get_work_item',
     description:
       'Fetch the full work item by id — title, body, fields, stage, status, parent. Use this when an agent needs to read the work item it is operating on without filesystem digging. Returns { ok: true, workItem } or { ok: false, error } for unknown / archived ids.',
@@ -665,6 +730,43 @@ async function patchServer(
     req.write(payload);
     req.end();
   });
+}
+
+/** Knowledge / secret / mcp-server tools accept { agentId } / { agentName }
+ *  while agent tools use { id } / { name }. Adapt the former to the shape
+ *  resolvePodId expects. */
+function agentArgs(args: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: args.agentId,
+    name: args.agentName,
+  };
+}
+
+/** Auto-derive a knowledge-doc name from the content body. Priority: first
+ *  H1 (`# Heading`) → first non-empty line → fallback to a timestamp slug.
+ *  Whitespace trimmed; capped at 64 chars; kebab-cased. */
+function deriveKnowledgeName(content: string): string {
+  const lines = content.split(/\r?\n/);
+  let candidate = '';
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) {
+      candidate = line.replace(/^#+\s*/, '').trim();
+    } else {
+      candidate = line;
+    }
+    if (candidate) break;
+  }
+  if (!candidate) {
+    return `knowledge-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  }
+  const slug = candidate
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug || `knowledge-${Date.now()}`;
 }
 
 /** Resolve a pod by either { id } or { name }. Name lookup hits the global
@@ -1298,6 +1400,200 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_delete_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_knowledge': {
+      const content = typeof args.content === 'string' ? args.content : '';
+      if (typeof args.content !== 'string') {
+        return {
+          content: [{ type: 'text', text: 'pc_create_knowledge: content required (string)' }],
+          isError: true,
+        };
+      }
+      const explicitName =
+        typeof args.docName === 'string' && args.docName.trim().length > 0
+          ? args.docName.trim()
+          : null;
+      const name = explicitName ?? deriveKnowledgeName(content);
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_create_knowledge: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          name,
+          content,
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-create-knowledge',
+        };
+        const res = await postServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/knowledge`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_create_knowledge failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_create_knowledge failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_update_knowledge': {
+      const knowledgeId = typeof args.knowledgeId === 'string' ? args.knowledgeId.trim() : '';
+      if (!knowledgeId) {
+        return {
+          content: [{ type: 'text', text: 'pc_update_knowledge: knowledgeId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_update_knowledge: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-edit-knowledge',
+        };
+        if (typeof args.content === 'string') payload.content = args.content;
+        if (typeof args.docName === 'string') payload.name = args.docName.trim();
+        const fieldKeys = Object.keys(payload).filter(
+          (k) => k !== 'actor' && k !== 'reason',
+        );
+        if (fieldKeys.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'pc_update_knowledge: at least one of { content, docName } required',
+              },
+            ],
+            isError: true,
+          };
+        }
+        const res = await patchServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/knowledge/${encodeURIComponent(knowledgeId)}`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_update_knowledge failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_update_knowledge failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_delete_knowledge': {
+      const knowledgeId = typeof args.knowledgeId === 'string' ? args.knowledgeId.trim() : '';
+      if (!knowledgeId) {
+        return {
+          content: [{ type: 'text', text: 'pc_delete_knowledge: knowledgeId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_delete_knowledge: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const reason =
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-delete-knowledge';
+        const qs = `actor=orchestrator&reason=${encodeURIComponent(reason)}`;
+        const res = await deleteServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/knowledge/${encodeURIComponent(knowledgeId)}?${qs}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_delete_knowledge failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_delete_knowledge failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_knowledge_read': {
+      const knowledgeId = typeof args.knowledgeId === 'string' ? args.knowledgeId.trim() : '';
+      if (!knowledgeId) {
+        return {
+          content: [{ type: 'text', text: 'pc_knowledge_read: knowledgeId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(agentArgs(args));
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_knowledge_read: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const res = await getServer(
+          `/api/agents/pods/${encodeURIComponent(id.id)}/knowledge/${encodeURIComponent(knowledgeId)}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_knowledge_read failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_knowledge_read failed: ${(err as Error).message}` },
+          ],
           isError: true,
         };
       }
