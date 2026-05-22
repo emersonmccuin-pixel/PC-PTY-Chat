@@ -16,7 +16,7 @@ import { join } from 'node:path';
 const tmpDataDir = mkdtempSync(join(tmpdir(), 'pc-pod-routes-db-'));
 process.env.PC_DATA_DIR = tmpDataDir;
 
-const { closeDb, listAgentAudit, runMigrations } = await import('@pc/db');
+const { closeDb, listAgentAudit, runMigrations, softDeleteAgent } = await import('@pc/db');
 const { Hono } = await import('hono');
 const { registerPodRoutes } = await import('../src/routes/pod-routes.ts');
 
@@ -33,7 +33,12 @@ interface ChangedHookCall {
   change: string;
 }
 
-function freshApp() {
+interface ResetStub {
+  calls: { name: string; reason: string }[];
+  result: { agent: { id: string; name: string; prompt: string } | null; resetFields: string[] };
+}
+
+function freshApp(opts?: { resetStub?: ResetStub }) {
   const broadcasts: BroadcastedEnvelope[] = [];
   const changedHookCalls: ChangedHookCall[] = [];
   const app = new Hono();
@@ -44,6 +49,12 @@ function freshApp() {
     onPodChanged: (name, change) => {
       changedHookCalls.push({ name, change });
     },
+    resetStockPodToDefault: opts?.resetStub
+      ? (name, reason) => {
+          opts.resetStub!.calls.push({ name, reason });
+          return opts.resetStub!.result as never;
+        }
+      : undefined,
   });
   return { app, broadcasts, changedHookCalls };
 }
@@ -337,6 +348,72 @@ test('POST /api/agents/pods/:id/clone-to-project rejects missing projectId', asy
     {},
   );
   assert.equal(status, 400);
+});
+
+test('POST /api/agents/pods/:id/reset-to-default rejects non-stock pods', async () => {
+  const resetStub: ResetStub = {
+    calls: [],
+    result: { agent: { id: 'x', name: 'x', prompt: 'x' }, resetFields: [] },
+  };
+  const { app } = freshApp({ resetStub });
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'not-stock-pod',
+    prompt: 'p',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/reset-to-default`,
+    {},
+  );
+  assert.equal(status, 400);
+  assert.equal(data.ok, false);
+  assert.equal(resetStub.calls.length, 0);
+});
+
+test('POST /api/agents/pods/:id/reset-to-default invokes the reset helper for stock pods + broadcasts', async () => {
+  // Use `agent-designer` — the one stock name the DELETE-refuses-stock-names
+  // test (line ~567) skips, so we can seed a real DB row here without
+  // tripping its UNIQUE-on-name loop.
+  const resetStub: ResetStub = {
+    calls: [],
+    result: {
+      agent: { id: 'ad-id', name: 'agent-designer', prompt: 'reset-prompt' },
+      resetFields: ['prompt', 'tools'],
+    },
+  };
+  const { app, broadcasts, changedHookCalls } = freshApp({ resetStub });
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'agent-designer',
+    prompt: 'live-edited',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  broadcasts.length = 0;
+  changedHookCalls.length = 0;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/reset-to-default`,
+    { reason: 'test-reset' },
+  );
+  assert.equal(status, 200);
+  assert.equal(data.ok, true);
+  assert.deepEqual(data.resetFields, ['prompt', 'tools']);
+  assert.equal(resetStub.calls.length, 1);
+  assert.equal(resetStub.calls[0]!.name, 'agent-designer');
+  assert.equal(resetStub.calls[0]!.reason, 'test-reset');
+  // Broadcast fired because resetFields was non-empty. The no-broadcast
+  // branch (resetFields=[]) is verified by inspection of the route — adding
+  // a second test would re-seed agent-designer and collide on UNIQUE.
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0]!.change, 'updated');
+  assert.equal(changedHookCalls.length, 1);
+  // Teardown — soft-delete via the repo directly to free the agent-designer
+  // name. The DELETE route is stock-name-gated (409) so the route path can't
+  // do this cleanup. Other tests in this file mint agent-designer under the
+  // assumption it's free.
+  softDeleteAgent(id as never, { actor: 'user', reason: 'test-cleanup' });
 });
 
 test('POST /api/agents/pods rejects missing name', async () => {

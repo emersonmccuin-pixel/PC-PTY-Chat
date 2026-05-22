@@ -88,6 +88,7 @@ import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
+import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
@@ -1099,6 +1100,10 @@ app.delete('/api/projects/:projectId/agents/:name', (c) => {
 // their work, and the next dispatch re-reads the DB anyway.
 registerPodRoutes(app, {
   broadcastAll,
+  resetStockPodToDefault: (name, reason) => {
+    const r = resetStockPodToDefault(name, reason);
+    return { agent: r.agent, resetFields: r.resetFields };
+  },
   onPodChanged: (podName) => {
     if (podName !== 'orchestrator') return;
     for (const runtime of projectRegistry.list()) {

@@ -84,6 +84,14 @@ export interface PodRoutesDeps {
    *  pod mutation lands its broadcast. Receives the pod's name + change
    *  kind so the caller can decide whether to kill+respawn anything. */
   onPodChanged?: (podName: string, change: PodMutationKind) => void;
+  /** Reset a stock pod's scalar fields to its seeded canonical content.
+   *  Injected so tests can stub it without dragging the seed modules + their
+   *  large prompt-text imports into the test bundle. Production wires this
+   *  to `resetStockPodToDefault` from services/stock-pod-reset.ts. */
+  resetStockPodToDefault?: (
+    name: string,
+    reason: string,
+  ) => { agent: PodAgentRow | null; resetFields: string[] };
 }
 
 /** Public projection of a secret — `valuePlaintext` is stripped. Never sent
@@ -452,6 +460,56 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
       { ok: true, pod: result.agent, copied: result.copied },
       201,
     );
+  });
+
+  /** Reset a stock pod's scalar fields to its canonical seed content. Only
+   *  the seven stock specialists are valid targets; any other pod returns
+   *  400. Knowledge / secrets / mcp servers are untouched.
+   *  Body: `{ actor?, reason? }` — actor defaults to 'user', reason defaults
+   *  to 'ui-reset-to-default'. */
+  app.post('/api/agents/pods/:id/reset-to-default', async (c) => {
+    const id = c.req.param('id') as ULID;
+    const existing = getAgentById(id);
+    if (!existing) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
+    if (!STOCK_POD_NAMES.has(existing.name)) {
+      return c.json(
+        { ok: false, error: 'reset-to-default is only available for stock pods' },
+        400,
+      );
+    }
+    if (!deps.resetStockPodToDefault) {
+      return c.json(
+        { ok: false, error: 'reset-to-default not wired on this server' },
+        500,
+      );
+    }
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim()
+        ? body.reason.trim()
+        : 'ui-reset-to-default';
+    const result = deps.resetStockPodToDefault(existing.name, reason);
+    if (!result.agent) {
+      return c.json({ ok: false, error: 'pod not found in canonical content' }, 500);
+    }
+    if (result.resetFields.length > 0) {
+      deps.broadcastAll({
+        type: 'pod-changed',
+        change: 'updated',
+        pod: result.agent,
+      });
+      deps.onPodChanged?.(result.agent.name, 'updated');
+    }
+    return c.json({
+      ok: true,
+      pod: result.agent,
+      resetFields: result.resetFields,
+    });
   });
 
   /** Patch a pod's scalar fields. Multi-field updates audit under a shared

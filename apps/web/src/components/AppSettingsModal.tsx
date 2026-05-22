@@ -17,10 +17,22 @@ import {
   FONT_SCALE_MIN,
   FONT_SCALE_STEP,
   type GlobalSettings,
+  type Pod,
   type Project,
   type ULID,
 } from '@/api/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
+import { PodDetailModal } from './agents/PodDetailModal';
+
+const STOCK_POD_NAMES = new Set([
+  'orchestrator',
+  'researcher',
+  'writer',
+  'reviewer',
+  'planner',
+  'extractor',
+  'agent-designer',
+]);
 
 interface AppSettingsModalProps {
   settings: GlobalSettings;
@@ -34,6 +46,11 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [specialistsOpen, setSpecialistsOpen] = useState(false);
+  const [stockPods, setStockPods] = useState<Pod[] | null>(null);
+  const [editPodId, setEditPodId] = useState<ULID | null>(null);
+  const [resetBusyId, setResetBusyId] = useState<ULID | null>(null);
+  const [resetErr, setResetErr] = useState<string | null>(null);
   const initialDataDir = useRef(settings.dataDir);
   const initialFontScale = useRef(settings.fontScale);
 
@@ -66,6 +83,54 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
       cancelled = true;
     };
   }, []);
+
+  // Load stock pods when the Specialists section is first expanded. They're
+  // a global-scope subset; filter the global pool to stock names.
+  useEffect(() => {
+    if (!specialistsOpen) return;
+    if (stockPods !== null) return; // already loaded
+    let cancelled = false;
+    void api
+      .listPods()
+      .then((pods) => {
+        if (cancelled) return;
+        setStockPods(pods.filter((p) => p.scope === 'global' && STOCK_POD_NAMES.has(p.name)));
+      })
+      .catch((e) => {
+        if (!cancelled) setResetErr((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [specialistsOpen, stockPods]);
+
+  function refetchStockPods() {
+    void api
+      .listPods()
+      .then((pods) => {
+        setStockPods(pods.filter((p) => p.scope === 'global' && STOCK_POD_NAMES.has(p.name)));
+      })
+      .catch((e) => setResetErr((e as Error).message));
+  }
+
+  async function resetPod(pod: Pod) {
+    const ok = window.confirm(
+      `Reset "${pod.name}" to the seeded default?\n\nThe prompt, tools, model, effort, max-turns, and output destination revert. Knowledge, secrets, and MCP servers are untouched. The change is audited.`,
+    );
+    if (!ok) return;
+    setResetErr(null);
+    setResetBusyId(pod.id);
+    try {
+      await api.resetStockPodToDefault(pod.id);
+      refetchStockPods();
+    } catch (e) {
+      setResetErr((e as Error).message);
+    } finally {
+      setResetBusyId(null);
+    }
+  }
+
+  const editPod = stockPods?.find((p) => p.id === editPodId) ?? null;
 
   const dataDirDirty = draft.dataDir !== initialDataDir.current;
 
@@ -219,6 +284,79 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
 
             {err && <div className="text-xs text-destructive">{err}</div>}
 
+            <section className="flex flex-col gap-2 border-t border-border pt-3">
+              <button
+                type="button"
+                onClick={() => setSpecialistsOpen((v) => !v)}
+                className="flex items-center justify-between gap-3 text-left text-sm uppercase tracking-wider text-muted-foreground hover:opacity-80"
+              >
+                <span className="flex items-center gap-2">
+                  <span aria-hidden className="inline-block w-3 text-[10px]">
+                    {specialistsOpen ? '▼' : '▶'}
+                  </span>
+                  <span>Specialists</span>
+                  <span className="bg-destructive/20 px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-destructive">
+                    danger zone
+                  </span>
+                </span>
+              </button>
+              {specialistsOpen && (
+                <div className="flex flex-col gap-3">
+                  <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    Editing stock specialists changes how every project's agents behave. Workflows that depend on the seeded prompt or tools may break. Reset to default restores the seeded content; knowledge, secrets, and MCP servers are untouched.
+                  </div>
+                  {resetErr && (
+                    <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                      {resetErr}
+                    </div>
+                  )}
+                  {stockPods === null ? (
+                    <div className="text-xs text-muted-foreground">Loading specialists…</div>
+                  ) : stockPods.length === 0 ? (
+                    <div className="text-xs text-muted-foreground">
+                      No stock specialists found. They seed at server boot.
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {stockPods.map((pod) => (
+                        <div
+                          key={pod.id}
+                          className="grid grid-cols-[1fr_auto] items-center gap-3 border border-border bg-background px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-foreground">{pod.name}</div>
+                            {pod.description && (
+                              <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                                {pod.description}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEditPodId(pod.id)}
+                              className="border border-border bg-card px-2 py-1 text-xs hover:bg-muted"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void resetPod(pod)}
+                              disabled={resetBusyId !== null}
+                              className="border border-destructive/60 bg-card px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              title="Restore the seeded canonical content."
+                            >
+                              {resetBusyId === pod.id ? 'Resetting…' : 'Reset to default'}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
@@ -245,6 +383,21 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
           onSelect={(p) => {
             setDraft({ ...draft, projectsFolder: p });
             setPickerOpen(false);
+          }}
+        />
+      )}
+      {editPod && (
+        <PodDetailModal
+          pod={editPod}
+          onClose={() => {
+            setEditPodId(null);
+            refetchStockPods();
+          }}
+          onDeleted={() => {
+            // Stock pods can't be deleted server-side; this branch is
+            // structurally unreachable. Refetch defensively if it does fire.
+            setEditPodId(null);
+            refetchStockPods();
           }}
         />
       )}

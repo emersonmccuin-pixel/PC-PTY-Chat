@@ -1204,6 +1204,14 @@ export const api = {
       name ? { projectId, name } : { projectId },
     ).then((r) => ({ pod: r.pod, copied: r.copied })),
 
+  /** Reset a stock pod's scalar fields to its seeded canonical content.
+   *  Returns the post-reset row + names of fields that diverged. */
+  resetStockPodToDefault: (podId: ULID) =>
+    postJson<{ ok: true; pod: Pod; resetFields: string[] }>(
+      `/api/agents/pods/${podId}/reset-to-default`,
+      {},
+    ).then((r) => ({ pod: r.pod, resetFields: r.resetFields })),
+
   patchPod: (podId: ULID, patch: PatchPodInput) =>
     postJsonMethod<{ ok: true; pod: Pod }>(
       `/api/agents/pods/${podId}`,
