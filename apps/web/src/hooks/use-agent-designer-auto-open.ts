@@ -1,19 +1,19 @@
 // 17b.11c — Shell-level effect that drives the AgentDesignerSessionModal
-// open/close. Watches the WS event stream for `agent-run-changed` envelopes
-// where record.agentName === 'agent-designer':
+// OPEN behavior. Watches the WS event stream for `agent-run-changed`
+// envelopes where record.agentName === 'agent-designer':
 //
 //   - When a non-terminal status arrives for a NEW runId, set the store.
 //     (Open the modal.)
-//   - When a terminal status (completed/failed/cancelled) arrives for the
-//     currently-open runId, clear the store. (Close the modal — and surface
-//     a one-line summary in chat is the orchestrator's job, not the
-//     modal's.)
+//   - On terminal status (completed/failed/cancelled): the hook does NOT
+//     auto-close. The user reads the final state and closes manually via
+//     the Close button. Auto-close caused confusion when an agent-designer
+//     dispatch terminated without ever pausing (e.g. agent forgot to call
+//     pc_ask_user) — the modal popped + immediately vanished, leaving no
+//     trace. Letting the user dismiss explicitly is the safer default.
 //
 // Resilient to multiple agent-designer runs across one session — only the
 // latest live one is shown. If two are running concurrently (rare),
 // preferring the latest means the user always sees the freshest dispatch.
-// Manual close (clear) is also fine — the run keeps going, the modal just
-// stays closed until the next dispatch.
 
 import { useEffect, useRef } from 'react';
 
@@ -40,7 +40,6 @@ export function useAgentDesignerAutoOpen(events: WsEnvelope[]): void {
   const lastProcessedRef = useRef(0);
   const runId = useAgentDesignerSession((s) => s.runId);
   const setRunId = useAgentDesignerSession((s) => s.setRunId);
-  const clear = useAgentDesignerSession((s) => s.clear);
 
   useEffect(() => {
     const start = events.length >= lastProcessedRef.current ? lastProcessedRef.current : 0;
@@ -53,10 +52,8 @@ export function useAgentDesignerAutoOpen(events: WsEnvelope[]): void {
       if (!rec || rec.agentName !== 'agent-designer') continue;
 
       if (TERMINAL.has(rec.status)) {
-        // Close the modal only if it's attached to THIS run. Don't clobber a
-        // newer dispatch's modal because an older terminal envelope arrives
-        // out of order (rare but theoretically possible).
-        if (runId === rec.runId) clear();
+        // Do NOT auto-close — user closes manually after reading the final
+        // state. See header comment for rationale.
         continue;
       }
 

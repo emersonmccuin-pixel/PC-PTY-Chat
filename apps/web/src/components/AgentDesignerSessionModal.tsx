@@ -98,17 +98,26 @@ function Modal({
     return null;
   }, [events, runId]);
 
-  // Bubbles from the JSONL stream — user + assistant turns only.
+  // Bubbles from the JSONL stream — user + assistant turns only. Drops the
+  // server-side warmup turn pair (spawn-time MCP-race fix from Section 20.C):
+  //   user:      "Reply with only the word OK."
+  //   assistant: "OK" (or similar short ack)
+  // The warmup is internal plumbing; users shouldn't see it.
   const bubbles = useMemo<Bubble[]>(() => {
     const out: Bubble[] = [];
     let userIdx = 0;
     let assistantIdx = 0;
+    let pendingWarmupSkip = false;
     for (const env of events) {
       if (!env || env.type !== 'agent-jsonl-event') continue;
       const j = env as AgentJsonlEnvelope;
       if (j.runId !== runId) continue;
       const ev = j.event;
       if (ev.kind === 'jsonl-user' && ev.text && ev.text.trim()) {
+        if (isWarmupUserText(ev.text)) {
+          pendingWarmupSkip = true; // skip this user bubble AND the next assistant
+          continue;
+        }
         out.push({ kind: 'user', text: ev.text, key: `u-${userIdx++}` });
       } else if (
         ev.kind === 'jsonl-turn-end' &&
@@ -119,6 +128,10 @@ function Modal({
           ev.stopReason === 'end_turn' ||
           ev.stopReason === 'max_tokens')
       ) {
+        if (pendingWarmupSkip) {
+          pendingWarmupSkip = false;
+          continue;
+        }
         out.push({ kind: 'assistant', text: ev.text, key: `a-${assistantIdx++}` });
       }
     }
@@ -289,6 +302,17 @@ function Modal({
       </div>
     </div>
   );
+}
+
+/** Match the warmup turn's user prompt (apps/server/src/services/agent-run-
+ *  manager.ts:DEFAULT_WARMUP_PROMPT). If the warmup prompt ever changes,
+ *  update this matcher too. We match loosely (trim + lowercase contains) so
+ *  minor whitespace drift doesn't unmask the warmup. */
+function isWarmupUserText(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  return trimmed === 'reply with only the word ok.' ||
+    trimmed === 'reply with only the word ok' ||
+    trimmed.startsWith('reply with only the word ok');
 }
 
 function BubbleRow({ bubble }: { bubble: Bubble }) {

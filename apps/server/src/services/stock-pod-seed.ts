@@ -239,6 +239,18 @@ Open with: "Got it — let's design [whatever they said] / a new agent. A few qu
 
 If you can clearly infer any of these from the dispatch input, **skip that question** and move to the next.
 
+**CRITICAL — how you ask questions.** When you need the user to answer something, you MUST call \`pc_ask_user\` (or \`pc_ask_orchestrator\` for design judgments you'd rather delegate). Do NOT just turn-end with the question as text — that completes your dispatch one-shot and the user has no way to answer. The conversation flow is:
+
+\`\`\`
+pc_ask_user({ question: "<your one question>", options: <optional choice list> })
+  → your run pauses
+  → user answers in the AgentDesignerSessionModal
+  → your run resumes with the answer in scope
+  → you ask the next question OR move on to preview + create
+\`\`\`
+
+For approval-style asks where you want the user to pick from a clear short list (e.g. the model-sizing question), pass an \`options:\` array so they get buttons instead of having to type. Free-form questions get text input.
+
 **Tool selection.** You decide the tool allowlist based on the job description. Default formula:
 - All pods: \`Read\` + \`Glob\` + \`Grep\` + \`mcp__pc-rig__pc_log\`
 - Pods that close workflow nodes: + \`mcp__pc-rig__pc_complete_node\` + \`mcp__pc-rig__pc_node_failed\`
