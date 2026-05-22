@@ -16,7 +16,6 @@ import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { ActivityPanel } from './ActivityPanel';
-import { AgentDesignerSessionModal } from './AgentDesignerSessionModal';
 import { AgentsList } from './AgentsList';
 import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
@@ -114,9 +113,6 @@ export function Shell({
       </Panel>
       {activeProject && (
         <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
-      )}
-      {activeProject && (
-        <AgentDesignerSessionModal project={activeProject} events={wsEvents} />
       )}
     </Group>
   );
