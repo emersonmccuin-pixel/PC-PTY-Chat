@@ -332,6 +332,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: "Inspect a pod's audit log (who changed what, when).",
     source: 'pc-rig',
   },
+  {
+    slug: 'mcp__pc-rig__pc_open_agent_designer',
+    label: 'Open the agent-designer modal',
+    description:
+      "Pop the AgentDesignerSessionModal for a fresh-design conversation.",
+    source: 'pc-rig',
+  },
 ];
 
 const BY_SLUG = new Map(TOOL_CATALOG.map((e) => [e.slug, e]));

@@ -1341,6 +1341,87 @@ app.delete('/api/projects/:projectId/agent-creator', (c) => {
   return c.json({ ok: true });
 });
 
+// ── Agent-designer transient session (17b.12) ─────────────────────────────
+//
+// Mirror of the agent-creator wiring above, but spawns CC with
+// `--agent agent-designer` (replaces CC's default system prompt with the
+// pod's content) + the materialised pod mcp.json. Free-form chat
+// conversation for designing a new agent.
+//
+// WS envelopes (distinct from agent-creator / workflow-creator streams):
+//   { type: 'agent-designer-state', state }
+//   { type: 'agent-designer-event', event }       — legacy hook events
+//   { type: 'agent-designer-jsonl', event }       — JSONL tailer events
+//   { type: 'agent-designer-exit', code, signal }
+//
+// Lifetime = modal-open. Closes implicitly when pc_create_agent fires
+// (project-agents-changed → modal handles cleanup) OR explicitly via the
+// DELETE route.
+
+function attachAgentDesignerHandlers(
+  projectId: ULID,
+  session: ReturnType<ProjectRuntime['startAgentDesigner']>,
+): void {
+  const flag = session as unknown as { __pcAgentDesignerAttached?: boolean };
+  if (flag.__pcAgentDesignerAttached) return;
+  session.on('state', (state: string) =>
+    broadcastTo(projectId, { type: 'agent-designer-state', state }),
+  );
+  session.on('event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'agent-designer-event', event }),
+  );
+  session.on('jsonl-event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'agent-designer-jsonl', event }),
+  );
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'agent-designer-exit', code, signal });
+  });
+  flag.__pcAgentDesignerAttached = true;
+}
+
+app.post('/api/projects/:projectId/agent-designer/start', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    const session = runtime.startAgentDesigner();
+    attachAgentDesignerHandlers(id, session);
+    return c.json({ ok: true, state: session.getState() });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+app.post('/api/projects/:projectId/agent-designer/send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.agentDesignerPty();
+  if (!session) return c.json({ ok: false, error: 'no agent-designer session' }, 409);
+  const body = await c.req.json<{ text?: string }>();
+  if (typeof body.text !== 'string' || body.text === '') {
+    return c.json({ ok: false, error: 'text required' }, 400);
+  }
+  session.send(body.text);
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/agent-designer/interrupt', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.agentDesignerPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/projects/:projectId/agent-designer', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.endAgentDesigner();
+  return c.json({ ok: true });
+});
+
 // ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────────
 //
 // Mirror of the agent-creator wiring above. One-off PtySession per project
@@ -2842,16 +2923,7 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
       options: row.options ?? [],
     });
   }
-  // 17b.11a — agent-designer is the dedicated pod for new-agent design
-  // flows. Its questions land in the AgentDesignerSessionModal (the UI's
-  // dedicated design surface), NOT in the orchestrator chat. Suppress the
-  // orchestrator-channel push for agent-designer runs; the pending_ask DB
-  // row + the `pending-ask-changed` WS broadcast (17b.11b) drive the
-  // modal. If the user dismisses the modal mid-conversation, the row
-  // stays in pending_asks and can be answered later via the same modal
-  // (auto-reopens) or via the pending-asks list endpoint.
-  const suppressOrchestratorChannel = agentName === 'agent-designer';
-  if (eventBody && !suppressOrchestratorChannel) {
+  if (eventBody) {
     // 18.3 — hybrid emit: inbox row + best-effort channel push + audit.
     // `ask-user` stays on the channel-only path (no inbox kind) — the
     // architecture-review lock merges it into `ask-orchestrator` in the
@@ -2892,17 +2964,6 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     kind,
     prompt: question,
     now: Date.now(),
-  });
-
-  // 17b.11b — broadcast pending-ask-changed so the AgentDesignerSessionModal
-  // (and any other UI subscribed to pending-ask state) can react without
-  // polling. Carries the full row so the modal renders the question + options
-  // immediately. `change: 'created'` distinguishes from the answered/cancelled
-  // broadcasts fired by the answer endpoint.
-  broadcastTo(projectId, {
-    type: 'pending-ask-changed',
-    change: 'created',
-    pendingAsk: row,
   });
 
   return c.json({ ok: true, pendingAskId, status: 'waiting' });
@@ -2963,19 +3024,6 @@ app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) 
       answeredBy,
       answer,
       now,
-    });
-  }
-
-  // 17b.11b — broadcast pending-ask-changed so the AgentDesignerSessionModal
-  // (and any other subscriber) clears the question + transitions the agent
-  // back to running. Only broadcast on actual landed answers; already-answered
-  // / unknown-id paths shouldn't fire spurious envelopes.
-  if (result.ok && askBefore) {
-    broadcastTo(projectId, {
-      type: 'pending-ask-changed',
-      change: 'answered',
-      pendingAskId: askId,
-      runId: askBefore.runId,
     });
   }
 

@@ -52,6 +52,12 @@ export interface ProjectRuntimeOptions {
 export class ProjectRuntime {
   private pty: PtySession | null = null;
   private agentCreator: PtySession | null = null;
+  /** 17b.12 — transient agent-designer session. Same shape as agentCreator
+   *  but spawns CC with `--agent agent-designer` + the materialised pod
+   *  (prompt + tools + knowledge from the agent-designer pod row). One per
+   *  project at a time. Pod-spawn cleanup is bound to the session end. */
+  private agentDesigner: PtySession | null = null;
+  private agentDesignerPrep: PodSpawnPrep | null = null;
   private workflowCreator: PtySession | null = null;
   private setupWizard: PtySession | null = null;
   /** Tracks the transient PC_SESSION_ID assigned to the current workflow-
@@ -471,6 +477,72 @@ export class ProjectRuntime {
     if (!this.agentCreator) return;
     try { this.agentCreator.kill(); } catch { /* best-effort */ }
     this.agentCreator = null;
+  }
+
+  /** 17b.12 — transient agent-designer session backed by the agent-designer
+   *  pod (DB-resident; materialised at spawn time). Free-form chat
+   *  conversation, like the orchestrator chat but scoped to designing a new
+   *  pod. One per project at a time; calling `start` again kills any prior
+   *  session. Pod materialisation cleanup is bound to session-end.
+   *
+   *  Differences from `startAgentCreator`:
+   *   - uses `--agent agent-designer` (REPLACES CC's default system prompt
+   *     with the pod's content; the pod owns the rulebook)
+   *   - materialised pod mcp.json (carries the pod's tool allowlist + any
+   *     per-pod MCP servers; baseline pc-rig still present)
+   *   - cleanup() on session-end removes the materialised .md + mcp.json
+   *  Otherwise the wiring (events.jsonl path, transient session id,
+   *  hook plumbing) mirrors startAgentCreator. */
+  startAgentDesigner(): PtySession {
+    this.endAgentDesigner();
+    this.refreshHooksIfStale();
+    const transientId = `ad-${randomUUID()}`;
+    const sessionDir = this.sessionDataPath(transientId);
+    mkdirSync(sessionDir, { recursive: true });
+
+    const prep = preparePodSpawn({
+      agentName: 'agent-designer',
+      worktreeDir: this.project.folderPath,
+      scratchDir: sessionDir,
+      filterMcpToReferencedTools: false,
+    });
+    if (!prep) {
+      throw new Error(
+        'agent-designer pod row not found — boot-time seedStockPods should have ensured it exists',
+      );
+    }
+    this.agentDesignerPrep = prep;
+
+    this.agentDesigner = new PtySession({
+      workspaceDir: this.project.folderPath,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      extraEnv: { PC_SESSION_ID: transientId, ...prep.extraEnv },
+      agentName: 'agent-designer',
+      mcpConfigPath: prep.mcpConfigPath,
+    });
+    return this.agentDesigner;
+  }
+
+  /** Returns the live agent-designer PtySession, or null. */
+  agentDesignerPty(): PtySession | null {
+    return this.agentDesigner && this.agentDesigner.getState() !== 'exited'
+      ? this.agentDesigner
+      : null;
+  }
+
+  /** Kill the agent-designer session + clean up the materialised pod
+   *  files. Idempotent. */
+  endAgentDesigner(): void {
+    if (this.agentDesigner) {
+      try { this.agentDesigner.kill(); } catch { /* best-effort */ }
+      this.agentDesigner = null;
+    }
+    if (this.agentDesignerPrep) {
+      try { this.agentDesignerPrep.cleanup(); } catch { /* best-effort */ }
+      this.agentDesignerPrep = null;
+    }
   }
 
   /** 4b.1: stash the latest workflow-creator draft for a session. The MCP

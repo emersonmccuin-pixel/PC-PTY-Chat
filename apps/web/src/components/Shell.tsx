@@ -15,7 +15,6 @@ import type { Project } from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
-import { useAgentDesignerAutoOpen } from '@/hooks/use-agent-designer-auto-open';
 import { ActivityPanel } from './ActivityPanel';
 import { AgentDesignerSessionModal } from './AgentDesignerSessionModal';
 import { AgentsList } from './AgentsList';
@@ -58,9 +57,6 @@ export function Shell({
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const activeProject = projects.find((p) => p.slug === activeSlug) ?? null;
-
-  // 17b.11c — drive the AgentDesignerSessionModal open/close from WS events.
-  useAgentDesignerAutoOpen(wsEvents);
 
   useEffect(() => {
     const panel = activityRef.current;

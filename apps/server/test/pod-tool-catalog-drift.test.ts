@@ -6,19 +6,57 @@
 // wildcard (notably the orchestrator) silently loses access to the new
 // tool — CC's `tools:` frontmatter is exact-name match only, no wildcard.
 //
-// This test fails loudly when drift exists, so new pc-rig tools can't ship
-// without updating both files.
+// Implementation note: parsing the MCP source as TEXT rather than importing
+// it. The MCP server's top-level `await server.connect(new
+// StdioServerTransport())` blocks any test process that imports the module.
+// A regex over the TOOLS array is sufficient — every entry is
+// `name: 'pc_*'` and the formatting is stable.
 //
 // Run via: pnpm --filter @pc/server test
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { TOOLS } from '../../../packages/mcp/src/server.ts';
 import { PC_RIG_TOOL_NAMES } from '../src/services/pod-tool-catalog.ts';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MCP_SERVER_PATH = resolve(
+  HERE,
+  '..',
+  '..',
+  '..',
+  'packages',
+  'mcp',
+  'src',
+  'server.ts',
+);
+
+function extractToolsFromMcpSource(): string[] {
+  const src = readFileSync(MCP_SERVER_PATH, 'utf8');
+  const out: string[] = [];
+  // Tool entries open with `name: 'pc_<...>',`. Match the literal so a
+  // future field rename (description? other top-level prop?) doesn't drag in
+  // unrelated strings.
+  const re = /name:\s*'(pc_[a-z0-9_]+)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    if (!out.includes(m[1])) out.push(m[1]);
+  }
+  if (out.length === 0) {
+    throw new Error(
+      `extractToolsFromMcpSource matched 0 names in ${MCP_SERVER_PATH} — regex may be out of sync with the TOOLS array shape`,
+    );
+  }
+  return out;
+}
+
 test('PC_RIG_TOOL_NAMES covers every tool in the MCP server TOOLS array', () => {
-  const fromServer = TOOLS.map((t) => `mcp__pc-rig__${t.name}`);
+  const fromServer = extractToolsFromMcpSource().map(
+    (n) => `mcp__pc-rig__${n}`,
+  );
   const fromCatalog = [...PC_RIG_TOOL_NAMES] as string[];
 
   const missing = fromServer.filter((name) => !fromCatalog.includes(name));

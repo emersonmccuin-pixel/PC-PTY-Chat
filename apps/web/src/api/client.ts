@@ -798,6 +798,33 @@ export const api = {
     if (!res.ok) throw new Error(`stop agent-creator → ${res.status}`);
   },
 
+  // ── Agent-designer transient session (17b.12) ─────────────────────────────
+  /** Spawn the AgentDesignerSessionModal's transient PtySession. Backed by
+   *  the agent-designer pod (DB-resident; materialised at spawn). */
+  startAgentDesigner: (projectId: ULID) =>
+    postJson<{ ok: true; state: string }>(
+      `/api/projects/${projectId}/agent-designer/start`,
+      {},
+    ).then((r) => r.state),
+
+  sendAgentDesigner: (projectId: ULID, text: string) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/agent-designer/send`, {
+      text,
+    }),
+
+  interruptAgentDesigner: (projectId: ULID) =>
+    postJson<{ ok: true }>(
+      `/api/projects/${projectId}/agent-designer/interrupt`,
+      {},
+    ),
+
+  stopAgentDesigner: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/agent-designer`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`stop agent-designer → ${res.status}`);
+  },
+
   // ── Setup wizard (5.6 / D82) ─────────────────────────────────────────────
 
   startSetupWizard: (projectId: ULID) =>

@@ -1,30 +1,39 @@
-// 17b.11d — Dedicated design surface for the agent-designer pod.
+// 17b.12 — AgentDesignerSessionModal as a transient-session chat.
 //
-// Opens automatically when the orchestrator dispatches agent-designer (the
-// auto-open hook + zustand store drive this). Shows a focused conversation
-// view (user + assistant turns only — no tool-call debug rows), plus an
-// input affordance when the agent pauses with pc_ask_user / pc_ask_
-// orchestrator. Submits answers via the existing pending-asks/answer route.
+// Architectural shape: same as Orchestrator chat or the legacy
+// CreateAgentModal — a free-form text conversation against a dedicated
+// PtySession running agent-designer's pod. Always-on text input. No
+// pause/answer dance, no dispatch/run lifecycle.
 //
-// Server-side, agent-designer's channel push to the orchestrator is
-// suppressed (17b.11a), so this modal is the ONLY surface where the
-// agent-designer's questions appear. The orchestrator chat stays clean.
+// Server contract (17b.12):
+//   - POST /api/projects/:projectId/agent-designer/start
+//       starts the transient PtySession with `--agent agent-designer`.
+//       The orchestrator's pc_open_agent_designer MCP tool calls this
+//       AND seeds the first user message via /send.
+//   - POST /api/projects/:projectId/agent-designer/send  { text }
+//       sends a user message into the chat.
+//   - POST /api/projects/:projectId/agent-designer/interrupt
+//       interrupts a thinking turn (Ctrl+C equivalent).
+//   - DELETE /api/projects/:projectId/agent-designer
+//       kills the session + cleans up the materialised pod files.
 //
-// Closes automatically on terminal status (completed/failed/cancelled) via
-// the auto-open effect. Explicit Close button is also available — closing
-// mid-conversation doesn't kill the agent; the run keeps going. Reopening
-// requires another agent-designer dispatch.
+// WS envelopes consumed:
+//   agent-designer-state      → spawn/ready/thinking/exited
+//   agent-designer-jsonl      → user + turn-end events become bubbles
+//   agent-designer-exit       → session terminated
+//   project-agents-changed    → auto-close (pc_create_agent fired = pod
+//                                made = we're done)
 //
-// Backfill: no replay on mount today. Events received before the modal
-// opened don't appear. Pause is fetched via list endpoint on first
-// pending-ask-changed receipt OR on initial mount-time scan.
+// Auto-open: when an agent-designer-state envelope arrives and the modal
+// isn't already open, set the store. Auto-close fires on the
+// project-agents-changed broadcast (means the pod was committed).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import type { AgentRunRecord, PendingAsk, Project } from '@/api/client';
+import type { Project } from '@/api/client';
 import { api } from '@/api/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 import { useAgentDesignerSession } from '@/store/agent-designer-session';
@@ -34,24 +43,7 @@ interface AgentDesignerSessionModalProps {
   events: WsEnvelope[];
 }
 
-interface AgentJsonlEnvelope extends WsEnvelope {
-  type: 'agent-jsonl-event';
-  runId: string;
-  event: JsonlEvent;
-}
-
-interface AgentRunChangedEnvelope extends WsEnvelope {
-  type: 'agent-run-changed';
-  record: AgentRunRecord;
-}
-
-interface PendingAskChangedEnvelope extends WsEnvelope {
-  type: 'pending-ask-changed';
-  change: 'created' | 'answered' | 'cancelled';
-  pendingAsk?: PendingAsk;
-  pendingAskId?: string;
-  runId?: string | null;
-}
+type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
 type Bubble =
   | { kind: 'user'; text: string; key: string }
@@ -61,174 +53,194 @@ export function AgentDesignerSessionModal({
   project,
   events,
 }: AgentDesignerSessionModalProps) {
-  const runId = useAgentDesignerSession((s) => s.runId);
+  // Store flips `open` to true when the auto-open hook detects an
+  // agent-designer session starting. Closing (manual or auto on
+  // pc_create_agent) flips it back.
+  const open = useAgentDesignerSession((s) => s.runId !== null);
+  const setRunId = useAgentDesignerSession((s) => s.setRunId);
   const clear = useAgentDesignerSession((s) => s.clear);
-  if (!runId) return null;
-  return (
-    <Modal
-      key={runId}
-      runId={runId}
-      project={project}
-      events={events}
-      onClose={clear}
-    />
-  );
+
+  // Detect the start of an agent-designer session from the WS stream. The
+  // server sets `state: 'spawning'` first, then 'ready'. Either trips us.
+  // We use a synthetic runId per project + per session-start since the
+  // session itself doesn't have a public id — the store just needs a
+  // truthy value to render the modal.
+  const lastStateAtRef = useRef<string | null>(null);
+  useEffect(() => {
+    for (const env of events) {
+      if (!env || env.type !== 'agent-designer-state') continue;
+      const stateEnv = env as WsEnvelope & { state?: string };
+      const seenKey = `${stateEnv.state ?? ''}:${(stateEnv as { ts?: number }).ts ?? ''}`;
+      if (seenKey === lastStateAtRef.current) continue;
+      lastStateAtRef.current = seenKey;
+      if (stateEnv.state && stateEnv.state !== 'exited') {
+        setRunId(`agent-designer:${project.id}`);
+      }
+    }
+  }, [events, project.id, setRunId]);
+
+  // Auto-close on pc_create_agent (project-agents-changed / pod-changed
+  // event with change=created). The user can also close manually.
+  useEffect(() => {
+    if (!open) return;
+    for (const env of events) {
+      if (!env) continue;
+      if (env.type === 'project-agents-changed') {
+        clear();
+        return;
+      }
+      if (
+        env.type === 'pod-changed' &&
+        (env as { change?: string }).change === 'created'
+      ) {
+        clear();
+        return;
+      }
+    }
+  }, [events, open, clear]);
+
+  if (!open) return null;
+  return <Chat project={project} events={events} onClose={clear} />;
 }
 
-function Modal({
-  runId,
+function Chat({
   project,
   events,
   onClose,
 }: {
-  runId: string;
   project: Project;
   events: WsEnvelope[];
   onClose: () => void;
 }) {
-  // Latest snapshot of this run, derived from the WS event stream (walks
-  // backward to find the most-recent `agent-run-changed` for this runId).
-  const run = useMemo<AgentRunRecord | null>(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i];
-      if (!env || env.type !== 'agent-run-changed') continue;
-      const rec = (env as AgentRunChangedEnvelope).record;
-      if (rec && rec.runId === runId) return rec;
-    }
-    return null;
-  }, [events, runId]);
+  const [state, setState] = useState<SessionState>('spawning');
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
-  // Bubbles from the JSONL stream — user + assistant turns only. Drops the
-  // server-side warmup turn pair (spawn-time MCP-race fix from Section 20.C):
-  //   user:      "Reply with only the word OK."
-  //   assistant: "OK" (or similar short ack)
-  // The warmup is internal plumbing; users shouldn't see it.
-  const bubbles = useMemo<Bubble[]>(() => {
-    const out: Bubble[] = [];
-    let userIdx = 0;
-    let assistantIdx = 0;
-    let pendingWarmupSkip = false;
-    for (const env of events) {
-      if (!env || env.type !== 'agent-jsonl-event') continue;
-      const j = env as AgentJsonlEnvelope;
-      if (j.runId !== runId) continue;
-      const ev = j.event;
-      if (ev.kind === 'jsonl-user' && ev.text && ev.text.trim()) {
-        if (isWarmupUserText(ev.text)) {
-          pendingWarmupSkip = true; // skip this user bubble AND the next assistant
-          continue;
+  // Tracks how many WS envelopes we've consumed so we re-scan only new
+  // ones. Snap to events.length on mount so pre-mount envelopes from
+  // concurrent orchestrator activity don't re-process.
+  const processedRef = useRef(0);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  useEffect(() => {
+    processedRef.current = eventsRef.current.length;
+    // Best-effort cleanup on close: server tears down the PtySession +
+    // cleans up the materialised pod files.
+    return () => {
+      void api.stopAgentDesigner(project.id).catch(() => {
+        /* best-effort */
+      });
+    };
+  }, [project.id]);
+
+  // Bubbles + state derived from the live WS stream.
+  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  // Warmup pair (user "Reply with only the word OK." + assistant "OK") is
+  // skipped — the spawn-time MCP-race fix from Section 20.C inserts a
+  // synthetic turn pair that's plumbing, not conversation.
+  const skipNextAssistantRef = useRef(false);
+
+  useEffect(() => {
+    const start =
+      events.length >= processedRef.current ? processedRef.current : 0;
+    const end = events.length;
+    processedRef.current = end;
+    let stateChanged: SessionState | null = null;
+    const newBubbles: Bubble[] = [];
+    for (let i = start; i < end; i++) {
+      const env = events[i];
+      if (!env) continue;
+      if (env.type === 'agent-designer-state') {
+        const s = (env as { state?: string }).state;
+        if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
+          stateChanged = s;
         }
-        out.push({ kind: 'user', text: ev.text, key: `u-${userIdx++}` });
-      } else if (
-        ev.kind === 'jsonl-turn-end' &&
-        ev.text &&
-        ev.text.trim() &&
-        (ev.stopReason === undefined ||
-          ev.stopReason === null ||
-          ev.stopReason === 'end_turn' ||
-          ev.stopReason === 'max_tokens')
-      ) {
-        if (pendingWarmupSkip) {
-          pendingWarmupSkip = false;
-          continue;
+      } else if (env.type === 'agent-designer-jsonl') {
+        const ev = (env as { event?: JsonlEvent }).event;
+        if (!ev) continue;
+        if (ev.kind === 'jsonl-user' && ev.text && ev.text.trim()) {
+          if (isWarmupUserText(ev.text)) {
+            skipNextAssistantRef.current = true;
+            continue;
+          }
+          newBubbles.push({
+            kind: 'user',
+            text: ev.text,
+            key: `u-${i}`,
+          });
+        } else if (
+          ev.kind === 'jsonl-turn-end' &&
+          ev.text &&
+          ev.text.trim() &&
+          (ev.stopReason === undefined ||
+            ev.stopReason === null ||
+            ev.stopReason === 'end_turn' ||
+            ev.stopReason === 'max_tokens')
+        ) {
+          if (skipNextAssistantRef.current) {
+            skipNextAssistantRef.current = false;
+            continue;
+          }
+          newBubbles.push({
+            kind: 'assistant',
+            text: ev.text,
+            key: `a-${i}`,
+          });
         }
-        out.push({ kind: 'assistant', text: ev.text, key: `a-${assistantIdx++}` });
+      } else if (env.type === 'agent-designer-exit') {
+        stateChanged = 'exited';
       }
     }
-    return out;
-  }, [events, runId]);
+    if (newBubbles.length > 0) {
+      setBubbles((prev) => [...prev, ...newBubbles]);
+    }
+    if (stateChanged) {
+      setState(stateChanged);
+    }
+  }, [events]);
 
   // Auto-scroll on new bubbles.
   const bodyRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [bubbles.length]);
+  }, [bubbles.length, state]);
 
-  // Pending-ask state. Initial pull from list endpoint covers "modal opened
-  // onto an already-paused run." `pending-ask-changed` envelopes keep it
-  // synced from there.
-  const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
-  const lastPaProcessedRef = useRef(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .listAgentPendingAsks(project.id)
-      .then((rows) => {
-        if (cancelled) return;
-        const match = rows.find((r) => r.runId === runId);
-        setPendingAsk(match ?? null);
-      })
-      .catch(() => {
-        /* best-effort */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id, runId]);
-
-  useEffect(() => {
-    const start =
-      events.length >= lastPaProcessedRef.current ? lastPaProcessedRef.current : 0;
-    const end = events.length;
-    lastPaProcessedRef.current = end;
-    for (let i = start; i < end; i++) {
-      const env = events[i];
-      if (!env || env.type !== 'pending-ask-changed') continue;
-      const pa = env as PendingAskChangedEnvelope;
-      if (pa.change === 'created' && pa.pendingAsk && pa.pendingAsk.runId === runId) {
-        setPendingAsk(pa.pendingAsk);
-      } else if (
-        (pa.change === 'answered' || pa.change === 'cancelled') &&
-        pa.runId === runId
-      ) {
-        setPendingAsk(null);
-      }
-    }
-  }, [events, runId]);
-
-  // Answer-submit state.
-  const [draft, setDraft] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-
-  async function handleSubmit(answer: string) {
-    if (!pendingAsk) return;
-    setSubmitting(true);
-    setSubmitError(null);
+  async function handleSend() {
+    const text = draft.trim();
+    if (!text || state === 'spawning' || state === 'exited') return;
+    setDraft('');
+    setError(null);
+    // Optimistic user bubble — the JSONL stream eventually rebroadcasts
+    // it but seeing it land instantly matches the orchestrator chat UX.
+    setBubbles((prev) => [
+      ...prev,
+      { kind: 'user', text, key: `local-u-${Date.now()}` },
+    ]);
     try {
-      const res = await api.answerAgentPendingAsk(
-        project.id,
-        pendingAsk.id,
-        answer,
-        'user',
-      );
-      if (!res.ok) {
-        setSubmitError(res.cause ?? 'answer rejected');
-        return;
-      }
-      setDraft('');
-      // The WS `pending-ask-changed` event will clear pendingAsk locally —
-      // no need to setPendingAsk(null) here.
-    } catch (err) {
-      setSubmitError((err as Error).message);
-    } finally {
-      setSubmitting(false);
+      await api.sendAgentDesigner(project.id, text);
+    } catch (e) {
+      setError((e as Error).message);
     }
   }
 
-  const status = run?.status ?? 'spawning';
-  const statusPillClasses =
-    status === 'paused'
-      ? 'bg-warning/25 text-warning'
-      : status === 'spawning'
-        ? 'bg-muted text-muted-foreground'
-        : status === 'completed'
-          ? 'bg-success/25 text-success'
-          : status === 'failed' || status === 'cancelled'
-            ? 'bg-destructive/25 text-destructive'
-            : 'bg-primary/20 text-primary';
+  async function handleInterrupt() {
+    try {
+      await api.interruptAgentDesigner(project.id);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  const canSend =
+    draft.trim().length > 0 && state !== 'spawning' && state !== 'exited';
+  const statusLabel = useMemo<string>(() => {
+    if (error) return error;
+    if (state === 'spawning') return 'Starting…';
+    if (state === 'thinking') return 'Thinking…';
+    if (state === 'exited') return 'Session ended';
+    return 'Ready';
+  }, [state, error]);
 
   return (
     <div
@@ -247,15 +259,13 @@ function Modal({
               <div className="truncate text-sm font-semibold text-foreground">
                 agent-designer
               </div>
-              <span
-                className={`shrink-0 px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${statusPillClasses}`}
-              >
-                {status}
+              <span className="shrink-0 bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                {statusLabel}
               </span>
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              The designer asks questions; answer here. Closing doesn't cancel the
-              dispatch.
+              Chat with agent-designer to design a new pod. Modal closes
+              automatically when the pod is created. Close manually any time.
             </p>
           </div>
           <button
@@ -269,50 +279,71 @@ function Modal({
         </header>
 
         <div ref={bodyRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          {bubbles.length === 0 && (
+          {bubbles.length === 0 && state === 'spawning' && (
             <p className="text-xs italic text-muted-foreground">
-              Starting up. The designer's first message lands here.
+              Starting agent-designer…
+            </p>
+          )}
+          {bubbles.length === 0 && state !== 'spawning' && (
+            <p className="text-xs italic text-muted-foreground">
+              Waiting for agent-designer's first message…
             </p>
           )}
           {bubbles.map((b) => (
             <BubbleRow key={b.key} bubble={b} />
           ))}
+          {state === 'thinking' && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="inline-block h-2 w-2 animate-pulse bg-muted-foreground/60" />
+              Thinking…
+            </div>
+          )}
         </div>
 
         <footer className="border-t border-border bg-muted/20 p-3">
-          {pendingAsk ? (
-            <PendingAskInput
-              pendingAsk={pendingAsk}
-              draft={draft}
-              onDraftChange={setDraft}
-              onSubmit={handleSubmit}
-              submitting={submitting}
-              error={submitError}
+          <div className="flex items-end gap-2">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSend();
+                }
+              }}
+              placeholder={
+                state === 'spawning'
+                  ? 'Waiting for session to start…'
+                  : state === 'exited'
+                    ? 'Session ended. Close to dismiss.'
+                    : 'Type your reply. Enter sends, Shift+Enter for a newline.'
+              }
+              rows={3}
+              disabled={state === 'spawning' || state === 'exited'}
+              className="flex-1 resize-none border border-border bg-background p-2 font-sans text-xs outline-none focus:border-primary disabled:opacity-50"
             />
-          ) : (
-            <div className="text-center text-xs italic text-muted-foreground">
-              {status === 'completed'
-                ? "Design complete. Check the Agents tab for your new pod."
-                : status === 'failed' || status === 'cancelled'
-                  ? `Session ${status}. Close to dismiss.`
-                  : 'Waiting on the designer…'}
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => void handleSend()}
+                disabled={!canSend}
+                className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                Send
+              </button>
+              <button
+                onClick={() => void handleInterrupt()}
+                disabled={state !== 'thinking'}
+                className="border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+              >
+                Stop
+              </button>
             </div>
-          )}
+          </div>
+          {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
         </footer>
       </div>
     </div>
   );
-}
-
-/** Match the warmup turn's user prompt (apps/server/src/services/agent-run-
- *  manager.ts:DEFAULT_WARMUP_PROMPT). If the warmup prompt ever changes,
- *  update this matcher too. We match loosely (trim + lowercase contains) so
- *  minor whitespace drift doesn't unmask the warmup. */
-function isWarmupUserText(text: string): boolean {
-  const trimmed = text.trim().toLowerCase();
-  return trimmed === 'reply with only the word ok.' ||
-    trimmed === 'reply with only the word ok' ||
-    trimmed.startsWith('reply with only the word ok');
 }
 
 function BubbleRow({ bubble }: { bubble: Bubble }) {
@@ -338,81 +369,14 @@ function BubbleRow({ bubble }: { bubble: Bubble }) {
   );
 }
 
-function PendingAskInput({
-  pendingAsk,
-  draft,
-  onDraftChange,
-  onSubmit,
-  submitting,
-  error,
-}: {
-  pendingAsk: PendingAsk;
-  draft: string;
-  onDraftChange: (v: string) => void;
-  onSubmit: (answer: string) => void;
-  submitting: boolean;
-  error: string | null;
-}) {
-  const hasOptions = pendingAsk.options && pendingAsk.options.length > 0;
-
+/** Match the warmup turn's user prompt
+ *  (apps/server/src/services/agent-run-manager.ts:DEFAULT_WARMUP_PROMPT).
+ *  If the warmup prompt ever changes, update this matcher too. */
+function isWarmupUserText(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
   return (
-    <div className="space-y-2">
-      <div className="border-l-2 border-l-warning/60 pl-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Designer is asking
-        </div>
-        <div className="mt-0.5 whitespace-pre-wrap text-xs text-foreground">
-          {pendingAsk.question}
-        </div>
-        {pendingAsk.context && (
-          <div className="mt-1 whitespace-pre-wrap text-[11px] text-muted-foreground">
-            {pendingAsk.context}
-          </div>
-        )}
-      </div>
-
-      {hasOptions ? (
-        <div className="flex flex-wrap gap-2">
-          {pendingAsk.options!.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              disabled={submitting}
-              onClick={() => onSubmit(opt.value)}
-              className="border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && draft.trim()) {
-                e.preventDefault();
-                onSubmit(draft.trim());
-              }
-            }}
-            placeholder="Your answer… (Enter sends, Shift+Enter for newline)"
-            rows={2}
-            disabled={submitting}
-            className="flex-1 resize-none border border-border bg-background p-2 font-sans text-xs outline-none focus:border-primary disabled:opacity-50"
-          />
-          <button
-            type="button"
-            onClick={() => onSubmit(draft.trim())}
-            disabled={submitting || !draft.trim()}
-            className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {submitting ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-      )}
-
-      {error && <div className="text-xs text-destructive">{error}</div>}
-    </div>
+    trimmed === 'reply with only the word ok.' ||
+    trimmed === 'reply with only the word ok' ||
+    trimmed.startsWith('reply with only the word ok')
   );
 }
