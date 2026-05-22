@@ -18,8 +18,10 @@ export interface AgentDispatchSettings {
   /**
    * Async-dispatch ack window. `pc_invoke_agent` (wait: false) blocks until
    * the spawned agent emits its first non-system JSONL event OR this timer
-   * fires. Default 30s — gut-feel for spawn + CC boot + dev-channels
-   * confirmation + initial prompt read.
+   * fires. Default 60s — Section 20.A.4 bumped from 30s after 4-back-to-back
+   * cold spawns under the legacy `npx -y tsx ...` MCP command blew past 30s.
+   * 20.A.1 + 20.A.2 fix the underlying cold-spawn cost; this 60s window stays
+   * as a safety net for genuinely slow spawns.
    */
   ackTimeoutMs: number;
   /**
@@ -96,7 +98,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     bugLogTargetProjectId: null,
     fontScale: 1,
     agentDispatch: {
-      ackTimeoutMs: 30_000,
+      ackTimeoutMs: 60_000,
       maxConcurrent: 5,
     },
     jsonl: {
@@ -112,9 +114,9 @@ export function clampFontScale(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Clamp `ackTimeoutMs` to [1s, 5min]. Default 30s on non-finite / out-of-band. */
+/** Clamp `ackTimeoutMs` to [1s, 5min]. Default 60s on non-finite / out-of-band. */
 export function clampAckTimeoutMs(n: number): number {
-  if (!Number.isFinite(n)) return 30_000;
+  if (!Number.isFinite(n)) return 60_000;
   if (n < AGENT_ACK_TIMEOUT_MS_MIN) return AGENT_ACK_TIMEOUT_MS_MIN;
   if (n > AGENT_ACK_TIMEOUT_MS_MAX) return AGENT_ACK_TIMEOUT_MS_MAX;
   return Math.floor(n);
