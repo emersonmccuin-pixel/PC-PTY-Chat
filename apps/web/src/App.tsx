@@ -131,11 +131,15 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between border-b border-border bg-card px-3 py-2">
-        <div className="text-sm font-semibold tracking-wide text-foreground">
-          {activeProject?.name ?? 'PROJECT COMPANION'}
+      <header className="grid grid-cols-3 items-center border-b border-border bg-card px-3 py-2">
+        <div className="flex items-center justify-self-start">
+          <img src="/icon.svg" alt="" className="h-10 w-10" />
+          <span className="-ml-1 text-sm font-semibold tracking-wide text-foreground">caisson</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="text-center text-2xl font-semibold tracking-tight text-foreground">
+          {activeProject?.name ?? ''}
+        </div>
+        <div className="flex items-center gap-2 justify-self-end">
           <button
             onClick={() => setSettingsOpen(true)}
             disabled={!settings}
