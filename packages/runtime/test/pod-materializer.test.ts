@@ -390,10 +390,13 @@ test('materializePod creates nested .claude/agents/ even when worktree is empty'
   }
 });
 
-test('materializePod emits a knowledge footer when knowledge rows exist (17b.9)', () => {
+test('materializePod emits a knowledge footer when knowledge rows exist AND pc_knowledge_read is in tools (17b.9)', () => {
   const dirs = freshDirs();
   try {
     const bundle = makeBundle({
+      agent: makeAgent({
+        tools: ['Read', 'Glob', 'Grep', 'mcp__pc-rig__pc_knowledge_read'],
+      }),
       knowledge: [
         makeKnowledge('agent-roster', 'researcher is the file reader\nwriter is the drafter'),
         makeKnowledge('pricing', '# Pricing tiers\n\nTier A is $10/mo'),
@@ -433,6 +436,32 @@ test('materializePod emits no knowledge footer when knowledge is empty', () => {
     const md = readFileSync(result.agentMdPath, 'utf8');
     assert.ok(!md.includes('## Knowledge available'));
     assert.ok(!md.includes('pc_knowledge_read'));
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('materializePod suppresses the footer when the agent lacks pc_knowledge_read (defensive)', () => {
+  // Knowledge rows exist but the agent's tool allowlist doesn't include
+  // pc_knowledge_read — emitting the footer would tell the agent to call
+  // a tool it can't reach. Suppress instead.
+  const dirs = freshDirs();
+  try {
+    const bundle = makeBundle({
+      agent: makeAgent({
+        tools: ['Read', 'Glob', 'Grep', 'mcp__pc-rig__pc_log'], // no _knowledge_read
+      }),
+      knowledge: [makeKnowledge('agent-roster', 'roster content')],
+    });
+    const result = materializePod({
+      bundle,
+      worktreeDir: dirs.worktree,
+      scratchDir: dirs.scratch,
+    });
+    const md = readFileSync(result.agentMdPath, 'utf8');
+    assert.ok(!md.includes('## Knowledge available'));
+    assert.ok(!md.includes('pc_knowledge_read'));
+    assert.ok(!md.includes('agent-roster'));
   } finally {
     dirs.cleanup();
   }

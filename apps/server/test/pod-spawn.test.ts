@@ -304,10 +304,20 @@ test('preparePodSpawn expands mcp__pc-rig__* via the static catalog', () => {
 
 // --- knowledge footer surfaced on spawn (17b.9) -----------------------------
 
-test('preparePodSpawn emits the knowledge footer when knowledge rows exist (17b.9)', () => {
+test('preparePodSpawn emits the knowledge footer when knowledge rows exist AND pc_knowledge_read is in tools (17b.9)', () => {
   const dirs = freshDirs();
   try {
-    const agent = createAgent({ name: 'pod-knows', scope: 'global' }, U);
+    const agent = createAgent(
+      {
+        name: 'pod-knows',
+        scope: 'global',
+        // Defensive footer-suppression check in the materialiser requires
+        // pc_knowledge_read to be in the expanded tool list. Without it,
+        // the footer would tell the agent to call a tool it can't reach.
+        tools: ['Read', 'Glob', 'mcp__pc-rig__pc_knowledge_read'],
+      },
+      U,
+    );
     createKnowledge(
       {
         agentId: agent.id,

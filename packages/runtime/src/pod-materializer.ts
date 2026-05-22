@@ -104,14 +104,22 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   };
 }
 
+/** The MCP tool agents call to fetch a knowledge doc's full content. The
+ *  materializer only emits the knowledge footer when this tool is present
+ *  in the agent's expanded tool list — otherwise the footer would tell the
+ *  agent to call a tool it doesn't have access to. */
+const KNOWLEDGE_READ_TOOL = 'mcp__pc-rig__pc_knowledge_read';
+
 /** Render the `.claude/agents/<name>.md` body. Frontmatter mirrors PC's
  *  flat-file agent shape: name, description, tools (comma-separated), model,
  *  effort, maxTurns. Empty/null fields are omitted.
  *
- *  When `knowledge` rows exist, appends a "Knowledge available" footer
- *  listing each doc + its id + a short summary. Worker agents pull full
- *  content at runtime via `pc_knowledge_read`. Pods with zero knowledge
- *  docs get no footer. */
+ *  When `knowledge` rows exist AND the agent has `pc_knowledge_read` in its
+ *  expanded tool list, appends a "Knowledge available" footer listing each
+ *  doc + its id + a short summary. Worker agents pull full content at
+ *  runtime via `pc_knowledge_read`. Pods with zero knowledge docs OR pods
+ *  without the read tool get no footer (the latter prevents silently telling
+ *  an agent to call a tool it can't reach). */
 export function renderAgentMd(
   agent: PodAgentRow,
   tools: readonly string[],
@@ -125,7 +133,8 @@ export function renderAgentMd(
   if (agent.maxTurns !== null) fm.push(`maxTurns: ${agent.maxTurns}`);
   fm.push('---');
   const body = agent.prompt.trim();
-  const footer = renderKnowledgeFooter(agent.id, knowledge);
+  const canReadKnowledge = tools.includes(KNOWLEDGE_READ_TOOL);
+  const footer = canReadKnowledge ? renderKnowledgeFooter(agent.id, knowledge) : '';
   return `${fm.join('\n')}\n\n${body}${footer}\n`;
 }
 
