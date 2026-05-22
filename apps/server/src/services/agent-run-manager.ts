@@ -71,6 +71,14 @@ const DEFAULT_MAX_CONCURRENT = 5;
  *  case enough headroom while still failing fast on actually-stuck spawns.
  *  Tests override via `AgentRunManagerDeps.spawnStuckTimeoutMs`. */
 const DEFAULT_SPAWN_STUCK_TIMEOUT_MS = 120_000;
+/** Section 20.C — interval between warmup "kicks." After sending the warmup
+ *  text at PtySession 'ready', the manager arms a recurring 30s timer. If the
+ *  warmup turn hasn't ended yet (transcript shows text-in-buffer-no-submit
+ *  symptom), session.kick() re-sends a bare Enter to nudge CC into processing.
+ *  Cancelled the moment status flips to 'running'. With a 30s interval and
+ *  120s spawn-stuck cap, we get up to 3 kicks (at ~30/60/90s) before the
+ *  run gives up. */
+const DEFAULT_WARMUP_KICK_INTERVAL_MS = 30_000;
 
 /** 18.B-mcp-race — minimal warmup prompt sent on first ready. CC's MCP child
  *  (pc-rig under `npx -y tsx ...`) takes 1–3s to register tools; the first
@@ -191,6 +199,8 @@ export interface AgentRunSpawnInput {
   readyTimeoutMs?: number;
   /** Section 20.B.1 — override the spawn-stuck timeout for this run. */
   spawnStuckTimeoutMs?: number;
+  /** Section 20.C — override the warmup-kick interval for this run. */
+  warmupKickIntervalMs?: number;
 }
 
 export interface AgentRunSpawnResult {
@@ -219,6 +229,9 @@ export interface AgentRunSpawnResult {
  *  tests supply a fake. */
 export interface AgentSessionLike extends EventEmitter {
   send(text: string): void;
+  /** Section 20.C — re-send Enter without retyping text. Optional so fakes
+   *  in pre-20.C tests don't break; missing impl → manager skips kicks. */
+  kick?(): void;
   kill(): void;
   getState(): SessionState;
 }
@@ -258,11 +271,15 @@ interface InternalRun extends AgentRunRecord {
   wallClockTimer: unknown;
   /** Section 20.B.1 — fires if status stays 'spawning' for too long. */
   spawnStuckTimer: unknown;
+  /** Section 20.C — periodic "kick" (bare Enter) while warmup is unanswered. */
+  warmupKickTimer: unknown;
   idleTimeoutMs: number;
   wallClockTimeoutMs: number;
   readyTimeoutMs: number;
   /** Section 20.B.1 — bound on time spent in 'spawning'. */
   spawnStuckTimeoutMs: number;
+  /** Section 20.C — interval between warmup kicks. */
+  warmupKickIntervalMs: number;
   initialInputSent: boolean;
   /** 18.B-mcp-race — true once the warmup turn has been sent. The real
    *  `initialInput` is held back until the warmup's `jsonl-turn-end` lands
@@ -381,6 +398,7 @@ export class AgentRunManager extends EventEmitter {
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+        warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -413,6 +431,7 @@ export class AgentRunManager extends EventEmitter {
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+        warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -450,6 +469,7 @@ export class AgentRunManager extends EventEmitter {
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
         spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+        warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -488,6 +508,7 @@ export class AgentRunManager extends EventEmitter {
           wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
           readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
           spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+          warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
         });
         const completion = this.installCompletionPromise(rec);
         this.runs.set(runId, rec);
@@ -516,6 +537,7 @@ export class AgentRunManager extends EventEmitter {
       wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
       readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
       spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+      warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
     });
     // Chain pod-cleanup + global-materialize-cleanup so both run on terminal.
     const podCleanup = podPrep?.cleanup ?? null;
@@ -692,6 +714,7 @@ export class AgentRunManager extends EventEmitter {
     wallClockTimeoutMs: number;
     readyTimeoutMs: number;
     spawnStuckTimeoutMs: number;
+    warmupKickIntervalMs: number;
   }): InternalRun {
     return {
       runId: args.runId,
@@ -715,10 +738,12 @@ export class AgentRunManager extends EventEmitter {
       idleTimer: null,
       wallClockTimer: null,
       spawnStuckTimer: null,
+      warmupKickTimer: null,
       idleTimeoutMs: args.idleTimeoutMs,
       wallClockTimeoutMs: args.wallClockTimeoutMs,
       readyTimeoutMs: args.readyTimeoutMs,
       spawnStuckTimeoutMs: args.spawnStuckTimeoutMs,
+      warmupKickIntervalMs: args.warmupKickIntervalMs,
       initialInputSent: false,
       // 18.B-mcp-race — pre-set when warmup is disabled so the ready-state
       // handler falls through to the legacy send-initialInput path.
@@ -752,6 +777,10 @@ export class AgentRunManager extends EventEmitter {
         rec.warmupSent = true;
         try {
           session.send(this.warmupPrompt);
+          // 20.C — arm the recurring kick timer. If the warmup's submit
+          // gets dropped (typed-text-no-Enter symptom), bare-Enter kicks
+          // at warmupKickIntervalMs nudge CC into draining the buffer.
+          this.armWarmupKick(rec);
         } catch (err) {
           this.fail(rec, 'spawn-failed', `send warmup failed: ${(err as Error).message}`);
         }
@@ -794,6 +823,7 @@ export class AgentRunManager extends EventEmitter {
         rec.initialInputSent = true;
         rec.status = 'running';
         this.clearSpawnStuckTimer(rec);
+        this.clearWarmupKick(rec);
         this.emitRunChanged(rec); // spawning → running
         try {
           rec.session?.send(rec.initialInput);
@@ -993,6 +1023,47 @@ export class AgentRunManager extends EventEmitter {
     }
   }
 
+  /** Section 20.C — periodic "kick" while warmup is unanswered. After the
+   *  initial warmup text is sent (`session.send(warmupPrompt)`), arms a
+   *  recurring timer that, when status is still 'spawning' and the warmup
+   *  is still unanswered, re-sends a bare Enter via `session.kick()` to
+   *  nudge CC into draining the prompt buffer. Cancelled when status flips
+   *  to 'running' (warmup landed) or on terminal. Tests can disable by
+   *  passing `warmupKickIntervalMs <= 0`. Sessions without a `kick` impl
+   *  silently skip (graceful for pre-20.C fakes). */
+  private armWarmupKick(rec: InternalRun): void {
+    if (rec.warmupKickTimer) return;
+    if (rec.warmupKickIntervalMs <= 0) return;
+    const setT = this.deps.setTimeout ?? ((cb, ms) => globalThis.setTimeout(cb, ms));
+    const fire = (): void => {
+      rec.warmupKickTimer = null;
+      // Re-check guards: status may have transitioned, run may be terminal,
+      // session may have been killed.
+      if (this.isTerminal(rec.status)) return;
+      if (rec.status !== 'spawning') return;
+      if (!rec.warmupSent || rec.initialInputSent) return;
+      if (!rec.session) return;
+      try {
+        rec.session.kick?.();
+      } catch {
+        // best-effort — a failed kick shouldn't fail the run; spawn-stuck
+        // timer will catch us if no kick lands.
+      }
+      // Re-arm for the next interval. The chain auto-stops when status
+      // transitions out of 'spawning' (next fire's guard catches it).
+      rec.warmupKickTimer = setT(fire, rec.warmupKickIntervalMs);
+    };
+    rec.warmupKickTimer = setT(fire, rec.warmupKickIntervalMs);
+  }
+
+  private clearWarmupKick(rec: InternalRun): void {
+    if (rec.warmupKickTimer) {
+      const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
+      clearT(rec.warmupKickTimer);
+      rec.warmupKickTimer = null;
+    }
+  }
+
   // ── Section 18.7: cap + queue ────────────────────────────────────────
 
   /** Resolve the global cap. Test override > live DB read > 5 fallback. */
@@ -1098,6 +1169,7 @@ export class AgentRunManager extends EventEmitter {
   private clearTimers(rec: InternalRun): void {
     this.clearIdleTimer(rec);
     this.clearSpawnStuckTimer(rec);
+    this.clearWarmupKick(rec);
     if (rec.wallClockTimer) {
       const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
       clearT(rec.wallClockTimer);

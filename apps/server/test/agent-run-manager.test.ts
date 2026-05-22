@@ -53,6 +53,8 @@ after(() => {
 
 class FakeSession extends EventEmitter implements AgentSessionLike {
   sent: string[] = [];
+  /** Section 20.C — count of bare-Enter kicks the manager re-sent. */
+  kicks = 0;
   killed = false;
   state: SessionState = 'spawning';
   lastOpts: PtySessionOptions;
@@ -62,6 +64,9 @@ class FakeSession extends EventEmitter implements AgentSessionLike {
   }
   send(text: string): void {
     this.sent.push(text);
+  }
+  kick(): void {
+    this.kicks++;
   }
   kill(): void {
     this.killed = true;
@@ -1650,6 +1655,70 @@ test('PTY exit after manager kill is idempotent — completion resolves once, no
   );
   assert.equal(terminalSnapshots[0], 'failed:spawn-stuck');
   assert.equal(mgr.get(runId)?.failureCause, 'spawn-stuck', 'failureCause must not be overwritten');
+});
+
+// Section 20.C — warmup kick. After the warmup text is sent, the manager
+// arms a recurring timer that re-sends a bare Enter every warmupKickIntervalMs
+// while the warmup is unanswered. Cancelled the moment the warmup turn-end
+// lands. Real-world symptom this addresses: text gets typed into CC's prompt
+// buffer but the submit is dropped (intermittent on Windows under concurrent
+// spawn + strict-mcp-config handshake).
+test('warmup kick: re-sends Enter on interval while warmup unanswered; stops on first turn-end', async () => {
+  const p = createProject({
+    slug: 'arm-warmup-kick',
+    name: 'ARM Warmup Kick',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    // Default warmup is active (no override).
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-warmup-kick', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'real input',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'kick-test',
+    worktreeDir: tmpDataDir,
+    warmupKickIntervalMs: 25,
+    // Keep spawn-stuck out of the way (well past anything this test does).
+    spawnStuckTimeoutMs: 5_000,
+  });
+  const s = sessions[0]!;
+
+  // Ready → warmup sent; kick timer armed; status stays 'spawning'.
+  s.becomeReady();
+  assert.deepEqual(s.sent, ['Reply with only the word OK.']);
+  assert.equal(s.kicks, 0, 'no kicks before the kick interval elapses');
+
+  // Wait for at least 2 kick intervals; expect 2+ kicks while warmup is
+  // unanswered.
+  await new Promise<void>((r) => setTimeout(r, 80));
+  assert.ok(s.kicks >= 2, `expected ≥2 kicks while warmup pending, got ${s.kicks}`);
+  const kicksBeforeTurnEnd = s.kicks;
+
+  // Warmup turn finally lands. Manager flips to 'running' + sends real
+  // input + cancels kick timer.
+  s.emitTurnEnd('OK');
+  assert.deepEqual(s.sent, ['Reply with only the word OK.', 'real input']);
+
+  // No additional kicks should land after the warmup turn-end.
+  await new Promise<void>((r) => setTimeout(r, 80));
+  assert.equal(
+    s.kicks,
+    kicksBeforeTurnEnd,
+    'kick timer must stop once warmup completes',
+  );
+
+  // Real turn-end completes the run.
+  s.emitTurnEnd('done');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
 });
 
 // Section 20.B.1 — spawn-stuck timer must be cleared the moment a run flips

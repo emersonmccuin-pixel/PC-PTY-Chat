@@ -528,6 +528,17 @@ export class PtySession extends EventEmitter {
     this.child.write('\x1b');
   }
 
+  /** Section 20.C — re-send the Enter key without typing any text. Used by
+   *  agent-run-manager's warmup-kick path: if the warmup text was typed but
+   *  the submit got dropped (observed intermittently under concurrent spawn
+   *  + strict-MCP-config handshake), a bare `\r` can wake the buffered text
+   *  out of the prompt and into the model loop. Cheap; idempotent if CC has
+   *  already moved on (an extra Enter on an empty prompt is a no-op). */
+  kick() {
+    if (this.state === 'exited') return;
+    this.child.write('\r');
+  }
+
   resize(cols: number, rows: number) {
     if (this.state === 'exited') return;
     this.child.resize(cols, rows);
