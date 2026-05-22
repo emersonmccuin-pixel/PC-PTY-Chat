@@ -1,10 +1,13 @@
-// Section 17d.3 — Pod list page.
+// Section 17d.3 + 17d follow-up — Pod list page.
 //
-// Mirrors WorkflowList.tsx structure: header strip with title + "+ New
-// agent" button, table of rows, row click → PodDetailModal (17d.4). The list
-// shows the active project's view: every global pod + every project-scope
-// pod owned by this project. Project-scope rows expose a hover-only
-// "Promote to global" action.
+// Two regions:
+//   - Built-in (collapsed by default): the stock specialists. Read-only here;
+//     editing lives in Global Settings (danger-zone). Always present.
+//   - This project's agents (open): project-scope rows owned by this project.
+//
+// User-promoted globals (non-stock) DO NOT render here. They live in the
+// global pool and become usable in another project via the "Add from global
+// pool" picker, which clones them into that project (17d.f.2 / .f.3).
 
 import { useMemo, useState } from 'react';
 
@@ -26,12 +29,29 @@ const STOCK_POD_NAMES = new Set([
   'reviewer',
   'planner',
   'extractor',
+  'agent-designer',
 ]);
 
 export function AgentsList({ project, events }: AgentsListProps) {
   const { pods, refetch } = useProjectPods(project, events);
   const [createOpen, setCreateOpen] = useState(false);
   const [detailPodId, setDetailPodId] = useState<string | null>(null);
+  const [builtinCollapsed, setBuiltinCollapsed] = useState(true);
+
+  const { stockPods, projectPods } = useMemo(() => {
+    const stock: Pod[] = [];
+    const proj: Pod[] = [];
+    for (const pod of pods) {
+      if (pod.scope === 'global' && STOCK_POD_NAMES.has(pod.name)) {
+        stock.push(pod);
+      } else if (pod.scope === 'project') {
+        proj.push(pod);
+      }
+      // Non-stock globals: intentionally not rendered here. Reachable only
+      // via the "Add from global pool" picker (17d.f.2).
+    }
+    return { stockPods: stock, projectPods: proj };
+  }, [pods]);
 
   const detailPod = useMemo(
     () => (detailPodId ? pods.find((p) => p.id === detailPodId) ?? null : null),
@@ -41,24 +61,43 @@ export function AgentsList({ project, events }: AgentsListProps) {
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-background">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-4">
+        <CollapsibleSection
+          title="Built-in"
+          subtitle="Stock specialists. Edit in Global Settings."
+          count={stockPods.length}
+          collapsed={builtinCollapsed}
+          onToggle={() => setBuiltinCollapsed((c) => !c)}
+        >
+          {stockPods.map((pod) => (
+            <PodRow
+              key={pod.id}
+              pod={pod}
+              variant="stock"
+              onOpen={() => setDetailPodId(pod.id)}
+              onPromoted={() => void refetch()}
+            />
+          ))}
+        </CollapsibleSection>
+
         <Section
-          title="Agents"
-          empty="No agents yet. Click + New agent to create one."
-          count={pods.length}
+          title="This project's agents"
+          empty="No project agents yet. Click + Add agent to create one."
+          count={projectPods.length}
           action={
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
               className="border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-muted"
             >
-              + New agent
+              + Add agent
             </button>
           }
         >
-          {pods.map((pod) => (
+          {projectPods.map((pod) => (
             <PodRow
               key={pod.id}
               pod={pod}
+              variant="project"
               onOpen={() => setDetailPodId(pod.id)}
               onPromoted={() => void refetch()}
             />
@@ -94,15 +133,15 @@ export function AgentsList({ project, events }: AgentsListProps) {
 
 function PodRow({
   pod,
+  variant,
   onOpen,
   onPromoted,
 }: {
   pod: Pod;
+  variant: 'stock' | 'project';
   onOpen: () => void;
   onPromoted: () => void;
 }) {
-  const isStock = STOCK_POD_NAMES.has(pod.name);
-  const isProject = pod.scope === 'project';
   const editedAgo = formatRelativeTime(pod.updatedAt);
   const [promoting, setPromoting] = useState(false);
   const [promoteErr, setPromoteErr] = useState<string | null>(null);
@@ -111,7 +150,7 @@ function PodRow({
     e.stopPropagation();
     if (promoting) return;
     const ok = window.confirm(
-      `Promote "${pod.name}" to global? It will be visible across every project and you won't be able to undo this from the UI.`,
+      `Promote "${pod.name}" to the global pool?\n\nIt will become available to add to any project. The local copy will be removed from this project — re-add it from the global pool if you still want it here.`,
     );
     if (!ok) return;
     setPromoteErr(null);
@@ -142,18 +181,9 @@ function PodRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-medium text-foreground">{pod.name}</span>
-          <span
-            className={
-              isProject
-                ? 'inline-flex items-center bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary'
-                : 'inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground'
-            }
-          >
-            {isProject ? 'project' : 'global'}
-          </span>
-          {isStock && (
-            <span className="inline-flex items-center bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
-              stock
+          {variant === 'stock' && (
+            <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              read-only
             </span>
           )}
         </div>
@@ -167,7 +197,7 @@ function PodRow({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {isProject && (
+        {variant === 'project' && (
           <button
             type="button"
             onClick={(e) => void handlePromote(e)}
@@ -217,6 +247,60 @@ function Section({
         </div>
       ) : (
         <div className="flex flex-col gap-1">{children}</div>
+      )}
+    </section>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  subtitle,
+  count,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <header
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="flex cursor-pointer select-none items-center justify-between gap-3 hover:opacity-80"
+      >
+        <div className="flex items-center gap-2 text-sm font-medium uppercase tracking-wider text-muted-foreground">
+          <span aria-hidden className="inline-block w-3 text-[10px]">
+            {collapsed ? '▶' : '▼'}
+          </span>
+          <span>{title}</span>
+          <span className="border border-border px-1 text-[10px] font-normal text-muted-foreground">
+            {count}
+          </span>
+          {subtitle && (
+            <span className="ml-2 text-[10px] font-normal normal-case tracking-normal text-muted-foreground">
+              {subtitle}
+            </span>
+          )}
+        </div>
+      </header>
+      {!collapsed && count > 0 && <div className="flex flex-col gap-1">{children}</div>}
+      {!collapsed && count === 0 && (
+        <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+          No stock specialists installed.
+        </div>
       )}
     </section>
   );

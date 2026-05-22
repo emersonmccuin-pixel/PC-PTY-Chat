@@ -35,6 +35,7 @@ const STOCK_POD_NAMES = new Set([
   'reviewer',
   'planner',
   'extractor',
+  'agent-designer',
 ]);
 
 interface PodDetailModalProps {
