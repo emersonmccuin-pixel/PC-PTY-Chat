@@ -312,7 +312,7 @@ const TOOLS = [
   {
     name: 'pc_list_agents',
     description:
-      'List the agents available to this project (resolved across globals + per-project overrides). Use this BEFORE asking the user which agent a subagent step should call, or before authoring a subagent step. Returns { ok: true, globals: [...], overrides: [...], projectOnly: [...] }; each entry has { name, description?, ...}. The `name` is what goes into a subagent step\'s `subagent:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
+      'List the agents available to this project. Use this BEFORE asking the user which agent a subagent step should call, or before authoring a subagent step. Returns { ok: true, globals: [{ name, description?, ... }, ...], overrides: [], projectOnly: [] }. Post-17e all live agents are global-scope DB pods and surface in `globals`; the other arrays are kept empty for API back-compat. The `name` is what goes into a subagent step\'s `subagent:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
     inputSchema: { type: 'object', properties: {} },
   },
   {

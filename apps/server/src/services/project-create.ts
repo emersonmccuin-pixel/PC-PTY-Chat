@@ -19,11 +19,12 @@
 //   8. Insert the DB row with the pre-minted id.
 //   9. Register the runtime in the ProjectRegistry.
 //
-// Per Section 3 D2: the 5 global agents are NOT physically copied into the
-// project's `.claude/agents/` at create time. They surface live from the
-// library via `listResolvedAgents`. The per-project folder is created empty
-// and only fills as the user edits a global (creating an override) or
-// authors a new project-only agent.
+// Per Section 3 D2 (revised 17e.2, 2026-05-21): the 5 stock specialist pods
+// live in the DB `agents` table at global scope, seeded at boot from
+// `stock-pod-seed.ts`. `listResolvedAgents` reads them straight from the
+// DB; nothing is copied into the project's `.claude/agents/` at create time.
+// The per-project folder is created empty and (post-17d's Pod UI) stays
+// empty in v1, since project-scope pods are deferred to 17c.
 //
 // Failure modes left uncovered for the first cut: partial scaffolds when git
 // commit fails midway. The folder is left as-is; user can `rm -rf .git` and

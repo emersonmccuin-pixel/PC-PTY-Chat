@@ -1072,19 +1072,20 @@ export class AgentRunManager extends EventEmitter {
 export type AgentSource = 'pod' | 'project-flat-file' | 'global-flat-file' | null;
 
 /** Resolve an agent name to a source. Three places to look, in priority order:
- *   1. `pod` — live global pod row in the DB (canonical post-17a).
- *   2. `project-flat-file` — `<worktree>/.claude/agents/<name>.md` (a per-
- *      project override OR a custom project-only agent).
- *   3. `global-flat-file` — `~/.project-companion/agents/<name>.md` (Section 3
- *      stock globals: researcher / writer / planner / reviewer / extractor).
- *      These surface in `listResolvedAgents` for the UI but are NOT physically
- *      copied into the project at create time — see project-create.ts. The
- *      spawn path materialises them on the fly so CC's `--agent` flag can
- *      find them under `<cwd>/.claude/agents/`.
+ *   1. `pod` — live global pod row in the DB (canonical post-17a). Post-17e.2
+ *      this is the only source `listResolvedAgents` surfaces; the stock 5
+ *      (researcher / writer / planner / reviewer / extractor) are all seeded
+ *      here at boot via `stock-pod-seed.ts`.
+ *   2. `project-flat-file` — `<worktree>/.claude/agents/<name>.md` (legacy
+ *      per-project override path; orphaned post-17e.2, kept until 17e.4).
+ *   3. `global-flat-file` — `~/.project-companion/agents/<name>.md` (legacy
+ *      AgentLibrary path; orphaned post-17e.2, kept until 17e.4 cleanup).
+ *      The spawn path still materialises any leftover flat-file into
+ *      `<cwd>/.claude/agents/` so CC's `--agent` flag can find it.
  *
  *  Returns null when none match — caller fails the spawn with
- *  `cause: 'unknown-agent'`. Per-project pod overlays land in 17c; flat-file
- *  globals sunset in 17e (migrated to pod rows). */
+ *  `cause: 'unknown-agent'`. Per-project pod overlays land in 17c; the
+ *  flat-file branches go away in 17e.4. */
 export function resolveAgentSource(agentName: string, worktreeDir: string): AgentSource {
   if (getAgentByName({ name: agentName, scope: 'global' })) return 'pod';
   if (existsSync(resolve(worktreeDir, '.claude', 'agents', `${agentName}.md`))) return 'project-flat-file';

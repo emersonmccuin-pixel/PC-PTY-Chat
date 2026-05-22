@@ -862,7 +862,7 @@ app.get('/api/projects/:projectId/agents', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const resolved = listResolvedAgents(agentLibrary, runtime.folderPath);
+  const resolved = listResolvedAgents(runtime.folderPath);
   return c.json({ ok: true, ...resolved });
 });
 
