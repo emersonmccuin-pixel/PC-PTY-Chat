@@ -87,6 +87,7 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
+import { seedStockPods } from './services/stock-pod-seed.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
 import {
   recordAgentAnswer,
@@ -154,9 +155,12 @@ runMigrations();
 // Section 17e starter (2026-05-21) — seed the global researcher pod if
 // missing. Pulled forward from full 17e as a Section 18 dependency: V-3 +
 // V-4 need a worker agent that can call pc_ask_orchestrator +
-// pc_request_approval, and the flat-file researcher lacks those tools. The
-// other four worker pods (writer / reviewer / planner / extractor) stay on
-// the flat-file fallback path until 17e ships in full.
+// pc_request_approval, and the flat-file researcher lacks those tools.
+//
+// 17e.1 follow-up (2026-05-21 evening): this seeder coexists with the new
+// `seedStockPods()` call below. Both no-op once the researcher row exists.
+// Deleted in 17e.4 cleanup along with researcher-pod-seed.ts +
+// researcher-pod-content.ts.
 {
   const result = seedResearcherPodIfMissing();
   switch (result.action) {
@@ -175,6 +179,22 @@ runMigrations();
       break;
     case 'unchanged':
       break;
+  }
+}
+
+// Section 17e.1 — seed the 4 remaining stock specialist pods (writer /
+// reviewer / planner / extractor) if missing. Researcher entry no-ops on
+// every boot since the 17e-starter seed (above) put it there already.
+// INSERT IF NOT EXISTS — never overwrites existing rows, regardless of
+// content drift. 17e cleanup removes the flat-file
+// `templates/.project-companion/agents/` directory once dispatch smoke
+// (17e.3) is green.
+{
+  const result = seedStockPods();
+  for (const entry of result.entries) {
+    if (entry.action === 'inserted') {
+      console.log(`[pc] stock pod '${entry.name}' seeded (id=${entry.agentId})`);
+    }
   }
 }
 
