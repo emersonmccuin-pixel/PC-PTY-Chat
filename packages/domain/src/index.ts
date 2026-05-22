@@ -157,6 +157,8 @@ export type {
 export { NODE_PORT_SCHEMAS, getPortSchema } from './workflow-ports.ts';
 export type { EdgeRef, NodeEdges } from './workflow-edges.ts';
 export { formatEdgeRef, isCompactEdgeRef, parseEdgeRef } from './workflow-edges.ts';
+export type { ToolCatalogEntry, ToolCatalogSource } from './tool-catalog.ts';
+export { TOOL_CATALOG, descriptionOf, friendlyName, lookupTool } from './tool-catalog.ts';
 export {
   AGENT_BODY_VARIABLES,
   AgentBodyTemplateError,
