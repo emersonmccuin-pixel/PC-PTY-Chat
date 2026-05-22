@@ -109,6 +109,7 @@ export function AgentsList({ project, events }: AgentsListProps) {
         <CreatePodModal
           project={project}
           events={events}
+          existingProjectPodNames={projectPods.map((p) => p.name)}
           onClose={() => setCreateOpen(false)}
           onCreated={(newPod: Pod) => {
             setCreateOpen(false);
