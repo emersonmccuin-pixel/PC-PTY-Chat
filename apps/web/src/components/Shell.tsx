@@ -16,6 +16,7 @@ import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { ActivityPanel } from './ActivityPanel';
+import { AgentsList } from './AgentsList';
 import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
@@ -161,6 +162,8 @@ function Center({
           />
         ) : tab === 'workflows' ? (
           <WorkflowList project={activeProject} events={wsEvents} send={wsSend} />
+        ) : tab === 'agents' ? (
+          <AgentsList project={activeProject} events={wsEvents} />
         ) : tab === 'files' ? (
           <FilesViewer project={activeProject} />
         ) : tab === 'project-settings' ? (
