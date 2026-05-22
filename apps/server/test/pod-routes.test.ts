@@ -221,6 +221,124 @@ test('POST /api/agents/pods/:id/promote-to-global returns 409 on global-name col
   assert.equal(data.ok, false);
 });
 
+test('POST /api/agents/pods/:id/clone-to-project clones global to project-scope row with knowledge + mcp', async () => {
+  const { app, broadcasts, changedHookCalls } = freshApp();
+  // Source global pod with one knowledge row + one mcp server.
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'clonable-global',
+    prompt: 'source prompt',
+    tools: ['Read', 'Glob'],
+    description: 'source desc',
+  });
+  const sourceId = (create.data.pod as { id: string }).id;
+  await fetchJson(app, 'POST', `/api/agents/pods/${sourceId}/knowledge`, {
+    name: 'kb-note',
+    content: 'kb content',
+  });
+  await fetchJson(app, 'POST', `/api/agents/pods/${sourceId}/mcp-servers`, {
+    name: 'gmail',
+    config: { command: 'node', args: ['gmail.js'] },
+  });
+
+  broadcasts.length = 0;
+  changedHookCalls.length = 0;
+  const targetProjectId = '01HZZZZZZZZZZZZZZZZZZZZZAA';
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${sourceId}/clone-to-project`,
+    { projectId: targetProjectId },
+  );
+  assert.equal(status, 201);
+  const pod = data.pod as { id: string; name: string; scope: string; projectId: string; prompt: string; tools: string[]; description: string };
+  assert.equal(pod.name, 'clonable-global');
+  assert.equal(pod.scope, 'project');
+  assert.equal(pod.projectId, targetProjectId);
+  assert.equal(pod.prompt, 'source prompt');
+  assert.deepEqual(pod.tools, ['Read', 'Glob']);
+  assert.equal(pod.description, 'source desc');
+  assert.notEqual(pod.id, sourceId);
+  assert.deepEqual(data.copied, { knowledge: 1, mcpServers: 1 });
+  // Bundle reflects the cloned content under the new (project-scope) agent.
+  const bundle = await fetchJson(app, 'GET', `/api/agents/pods/${pod.id}`);
+  assert.equal(bundle.status, 200);
+  const knowledge = bundle.data.knowledge as Array<{ name: string; content: string; scope: string; projectId: string }>;
+  assert.equal(knowledge.length, 1);
+  assert.equal(knowledge[0]!.name, 'kb-note');
+  assert.equal(knowledge[0]!.content, 'kb content');
+  assert.equal(knowledge[0]!.scope, 'project');
+  assert.equal(knowledge[0]!.projectId, targetProjectId);
+  const mcpServers = bundle.data.mcpServers as Array<{ name: string; scope: string; projectId: string }>;
+  assert.equal(mcpServers.length, 1);
+  assert.equal(mcpServers[0]!.name, 'gmail');
+  assert.equal(mcpServers[0]!.scope, 'project');
+  assert.equal(mcpServers[0]!.projectId, targetProjectId);
+  // Broadcast + hook fired with change='created'.
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0]!.change, 'created');
+  assert.equal(changedHookCalls.length, 1);
+  assert.equal(changedHookCalls[0]!.change, 'created');
+});
+
+test('POST /api/agents/pods/:id/clone-to-project supports name override', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'renameable',
+    prompt: 'p',
+  });
+  const sourceId = (create.data.pod as { id: string }).id;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${sourceId}/clone-to-project`,
+    { projectId: '01HZZZZZZZZZZZZZZZZZZZZZBB', name: 'renamed-clone' },
+  );
+  assert.equal(status, 201);
+  assert.equal((data.pod as { name: string }).name, 'renamed-clone');
+});
+
+test('POST /api/agents/pods/:id/clone-to-project returns 409 on name collision', async () => {
+  const { app } = freshApp();
+  const projectId = '01HZZZZZZZZZZZZZZZZZZZZZCC';
+  await fetchJson(app, 'POST', '/api/agents/pods', { name: 'dup-source', prompt: 'g' });
+  // Mint a project-scope pod with the same name in the target project.
+  await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'dup-source',
+    scope: 'project',
+    projectId,
+    prompt: 'p',
+  });
+  const globalCreate = await fetchJson(app, 'GET', '/api/agents/pods');
+  const globalPod = (globalCreate.data.pods as Array<{ id: string; name: string; scope: string }>).find(
+    (p) => p.name === 'dup-source' && p.scope === 'global',
+  );
+  assert.ok(globalPod);
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${globalPod!.id}/clone-to-project`,
+    { projectId },
+  );
+  assert.equal(status, 409);
+  assert.equal(data.ok, false);
+});
+
+test('POST /api/agents/pods/:id/clone-to-project rejects missing projectId', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'no-target',
+    prompt: 'p',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  const { status } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/clone-to-project`,
+    {},
+  );
+  assert.equal(status, 400);
+});
+
 test('POST /api/agents/pods rejects missing name', async () => {
   const { app } = freshApp();
   const { status } = await fetchJson(app, 'POST', '/api/agents/pods', {

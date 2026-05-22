@@ -366,6 +366,178 @@ export function promoteAgentToGlobal(id: ULID, audit: AuditInput): PodAgentRow |
   return getAgentById(id);
 }
 
+export interface CloneAgentToProjectInput {
+  /** Source agent. Any scope; typically global. */
+  sourceId: ULID;
+  /** Target project for the clone. */
+  targetProjectId: ULID;
+  /** Optional name override. Defaults to source name. */
+  name?: string;
+}
+
+export interface CloneAgentResult {
+  agent: PodAgentRow;
+  /** Counts of content rows that were copied. */
+  copied: { knowledge: number; mcpServers: number };
+}
+
+/** Clone a pod into a target project as a project-scope row. Copies the
+ *  agent's scalar fields + every knowledge row + every mcp-server row.
+ *  Secrets are NOT copied — they're sensitive and the cloning user may not
+ *  intend to share them. The target project re-creates whatever secrets the
+ *  pod actually needs.
+ *
+ *  Throws 'already exists' if the target project already has a live
+ *  project-scope row with the resolved name. UNIQUE constraint on
+ *  `agents_project_name_idx` is the structural guard; we pre-check for a
+ *  cleaner error message. */
+export function cloneAgentToProject(
+  input: CloneAgentToProjectInput,
+  audit: AuditInput,
+): CloneAgentResult {
+  const source = getAgentById(input.sourceId);
+  if (!source) throw new Error(`unknown source pod: ${input.sourceId}`);
+  const name = (input.name ?? source.name).trim();
+  if (!name) throw new Error('clone name cannot be empty');
+
+  const collision = getAgentByName({
+    name,
+    scope: 'project',
+    projectId: input.targetProjectId,
+  });
+  if (collision) {
+    throw new Error(
+      `a project pod named "${name}" already exists in this project`,
+    );
+  }
+
+  const sourceKnowledge =
+    source.scope === 'project' && source.projectId
+      ? listKnowledge({ agentId: source.id, projectId: source.projectId })
+      : listKnowledge({ agentId: source.id, scope: 'global' });
+  const sourceMcp =
+    source.scope === 'project' && source.projectId
+      ? listMcpServers({ agentId: source.id, projectId: source.projectId })
+      : listMcpServers({ agentId: source.id, scope: 'global' });
+
+  const now = Date.now();
+  const newAgentId = newId() as ULID;
+  const agentRow = {
+    id: newAgentId,
+    name,
+    scope: 'project' as PodScope,
+    projectId: input.targetProjectId,
+    prompt: source.prompt,
+    tools: source.tools,
+    model: source.model,
+    effort: source.effort,
+    maxTurns: source.maxTurns,
+    outputDestination: source.outputDestination,
+    description: source.description,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
+  const newAgent = rowToAgent(agentRow as typeof agents.$inferSelect);
+
+  const cloneAudit: AuditInput = {
+    ...audit,
+    reason: audit.reason ?? `cloned-from-${source.id}`,
+  };
+
+  const knowledgeRows = sourceKnowledge.map((k) => ({
+    insertRow: {
+      id: newId() as ULID,
+      agentId: newAgentId,
+      scope: 'project' as PodScope,
+      projectId: input.targetProjectId,
+      name: k.name,
+      kind: k.kind,
+      content: k.content,
+      createdAt: now,
+      updatedAt: now,
+    },
+    auditField: 'knowledge' as PodAuditField,
+    snapshot: knowledgeSnapshot({
+      ...k,
+      scope: 'project',
+      projectId: input.targetProjectId,
+    }),
+  }));
+
+  const mcpRows = sourceMcp.map((m) => ({
+    insertRow: {
+      id: newId() as ULID,
+      agentId: newAgentId,
+      scope: 'project' as PodScope,
+      projectId: input.targetProjectId,
+      name: m.name,
+      config: m.config,
+      createdAt: now,
+    },
+    auditField: 'mcp_server' as PodAuditField,
+    snapshot: mcpSnapshot({
+      ...m,
+      scope: 'project',
+      projectId: input.targetProjectId,
+    }),
+  }));
+
+  const agentAuditRow = buildAuditRow(
+    {
+      agentId: newAgentId,
+      field: 'created',
+      newValue: agentSnapshot(newAgent),
+      audit: cloneAudit,
+    },
+    now,
+  );
+
+  getDb().transaction((tx) => {
+    tx.insert(agents).values(agentRow).run();
+    tx.insert(agentAudit).values(agentAuditRow).run();
+    for (const k of knowledgeRows) {
+      tx.insert(agentKnowledge).values(k.insertRow).run();
+      tx.insert(agentAudit)
+        .values(
+          buildAuditRow(
+            {
+              agentId: newAgentId,
+              field: k.auditField,
+              fieldRef: k.insertRow.id,
+              newValue: k.snapshot,
+              audit: cloneAudit,
+            },
+            now,
+          ),
+        )
+        .run();
+    }
+    for (const m of mcpRows) {
+      tx.insert(agentMcpServers).values(m.insertRow).run();
+      tx.insert(agentAudit)
+        .values(
+          buildAuditRow(
+            {
+              agentId: newAgentId,
+              field: m.auditField,
+              fieldRef: m.insertRow.name,
+              newValue: m.snapshot,
+              audit: cloneAudit,
+            },
+            now,
+          ),
+        )
+        .run();
+    }
+  });
+
+  return {
+    agent: newAgent,
+    copied: { knowledge: knowledgeRows.length, mcpServers: mcpRows.length },
+  };
+}
+
 // --- agent_knowledge --------------------------------------------------------
 
 export interface CreateKnowledgeInput {

@@ -74,6 +74,7 @@ export type { UpsertWorktreeInput } from './repos/worktrees.ts';
 export { getGlobalSettings, setGlobalSettings } from './repos/settings.ts';
 
 export {
+  cloneAgentToProject,
   createAgent,
   createKnowledge,
   createMcpServer,
@@ -101,6 +102,8 @@ export {
   updateKnowledge,
 } from './repos/pods.ts';
 export type {
+  CloneAgentResult,
+  CloneAgentToProjectInput,
   CreateAgentInput,
   CreateKnowledgeInput,
   CreateMcpServerInput,

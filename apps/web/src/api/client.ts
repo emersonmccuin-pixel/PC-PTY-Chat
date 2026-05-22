@@ -1195,6 +1195,15 @@ export const api = {
       {},
     ).then((r) => r.pod),
 
+  /** Clone a pod into a target project as a project-scope row. Copies
+   *  scalar fields + knowledge + mcp servers; NOT secrets. Throws 409 on
+   *  name collision in the target project. */
+  clonePodToProject: (podId: ULID, projectId: ULID, name?: string) =>
+    postJson<{ ok: true; pod: Pod; copied: { knowledge: number; mcpServers: number } }>(
+      `/api/agents/pods/${podId}/clone-to-project`,
+      name ? { projectId, name } : { projectId },
+    ).then((r) => ({ pod: r.pod, copied: r.copied })),
+
   patchPod: (podId: ULID, patch: PatchPodInput) =>
     postJsonMethod<{ ok: true; pod: Pod }>(
       `/api/agents/pods/${podId}`,

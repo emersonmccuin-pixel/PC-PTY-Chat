@@ -22,6 +22,7 @@
 
 import type { Hono } from 'hono';
 import {
+  cloneAgentToProject,
   createAgent,
   createKnowledge,
   createMcpServer,
@@ -406,6 +407,51 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     deps.broadcastAll({ type: 'pod-changed', change: 'updated', pod: row });
     deps.onPodChanged?.(row.name, 'updated');
     return c.json({ ok: true, pod: row });
+  });
+
+  /** Clone a pod into a target project as a project-scope row. Copies the
+   *  scalar fields + knowledge + mcp servers; secrets are intentionally NOT
+   *  copied. Returns the new pod row and counts of cloned content rows.
+   *  Body: `{ projectId: ULID, name?: string, actor?, reason? }`. */
+  app.post('/api/agents/pods/:id/clone-to-project', async (c) => {
+    const sourceId = c.req.param('id') as ULID;
+    const source = getAgentById(sourceId);
+    if (!source) return c.json({ ok: false, error: `unknown pod: ${sourceId}` }, 404);
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+    }
+    const targetProjectId = body.projectId;
+    if (typeof targetProjectId !== 'string' || !targetProjectId) {
+      return c.json({ ok: false, error: 'projectId is required' }, 400);
+    }
+    const nameOverride =
+      typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined;
+    let result;
+    try {
+      result = cloneAgentToProject(
+        {
+          sourceId,
+          targetProjectId: targetProjectId as ULID,
+          name: nameOverride,
+        },
+        auditFromBody(body, 'user', 'ui-clone'),
+      );
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/already exists/i.test(msg)) {
+        return c.json({ ok: false, error: msg }, 409);
+      }
+      return c.json({ ok: false, error: msg }, 400);
+    }
+    deps.broadcastAll({ type: 'pod-changed', change: 'created', pod: result.agent });
+    deps.onPodChanged?.(result.agent.name, 'created');
+    return c.json(
+      { ok: true, pod: result.agent, copied: result.copied },
+      201,
+    );
   });
 
   /** Patch a pod's scalar fields. Multi-field updates audit under a shared
