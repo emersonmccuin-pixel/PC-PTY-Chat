@@ -30,6 +30,9 @@
 //   - 'idle-timeout' (no JSONL event for N seconds)
 //   - 'spawn-failed' (PtySession constructor or pod-prep threw)
 //   - 'spawn-exit' (process exited before reaching a terminal turn-end)
+//   - 'spawn-stuck' (Section 20.B — never transitioned spawning → running
+//      within `spawnStuckTimeoutMs`; warmup turn never landed, or MCP
+//      handshake hung. Cleared on the spawning → running transition.)
 //   - 'cancelled' (cancel() called)
 
 import { EventEmitter } from 'node:events';
@@ -61,6 +64,13 @@ const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_WALL_CLOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT = 5;
+/** Section 20.B.1 — bounds the time a run can sit in 'spawning' status.
+ *  Fires when CC booted but the warmup turn never produced its `jsonl-turn-end`
+ *  (typical symptom: MCP child hung mid-handshake, prompt buffer holds typed
+ *  warmup but no submit went through). 2× ackTimeoutMs gives the slow-spawn
+ *  case enough headroom while still failing fast on actually-stuck spawns.
+ *  Tests override via `AgentRunManagerDeps.spawnStuckTimeoutMs`. */
+const DEFAULT_SPAWN_STUCK_TIMEOUT_MS = 120_000;
 
 /** 18.B-mcp-race — minimal warmup prompt sent on first ready. CC's MCP child
  *  (pc-rig under `npx -y tsx ...`) takes 1–3s to register tools; the first
@@ -116,6 +126,7 @@ export type AgentRunFailureCause =
   | 'idle-timeout'
   | 'spawn-failed'
   | 'spawn-exit'
+  | 'spawn-stuck'
   | 'cancelled'
   | 'unknown-agent';
 
@@ -178,6 +189,8 @@ export interface AgentRunSpawnInput {
   idleTimeoutMs?: number;
   wallClockTimeoutMs?: number;
   readyTimeoutMs?: number;
+  /** Section 20.B.1 — override the spawn-stuck timeout for this run. */
+  spawnStuckTimeoutMs?: number;
 }
 
 export interface AgentRunSpawnResult {
@@ -243,9 +256,13 @@ interface InternalRun extends AgentRunRecord {
   initialInput: string;
   idleTimer: unknown;
   wallClockTimer: unknown;
+  /** Section 20.B.1 — fires if status stays 'spawning' for too long. */
+  spawnStuckTimer: unknown;
   idleTimeoutMs: number;
   wallClockTimeoutMs: number;
   readyTimeoutMs: number;
+  /** Section 20.B.1 — bound on time spent in 'spawning'. */
+  spawnStuckTimeoutMs: number;
   initialInputSent: boolean;
   /** 18.B-mcp-race — true once the warmup turn has been sent. The real
    *  `initialInput` is held back until the warmup's `jsonl-turn-end` lands
@@ -363,6 +380,7 @@ export class AgentRunManager extends EventEmitter {
         idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+        spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -394,6 +412,7 @@ export class AgentRunManager extends EventEmitter {
         idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+        spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -430,6 +449,7 @@ export class AgentRunManager extends EventEmitter {
         idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
         wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
         readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+        spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
@@ -467,6 +487,7 @@ export class AgentRunManager extends EventEmitter {
           idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
           wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
           readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+          spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
         });
         const completion = this.installCompletionPromise(rec);
         this.runs.set(runId, rec);
@@ -494,6 +515,7 @@ export class AgentRunManager extends EventEmitter {
       idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
       wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
       readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+      spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
     });
     // Chain pod-cleanup + global-materialize-cleanup so both run on terminal.
     const podCleanup = podPrep?.cleanup ?? null;
@@ -669,6 +691,7 @@ export class AgentRunManager extends EventEmitter {
     idleTimeoutMs: number;
     wallClockTimeoutMs: number;
     readyTimeoutMs: number;
+    spawnStuckTimeoutMs: number;
   }): InternalRun {
     return {
       runId: args.runId,
@@ -691,9 +714,11 @@ export class AgentRunManager extends EventEmitter {
       initialInput: args.initialInput,
       idleTimer: null,
       wallClockTimer: null,
+      spawnStuckTimer: null,
       idleTimeoutMs: args.idleTimeoutMs,
       wallClockTimeoutMs: args.wallClockTimeoutMs,
       readyTimeoutMs: args.readyTimeoutMs,
+      spawnStuckTimeoutMs: args.spawnStuckTimeoutMs,
       initialInputSent: false,
       // 18.B-mcp-race — pre-set when warmup is disabled so the ready-state
       // handler falls through to the legacy send-initialInput path.
@@ -735,6 +760,7 @@ export class AgentRunManager extends EventEmitter {
         // real initialInput immediately on ready.
         rec.initialInputSent = true;
         rec.status = 'running';
+        this.clearSpawnStuckTimer(rec);
         this.emitRunChanged(rec); // spawning → running
         try {
           session.send(rec.initialInput);
@@ -745,6 +771,7 @@ export class AgentRunManager extends EventEmitter {
         // attachResumedSession case: initial input was the prior turn's
         // answer-write, not the spawn input. Just flip running.
         rec.status = 'running';
+        this.clearSpawnStuckTimer(rec);
         this.emitRunChanged(rec);
       }
     });
@@ -766,6 +793,7 @@ export class AgentRunManager extends EventEmitter {
       ) {
         rec.initialInputSent = true;
         rec.status = 'running';
+        this.clearSpawnStuckTimer(rec);
         this.emitRunChanged(rec); // spawning → running
         try {
           rec.session?.send(rec.initialInput);
@@ -934,6 +962,37 @@ export class AgentRunManager extends EventEmitter {
     }, rec.wallClockTimeoutMs);
   }
 
+  /** Section 20.B.1 — fires when a run sits in 'spawning' past
+   *  `spawnStuckTimeoutMs`. Symptom on the wire: CC booted but the warmup
+   *  turn's `jsonl-turn-end` never landed (MCP child hung, prompt buffer
+   *  holds the warmup text but no Enter took). Cleared the moment status
+   *  flips to 'running' (warmup completed, or warmup disabled + initialInput
+   *  acked the legacy path). Without this timer, a hung spawn only fails via
+   *  the 5-minute idle timeout — too long; orchestrator sees a frozen card. */
+  private armSpawnStuckTimer(rec: InternalRun): void {
+    if (rec.spawnStuckTimer) return;
+    const setT = this.deps.setTimeout ?? ((cb, ms) => globalThis.setTimeout(cb, ms));
+    rec.spawnStuckTimer = setT(() => {
+      // Defensive: the only state we should fire from is 'spawning'. If the
+      // transition raced and we got cleared late, no-op. failWithCause itself
+      // also no-ops on terminal status.
+      if (rec.status !== 'spawning') return;
+      this.fail(
+        rec,
+        'spawn-stuck',
+        `agent did not begin its first turn within ${Math.round(rec.spawnStuckTimeoutMs / 1000)}s — likely MCP boot stalled or warmup never processed`,
+      );
+    }, rec.spawnStuckTimeoutMs);
+  }
+
+  private clearSpawnStuckTimer(rec: InternalRun): void {
+    if (rec.spawnStuckTimer) {
+      const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
+      clearT(rec.spawnStuckTimer);
+      rec.spawnStuckTimer = null;
+    }
+  }
+
   // ── Section 18.7: cap + queue ────────────────────────────────────────
 
   /** Resolve the global cap. Test override > live DB read > 5 fallback. */
@@ -1022,6 +1081,7 @@ export class AgentRunManager extends EventEmitter {
     this.attachToSession(rec, session);
     this.armWallClockTimer(rec);
     this.armIdleTimer(rec);
+    this.armSpawnStuckTimer(rec);
     // 16b.8.1 — surface the freshly-spawned record so the Activity Panel
     // card appears immediately (before the PTY reaches `ready`).
     this.emitRunChanged(rec);
@@ -1037,6 +1097,7 @@ export class AgentRunManager extends EventEmitter {
 
   private clearTimers(rec: InternalRun): void {
     this.clearIdleTimer(rec);
+    this.clearSpawnStuckTimer(rec);
     if (rec.wallClockTimer) {
       const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
       clearT(rec.wallClockTimer);

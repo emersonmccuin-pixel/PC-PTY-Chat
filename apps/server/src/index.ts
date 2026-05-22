@@ -2928,6 +2928,7 @@ function agentFailureCauseToPayload(
     case 'unknown-agent':
       return 'unknown-agent';
     case 'spawn-failed':
+    case 'spawn-stuck':
       return 'spawn-failed';
     case 'spawn-exit':
     case null:

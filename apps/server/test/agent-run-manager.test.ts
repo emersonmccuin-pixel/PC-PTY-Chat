@@ -549,10 +549,11 @@ test('idle-timeout → failed with cause=idle-timeout', async () => {
   const s = sessions[0]!;
   s.becomeReady();
 
-  // Find the most-recently armed idle timer (last entry, since wall-clock
-  // was armed first then idle).
-  const idleEntry = idleFires[idleFires.length - 1]!;
-  assert.equal(idleEntry.ms, 1000);
+  // Locate the idle timer by its duration — finishSpawn arms wall-clock
+  // (60_000), idle (1_000), and spawn-stuck (DEFAULT_SPAWN_STUCK_TIMEOUT_MS),
+  // in that order, so position-based lookup is fragile.
+  const idleEntry = idleFires.find((e) => e.ms === 1000)!;
+  assert.ok(idleEntry, 'idle timer (1000ms) should be armed at finishSpawn');
   // Fire it.
   idleEntry.cb();
 
@@ -1546,4 +1547,85 @@ test('getMaxConcurrent dep override beats DB-backed default', async () => {
   sessions[3]!.becomeReady();
   sessions[3]!.emitTurnEnd('done-overflow');
   await overflow.completion;
+});
+
+// Section 20.B.1 — spawn-stuck timeout. A run that boots but never transitions
+// out of 'spawning' (warmup turn never lands → e.g. MCP boot hung) must fail
+// with cause='spawn-stuck' rather than sitting until the 5-minute idle timer.
+test('spawn-stuck timeout: never-ready session fails with cause=spawn-stuck', async () => {
+  const p = createProject({
+    slug: 'arm-spawn-stuck',
+    name: 'ARM SpawnStuck',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-spawn-stuck', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'spawn-stuck-test',
+    worktreeDir: tmpDataDir,
+    spawnStuckTimeoutMs: 30,
+  });
+  assert.equal(sessions.length, 1);
+  // Deliberately DO NOT call becomeReady() — simulates a CC child whose
+  // MCP boot hung pre-banner OR a stuck warmup. The spawn-stuck timer should
+  // fire and resolve completion.
+
+  const result = await completion;
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureCause, 'spawn-stuck');
+  assert.match(
+    result.failureReason ?? '',
+    /did not begin its first turn within \d+s/,
+    `expected spawn-stuck reason, got: ${result.failureReason}`,
+  );
+});
+
+// Section 20.B.1 — spawn-stuck timer must be cleared the moment a run flips
+// from spawning to running. A run that reaches 'running' before the timer
+// fires must complete normally; the timer must not later kick in to mark a
+// happy-path run as 'failed'.
+test('spawn-stuck timer cleared when run transitions to running (happy path unaffected)', async () => {
+  const p = createProject({
+    slug: 'arm-spawn-stuck-clear',
+    name: 'ARM SpawnStuck Cleared',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-spawn-stuck-clear', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const { completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'spawn-stuck-cleared-test',
+    worktreeDir: tmpDataDir,
+    spawnStuckTimeoutMs: 30,
+  });
+  const s = sessions[0]!;
+  // Flip to running immediately — spawn-stuck timer should be cleared.
+  s.becomeReady();
+  // Wait long enough that an uncleared timer would fire (3× its window).
+  await new Promise<void>((r) => setTimeout(r, 100));
+  s.emitTurnEnd('done');
+  const result = await completion;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.failureCause, null);
 });
