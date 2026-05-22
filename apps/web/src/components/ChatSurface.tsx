@@ -455,8 +455,14 @@ interface ChatSurfaceProps {
   onAskReply?: (toolUseId: string, answer: string) => boolean;
   /** localStorage partition for prompt history (per-project / per-surface). */
   composerHistoryKey: string;
-  /** Hide composer entirely — past-session view / agent-designer-exited. */
+  /** Hide composer entirely — past-session view. */
   composerHidden?: boolean;
+  /** Disable composer input + send/interrupt buttons. Used for agent-designer
+   *  spawn / exited states where the composer is structurally present but
+   *  input isn't yet (or no longer) accepted. */
+  composerDisabled?: boolean;
+  /** Override composer placeholder. Defaults to the orchestrator string. */
+  composerPlaceholder?: string;
   /** Optional content above the chat scroller (session title row, agent label, etc.). */
   headerSlot?: ReactNode;
   /** Optional content between scroller and composer (e.g. session-ended notice). */
@@ -476,6 +482,8 @@ export function ChatSurface({
   onAskReply,
   composerHistoryKey,
   composerHidden,
+  composerDisabled,
+  composerPlaceholder,
   headerSlot,
   bannerSlot,
   footerSlot,
@@ -778,6 +786,8 @@ export function ChatSurface({
           onSend={handleSend}
           onInterrupt={handleInterrupt}
           queuedPrompts={queuedPrompts}
+          disabled={composerDisabled}
+          placeholder={composerPlaceholder}
         />
       )}
       {footerSlot}
@@ -1802,11 +1812,15 @@ function Composer({
   onSend,
   onInterrupt,
   queuedPrompts,
+  disabled,
+  placeholder,
 }: {
   historyKey: string;
   onSend: (text: string) => boolean;
   onInterrupt: () => boolean;
   queuedPrompts: string[];
+  disabled?: boolean;
+  placeholder?: string;
 }) {
   const [text, setText] = useState('');
   const [interruptFeedback, setInterruptFeedback] = useState<'sent' | 'failed' | null>(null);
@@ -1908,8 +1922,12 @@ function Composer({
             return;
           }
         }}
-        placeholder="Message the orchestrator (Enter to send, Shift+Enter for newline, ↑/↓ for history)"
-        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none"
+        placeholder={
+          placeholder ??
+          'Message the orchestrator (Enter to send, Shift+Enter for newline, ↑/↓ for history)'
+        }
+        disabled={disabled}
+        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none disabled:opacity-50"
         style={{ minHeight: COMPOSER_MIN_PX, maxHeight: COMPOSER_MAX_PX }}
       />
       {queuedPrompts.length > 0 && (
@@ -1935,7 +1953,7 @@ function Composer({
         <button
           type="button"
           onClick={submit}
-          disabled={!text.trim()}
+          disabled={disabled || !text.trim()}
           className="bg-primary px-3 py-1 text-xs font-medium uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           Send
@@ -1943,7 +1961,7 @@ function Composer({
         <button
           type="button"
           onClick={clickInterrupt}
-          disabled={interruptFeedback === 'sent'}
+          disabled={disabled || interruptFeedback === 'sent'}
           title="Stop the current response (sends Escape to the PTY)"
           className={
             'px-3 py-1 text-xs font-medium uppercase tracking-wider disabled:opacity-100 ' +
