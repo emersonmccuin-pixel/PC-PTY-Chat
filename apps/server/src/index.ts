@@ -85,6 +85,7 @@ import { ProjectCreate, type CreateProjectMode } from './services/project-create
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
+import { registerPodRoutes } from './routes/pod-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
@@ -245,6 +246,20 @@ function broadcastTo(projectId: ULID, msg: unknown): void {
   const data = JSON.stringify(tagged);
   for (const c of set) {
     if (c.readyState === c.OPEN) c.send(data);
+  }
+}
+
+/**
+ * Global broadcast (17d.1) — fan out to every subscribed WebSocket regardless
+ * of project. Used for envelopes that aren't project-scoped (pods are global
+ * in v1). No `projectId` tag is injected; consumers filter by `type`.
+ */
+function broadcastAll(msg: unknown): void {
+  const data = JSON.stringify(msg);
+  for (const set of subscribers.values()) {
+    for (const c of set) {
+      if (c.readyState === c.OPEN) c.send(data);
+    }
   }
 }
 
@@ -1072,6 +1087,15 @@ app.delete('/api/projects/:projectId/agents/:name', (c) => {
     }
     return c.json({ ok: false, error: msg }, 500);
   }
+});
+
+// Section 17d.1 — Pod (DB-resident agent) routes. Live alongside the legacy
+// flat-file routes above; 17e.4 retires the flat-file path. Restart-on-edit
+// hook (`onPodChanged`) lands in 17d.10; until then mutations only emit
+// broadcasts. Pods are global-scope in v1; v2 (17c) overlays project rows.
+registerPodRoutes(app, {
+  broadcastAll,
+  // onPodChanged: wired in 17d.10
 });
 
 /** Custom commands for the Abilities tray. Scans `.claude/commands/*.md` in
