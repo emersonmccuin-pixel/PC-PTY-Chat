@@ -88,6 +88,7 @@ import { ProjectScaffold } from './services/project-scaffold.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
+import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { respawnAgentWithAnswer } from './services/agent-resume.ts';
 import {
   recordAgentAnswer,
@@ -195,6 +196,20 @@ runMigrations();
     if (entry.action === 'inserted') {
       console.log(`[pc] stock pod '${entry.name}' seeded (id=${entry.agentId})`);
     }
+  }
+}
+
+// Section 20.A.2 — Rewrite stale `npx -y tsx packages/mcp/src/server.ts`
+// commands in per-project .mcp.json files to use the pre-built bundle from
+// 20.A.1 (`node packages/mcp/dist/server.mjs`). Idempotent — no-op once
+// migrated.
+{
+  const folderPaths = listProjects().map((p) => p.folderPath);
+  const result = rewriteStaleMcpConfigs(folderPaths);
+  if (result.rewritten.length > 0) {
+    console.log(
+      `[pc] rewrote pc-rig MCP command to bundle in ${result.rewritten.length} project(s): ${result.rewritten.join(', ')}`,
+    );
   }
 }
 

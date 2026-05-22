@@ -1,11 +1,9 @@
 {
   "mcpServers": {
     "pc-rig": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "tsx",
-        "{{PC_TRUNK_PATH}}/packages/mcp/src/server.ts"
+        "{{PC_TRUNK_PATH}}/packages/mcp/dist/server.mjs"
       ],
       "env": {
         "PC_PROJECT_ID": "{{PROJECT_ID}}",
