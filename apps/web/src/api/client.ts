@@ -232,6 +232,131 @@ export type FilePreview =
   | { kind: 'binary'; byteSize: number }
   | { kind: 'oversized'; byteSize: number };
 
+// ── Agent pods (Section 17 — DB-resident agents) ──────────────────────────
+// Wire shapes mirror packages/domain/src/pod.ts. valuePlaintext is INTENTIONALLY
+// omitted from PodSecret — the server never echoes it back.
+
+export type PodScope = 'global' | 'project';
+export type PodKnowledgeKind = 'knowledge' | 'example';
+export type PodAuditActor = 'orchestrator' | 'user';
+export type PodAuditField =
+  | 'prompt'
+  | 'description'
+  | 'model'
+  | 'effort'
+  | 'max_turns'
+  | 'tools'
+  | 'output_destination'
+  | 'name'
+  | 'knowledge'
+  | 'secret'
+  | 'mcp_server'
+  | 'created'
+  | 'deleted';
+
+export interface PodMcpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+}
+
+export interface Pod {
+  id: ULID;
+  name: string;
+  scope: PodScope;
+  projectId: ULID | null;
+  prompt: string;
+  tools: string[];
+  model: string | null;
+  effort: string | null;
+  maxTurns: number | null;
+  outputDestination: string | null;
+  description: string;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}
+
+export interface PodKnowledge {
+  id: ULID;
+  agentId: ULID;
+  scope: PodScope;
+  projectId: ULID | null;
+  name: string;
+  kind: PodKnowledgeKind;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Secret as the wire sees it — value is NEVER readback. */
+export interface PodSecret {
+  id: ULID;
+  agentId: ULID;
+  envVarName: string;
+  createdAt: number;
+}
+
+export interface PodMcpServer {
+  id: ULID;
+  agentId: ULID;
+  scope: PodScope;
+  projectId: ULID | null;
+  name: string;
+  config: PodMcpServerConfig;
+  createdAt: number;
+}
+
+export interface PodAuditEntry {
+  id: ULID;
+  agentId: ULID;
+  changeSetId: ULID | null;
+  actor: PodAuditActor;
+  field: PodAuditField;
+  fieldRef: string | null;
+  priorValue: string | null;
+  newValue: string | null;
+  reason: string | null;
+  createdAt: number;
+}
+
+export interface PodBundle {
+  agent: Pod;
+  knowledge: PodKnowledge[];
+  secrets: PodSecret[];
+  mcpServers: PodMcpServer[];
+}
+
+export interface CreatePodInput {
+  name: string;
+  description?: string;
+  prompt?: string;
+  model?: string | null;
+  effort?: string | null;
+  maxTurns?: number | null;
+  tools?: string[];
+  outputDestination?: string | null;
+}
+
+export interface PatchPodInput {
+  name?: string;
+  description?: string;
+  prompt?: string;
+  model?: string | null;
+  effort?: string | null;
+  maxTurns?: number | null;
+  tools?: string[];
+  outputDestination?: string | null;
+}
+
+export interface ListAuditOptions {
+  limit?: number;
+  beforeCreatedAt?: number;
+  actor?: PodAuditActor;
+  field?: PodAuditField;
+}
+
 // ── Global settings (Q10 envelope) ─────────────────────────────────────────
 
 export interface ActivityPanelSettings {
@@ -982,6 +1107,124 @@ export const api = {
       { content },
       'PUT',
     ).then((r) => r.file),
+
+  // ── Agent pods (Section 17d) ──────────────────────────────────────────
+  /** List every live global pod. v1 = global-only. */
+  listPods: () => getJson<{ pods: Pod[] }>('/api/agents/pods').then((r) => r.pods),
+
+  /** Full bundle: agent + knowledge + secrets-metadata-only + mcp servers. */
+  getPod: (podId: ULID) =>
+    getJson<{ ok: true } & PodBundle>(`/api/agents/pods/${podId}`).then(
+      ({ agent, knowledge, secrets, mcpServers }) => ({
+        agent,
+        knowledge,
+        secrets,
+        mcpServers,
+      }),
+    ),
+
+  createPod: (input: CreatePodInput) =>
+    postJson<{ ok: true; pod: Pod }>('/api/agents/pods', input).then((r) => r.pod),
+
+  patchPod: (podId: ULID, patch: PatchPodInput) =>
+    postJsonMethod<{ ok: true; pod: Pod }>(
+      `/api/agents/pods/${podId}`,
+      patch,
+      'PATCH',
+    ).then((r) => r.pod),
+
+  deletePod: async (podId: ULID): Promise<void> => {
+    const res = await fetch(`/api/agents/pods/${podId}`, { method: 'DELETE' });
+    const data = (await res.json()) as { ok?: boolean; error?: string; kind?: string };
+    if (!res.ok || data.ok === false) {
+      const msg = data.error ?? `delete pod → ${res.status}`;
+      const err = new Error(msg) as Error & { kind?: string; status?: number };
+      if (data.kind) err.kind = data.kind;
+      err.status = res.status;
+      throw err;
+    }
+  },
+
+  createKnowledge: (
+    podId: ULID,
+    input: { name: string; content?: string; kind?: PodKnowledgeKind },
+  ) =>
+    postJson<{ ok: true; knowledge: PodKnowledge }>(
+      `/api/agents/pods/${podId}/knowledge`,
+      input,
+    ).then((r) => r.knowledge),
+
+  patchKnowledge: (
+    podId: ULID,
+    knowledgeId: ULID,
+    patch: { name?: string; content?: string; kind?: PodKnowledgeKind },
+  ) =>
+    postJsonMethod<{ ok: true; knowledge: PodKnowledge }>(
+      `/api/agents/pods/${podId}/knowledge/${knowledgeId}`,
+      patch,
+      'PATCH',
+    ).then((r) => r.knowledge),
+
+  deleteKnowledge: async (podId: ULID, knowledgeId: ULID): Promise<void> => {
+    const res = await fetch(`/api/agents/pods/${podId}/knowledge/${knowledgeId}`, {
+      method: 'DELETE',
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete knowledge → ${res.status}`);
+    }
+  },
+
+  /** Add a secret. The value goes one-way: server stores it, the GET path
+   *  strips it from every readback. To "edit" a secret, delete + recreate. */
+  createSecret: (podId: ULID, input: { envVarName: string; valuePlaintext: string }) =>
+    postJson<{ ok: true; secret: PodSecret }>(
+      `/api/agents/pods/${podId}/secrets`,
+      input,
+    ).then((r) => r.secret),
+
+  deleteSecret: async (podId: ULID, secretId: ULID): Promise<void> => {
+    const res = await fetch(`/api/agents/pods/${podId}/secrets/${secretId}`, {
+      method: 'DELETE',
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete secret → ${res.status}`);
+    }
+  },
+
+  createPodMcpServer: (
+    podId: ULID,
+    input: { name: string; config: PodMcpServerConfig },
+  ) =>
+    postJson<{ ok: true; mcpServer: PodMcpServer }>(
+      `/api/agents/pods/${podId}/mcp-servers`,
+      input,
+    ).then((r) => r.mcpServer),
+
+  deletePodMcpServer: async (podId: ULID, mcpId: ULID): Promise<void> => {
+    const res = await fetch(`/api/agents/pods/${podId}/mcp-servers/${mcpId}`, {
+      method: 'DELETE',
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error ?? `delete mcp server → ${res.status}`);
+    }
+  },
+
+  listPodAudit: (podId: ULID, opts: ListAuditOptions = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+    if (opts.beforeCreatedAt !== undefined) {
+      qs.set('beforeCreatedAt', String(opts.beforeCreatedAt));
+    }
+    if (opts.actor) qs.set('actor', opts.actor);
+    if (opts.field) qs.set('field', opts.field);
+    const suffix = qs.toString();
+    return getJson<{ ok: true; rows: PodAuditEntry[] }>(
+      `/api/agents/pods/${podId}/audit${suffix ? `?${suffix}` : ''}`,
+    ).then((r) => r.rows);
+  },
 };
 
 export type MemoryScope = 'user' | 'project' | 'workspace';
