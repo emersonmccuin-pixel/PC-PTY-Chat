@@ -121,6 +121,13 @@ export function AgentsList({ project, events }: AgentsListProps) {
       {detailPod && (
         <PodDetailModal
           pod={detailPod}
+          // Stock specialists in the project Agents tab open in read-only
+          // mode. Editing them lives in Global Settings → Specialists
+          // (17d.f.5). Non-stock globals never render in this tab; the
+          // readOnly check still passes them through safely if they sneak in.
+          readOnly={
+            detailPod.scope === 'global' && STOCK_POD_NAMES.has(detailPod.name)
+          }
           onClose={() => setDetailPodId(null)}
           onDeleted={() => {
             setDetailPodId(null);

@@ -40,6 +40,11 @@ const STOCK_POD_NAMES = new Set([
 
 interface PodDetailModalProps {
   pod: Pod;
+  /** When true: editing UI is inert (pointer-events: none + reduced opacity).
+   *  Footer drops Delete/Save/Cancel — only Close remains. A banner explains
+   *  that editing lives in Global Settings. Used when the modal is opened
+   *  from the project's Built-in section (17d follow-up). */
+  readOnly?: boolean;
   onClose: () => void;
   onDeleted: () => void;
 }
@@ -83,7 +88,7 @@ function isDirty(draft: ScalarDraft, baseline: Pod): boolean {
   );
 }
 
-export function PodDetailModal({ pod, onClose, onDeleted }: PodDetailModalProps) {
+export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailModalProps) {
   const [tab, setTab] = useState<TabId>('prompt');
   const [baseline, setBaseline] = useState<Pod>(pod);
   const [draft, setDraft] = useState<ScalarDraft>(() => draftFromPod(pod));
@@ -240,13 +245,21 @@ export function PodDetailModal({ pod, onClose, onDeleted }: PodDetailModalProps)
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-base font-semibold text-foreground">{baseline.name}</span>
-              <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                global
-              </span>
-              {isStock && (
-                <span className="inline-flex items-center bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
-                  stock
+              {readOnly ? (
+                <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  built-in · read-only
                 </span>
+              ) : (
+                <>
+                  <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    {baseline.scope === 'project' ? 'project' : 'global'}
+                  </span>
+                  {isStock && (
+                    <span className="inline-flex items-center bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+                      stock
+                    </span>
+                  )}
+                </>
               )}
             </div>
             {baseline.description && (
@@ -281,7 +294,20 @@ export function PodDetailModal({ pod, onClose, onDeleted }: PodDetailModalProps)
           ))}
         </nav>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3">
+        {readOnly && (
+          <div className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+            This is a stock specialist. To edit the prompt or settings, open{' '}
+            <span className="font-medium text-foreground">Global Settings → Specialists</span>{' '}
+            (danger-zone).
+          </div>
+        )}
+
+        <div
+          className={
+            'flex-1 overflow-y-auto px-4 py-3 ' +
+            (readOnly ? 'pointer-events-none opacity-70' : '')
+          }
+        >
           {tab === 'prompt' && (
             <PromptTab
               draft={draft}
@@ -349,39 +375,54 @@ export function PodDetailModal({ pod, onClose, onDeleted }: PodDetailModalProps)
         )}
 
         <footer className="flex items-center justify-between gap-2 border-t border-border px-4 py-3">
-          <div>
-            <button
-              type="button"
-              onClick={deletePod}
-              disabled={busy || isStock}
-              title={
-                isStock
-                  ? 'Stock specialists cannot be deleted.'
-                  : 'Soft-delete this agent.'
-              }
-              className="border border-destructive/60 bg-card px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Delete
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={attemptClose}
-              disabled={busy}
-              className="border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={save}
-              disabled={!dirty || busy}
-              className="border border-primary bg-primary/30 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-primary/50 disabled:opacity-50"
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-          </div>
+          {readOnly ? (
+            <>
+              <div className="text-xs text-muted-foreground">Read-only view.</div>
+              <button
+                type="button"
+                onClick={attemptClose}
+                className="border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted"
+              >
+                Close
+              </button>
+            </>
+          ) : (
+            <>
+              <div>
+                <button
+                  type="button"
+                  onClick={deletePod}
+                  disabled={busy || isStock}
+                  title={
+                    isStock
+                      ? 'Stock specialists cannot be deleted.'
+                      : 'Soft-delete this agent.'
+                  }
+                  className="border border-destructive/60 bg-card px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Delete
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={attemptClose}
+                  disabled={busy}
+                  className="border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={!dirty || busy}
+                  className="border border-primary bg-primary/30 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-primary/50 disabled:opacity-50"
+                >
+                  {busy ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </>
+          )}
         </footer>
       </div>
     </div>
