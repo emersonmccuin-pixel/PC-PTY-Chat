@@ -112,13 +112,75 @@ function Chat({
   events: WsEnvelope[];
   onClose: () => void;
 }) {
-  const [state, setState] = useState<SessionState>('spawning');
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  // The server side starts the session BEFORE the modal mounts (orchestrator
+  // dispatches pc_open_agent_designer → server fires /start + /send before
+  // the WS broadcast → modal opens reacting to the broadcast). That means
+  // the early state envelopes (`spawning` → `ready`) arrive BEFORE this
+  // component mounts. We do two things to recover:
+  //   1. Initial state: scan the events history backwards for the most
+  //      recent agent-designer-state envelope so we start at the truth,
+  //      not at the default 'spawning'.
+  //   2. JSONL backfill: same scan walks every agent-designer-jsonl
+  //      envelope to seed the bubble list with anything that landed before
+  //      mount (in practice, just the first agent turn that lands during
+  //      the brief spawn window).
+  const initialFromHistory = useMemo<{
+    state: SessionState;
+    bubbles: Bubble[];
+  }>(() => {
+    let state: SessionState = 'spawning';
+    const bubbles: Bubble[] = [];
+    let skipNextAssistant = false;
+    for (let i = 0; i < events.length; i++) {
+      const env = events[i];
+      if (!env) continue;
+      if (env.type === 'agent-designer-state') {
+        const s = (env as { state?: string }).state;
+        if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
+          state = s;
+        }
+      } else if (env.type === 'agent-designer-jsonl') {
+        const ev = (env as { event?: JsonlEvent }).event;
+        if (!ev) continue;
+        if (ev.kind === 'jsonl-user' && ev.text && ev.text.trim()) {
+          if (isWarmupUserText(ev.text)) {
+            skipNextAssistant = true;
+            continue;
+          }
+          bubbles.push({ kind: 'user', text: ev.text, key: `u-${i}` });
+        } else if (
+          ev.kind === 'jsonl-turn-end' &&
+          ev.text &&
+          ev.text.trim() &&
+          (ev.stopReason === undefined ||
+            ev.stopReason === null ||
+            ev.stopReason === 'end_turn' ||
+            ev.stopReason === 'max_tokens')
+        ) {
+          if (skipNextAssistant) {
+            skipNextAssistant = false;
+            continue;
+          }
+          bubbles.push({ kind: 'assistant', text: ev.text, key: `a-${i}` });
+        }
+      } else if (env.type === 'agent-designer-exit') {
+        state = 'exited';
+      }
+    }
+    return { state, bubbles };
+    // Compute once on mount; from then on the live effect below appends.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const [state, setState] = useState<SessionState>(initialFromHistory.state);
+  const [bubbles, setBubbles] = useState<Bubble[]>(initialFromHistory.bubbles);
+
   // Tracks how many WS envelopes we've consumed so we re-scan only new
-  // ones. Snap to events.length on mount so pre-mount envelopes from
-  // concurrent orchestrator activity don't re-process.
+  // ones. Snap to events.length on mount so the backfill scan above
+  // doesn't double-process them.
   const processedRef = useRef(0);
   const eventsRef = useRef(events);
   eventsRef.current = events;
@@ -133,8 +195,6 @@ function Chat({
     };
   }, [project.id]);
 
-  // Bubbles + state derived from the live WS stream.
-  const [bubbles, setBubbles] = useState<Bubble[]>([]);
   // Warmup pair (user "Reply with only the word OK." + assistant "OK") is
   // skipped — the spawn-time MCP-race fix from Section 20.C inserts a
   // synthetic turn pair that's plumbing, not conversation.
