@@ -203,20 +203,87 @@ const TOOLS = [
   {
     name: 'pc_create_agent',
     description:
-      'Create a NEW project-scoped agent. Used by the conversational Create Agent flow (3e). Accepts either { name, body } (raw file text — YAML frontmatter + markdown body) OR { name, def, markdown } (typed AgentDef + body). 409 if a project agent by this name already exists, or if the name matches a global (in which case the user should pick a different name or use the form editor to override the global). Broadcasts project-agents-changed on success.',
+      "Create a NEW agent pod (DB-resident; global-scope in v1). Returns the new pod row with its ULID id. Use this for fresh agent design — the user said 'build me an agent that does X'. For structural design from scratch you should usually dispatch agent-designer first (pc_invoke_agent agent='agent-designer') so the design conversation happens in its specialised pod; call pc_create_agent directly only for trivial extractors / utilities or when continuing a design conversation. Stock-pod names (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are reserved — 400 if name collides. Broadcasts pod-changed on success.",
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'lowercase agent name (letters/numbers/dashes)' },
-        body: { type: 'string', description: 'raw file text — YAML frontmatter + markdown body' },
-        def: {
-          type: 'object',
-          description: 'typed AgentDef (name, description, model, tools, etc.). Used with markdown.',
-          additionalProperties: true,
+        name: { type: 'string', description: 'lowercase kebab-case agent name (letters/numbers/dashes)' },
+        prompt: { type: 'string', description: "the agent's system prompt body (markdown)" },
+        description: { type: 'string', description: 'one-line description for the dispatch picker' },
+        model: { type: 'string', description: "model slug (e.g. 'opus' / 'sonnet' / 'haiku' / 'inherit')" },
+        effort: { type: 'string', description: "reasoning effort: low / medium / high / xhigh / max" },
+        maxTurns: { type: 'integer', description: 'optional cap on the number of conversation turns' },
+        tools: {
+          type: 'array',
+          items: { type: 'string' },
+          description: "allowlist of tool slugs (e.g. ['Read','Grep','mcp__pc-rig__pc_log']). Empty = inherit all.",
         },
-        markdown: { type: 'string', description: 'agent body markdown (used with def)' },
+        outputDestination: {
+          type: 'string',
+          description: "where the agent's output goes (per AgentOutputDestination enum)",
+        },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'pc_get_agent',
+    description:
+      "Fetch the full pod bundle for an agent: prompt + knowledge docs + secret env-var names (NEVER values) + MCP servers + scalar settings. Use when you need to read an agent's current configuration before recommending a change, answering 'what does <agent> know about X?', or auditing a pod's setup. Accepts either { id } (ULID) or { name } (resolved to id via list lookup).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'pod ULID id (mutually exclusive with name)' },
+        name: { type: 'string', description: 'pod name (looked up if id absent)' },
+      },
+    },
+  },
+  {
+    name: 'pc_update_agent_prompt',
+    description:
+      "Replace an agent's system prompt body. Most-used edit path: 'make orchestrator terser', 'teach researcher to cite sources'. Audits as actor='orchestrator'. Stock-pod prompts (orchestrator/researcher/...) are editable — be deliberate; danger-zone editing in the UI is gated for a reason. Accepts either { id } or { name }. Triggers restart-on-edit for any live session.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'pod ULID id (mutually exclusive with name)' },
+        name: { type: 'string', description: 'pod name (looked up if id absent)' },
+        prompt: { type: 'string', description: 'the new system prompt body (markdown)' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'pc_update_agent_settings',
+    description:
+      "Update an agent's scalar settings: model, effort, maxTurns, tools, outputDestination, description, or name. Pass only the fields you want to change. For prompt edits use pc_update_agent_prompt instead. Audits as actor='orchestrator'; multi-field updates audit under a shared change-set. Accepts either { id } or { name }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'pod ULID id (mutually exclusive with name)' },
+        name: { type: 'string', description: 'pod name (looked up if id absent)' },
+        newName: { type: 'string', description: 'rename (lowercase kebab-case)' },
+        description: { type: 'string', description: 'new one-line description' },
+        model: { type: 'string' },
+        effort: { type: 'string', description: 'low / medium / high / xhigh / max' },
+        maxTurns: { type: 'integer' },
+        tools: { type: 'array', items: { type: 'string' } },
+        outputDestination: { type: 'string' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
+    },
+  },
+  {
+    name: 'pc_delete_agent',
+    description:
+      "Soft-delete an agent pod. Stock pods (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are NOT deletable — returns 409. The pod can be restored via the History tab. Audits as actor='orchestrator'. Accepts either { id } or { name }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'pod ULID id (mutually exclusive with name)' },
+        name: { type: 'string', description: 'pod name (looked up if id absent)' },
+        reason: { type: 'string', description: 'optional one-line audit reason' },
+      },
     },
   },
   {
@@ -556,6 +623,82 @@ async function getServer(path: string): Promise<{ status: number; body: string }
   return new Promise((res, rej) => {
     const req = httpRequest(
       { host: '127.0.0.1', port: SERVER_PORT, method: 'GET', path },
+      (r) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c) => chunks.push(c as Buffer));
+        r.on('end', () =>
+          res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
+        );
+      },
+    );
+    req.on('error', rej);
+    req.end();
+  });
+}
+
+async function patchServer(
+  path: string,
+  body: unknown,
+): Promise<{ status: number; body: string }> {
+  const payload = JSON.stringify(body);
+  return new Promise((res, rej) => {
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: SERVER_PORT,
+        method: 'PATCH',
+        path,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (r) => {
+        const chunks: Buffer[] = [];
+        r.on('data', (c) => chunks.push(c as Buffer));
+        r.on('end', () =>
+          res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
+        );
+      },
+    );
+    req.on('error', rej);
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** Resolve a pod by either { id } or { name }. Name lookup hits the global
+ *  list endpoint. Used by every pc_*_agent / pc_*_knowledge MCP tool so the
+ *  orchestrator can refer to pods by their human name without needing to
+ *  juggle ULIDs across turns. */
+async function resolvePodId(
+  args: Record<string, unknown>,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  if (typeof args.id === 'string' && args.id.trim().length > 0) {
+    return { ok: true, id: args.id.trim() };
+  }
+  const name = typeof args.name === 'string' ? args.name.trim() : '';
+  if (!name) {
+    return { ok: false, error: 'either id or name required' };
+  }
+  const res = await getServer('/api/agents/pods');
+  if (res.status < 200 || res.status >= 300) {
+    return { ok: false, error: `pod-list lookup failed (${res.status}): ${res.body}` };
+  }
+  try {
+    const parsed = JSON.parse(res.body) as { pods?: Array<{ id: string; name: string }> };
+    const pod = (parsed.pods ?? []).find((p) => p.name === name);
+    if (!pod) return { ok: false, error: `no pod named '${name}'` };
+    return { ok: true, id: pod.id };
+  } catch (err) {
+    return { ok: false, error: `pod-list parse failed: ${(err as Error).message}` };
+  }
+}
+
+async function deleteServer(path: string): Promise<{ status: number; body: string }> {
+  return new Promise((res, rej) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port: SERVER_PORT, method: 'DELETE', path },
       (r) => {
         const chunks: Buffer[] = [];
         r.on('data', (c) => chunks.push(c as Buffer));
@@ -971,29 +1114,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case 'pc_create_agent': {
       const name = typeof args.name === 'string' ? args.name.trim() : '';
-      const rawBody = typeof args.body === 'string' ? args.body : undefined;
-      const def = args.def && typeof args.def === 'object' ? args.def : undefined;
-      const markdown = typeof args.markdown === 'string' ? args.markdown : undefined;
       if (!name) {
         return { content: [{ type: 'text', text: 'pc_create_agent: name required' }], isError: true };
       }
-      if (!rawBody && !(def && markdown !== undefined)) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_create_agent: either `body` (raw file text) or `{ def, markdown }` required',
-            },
-          ],
-          isError: true,
-        };
-      }
       try {
-        const payload: Record<string, unknown> = { name };
-        if (rawBody !== undefined) payload.body = rawBody;
-        if (def !== undefined) payload.def = def;
-        if (markdown !== undefined) payload.markdown = markdown;
-        const res = await postServer(projectPath('agents'), payload);
+        const payload: Record<string, unknown> = {
+          name,
+          actor: 'orchestrator',
+          reason: 'mcp-create',
+        };
+        if (typeof args.prompt === 'string') payload.prompt = args.prompt;
+        if (typeof args.description === 'string') payload.description = args.description;
+        if (typeof args.model === 'string') payload.model = args.model;
+        if (typeof args.effort === 'string') payload.effort = args.effort;
+        if (typeof args.maxTurns === 'number') payload.maxTurns = args.maxTurns;
+        if (Array.isArray(args.tools)) payload.tools = args.tools;
+        if (typeof args.outputDestination === 'string') {
+          payload.outputDestination = args.outputDestination;
+        }
+        const res = await postServer('/api/agents/pods', payload);
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -1004,6 +1143,161 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_create_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_get_agent': {
+      try {
+        const id = await resolvePodId(args);
+        if (!id.ok) {
+          return { content: [{ type: 'text', text: `pc_get_agent: ${id.error}` }], isError: true };
+        }
+        const res = await getServer(`/api/agents/pods/${encodeURIComponent(id.id)}`);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_get_agent failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_get_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_update_agent_prompt': {
+      const prompt = typeof args.prompt === 'string' ? args.prompt : '';
+      if (typeof args.prompt !== 'string') {
+        return {
+          content: [{ type: 'text', text: 'pc_update_agent_prompt: prompt required (string)' }],
+          isError: true,
+        };
+      }
+      try {
+        const id = await resolvePodId(args);
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_update_agent_prompt: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          prompt,
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-edit-prompt',
+        };
+        const res = await patchServer(`/api/agents/pods/${encodeURIComponent(id.id)}`, payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_update_agent_prompt failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_update_agent_prompt failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_update_agent_settings': {
+      try {
+        const id = await resolvePodId(args);
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_update_agent_settings: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const payload: Record<string, unknown> = {
+          actor: 'orchestrator',
+          reason: typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-edit-settings',
+        };
+        if (typeof args.newName === 'string') payload.name = args.newName.trim();
+        if (typeof args.description === 'string') payload.description = args.description;
+        if (typeof args.model === 'string') payload.model = args.model;
+        if (typeof args.effort === 'string') payload.effort = args.effort;
+        if (typeof args.maxTurns === 'number') payload.maxTurns = args.maxTurns;
+        if (Array.isArray(args.tools)) payload.tools = args.tools;
+        if (typeof args.outputDestination === 'string') {
+          payload.outputDestination = args.outputDestination;
+        }
+        // Body must contain at least one mutating field — the `actor` + `reason`
+        // alone produces a no-op update.
+        const fieldKeys = Object.keys(payload).filter(
+          (k) => k !== 'actor' && k !== 'reason',
+        );
+        if (fieldKeys.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'pc_update_agent_settings: at least one setting field required (newName / description / model / effort / maxTurns / tools / outputDestination)',
+              },
+            ],
+            isError: true,
+          };
+        }
+        const res = await patchServer(`/api/agents/pods/${encodeURIComponent(id.id)}`, payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_update_agent_settings failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_update_agent_settings failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_delete_agent': {
+      try {
+        const id = await resolvePodId(args);
+        if (!id.ok) {
+          return {
+            content: [{ type: 'text', text: `pc_delete_agent: ${id.error}` }],
+            isError: true,
+          };
+        }
+        const reason =
+          typeof args.reason === 'string' && args.reason.trim().length > 0
+            ? args.reason.trim()
+            : 'mcp-delete';
+        const qs = `actor=orchestrator&reason=${encodeURIComponent(reason)}`;
+        const res = await deleteServer(`/api/agents/pods/${encodeURIComponent(id.id)}?${qs}`);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_delete_agent failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_delete_agent failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

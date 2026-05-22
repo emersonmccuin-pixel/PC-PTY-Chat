@@ -177,6 +177,40 @@ function asActor(v: unknown): PodAuditActor | undefined {
   throw new Error(`invalid actor: ${JSON.stringify(v)}`);
 }
 
+/** Mutating routes accept optional `actor` + `reason` in the body so callers
+ *  can identify themselves to the audit log (`'orchestrator'` for MCP-driven
+ *  writes, `'user'` for UI writes). Falls back to the route's default when
+ *  absent or empty. Caller is expected to pass a known reason slug
+ *  (`'mcp-create'`, `'ui-edit'`, etc.); free-form strings are permitted. */
+function auditFromBody(
+  body: Record<string, unknown>,
+  defaultActor: PodAuditActor,
+  defaultReason: string,
+): { actor: PodAuditActor; reason: string } {
+  const actor = asActor(body.actor) ?? defaultActor;
+  const reason =
+    typeof body.reason === 'string' && body.reason.trim().length > 0
+      ? body.reason.trim()
+      : defaultReason;
+  return { actor, reason };
+}
+
+/** DELETE has no body; accept the same `actor` + `reason` overrides via query
+ *  string. Same defaults as the body path. */
+function auditFromQuery(
+  qs: URLSearchParams,
+  defaultActor: PodAuditActor,
+  defaultReason: string,
+): { actor: PodAuditActor; reason: string } {
+  const actor = asActor(qs.get('actor') ?? undefined) ?? defaultActor;
+  const reasonRaw = qs.get('reason');
+  const reason =
+    typeof reasonRaw === 'string' && reasonRaw.trim().length > 0
+      ? reasonRaw.trim()
+      : defaultReason;
+  return { actor, reason };
+}
+
 function asAuditField(v: unknown): PodAuditField | undefined {
   if (v === undefined || v === null || v === '') return undefined;
   if (typeof v === 'string' && (POD_AUDIT_FIELDS as readonly string[]).includes(v)) {
@@ -310,7 +344,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
             ? { outputDestination: asOutputDestinationOrNull(body.outputDestination) ?? null }
             : {}),
         },
-        { actor: 'user', reason: 'ui-create' },
+        auditFromBody(body, 'user', 'ui-create'),
       );
     } catch (err) {
       const msg = (err as Error).message;
@@ -353,7 +387,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
       if (patch.name === '') {
         return c.json({ ok: false, error: 'name cannot be empty' }, 400);
       }
-      updated = updateAgent(id, patch, { actor: 'user', reason: 'ui-edit' });
+      updated = updateAgent(id, patch, auditFromBody(body, 'user', 'ui-edit'));
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
     }
@@ -380,7 +414,8 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
         409,
       );
     }
-    const deleted = softDeleteAgent(id, { actor: 'user', reason: 'ui-delete' });
+    const qs = new URL(c.req.url).searchParams;
+    const deleted = softDeleteAgent(id, auditFromQuery(qs, 'user', 'ui-delete'));
     if (!deleted) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
     deps.broadcastAll({ type: 'pod-changed', change: 'deleted', podId: id, name: existing.name });
     deps.onPodChanged?.(existing.name, 'deleted');
@@ -411,7 +446,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
           ...(body.kind !== undefined ? { kind: asKnowledgeKind(body.kind) } : {}),
           content: typeof body.content === 'string' ? body.content : '',
         },
-        { actor: 'user', reason: 'ui-create-knowledge' },
+        auditFromBody(body, 'user', 'ui-create-knowledge'),
       );
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
@@ -445,10 +480,11 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
         const kind = asKnowledgeKind(body.kind);
         if (kind !== undefined) patch.kind = kind;
       }
-      updated = updateKnowledge(knowledgeId, patch, {
-        actor: 'user',
-        reason: 'ui-edit-knowledge',
-      });
+      updated = updateKnowledge(
+        knowledgeId,
+        patch,
+        auditFromBody(body, 'user', 'ui-edit-knowledge'),
+      );
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
     }
@@ -467,10 +503,11 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     if (!existing || existing.agentId !== id) {
       return c.json({ ok: false, error: `unknown knowledge: ${knowledgeId}` }, 404);
     }
-    const removed = deleteKnowledge(knowledgeId, {
-      actor: 'user',
-      reason: 'ui-delete-knowledge',
-    });
+    const qs = new URL(c.req.url).searchParams;
+    const removed = deleteKnowledge(
+      knowledgeId,
+      auditFromQuery(qs, 'user', 'ui-delete-knowledge'),
+    );
     if (!removed) return c.json({ ok: false, error: `unknown knowledge: ${knowledgeId}` }, 404);
     deps.broadcastAll({ type: 'pod-changed', change: 'updated', podId: id, name: agent.name });
     deps.onPodChanged?.(agent.name, 'updated');
@@ -498,7 +535,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     try {
       row = createSecret(
         { agentId: id, scope: 'global', envVarName, valuePlaintext },
-        { actor: 'user', reason: 'ui-create-secret' },
+        auditFromBody(body, 'user', 'ui-create-secret'),
       );
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
@@ -517,7 +554,8 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     if (!existing || existing.agentId !== id) {
       return c.json({ ok: false, error: `unknown secret: ${secretId}` }, 404);
     }
-    const removed = deleteSecret(secretId, { actor: 'user', reason: 'ui-delete-secret' });
+    const qs = new URL(c.req.url).searchParams;
+    const removed = deleteSecret(secretId, auditFromQuery(qs, 'user', 'ui-delete-secret'));
     if (!removed) return c.json({ ok: false, error: `unknown secret: ${secretId}` }, 404);
     deps.broadcastAll({ type: 'pod-changed', change: 'updated', podId: id, name: agent.name });
     deps.onPodChanged?.(agent.name, 'updated');
@@ -543,7 +581,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
       const config = asMcpConfig(body.config);
       row = createMcpServer(
         { agentId: id, scope: 'global', name, config },
-        { actor: 'user', reason: 'ui-create-mcp' },
+        auditFromBody(body, 'user', 'ui-create-mcp'),
       );
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
@@ -562,7 +600,8 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     if (!existing || existing.agentId !== id) {
       return c.json({ ok: false, error: `unknown mcp server: ${mcpId}` }, 404);
     }
-    const removed = deleteMcpServer(mcpId, { actor: 'user', reason: 'ui-delete-mcp' });
+    const qs = new URL(c.req.url).searchParams;
+    const removed = deleteMcpServer(mcpId, auditFromQuery(qs, 'user', 'ui-delete-mcp'));
     if (!removed) return c.json({ ok: false, error: `unknown mcp server: ${mcpId}` }, 404);
     deps.broadcastAll({ type: 'pod-changed', change: 'updated', podId: id, name: agent.name });
     deps.onPodChanged?.(agent.name, 'updated');
