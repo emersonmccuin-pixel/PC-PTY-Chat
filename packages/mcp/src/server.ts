@@ -27,7 +27,7 @@ const PROJECT_DATA = PROJECT_ID ? resolve(DATA, 'projects', PROJECT_ID) : DATA;
 const LOG = resolve(PROJECT_DATA, 'mcp-log.jsonl');
 const STATUS = resolve(PROJECT_DATA, 'mcp-status.json');
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: 'pc_log',
     description:

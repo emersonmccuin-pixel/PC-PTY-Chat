@@ -36,4 +36,18 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_ask_user',
   'mcp__pc-rig__pc_request_approval',
   'mcp__pc-rig__pc_answer_pending',
+  // 17b additions — pod CRUD MCP tools
+  'mcp__pc-rig__pc_get_agent',
+  'mcp__pc-rig__pc_update_agent_prompt',
+  'mcp__pc-rig__pc_update_agent_settings',
+  'mcp__pc-rig__pc_delete_agent',
+  'mcp__pc-rig__pc_create_knowledge',
+  'mcp__pc-rig__pc_update_knowledge',
+  'mcp__pc-rig__pc_delete_knowledge',
+  'mcp__pc-rig__pc_knowledge_read',
+  'mcp__pc-rig__pc_create_agent_secret',
+  'mcp__pc-rig__pc_delete_agent_secret',
+  'mcp__pc-rig__pc_add_agent_mcp_server',
+  'mcp__pc-rig__pc_delete_agent_mcp_server',
+  'mcp__pc-rig__pc_list_agent_audit',
 ] as const;
