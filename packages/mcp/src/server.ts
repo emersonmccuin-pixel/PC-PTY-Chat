@@ -428,21 +428,6 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_open_agent_designer',
-    description:
-      "Open the AgentDesignerSessionModal in the UI so the user can design a new agent in a dedicated chat with agent-designer. Use this for ANY 'make me an agent that does X' / fresh-design / 'help me design an agent' request. Do NOT use pc_invoke_agent for agent-designer — that path is for one-shot worker agents; agent-designer is a conversational specialist that needs a free-form chat. Pass `initialIntent` carrying the user's request verbatim — the modal seeds it as the first user message so the agent-designer can open the conversation immediately. The chat then runs in the modal entirely; you will NOT receive its turns in your channel. When the agent-designer creates the new pod (pc_create_agent fires), the project's WS broadcasts `project-agents-changed` and the modal closes; you'll then surface a one-line confirmation in chat.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        initialIntent: {
-          type: 'string',
-          description: "the user's request verbatim — seeds the modal's first user message",
-        },
-      },
-      required: ['initialIntent'],
-    },
-  },
-  {
     name: 'pc_list_agent_audit',
     description:
       "Read an agent's change history. Returns audit rows newest-first. Filter by actor ('orchestrator' / 'user'), field ('prompt' / 'model' / 'effort' / 'tools' / 'description' / 'name' / 'maxTurns' / 'outputDestination' / 'knowledge' / 'secret' / 'mcp-server'), limit (default 50), beforeCreatedAt (epoch ms — for paging). Use when reasoning about 'why does this agent behave this way?' or auditing recent changes. Accepts either { agentId } or { agentName }.",
@@ -1870,73 +1855,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [
             { type: 'text', text: `pc_add_agent_mcp_server failed: ${(err as Error).message}` },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_open_agent_designer': {
-      const initialIntent =
-        typeof args.initialIntent === 'string' ? args.initialIntent : '';
-      if (!initialIntent.trim()) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_open_agent_designer: initialIntent required' },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        // 1. Start the transient session.
-        const startRes = await postServer(
-          projectPath('agent-designer/start'),
-          {},
-        );
-        if (startRes.status < 200 || startRes.status >= 300) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `pc_open_agent_designer failed at start (${startRes.status}): ${startRes.body}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        // 2. Seed the first user message. CC takes a beat to be ready for
-        //    input post-spawn; we don't wait for ready here — the modal's
-        //    state event will catch the user up. The send call is queued
-        //    by PtySession until the session can accept it.
-        const sendRes = await postServer(projectPath('agent-designer/send'), {
-          text: initialIntent.trim(),
-        });
-        if (sendRes.status < 200 || sendRes.status >= 300) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `pc_open_agent_designer failed at send (${sendRes.status}): ${sendRes.body}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'Opened the agent-designer modal. The user is talking to agent-designer there; stay silent until pc_create_agent fires (project-agents-changed) or the user comes back here.',
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `pc_open_agent_designer failed: ${(err as Error).message}`,
-            },
           ],
           isError: true,
         };

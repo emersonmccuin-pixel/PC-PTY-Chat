@@ -805,8 +805,8 @@ export const api = {
   },
 
   // ── Agent-designer transient session (17b.12) ─────────────────────────────
-  /** Spawn the AgentDesignerSessionModal's transient PtySession. Backed by
-   *  the agent-designer pod (DB-resident; materialised at spawn). */
+  /** Spawn the AgentDesignerChat's transient PtySession. Backed by the
+   *  agent-designer pod (DB-resident; materialised at spawn). */
   startAgentDesigner: (projectId: ULID) =>
     postJson<{ ok: true; state: string }>(
       `/api/projects/${projectId}/agent-designer/start`,
@@ -1078,9 +1078,9 @@ export const api = {
       {},
     ),
 
-  /** 17b.11 — list waiting pending-asks for a project. Feeds the
-   *  AgentDesignerSessionModal's first-render pull when it opens onto a
-   *  run that's already paused (e.g. after browser refresh while the
+  /** 17b.11 — list waiting pending-asks for a project. Surfaces pending
+   *  pause states for dispatched-agent flows that re-open onto a run
+   *  that's already paused (e.g. after browser refresh while a
    *  conversation is in-flight). */
   listAgentPendingAsks: (projectId: ULID) =>
     getJson<{ ok: true; pendingAsks: PendingAsk[] }>(
