@@ -16,7 +16,7 @@ import { join } from 'node:path';
 const tmpDataDir = mkdtempSync(join(tmpdir(), 'pc-pod-routes-db-'));
 process.env.PC_DATA_DIR = tmpDataDir;
 
-const { closeDb, runMigrations } = await import('@pc/db');
+const { closeDb, listAgentAudit, runMigrations } = await import('@pc/db');
 const { Hono } = await import('hono');
 const { registerPodRoutes } = await import('../src/routes/pod-routes.ts');
 
@@ -390,4 +390,184 @@ test('audit listing rejects invalid filter values', async () => {
 
   const badField = await fetchJson(app, 'GET', `/api/agents/pods/${id}/audit?field=banana`);
   assert.equal(badField.status, 400);
+});
+
+// --- 17b smoke gate (D39) --------------------------------------------------
+//
+// These exercise the orchestrator's HTTP path on real route handlers (same
+// module the production server imports). The MCP layer is a thin HTTP shim
+// over these routes; if the routes work, the orchestrator works.
+
+test('17b.10: actor=orchestrator threads from body to audit row (POST + PATCH)', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'actor-thread-test',
+    prompt: 'first draft',
+    actor: 'orchestrator',
+    reason: 'mcp-create',
+  });
+  assert.equal(create.status, 201);
+  const id = (create.data.pod as { id: string }).id;
+
+  await fetchJson(app, 'PATCH', `/api/agents/pods/${id}`, {
+    prompt: 'second draft',
+    actor: 'orchestrator',
+    reason: 'mcp-edit-prompt',
+  });
+
+  const audit = await fetchJson(app, 'GET', `/api/agents/pods/${id}/audit?actor=orchestrator`);
+  const rows = audit.data.rows as Array<{ actor: string; field: string; reason: string }>;
+  assert.ok(rows.length >= 2, 'expected at least created + prompt rows');
+  assert.ok(rows.every((r) => r.actor === 'orchestrator'));
+  const fields = rows.map((r) => r.field).sort();
+  assert.ok(fields.includes('created'));
+  assert.ok(fields.includes('prompt'));
+  // Custom reason is preserved.
+  const promptRow = rows.find((r) => r.field === 'prompt');
+  assert.equal(promptRow?.reason, 'mcp-edit-prompt');
+});
+
+test('17b.10: DELETE actor override via query string lands on audit', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', { name: 'del-actor-test' });
+  const id = (create.data.pod as { id: string }).id;
+
+  const del = await fetchJson(
+    app,
+    'DELETE',
+    `/api/agents/pods/${id}?actor=orchestrator&reason=mcp-delete`,
+  );
+  assert.equal(del.status, 200);
+
+  // GET /audit on a soft-deleted pod 404s (the route gates on live agents);
+  // read via the repo directly to verify the actor + reason landed.
+  const rows = listAgentAudit({ agentId: id as never });
+  const deleteRow = rows.find((r) => r.field === 'deleted');
+  assert.ok(deleteRow, 'expected a deleted audit row');
+  assert.equal(deleteRow?.actor, 'orchestrator');
+  assert.equal(deleteRow?.reason, 'mcp-delete');
+});
+
+test('17b.10: GET single knowledge doc by id returns content', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', { name: 'know-read-test' });
+  const id = (create.data.pod as { id: string }).id;
+
+  const addKnow = await fetchJson(app, 'POST', `/api/agents/pods/${id}/knowledge`, {
+    name: 'pricing-tiers',
+    content: '# Pricing\n\nTier A is $10/mo. Tier B is $50/mo.',
+  });
+  const knowledgeId = (addKnow.data.knowledge as { id: string }).id;
+
+  const read = await fetchJson(
+    app,
+    'GET',
+    `/api/agents/pods/${id}/knowledge/${knowledgeId}`,
+  );
+  assert.equal(read.status, 200);
+  const knowledge = read.data.knowledge as { name: string; content: string };
+  assert.equal(knowledge.name, 'pricing-tiers');
+  assert.ok(knowledge.content.includes('Tier A is $10/mo'));
+
+  // 404 paths:
+  const unknownKnow = await fetchJson(
+    app,
+    'GET',
+    `/api/agents/pods/${id}/knowledge/01NOTREAL0000000000000000`,
+  );
+  assert.equal(unknownKnow.status, 404);
+
+  const unknownPod = await fetchJson(
+    app,
+    'GET',
+    `/api/agents/pods/01NOTAPODID00000000000000/knowledge/${knowledgeId}`,
+  );
+  assert.equal(unknownPod.status, 404);
+});
+
+test('17b.10: full orchestrator flow — create pod, add knowledge, read it, audit reflects orchestrator', async () => {
+  const { app } = freshApp();
+
+  // Step 1: orchestrator creates a pod (mimics pc_create_agent).
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'cold-emailer',
+    description: 'Drafts cold emails for SaaS prospects.',
+    prompt: 'You write 4-sentence cold emails.',
+    model: 'sonnet',
+    effort: 'medium',
+    tools: ['Read', 'Glob', 'mcp__pc-rig__pc_log'],
+    actor: 'orchestrator',
+    reason: 'mcp-create',
+  });
+  assert.equal(create.status, 201);
+  const podId = (create.data.pod as { id: string }).id;
+
+  // Step 2: orchestrator attaches knowledge (mimics pc_create_knowledge).
+  const know = await fetchJson(app, 'POST', `/api/agents/pods/${podId}/knowledge`, {
+    name: 'tone-guide',
+    content: 'Tone: warm but direct. No exclamation marks. Avoid superlatives.',
+    actor: 'orchestrator',
+    reason: 'mcp-create-knowledge',
+  });
+  assert.equal(know.status, 201);
+  const knowId = (know.data.knowledge as { id: string }).id;
+
+  // Step 3: orchestrator reads knowledge (mimics pc_knowledge_read).
+  const read = await fetchJson(app, 'GET', `/api/agents/pods/${podId}/knowledge/${knowId}`);
+  assert.equal(read.status, 200);
+  assert.ok(
+    (read.data.knowledge as { content: string }).content.includes('No exclamation marks'),
+  );
+
+  // Step 4: orchestrator patches the prompt (mimics pc_update_agent_prompt).
+  const patch = await fetchJson(app, 'PATCH', `/api/agents/pods/${podId}`, {
+    prompt: 'You write 3-sentence cold emails. Open with a name-drop.',
+    actor: 'orchestrator',
+    reason: 'mcp-edit-prompt',
+  });
+  assert.equal(patch.status, 200);
+  assert.ok(
+    (patch.data.pod as { prompt: string }).prompt.includes('name-drop'),
+  );
+
+  // Step 5: audit log reflects only orchestrator actions, multiple fields.
+  const audit = await fetchJson(app, 'GET', `/api/agents/pods/${podId}/audit?actor=orchestrator`);
+  const rows = audit.data.rows as Array<{ field: string; actor: string }>;
+  const fields = new Set(rows.map((r) => r.field));
+  assert.ok(fields.has('created'));
+  assert.ok(fields.has('prompt'));
+  assert.ok(fields.has('knowledge'));
+  assert.ok(rows.every((r) => r.actor === 'orchestrator'));
+
+  // Step 6: bundle reflects post-state — prompt + knowledge present.
+  const bundle = await fetchJson(app, 'GET', `/api/agents/pods/${podId}`);
+  assert.equal(bundle.status, 200);
+  assert.ok(
+    (bundle.data.agent as { prompt: string }).prompt.includes('name-drop'),
+  );
+  const knowledge = bundle.data.knowledge as Array<{ name: string }>;
+  assert.equal(knowledge.length, 1);
+  assert.equal(knowledge[0]?.name, 'tone-guide');
+});
+
+test('17b.10: stock-pod delete returns 409 regardless of actor', async () => {
+  const { app } = freshApp();
+  // 'agent-designer' was added to STOCK_POD_NAMES in 17b.7 — use it (no
+  // earlier test in this file mints it, so the UNIQUE name index doesn't
+  // 400 the POST).
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'agent-designer',
+    prompt: 'stock seed',
+  });
+  assert.equal(create.status, 201);
+  const id = (create.data.pod as { id: string }).id;
+
+  // Orchestrator-as-actor doesn't bypass the guard.
+  const del = await fetchJson(
+    app,
+    'DELETE',
+    `/api/agents/pods/${id}?actor=orchestrator&reason=mcp-delete`,
+  );
+  assert.equal(del.status, 409);
+  assert.equal((del.data as { kind?: string }).kind, 'stock-specialist');
 });
