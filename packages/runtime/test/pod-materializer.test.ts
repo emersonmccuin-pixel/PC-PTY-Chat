@@ -390,11 +390,14 @@ test('materializePod creates nested .claude/agents/ even when worktree is empty'
   }
 });
 
-test('materializePod ignores knowledge rows in 17a.3 (footer is a 17b concern)', () => {
+test('materializePod emits a knowledge footer when knowledge rows exist (17b.9)', () => {
   const dirs = freshDirs();
   try {
     const bundle = makeBundle({
-      knowledge: [makeKnowledge('agent-roster', 'roster content'.repeat(10))],
+      knowledge: [
+        makeKnowledge('agent-roster', 'researcher is the file reader\nwriter is the drafter'),
+        makeKnowledge('pricing', '# Pricing tiers\n\nTier A is $10/mo'),
+      ],
     });
     const result = materializePod({
       bundle,
@@ -402,11 +405,34 @@ test('materializePod ignores knowledge rows in 17a.3 (footer is a 17b concern)',
       scratchDir: dirs.scratch,
     });
     const md = readFileSync(result.agentMdPath, 'utf8');
-    // Knowledge MCP tools land in 17b; until then the materialiser doesn't
-    // dump knowledge into the prompt body (would be useless without
-    // pc_knowledge_read to act on it).
-    assert.ok(!md.includes('agent-roster'));
-    assert.ok(!md.includes('roster content'));
+    // Footer section heading present
+    assert.ok(md.includes('## Knowledge available'));
+    // pc_knowledge_read pattern shown
+    assert.ok(md.includes('pc_knowledge_read'));
+    // Both doc names + ids surfaced
+    assert.ok(md.includes('**agent-roster**'));
+    assert.ok(md.includes('**pricing**'));
+    // First non-heading line surfaced as summary
+    assert.ok(md.includes('researcher is the file reader'));
+    // H1 skipped in favor of body line for 'pricing' summary
+    assert.ok(md.includes('Tier A is $10/mo'));
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+test('materializePod emits no knowledge footer when knowledge is empty', () => {
+  const dirs = freshDirs();
+  try {
+    const bundle = makeBundle({ knowledge: [] });
+    const result = materializePod({
+      bundle,
+      worktreeDir: dirs.worktree,
+      scratchDir: dirs.scratch,
+    });
+    const md = readFileSync(result.agentMdPath, 'utf8');
+    assert.ok(!md.includes('## Knowledge available'));
+    assert.ok(!md.includes('pc_knowledge_read'));
   } finally {
     dirs.cleanup();
   }

@@ -302,9 +302,9 @@ test('preparePodSpawn expands mcp__pc-rig__* via the static catalog', () => {
   }
 });
 
-// --- knowledge does NOT leak into v1 spawn ---------------------------------
+// --- knowledge footer surfaced on spawn (17b.9) -----------------------------
 
-test('preparePodSpawn does not write knowledge content into the .md (17a.3 carve-out)', () => {
+test('preparePodSpawn emits the knowledge footer when knowledge rows exist (17b.9)', () => {
   const dirs = freshDirs();
   try {
     const agent = createAgent({ name: 'pod-knows', scope: 'global' }, U);
@@ -313,7 +313,9 @@ test('preparePodSpawn does not write knowledge content into the .md (17a.3 carve
         agentId: agent.id,
         scope: 'global',
         name: 'agent-roster',
-        content: 'super-secret-roster-payload',
+        // 17b.9: full content is NOT inlined — only a one-line summary lives
+        // in the .md. Agents pull full content at runtime via pc_knowledge_read.
+        content: 'this summary line surfaces but full content stays at runtime',
       },
       U,
     );
@@ -327,8 +329,11 @@ test('preparePodSpawn does not write knowledge content into the .md (17a.3 carve
       resolve(dirs.worktree, '.claude', 'agents', 'pod-knows.md'),
       'utf8',
     );
-    assert.ok(!md.includes('agent-roster'));
-    assert.ok(!md.includes('super-secret-roster-payload'));
+    // Footer present + roster + pc_knowledge_read pattern + summary
+    assert.ok(md.includes('## Knowledge available'));
+    assert.ok(md.includes('**agent-roster**'));
+    assert.ok(md.includes('pc_knowledge_read'));
+    assert.ok(md.includes('this summary line surfaces'));
   } finally {
     dirs.cleanup();
   }

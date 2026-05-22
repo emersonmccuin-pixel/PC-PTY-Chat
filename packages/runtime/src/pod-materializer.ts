@@ -26,6 +26,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type {
   PodAgentRow,
+  PodKnowledgeRow,
   PodMcpServerConfig,
   PodMcpServerRow,
   PodSecretRow,
@@ -75,7 +76,11 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
 
   const agentMdPath = resolve(worktreeDir, '.claude', 'agents', `${bundle.agent.name}.md`);
   mkdirSync(dirname(agentMdPath), { recursive: true });
-  writeFileSync(agentMdPath, renderAgentMd(bundle.agent, expandedTools), 'utf8');
+  writeFileSync(
+    agentMdPath,
+    renderAgentMd(bundle.agent, expandedTools, bundle.knowledge),
+    'utf8',
+  );
 
   const mcpConfigPath = resolve(scratchDir, 'mcp.json');
   mkdirSync(scratchDir, { recursive: true });
@@ -101,8 +106,17 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
 
 /** Render the `.claude/agents/<name>.md` body. Frontmatter mirrors PC's
  *  flat-file agent shape: name, description, tools (comma-separated), model,
- *  effort, maxTurns. Empty/null fields are omitted. */
-export function renderAgentMd(agent: PodAgentRow, tools: readonly string[]): string {
+ *  effort, maxTurns. Empty/null fields are omitted.
+ *
+ *  When `knowledge` rows exist, appends a "Knowledge available" footer
+ *  listing each doc + its id + a short summary. Worker agents pull full
+ *  content at runtime via `pc_knowledge_read`. Pods with zero knowledge
+ *  docs get no footer. */
+export function renderAgentMd(
+  agent: PodAgentRow,
+  tools: readonly string[],
+  knowledge: readonly PodKnowledgeRow[] = [],
+): string {
   const fm: string[] = ['---', `name: ${agent.name}`];
   if (agent.description.trim() !== '') fm.push(`description: ${agent.description}`);
   if (tools.length > 0) fm.push(`tools: ${tools.join(', ')}`);
@@ -111,7 +125,52 @@ export function renderAgentMd(agent: PodAgentRow, tools: readonly string[]): str
   if (agent.maxTurns !== null) fm.push(`maxTurns: ${agent.maxTurns}`);
   fm.push('---');
   const body = agent.prompt.trim();
-  return `${fm.join('\n')}\n\n${body}\n`;
+  const footer = renderKnowledgeFooter(agent.id, knowledge);
+  return `${fm.join('\n')}\n\n${body}${footer}\n`;
+}
+
+/** Knowledge access footer appended to the rendered .md when the pod has
+ *  knowledge docs. Lists ids + names + a short summary so the agent can
+ *  decide which docs to read; full content is pulled at runtime via
+ *  `pc_knowledge_read`. */
+export function renderKnowledgeFooter(
+  agentId: string,
+  knowledge: readonly PodKnowledgeRow[],
+): string {
+  if (knowledge.length === 0) return '';
+  const lines: string[] = [
+    '',
+    '',
+    '## Knowledge available',
+    '',
+    `You have ${knowledge.length} reference document${knowledge.length === 1 ? '' : 's'} attached to your pod. Read any of them at runtime with:`,
+    '',
+    '```',
+    `pc_knowledge_read({ agentId: "${agentId}", knowledgeId: "<one of the ids below>" })`,
+    '```',
+    '',
+    'Available docs:',
+    '',
+  ];
+  for (const doc of knowledge) {
+    const summary = summariseKnowledge(doc.content);
+    lines.push(`- **${doc.name}** (\`${doc.id}\`) — ${summary}`);
+  }
+  return lines.join('\n');
+}
+
+function summariseKnowledge(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return '(empty)';
+  // First non-empty / non-heading line; cap at 120 chars.
+  for (const raw of trimmed.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+  }
+  // All lines are headings; take the first
+  const firstHeading = trimmed.split(/\r?\n/)[0]?.replace(/^#+\s*/, '').trim();
+  return firstHeading || '(content)';
 }
 
 /** Render the temp `mcp.json` content. Pod's MCP rows merge on top of the
