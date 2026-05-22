@@ -1591,6 +1591,67 @@ test('spawn-stuck timeout: never-ready session fails with cause=spawn-stuck', as
   );
 });
 
+// Section 20.B.2 — PTY-exit handler race. When a non-terminal run is failed
+// by the manager (spawn-stuck, idle-timeout, cancel), `failWithCause` calls
+// `session.kill()` synchronously and then resolves completion. The fake
+// session's kill() defers an 'exit' emit via setImmediate; when that exit
+// listener runs, `rec.status` is already terminal so the handler must no-op
+// (cleanupOnTerminal is idempotent, completion stays resolved once, no
+// extra run-changed event fires). Guards against a future regression that
+// re-fails a terminal run on its own kill-driven exit.
+test('PTY exit after manager kill is idempotent — completion resolves once, no extra run-changed', async () => {
+  const p = createProject({
+    slug: 'arm-exit-race',
+    name: 'ARM Exit Race',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-exit-race', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const terminalSnapshots: string[] = [];
+  mgr.on('run-changed', (rec) => {
+    if (rec.status === 'failed' || rec.status === 'completed' || rec.status === 'cancelled') {
+      terminalSnapshots.push(`${rec.status}:${rec.failureCause ?? '-'}`);
+    }
+  });
+
+  const { runId, completion } = mgr.spawn({
+    agentName: 'researcher',
+    input: 'go',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'exit-race-test',
+    worktreeDir: tmpDataDir,
+    spawnStuckTimeoutMs: 25,
+  });
+  const s = sessions[0]!;
+  // Don't call becomeReady — let spawn-stuck timer fire, which calls
+  // session.kill(), which schedules an exit emit on setImmediate.
+
+  const result = await completion;
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failureCause, 'spawn-stuck');
+  // Wait one extra tick to let the deferred exit emit land + run through
+  // the exit listener. If the handler tried to re-fail the run, a second
+  // terminal run-changed would land here.
+  await tick();
+  await tick();
+  assert.equal(s.killed, true, 'kill was invoked by failWithCause');
+  assert.equal(
+    terminalSnapshots.length,
+    1,
+    `terminal run-changed must fire exactly once, got: ${JSON.stringify(terminalSnapshots)}`,
+  );
+  assert.equal(terminalSnapshots[0], 'failed:spawn-stuck');
+  assert.equal(mgr.get(runId)?.failureCause, 'spawn-stuck', 'failureCause must not be overwritten');
+});
+
 // Section 20.B.1 — spawn-stuck timer must be cleared the moment a run flips
 // from spawning to running. A run that reaches 'running' before the timer
 // fires must complete normally; the timer must not later kick in to mark a
