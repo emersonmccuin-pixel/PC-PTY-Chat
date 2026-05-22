@@ -384,6 +384,31 @@ export class ProjectRuntime {
     return reactivated;
   }
 
+  /**
+   * Section 17d.10 — restart-on-pod-edit for the orchestrator. CC memoizes the
+   * agent definition per-process, so mid-session pod edits don't propagate
+   * until the claude.exe child is killed + respawned. After the kill, the
+   * active session row is preserved (same id, same providerSessionId, same
+   * JSONL on disk), so the next `ensurePty()` re-spawns with `--resume` and
+   * the conversation continues from the same point — only with the new pod
+   * content materialised. Returns true if a live PTY was killed (caller is
+   * expected to ensure() + re-attach handlers); false if there was nothing
+   * to restart.
+   *
+   * Worker agents (researcher / writer / etc.) deliberately do NOT restart on
+   * pod edit — killing them mid-task would orphan their in-flight work. Worker
+   * agents pick up new pod content on their next dispatch, which is the safer
+   * default.
+   */
+  restartIfOrchestratorPod(podName: string): boolean {
+    if (podName !== 'orchestrator') return false;
+    if (!this.pty) return false;
+    if (this.pty.getState() === 'exited') return false;
+    try { this.pty.kill(); } catch { /* best-effort */ }
+    this.pty = null;
+    return true;
+  }
+
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }

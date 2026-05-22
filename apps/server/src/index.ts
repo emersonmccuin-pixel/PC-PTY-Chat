@@ -1090,12 +1090,33 @@ app.delete('/api/projects/:projectId/agents/:name', (c) => {
 });
 
 // Section 17d.1 — Pod (DB-resident agent) routes. Live alongside the legacy
-// flat-file routes above; 17e.4 retires the flat-file path. Restart-on-edit
-// hook (`onPodChanged`) lands in 17d.10; until then mutations only emit
-// broadcasts. Pods are global-scope in v1; v2 (17c) overlays project rows.
+// flat-file routes above; 17e.4 retires the flat-file path. Pods are
+// global-scope in v1; v2 (17c) overlays project rows.
+//
+// 17d.10 — `onPodChanged` triggers restart-on-edit for the orchestrator
+// pod across every loaded ProjectRuntime. Worker pods (researcher, etc.)
+// are intentionally NOT restarted — killing them mid-task would orphan
+// their work, and the next dispatch re-reads the DB anyway.
 registerPodRoutes(app, {
   broadcastAll,
-  // onPodChanged: wired in 17d.10
+  onPodChanged: (podName) => {
+    if (podName !== 'orchestrator') return;
+    for (const runtime of projectRegistry.list()) {
+      const restarted = runtime.restartIfOrchestratorPod(podName);
+      if (!restarted) continue;
+      try {
+        const pty = runtime.ensurePty();
+        attachPtyHandlers(runtime.project.id, runtime, pty);
+        // No replayActiveSessionEvents — chat history already in the UI;
+        // the user sees a brief reconnect blip + the next prompt-turn
+        // reflects the new orchestrator identity.
+      } catch (err) {
+        console.error(
+          `[pc] orchestrator restart-on-pod-edit failed for ${runtime.project.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+  },
 });
 
 /** Custom commands for the Abilities tray. Scans `.claude/commands/*.md` in
