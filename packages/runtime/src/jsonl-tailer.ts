@@ -165,7 +165,15 @@ export class JsonlTailer extends EventEmitter {
       const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : null;
       if (op === 'enqueue') {
         this.emit('event', { kind: 'jsonl-queue-enqueue', timestamp } satisfies JsonlEvent);
-      } else if (op === 'dequeue') {
+      } else if (op === 'dequeue' || op === 'remove') {
+        // CC's queue protocol logs two consumption operations:
+        //   - `dequeue` when a command is pulled for processing via the normal
+        //     consume path (messageQueueManager.dequeue)
+        //   - `remove` when a command leaves the queue via reference / filter
+        //     removal (messageQueueManager.remove / removeByFilter). The
+        //     "queued command processed at turn-end" path on CC ≥2.1 fires
+        //     `remove`. Both mean "this queue slot is gone" — collapse into
+        //     our single `jsonl-queue-dequeue` envelope so the UI pops it.
         this.emit('event', { kind: 'jsonl-queue-dequeue', timestamp } satisfies JsonlEvent);
       }
       return;

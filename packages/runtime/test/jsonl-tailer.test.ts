@@ -388,6 +388,25 @@ test('queue-operation enqueue + dequeue → matching events', () => {
   ]);
 });
 
+test('queue-operation remove (CC ≥2.1) collapses into jsonl-queue-dequeue', () => {
+  // CC's queue manager emits `remove` when a queued command is consumed via
+  // the reference/filter path (messageQueueManager.remove / removeByFilter).
+  // The "queued command processed at turn-end" path fires `remove`, NOT
+  // `dequeue` — both mean "this queue slot is gone" so the tailer collapses
+  // them into a single jsonl-queue-dequeue envelope. Burned 2026-05-22 when
+  // the queue UI never popped because the tailer ignored `remove`.
+  const f = freshFile([
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-05-22T17:25:11Z' },
+    { type: 'queue-operation', operation: 'remove', timestamp: '2026-05-22T17:27:16Z' },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, [
+    { kind: 'jsonl-queue-enqueue', timestamp: '2026-05-22T17:25:11Z' },
+    { kind: 'jsonl-queue-dequeue', timestamp: '2026-05-22T17:27:16Z' },
+  ]);
+});
+
 test('isSidechain: true short-circuits → only jsonl-sidechain event', () => {
   // Subagent JSONL lines have isSidechain: true. The tailer must NOT also
   // emit jsonl-user / jsonl-turn-end for them — the chat panel renders
