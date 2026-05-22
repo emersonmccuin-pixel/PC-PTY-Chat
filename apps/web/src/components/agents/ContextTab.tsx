@@ -1,7 +1,16 @@
-// Section 17d.5 — Context (knowledge) tab. Placeholder shell until the
-// real implementation lands.
+// Section 17d.5 — Context (knowledge) tab.
+//
+// List of knowledge docs the agent can reference via pc_knowledge_read (17b).
+// Row click expands inline with Save/Cancel. "Add" button appends a new
+// blank row pre-opened for editing. Delete asks for confirm.
+//
+// The `kind: 'knowledge' | 'example'` distinction is hidden from the UI per
+// buildout § 17d "Hides the internal kind distinction." New docs default to
+// 'knowledge'; existing 'example' rows render identically.
 
-import type { PodBundle, ULID } from '@/api/client';
+import { useState } from 'react';
+
+import { api, type PodBundle, type PodKnowledge, type ULID } from '@/api/client';
 
 interface ContextTabProps {
   podId: ULID;
@@ -11,13 +20,263 @@ interface ContextTabProps {
   onChanged: () => void;
 }
 
-export function ContextTab({ bundle, loading, error }: ContextTabProps) {
+interface EditState {
+  /** New (unsaved) rows have a synthetic id and no real DB row yet. */
+  id: string;
+  isNew: boolean;
+  draft: { name: string; content: string };
+}
+
+export function ContextTab({ podId, bundle, loading, error, onChanged }: ContextTabProps) {
+  const [edit, setEdit] = useState<EditState | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function startNew() {
+    setOpError(null);
+    setEdit({
+      id: `__new__${Date.now()}`,
+      isNew: true,
+      draft: { name: '', content: '' },
+    });
+  }
+
+  function startEdit(row: PodKnowledge) {
+    setOpError(null);
+    setEdit({
+      id: row.id,
+      isNew: false,
+      draft: { name: row.name, content: row.content },
+    });
+  }
+
+  function cancelEdit() {
+    setEdit(null);
+    setOpError(null);
+  }
+
+  async function save() {
+    if (!edit || busy) return;
+    const name = edit.draft.name.trim();
+    if (!name) {
+      setOpError('Name is required.');
+      return;
+    }
+    setBusy(true);
+    setOpError(null);
+    try {
+      if (edit.isNew) {
+        await api.createKnowledge(podId, { name, content: edit.draft.content });
+      } else {
+        await api.patchKnowledge(podId, edit.id as ULID, {
+          name,
+          content: edit.draft.content,
+        });
+      }
+      setEdit(null);
+      onChanged();
+    } catch (e) {
+      setOpError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(row: PodKnowledge) {
+    const ok = window.confirm(`Delete knowledge "${row.name}"?`);
+    if (!ok) return;
+    setBusy(true);
+    setOpError(null);
+    try {
+      await api.deleteKnowledge(podId, row.id);
+      if (edit?.id === row.id) setEdit(null);
+      onChanged();
+    } catch (e) {
+      setOpError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) return <div className="text-xs text-muted-foreground">Loading…</div>;
   if (error) return <div className="text-xs text-destructive">{error}</div>;
   if (!bundle) return null;
+
+  const rows = bundle.knowledge;
+
   return (
-    <div className="text-xs text-muted-foreground">
-      Knowledge docs ({bundle.knowledge.length}). Editor lands in 17d.5.
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {rows.length} knowledge {rows.length === 1 ? 'doc' : 'docs'}
+        </div>
+        <button
+          type="button"
+          onClick={startNew}
+          disabled={busy || edit !== null}
+          className="border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+        >
+          + Add doc
+        </button>
+      </div>
+
+      {opError && (
+        <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {opError}
+        </div>
+      )}
+
+      {edit?.isNew && (
+        <KnowledgeEditor
+          edit={edit}
+          busy={busy}
+          onChange={(patch) =>
+            setEdit((p) => (p ? { ...p, draft: { ...p.draft, ...patch } } : p))
+          }
+          onSave={save}
+          onCancel={cancelEdit}
+        />
+      )}
+
+      {rows.length === 0 && !edit?.isNew ? (
+        <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+          No knowledge docs yet. Add one to give this agent reference material.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {rows.map((row) =>
+            edit?.id === row.id && !edit.isNew ? (
+              <KnowledgeEditor
+                key={row.id}
+                edit={edit}
+                busy={busy}
+                onChange={(patch) =>
+                  setEdit((p) => (p ? { ...p, draft: { ...p.draft, ...patch } } : p))
+                }
+                onSave={save}
+                onCancel={cancelEdit}
+              />
+            ) : (
+              <KnowledgeRow
+                key={row.id}
+                row={row}
+                disabled={busy || edit !== null}
+                onEdit={() => startEdit(row)}
+                onDelete={() => void remove(row)}
+              />
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KnowledgeRow({
+  row,
+  disabled,
+  onEdit,
+  onDelete,
+}: {
+  row: PodKnowledge;
+  disabled: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const preview = row.content.length > 200 ? row.content.slice(0, 200) + '…' : row.content;
+  return (
+    <div className="border border-border bg-card px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-xs font-medium text-foreground">{row.name}</div>
+          <div className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
+            {preview || <span className="italic">(empty)</span>}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">
+            {row.content.length.toLocaleString()} chars
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col gap-1">
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={disabled}
+            className="border border-border bg-card px-2 py-0.5 text-[10px] hover:bg-muted disabled:opacity-50"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={disabled}
+            className="border border-destructive/60 bg-card px-2 py-0.5 text-[10px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KnowledgeEditor({
+  edit,
+  busy,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  edit: EditState;
+  busy: boolean;
+  onChange: (patch: Partial<{ name: string; content: string }>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="border border-primary/60 bg-card px-3 py-2">
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Name
+          </span>
+          <input
+            type="text"
+            value={edit.draft.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+            placeholder="doc-name"
+            className="w-full border border-border bg-background px-2 py-1 font-mono text-xs text-foreground outline-none focus:border-primary"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Content
+          </span>
+          <textarea
+            value={edit.draft.content}
+            onChange={(e) => onChange({ content: e.target.value })}
+            rows={10}
+            className="w-full border border-border bg-background px-2 py-1 font-mono text-[11px] text-foreground outline-none focus:border-primary"
+          />
+        </label>
+      </div>
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="border border-border bg-card px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={busy}
+          className="border border-primary bg-primary/30 px-2 py-1 text-xs font-medium text-foreground hover:bg-primary/50 disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : edit.isNew ? 'Create' : 'Save'}
+        </button>
+      </div>
     </div>
   );
 }
