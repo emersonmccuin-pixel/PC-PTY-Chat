@@ -100,7 +100,7 @@ export function CreatePodModal({
           </TabPanel>
 
           <TabPanel active={tab === 'manual'}>
-            <ManualForm onClose={handleClose} onCreated={onCreated} />
+            <ManualForm project={project} onClose={handleClose} onCreated={onCreated} />
           </TabPanel>
         </div>
       </div>
@@ -241,9 +241,11 @@ const INITIAL: FormState = {
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 function ManualForm({
+  project,
   onClose,
   onCreated,
 }: {
+  project: Project;
   onClose: () => void;
   onCreated: (pod: Pod) => void;
 }) {
@@ -263,7 +265,11 @@ function ManualForm({
       setError('Name is required.');
       return;
     }
-    const input: CreatePodInput = { name };
+    const input: CreatePodInput = {
+      name,
+      scope: 'project',
+      projectId: project.id,
+    };
     if (form.description.trim()) input.description = form.description.trim();
     if (form.prompt) input.prompt = form.prompt;
     if (form.model.trim()) input.model = form.model.trim();

@@ -4,9 +4,10 @@
 // pod-routes.test.ts so the tests exercise the same handler code paths the
 // production server runs.
 //
-// v1 = global-scope only. Routes reject `scope: 'project'` payloads with 400
-// (the repo also rejects, but routes do it first so we never partially
-// transact on a bad input).
+// Both `scope: 'global'` and `scope: 'project'` are supported. Project-scope
+// rows require `projectId`. GET /api/agents/pods accepts `?projectId=<ulid>`
+// to merge globals with that project's project-scope rows (the union the
+// Agents tab displays); without the query, returns globals only.
 //
 // Mutating routes emit two effects after the DB write:
 //   1. `deps.broadcastAll({ type: 'pod-changed', ... })` — global broadcast
@@ -37,6 +38,7 @@ import {
   listKnowledge,
   listMcpServers,
   listSecrets,
+  promoteAgentToGlobal,
   softDeleteAgent,
   updateAgent,
   updateKnowledge,
@@ -52,6 +54,7 @@ import type {
   PodKnowledgeRow,
   PodMcpServerConfig,
   PodMcpServerRow,
+  PodScope,
   PodSecretRow,
   ULID,
 } from '@pc/domain';
@@ -267,9 +270,15 @@ function asMcpConfig(v: unknown): PodMcpServerConfig {
 export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
   // --- /api/agents/pods ---------------------------------------------------
 
-  /** List all live pods. v1 = global-scope only. */
+  /** List live pods. Without `?projectId`: globals only. With
+   *  `?projectId=<ulid>`: union of globals + that project's project-scope rows
+   *  (the Agents-tab view). */
   app.get('/api/agents/pods', (c) => {
-    const pods = listAgents({ scope: 'global' });
+    const qs = new URL(c.req.url).searchParams;
+    const projectId = qs.get('projectId') as ULID | null;
+    const pods = projectId
+      ? listAgents({ projectId, includeGlobals: true })
+      : listAgents({ scope: 'global' });
     return c.json({ ok: true, pods });
   });
 
@@ -312,7 +321,8 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     }
   });
 
-  /** Create a new pod. v1 = global-scope only. Body: name + optional fields. */
+  /** Create a new pod. Body: name + scope ('global' default | 'project') +
+   *  projectId (required when scope='project') + optional fields. */
   app.post('/api/agents/pods', async (c) => {
     let body: Record<string, unknown>;
     try {
@@ -322,8 +332,13 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     }
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-    if (body.scope !== undefined && body.scope !== 'global') {
-      return c.json({ ok: false, error: 'only scope="global" is supported in v1' }, 400);
+    const scope: PodScope = body.scope === 'project' ? 'project' : 'global';
+    let projectId: ULID | null = null;
+    if (scope === 'project') {
+      if (typeof body.projectId !== 'string' || !body.projectId) {
+        return c.json({ ok: false, error: 'projectId required when scope="project"' }, 400);
+      }
+      projectId = body.projectId as ULID;
     }
     let row: PodAgentRow;
     try {
@@ -332,7 +347,8 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
       row = createAgent(
         {
           name,
-          scope: 'global',
+          scope,
+          ...(projectId ? { projectId } : {}),
           prompt,
           description,
           ...(body.model !== undefined ? { model: asModelOrNull(body.model) ?? null } : {}),
@@ -355,6 +371,41 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     deps.broadcastAll({ type: 'pod-changed', change: 'created', pod: row });
     deps.onPodChanged?.(row.name, 'created');
     return c.json({ ok: true, pod: row }, 201);
+  });
+
+  /** Promote a project-scoped pod to global. Stock pods are seeded global and
+   *  shouldn't surface this route in practice, but it returns 400 if the row
+   *  is already global. UNIQUE violation on a global name collision → 409. */
+  app.post('/api/agents/pods/:id/promote-to-global', async (c) => {
+    const id = c.req.param('id') as ULID;
+    const existing = getAgentById(id);
+    if (!existing) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
+    if (existing.scope === 'global') {
+      return c.json({ ok: false, error: 'pod is already global' }, 400);
+    }
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    let row: PodAgentRow | null;
+    try {
+      row = promoteAgentToGlobal(id, auditFromBody(body, 'user', 'ui-promote'));
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/UNIQUE/i.test(msg)) {
+        return c.json(
+          { ok: false, error: `a global pod named "${existing.name}" already exists` },
+          409,
+        );
+      }
+      return c.json({ ok: false, error: msg }, 400);
+    }
+    if (!row) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
+    deps.broadcastAll({ type: 'pod-changed', change: 'updated', pod: row });
+    deps.onPodChanged?.(row.name, 'updated');
+    return c.json({ ok: true, pod: row });
   });
 
   /** Patch a pod's scalar fields. Multi-field updates audit under a shared

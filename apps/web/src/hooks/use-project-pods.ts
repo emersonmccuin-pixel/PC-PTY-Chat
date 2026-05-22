@@ -1,14 +1,15 @@
-// Section 17d.2 — Pods are GLOBAL (not per-project). Hook subscribes to
-// `pod-changed` envelopes on the active project's WS — they're broadcast
-// app-wide by broadcastAll() so any connected project's WS sees every
-// mutation.
+// Section 17d.2 — Pods can be global OR project-scoped. The hook lists the
+// union for the active project (globals + the project's project-scope rows)
+// by passing projectId to listPods. WS broadcasts are still app-wide via
+// broadcastAll(); the upsert ignores rows that belong to a different project.
 //
 // Envelope shapes:
 //   { type: 'pod-changed', change: 'created' | 'updated', pod: Pod }       -- agent CRUD
 //   { type: 'pod-changed', change: 'updated', podId, name }                -- nested mutation (knowledge/secret/mcp)
 //   { type: 'pod-changed', change: 'deleted', podId, name }                -- soft delete
 //
-// On 'created' / 'updated' with a full `pod` field → apply the snapshot.
+// On 'created' / 'updated' with a full `pod` field → apply the snapshot
+// (only if scope='global' OR projectId matches the active project).
 // On 'updated' without a `pod` field → refetch (a nested mutation changed
 // updatedAt of the pod row, so the "edited Xmin ago" indicator needs to refresh).
 // On 'deleted' → drop the row from the map.
@@ -42,7 +43,7 @@ export function useProjectPods(
       return;
     }
     let cancelled = false;
-    void api.listPods().then((list) => {
+    void api.listPods(project.id).then((list) => {
       if (cancelled) return;
       setMap(new Map(list.map((p) => [p.id, p])));
     });
@@ -79,7 +80,12 @@ export function useProjectPods(
         continue;
       }
       if (e.pod) {
-        upserts.push(e.pod);
+        // Filter to rows visible to this project: globals + this project's
+        // project-scope rows. Other projects' rows arrive on the broadcast
+        // because broadcastAll() is app-wide; ignore them.
+        if (e.pod.scope === 'global' || e.pod.projectId === project.id) {
+          upserts.push(e.pod);
+        }
       } else {
         // Nested-mutation envelope: row's updatedAt advanced but we don't
         // have the snapshot. Refetch to keep "edited Xmin ago" honest.
@@ -98,7 +104,7 @@ export function useProjectPods(
     }
 
     if (needsRefetch) {
-      void api.listPods().then((list) => {
+      void api.listPods(project.id).then((list) => {
         setMap(new Map(list.map((p) => [p.id, p])));
       });
     }
@@ -113,7 +119,8 @@ export function useProjectPods(
   return {
     pods,
     refetch: () => {
-      void api.listPods().then((list) => {
+      if (!project) return;
+      void api.listPods(project.id).then((list) => {
         setMap(new Map(list.map((p) => [p.id, p])));
       });
     },

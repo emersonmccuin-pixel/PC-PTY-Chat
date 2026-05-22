@@ -94,6 +94,7 @@ export {
   listKnowledge,
   listMcpServers,
   listSecrets,
+  promoteAgentToGlobal,
   restoreAgent,
   softDeleteAgent,
   updateAgent,

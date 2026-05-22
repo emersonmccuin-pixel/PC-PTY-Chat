@@ -1,13 +1,14 @@
 // Section 17d.3 — Pod list page.
 //
 // Mirrors WorkflowList.tsx structure: header strip with title + "+ New
-// agent" button, table of rows, row click → PodDetailModal (17d.4).
-// Pods are global; the project prop is only used to access the active WS
-// stream.
+// agent" button, table of rows, row click → PodDetailModal (17d.4). The list
+// shows the active project's view: every global pod + every project-scope
+// pod owned by this project. Project-scope rows expose a hover-only
+// "Promote to global" action.
 
 import { useMemo, useState } from 'react';
 
-import type { Pod, Project } from '@/api/client';
+import { api, type Pod, type Project } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
 import { CreatePodModal } from './agents/CreatePodModal';
@@ -55,7 +56,12 @@ export function AgentsList({ project, events }: AgentsListProps) {
           }
         >
           {pods.map((pod) => (
-            <PodRow key={pod.id} pod={pod} onOpen={() => setDetailPodId(pod.id)} />
+            <PodRow
+              key={pod.id}
+              pod={pod}
+              onOpen={() => setDetailPodId(pod.id)}
+              onPromoted={() => void refetch()}
+            />
           ))}
         </Section>
       </div>
@@ -86,20 +92,64 @@ export function AgentsList({ project, events }: AgentsListProps) {
   );
 }
 
-function PodRow({ pod, onOpen }: { pod: Pod; onOpen: () => void }) {
+function PodRow({
+  pod,
+  onOpen,
+  onPromoted,
+}: {
+  pod: Pod;
+  onOpen: () => void;
+  onPromoted: () => void;
+}) {
   const isStock = STOCK_POD_NAMES.has(pod.name);
+  const isProject = pod.scope === 'project';
   const editedAgo = formatRelativeTime(pod.updatedAt);
+  const [promoting, setPromoting] = useState(false);
+  const [promoteErr, setPromoteErr] = useState<string | null>(null);
+
+  async function handlePromote(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (promoting) return;
+    const ok = window.confirm(
+      `Promote "${pod.name}" to global? It will be visible across every project and you won't be able to undo this from the UI.`,
+    );
+    if (!ok) return;
+    setPromoteErr(null);
+    setPromoting(true);
+    try {
+      await api.promotePodToGlobal(pod.id);
+      onPromoted();
+    } catch (err) {
+      setPromoteErr((err as Error).message);
+    } finally {
+      setPromoting(false);
+    }
+  }
+
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="grid w-full grid-cols-[1fr_auto] items-center gap-4 border border-border bg-card px-3 py-2 text-left hover:bg-muted"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="group grid w-full cursor-pointer grid-cols-[1fr_auto] items-center gap-4 border border-border bg-card px-3 py-2 text-left hover:bg-muted"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-medium text-foreground">{pod.name}</span>
-          <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            global
+          <span
+            className={
+              isProject
+                ? 'inline-flex items-center bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary'
+                : 'inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground'
+            }
+          >
+            {isProject ? 'project' : 'global'}
           </span>
           {isStock && (
             <span className="inline-flex items-center bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
@@ -112,12 +162,28 @@ function PodRow({ pod, onOpen }: { pod: Pod; onOpen: () => void }) {
             {pod.description}
           </div>
         )}
+        {promoteErr && (
+          <div className="mt-0.5 truncate text-xs text-destructive">{promoteErr}</div>
+        )}
       </div>
-      <div className="flex shrink-0 flex-col items-end text-[10px] text-muted-foreground">
-        {pod.model && <span>{pod.model}</span>}
-        <span>edited {editedAgo}</span>
+      <div className="flex shrink-0 items-center gap-2">
+        {isProject && (
+          <button
+            type="button"
+            onClick={(e) => void handlePromote(e)}
+            disabled={promoting}
+            className="border border-border bg-card px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground disabled:opacity-50 group-hover:opacity-100"
+            title="Make this agent available in every project"
+          >
+            {promoting ? 'Promoting…' : 'Promote to global'}
+          </button>
+        )}
+        <div className="flex flex-col items-end text-[10px] text-muted-foreground">
+          {pod.model && <span>{pod.model}</span>}
+          <span>edited {editedAgo}</span>
+        </div>
       </div>
-    </button>
+    </div>
   );
 }
 

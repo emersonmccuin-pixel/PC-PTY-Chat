@@ -107,14 +107,117 @@ test('POST /api/agents/pods creates a global pod + broadcasts + fires onPodChang
   assert.deepEqual(changedHookCalls[0], { name: 'pod-route-test-1', change: 'created' });
 });
 
-test('POST /api/agents/pods rejects scope="project"', async () => {
+test('POST /api/agents/pods creates a project-scoped pod when scope="project" + projectId', async () => {
+  const { app, broadcasts, changedHookCalls } = freshApp();
+  const projectId = '01HZZZZZZZZZZZZZZZZZZZZZAA';
+  const { status, data } = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'project-scoped-pod-1',
+    scope: 'project',
+    projectId,
+    prompt: 'You are project-scoped.',
+  });
+  assert.equal(status, 201);
+  assert.equal(data.ok, true);
+  const pod = data.pod as Record<string, unknown>;
+  assert.equal(pod.scope, 'project');
+  assert.equal(pod.projectId, projectId);
+  assert.equal(broadcasts.length, 1);
+  assert.equal(changedHookCalls[0]?.name, 'project-scoped-pod-1');
+});
+
+test('POST /api/agents/pods rejects scope="project" without projectId', async () => {
   const { app } = freshApp();
   const { status, data } = await fetchJson(app, 'POST', '/api/agents/pods', {
-    name: 'should-not-land',
+    name: 'missing-project',
     scope: 'project',
     prompt: 'nope',
   });
   assert.equal(status, 400);
+  assert.equal(data.ok, false);
+});
+
+test('GET /api/agents/pods?projectId merges globals and that project\'s rows', async () => {
+  const { app } = freshApp();
+  const projectId = '01HZZZZZZZZZZZZZZZZZZZZZBB';
+  const otherProject = '01HZZZZZZZZZZZZZZZZZZZZZCC';
+  await fetchJson(app, 'POST', '/api/agents/pods', { name: 'mix-global-1', prompt: 'g' });
+  await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'mix-project-1',
+    scope: 'project',
+    projectId,
+    prompt: 'p',
+  });
+  await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'mix-other-1',
+    scope: 'project',
+    projectId: otherProject,
+    prompt: 'other',
+  });
+  const { data } = await fetchJson(app, 'GET', `/api/agents/pods?projectId=${projectId}`);
+  const names = (data.pods as Array<{ name: string }>).map((p) => p.name);
+  assert.ok(names.includes('mix-global-1'));
+  assert.ok(names.includes('mix-project-1'));
+  assert.ok(!names.includes('mix-other-1'));
+});
+
+test('POST /api/agents/pods/:id/promote-to-global flips scope to global', async () => {
+  const { app, broadcasts } = freshApp();
+  const projectId = '01HZZZZZZZZZZZZZZZZZZZZZDD';
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'promote-test',
+    scope: 'project',
+    projectId,
+    prompt: 'p',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  broadcasts.length = 0;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/promote-to-global`,
+    {},
+  );
+  assert.equal(status, 200);
+  assert.equal((data.pod as { scope: string }).scope, 'global');
+  assert.equal((data.pod as { projectId: string | null }).projectId, null);
+  assert.equal(broadcasts.length, 1);
+});
+
+test('POST /api/agents/pods/:id/promote-to-global rejects already-global pod', async () => {
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'already-global',
+    prompt: 'g',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/promote-to-global`,
+    {},
+  );
+  assert.equal(status, 400);
+  assert.equal(data.ok, false);
+});
+
+test('POST /api/agents/pods/:id/promote-to-global returns 409 on global-name collision', async () => {
+  const { app } = freshApp();
+  const projectId = '01HZZZZZZZZZZZZZZZZZZZZZEE';
+  await fetchJson(app, 'POST', '/api/agents/pods', { name: 'collision-name', prompt: 'g' });
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'collision-name',
+    scope: 'project',
+    projectId,
+    prompt: 'p',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  const { status, data } = await fetchJson(
+    app,
+    'POST',
+    `/api/agents/pods/${id}/promote-to-global`,
+    {},
+  );
+  assert.equal(status, 409);
   assert.equal(data.ok, false);
 });
 

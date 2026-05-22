@@ -203,11 +203,16 @@ export const TOOLS = [
   {
     name: 'pc_create_agent',
     description:
-      "Create a NEW agent pod (DB-resident; global-scope in v1). Returns the new pod row with its ULID id. Use this for fresh agent design — the user said 'build me an agent that does X'. For structural design from scratch you should usually dispatch agent-designer first (pc_invoke_agent agent='agent-designer') so the design conversation happens in its specialised pod; call pc_create_agent directly only for trivial extractors / utilities or when continuing a design conversation. Stock-pod names (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are reserved — 400 if name collides. Broadcasts pod-changed on success.",
+      "Create a NEW agent pod (DB-resident). Returns the new pod row with its ULID id. Defaults to scope='project' (pod is owned by the current project — set via PC_PROJECT_ID). Pass scope='global' only when the user explicitly says this agent should be reusable across every project. Use this for fresh agent design — the user said 'build me an agent that does X'. For structural design from scratch you should usually dispatch agent-designer first (pc_invoke_agent agent='agent-designer') so the design conversation happens in its specialised pod; call pc_create_agent directly only for trivial extractors / utilities or when continuing a design conversation. Stock-pod names (orchestrator/researcher/writer/reviewer/planner/extractor/agent-designer) are reserved — 400 if name collides with a global. Broadcasts pod-changed on success.",
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'lowercase kebab-case agent name (letters/numbers/dashes)' },
+        scope: {
+          type: 'string',
+          enum: ['project', 'global'],
+          description: "scope. Default 'project' — pod is owned by the current project. Use 'global' only when the user explicitly wants the pod reusable across every project.",
+        },
         prompt: { type: 'string', description: "the agent's system prompt body (markdown)" },
         description: { type: 'string', description: 'one-line description for the dispatch picker' },
         model: { type: 'string', description: "model slug (e.g. 'opus' / 'sonnet' / 'haiku' / 'inherit')" },
@@ -1324,9 +1329,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (!name) {
         return { content: [{ type: 'text', text: 'pc_create_agent: name required' }], isError: true };
       }
+      const scope = args.scope === 'global' ? 'global' : 'project';
+      if (scope === 'project' && !PROJECT_ID) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_create_agent: scope="project" but PC_PROJECT_ID is not set — pass scope="global" if you really want a global pod, or call from inside a project context.',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const payload: Record<string, unknown> = {
           name,
+          scope,
+          ...(scope === 'project' ? { projectId: PROJECT_ID } : {}),
           actor: 'orchestrator',
           reason: 'mcp-create',
         };

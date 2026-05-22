@@ -330,6 +330,12 @@ export interface PodBundle {
 
 export interface CreatePodInput {
   name: string;
+  /** Defaults to 'global' server-side when omitted. UI surfaces always pass
+   *  'project' + projectId; orchestrator pc_create_agent defaults to 'project'
+   *  too. Explicit 'global' is reserved for danger-zone promotion paths. */
+  scope?: 'project' | 'global';
+  /** Required when scope='project'. */
+  projectId?: ULID;
   description?: string;
   prompt?: string;
   model?: string | null;
@@ -1159,8 +1165,14 @@ export const api = {
     ).then((r) => r.file),
 
   // ── Agent pods (Section 17d) ──────────────────────────────────────────
-  /** List every live global pod. v1 = global-only. */
-  listPods: () => getJson<{ pods: Pod[] }>('/api/agents/pods').then((r) => r.pods),
+  /** List live pods. Without projectId: globals only. With projectId: union
+   *  of globals + that project's project-scope rows. */
+  listPods: (projectId?: ULID) => {
+    const path = projectId
+      ? `/api/agents/pods?projectId=${encodeURIComponent(projectId)}`
+      : '/api/agents/pods';
+    return getJson<{ pods: Pod[] }>(path).then((r) => r.pods);
+  },
 
   /** Full bundle: agent + knowledge + secrets-metadata-only + mcp servers. */
   getPod: (podId: ULID) =>
@@ -1175,6 +1187,13 @@ export const api = {
 
   createPod: (input: CreatePodInput) =>
     postJson<{ ok: true; pod: Pod }>('/api/agents/pods', input).then((r) => r.pod),
+
+  /** Flip a project-scoped pod to global. Throws on 409 (global name collision). */
+  promotePodToGlobal: (podId: ULID) =>
+    postJson<{ ok: true; pod: Pod }>(
+      `/api/agents/pods/${podId}/promote-to-global`,
+      {},
+    ).then((r) => r.pod),
 
   patchPod: (podId: ULID, patch: PatchPodInput) =>
     postJsonMethod<{ ok: true; pod: Pod }>(

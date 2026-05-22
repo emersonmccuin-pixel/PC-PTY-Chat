@@ -43,6 +43,7 @@ export type PodAuditField =
   | 'knowledge'
   | 'secret'
   | 'mcp_server'
+  | 'scope'
   | 'created'
   | 'deleted';
 
@@ -58,6 +59,7 @@ export const POD_AUDIT_FIELDS: readonly PodAuditField[] = [
   'knowledge',
   'secret',
   'mcp_server',
+  'scope',
   'created',
   'deleted',
 ];

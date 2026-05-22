@@ -22,7 +22,7 @@
 // changed, a fresh ULID is minted to group them. No audit emitted when the
 // patch has no field changes.
 
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import type {
   AgentEffort,
   AgentModel,
@@ -180,15 +180,29 @@ export function getAgentByName(input: GetAgentByNameInput): PodAgentRow | null {
 export interface ListAgentsOptions {
   scope?: PodScope;
   /** When set, narrows to project-scope rows for this project. Implies
-   *  `scope: 'project'`. */
+   *  `scope: 'project'` unless `includeGlobals` is also set. */
   projectId?: ULID;
+  /** When true alongside `projectId`, returns BOTH project-scope rows for
+   *  the project AND all global-scope rows — the union the Agents tab
+   *  surfaces to the user. */
+  includeGlobals?: boolean;
 }
 
 export function listAgents(opts: ListAgentsOptions = {}): PodAgentRow[] {
   const conditions = [isNull(agents.deletedAt)];
   if (opts.projectId !== undefined) {
-    conditions.push(eq(agents.scope, 'project'));
-    conditions.push(eq(agents.projectId, opts.projectId));
+    if (opts.includeGlobals) {
+      // scope='global' OR (scope='project' AND projectId=opts.projectId)
+      conditions.push(
+        or(
+          eq(agents.scope, 'global'),
+          and(eq(agents.scope, 'project'), eq(agents.projectId, opts.projectId)),
+        )!,
+      );
+    } else {
+      conditions.push(eq(agents.scope, 'project'));
+      conditions.push(eq(agents.projectId, opts.projectId));
+    }
   } else if (opts.scope !== undefined) {
     conditions.push(eq(agents.scope, opts.scope));
   }
@@ -316,6 +330,39 @@ export function restoreAgent(id: ULID): PodAgentRow | null {
   if (!row || row.deletedAt === null) return null;
   const now = Date.now();
   getDb().update(agents).set({ deletedAt: null, updatedAt: now }).where(eq(agents.id, id)).run();
+  return getAgentById(id);
+}
+
+/** Promote a project-scoped agent to global scope. Flips `scope='global'`,
+ *  clears `project_id`. Throws if the row is already global or doesn't
+ *  exist. UNIQUE constraint on `agents_global_name_idx` may throw if a
+ *  global with the same name already exists — caller surfaces as 409. */
+export function promoteAgentToGlobal(id: ULID, audit: AuditInput): PodAgentRow | null {
+  const existing = getAgentById(id);
+  if (!existing) return null;
+  if (existing.scope === 'global') {
+    throw new Error('already global');
+  }
+  const now = Date.now();
+  const prior = JSON.stringify({ scope: existing.scope, projectId: existing.projectId });
+  const next = JSON.stringify({ scope: 'global', projectId: null });
+  const auditRow = buildAuditRow(
+    {
+      agentId: id,
+      field: 'scope',
+      priorValue: prior,
+      newValue: next,
+      audit,
+    },
+    now,
+  );
+  getDb().transaction((tx) => {
+    tx.update(agents)
+      .set({ scope: 'global', projectId: null, updatedAt: now })
+      .where(eq(agents.id, id))
+      .run();
+    tx.insert(agentAudit).values(auditRow).run();
+  });
   return getAgentById(id);
 }
 
