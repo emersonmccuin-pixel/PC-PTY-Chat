@@ -3075,6 +3075,12 @@ function agentFailureCauseToPayload(
       return 'unknown-agent';
     case 'spawn-failed':
     case 'spawn-stuck':
+    case 'concurrent-continuation':
+      // The async/wire path is unlikely to see 'concurrent-continuation'
+      // (the route's sync DB-check catches it before the wire format
+      // matters), but if a same-tick race surfaces it via the background
+      // emit, map to the closest closed-set value the orchestrator pod
+      // prompt's handler-protocol §5 already understands.
       return 'spawn-failed';
     case 'spawn-exit':
     case null:
@@ -3194,7 +3200,12 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     return c.json({
       ok: false,
       error: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
-      cause: rec.failureCause === 'unknown-agent' ? 'unknown-agent' : 'spawn-failed',
+      cause:
+        rec.failureCause === 'unknown-agent'
+          ? 'unknown-agent'
+          : rec.failureCause === 'concurrent-continuation'
+          ? 'concurrent-continuation'
+          : 'spawn-failed',
     });
   }
 
@@ -3505,7 +3516,12 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
     return c.json({
       ok: false,
       error: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
-      cause: rec.failureCause === 'unknown-agent' ? 'unknown-agent' : 'spawn-failed',
+      cause:
+        rec.failureCause === 'unknown-agent'
+          ? 'unknown-agent'
+          : rec.failureCause === 'concurrent-continuation'
+          ? 'concurrent-continuation'
+          : 'spawn-failed',
     });
   }
 

@@ -32,9 +32,11 @@ export const AGENT_RUN_PERSISTED_STATUSES: readonly AgentRunPersistedStatus[] = 
 ];
 
 /** Coarse failure-cause taxonomy persisted alongside `status = 'failed'`.
- *  Mirrors the in-memory AgentRunFailureCause with one addition: the boot-
- *  time reconciliation sweep stamps orphaned-running rows with
- *  `'server-restart'`. */
+ *  Mirrors the in-memory AgentRunFailureCause with two additions over the
+ *  spawn / runtime causes: the boot-time reconciliation sweep stamps
+ *  orphaned-running rows with `'server-restart'`, and Section 21's
+ *  in-memory concurrent-continuation guard fails a same-tick second
+ *  continuation attempt with `'concurrent-continuation'`. */
 export type AgentRunFailureCause =
   | 'timeout'
   | 'idle-timeout'
@@ -43,7 +45,8 @@ export type AgentRunFailureCause =
   | 'spawn-stuck'
   | 'cancelled'
   | 'unknown-agent'
-  | 'server-restart';
+  | 'server-restart'
+  | 'concurrent-continuation';
 
 export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'timeout',
@@ -54,6 +57,7 @@ export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'cancelled',
   'unknown-agent',
   'server-restart',
+  'concurrent-continuation',
 ];
 
 /** One agent_runs row. The shape the repo returns and the route handlers

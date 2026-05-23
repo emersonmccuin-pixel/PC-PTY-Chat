@@ -1986,6 +1986,103 @@ test('spawn-stuck timer cleared when run transitions to running (happy path unaf
   assert.equal(result.failureCause, null);
 });
 
+// Section 21 — concurrent-continuation guard. The route's
+// `findActiveContinuation` DB check catches the typical "two HTTP calls
+// minutes apart" case; the in-memory map is defence-in-depth for
+// same-tick races where two route invocations both pass the DB check
+// before either has persisted its continuation row. Second attempt fails
+// synchronously with cause='concurrent-continuation'; releasing the
+// guard (by completing the in-flight continuation) opens it up again.
+test('Section 21 — second continuation for an in-flight parent is rejected synchronously', async () => {
+  const p = createProject({
+    slug: 'arm-continue-guard',
+    name: 'ARM Continue Guard',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-continue-guard', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  // Original dispatch → completed.
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'first ask',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'guard-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('answer one');
+  await original.completion;
+
+  // First continuation — proceeds; do NOT drive it to terminal yet.
+  const contA = mgr.spawn({
+    agentName: 'researcher',
+    input: 'follow-up 1',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'guard-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+  });
+  assert.equal(sessions.length, 2, 'first continuation spawned a real session');
+
+  // Second continuation against the same parent — must fail fast without
+  // creating a new session. Completion resolves with the rejection cause.
+  const contB = mgr.spawn({
+    agentName: 'researcher',
+    input: 'follow-up 2',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'guard-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+  });
+  assert.equal(
+    sessions.length,
+    2,
+    'second continuation did NOT spawn a session (rejected pre-flight)',
+  );
+  const contBResult = await contB.completion;
+  assert.equal(contBResult.status, 'failed');
+  assert.equal(contBResult.failureCause, 'concurrent-continuation');
+  assert.match(
+    contBResult.failureReason ?? '',
+    /already has an active continuation/,
+    'failure reason names the live continuation',
+  );
+
+  // Complete contA — releases the guard. A third continuation now goes
+  // through cleanly.
+  sessions[1]!.becomeReady();
+  sessions[1]!.emitTurnEnd('refined one');
+  await contA.completion;
+
+  const contC = mgr.spawn({
+    agentName: 'researcher',
+    input: 'follow-up 3',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'guard-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+  });
+  assert.equal(sessions.length, 3, 'third continuation spawned after A released the guard');
+  sessions[2]!.becomeReady();
+  sessions[2]!.emitTurnEnd('refined two');
+  const contCResult = await contC.completion;
+  assert.equal(contCResult.status, 'completed');
+});
+
 // Section 21 — continuation: spawn with `resume: { providerSessionId }`
 // reuses the prior run's CC session id, passes `--resume` to PtySession (via
 // the resume: true sessionOpts flag), and persists the new row with

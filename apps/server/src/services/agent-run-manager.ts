@@ -147,7 +147,13 @@ export type AgentRunFailureCause =
   | 'spawn-exit'
   | 'spawn-stuck'
   | 'cancelled'
-  | 'unknown-agent';
+  | 'unknown-agent'
+  /** Section 21 — same-tick second continuation attempt for a parent run
+   *  whose first continuation hasn't reached terminal yet. The route's
+   *  `findActiveContinuation` DB check catches the typical case; the
+   *  in-memory guard is defense-in-depth for races the DB query can't see
+   *  (two routes mid-spawn at once). */
+  | 'concurrent-continuation';
 
 export interface AgentRunRecord {
   runId: ULID;
@@ -306,6 +312,10 @@ interface InternalRun extends AgentRunRecord {
   scratchDir: string;
   worktreeDir: string;
   initialInput: string;
+  /** Section 21 — when this run is a continuation, the parent run's id.
+   *  Stashed so terminal handlers can clear the `activeContinuations` map
+   *  entry without re-reading the persisted row. */
+  continues: ULID | null;
   idleTimer: unknown;
   wallClockTimer: unknown;
   /** Section 20.B.1 — fires if status stays 'spawning' for too long. */
@@ -388,6 +398,13 @@ export class AgentRunManager extends EventEmitter {
    *  entries (cancelled-while-queued) are skipped in `processQueue` rather
    *  than removed eagerly, so cancel doesn't pay an O(N) array splice. */
   private queue: ULID[] = [];
+  /** Section 21 — in-memory map of active continuations, keyed by the
+   *  parent's runId. The continue route's `findActiveContinuation` DB
+   *  check catches the typical "two HTTP requests minutes apart" case;
+   *  this map is defense-in-depth against same-tick races where two route
+   *  invocations both pass the DB check before either has persisted its
+   *  spawn. Cleared on the continuation's terminal transition. */
+  private activeContinuations = new Map<ULID, ULID>();
 
   /** 18.B-mcp-race — resolved warmup prompt. `null` disables warmup; any
    *  string (including the default) enables it. Resolved once at
@@ -508,6 +525,47 @@ export class AgentRunManager extends EventEmitter {
     const sessionId = input.resume?.providerSessionId ?? randomUUID();
     const isResume = !!input.resume;
     const startedAt = Date.now();
+
+    // Section 21 — concurrent-continuation guard. Defence-in-depth for the
+    // same-tick race the route's `findActiveContinuation` DB check can't
+    // see (two route invocations both query the DB and both pass before
+    // either has persisted their continuation row). Fail-fast via the
+    // standard makeRecord + persist + fail pattern.
+    if (isResume && input.continues && this.activeContinuations.has(input.continues)) {
+      const existing = this.activeContinuations.get(input.continues)!;
+      const rec = this.makeRecord({
+        runId,
+        sessionId,
+        agentName: input.agentName,
+        projectId: input.projectId,
+        parentWorkItemId: input.parentWorkItemId ?? null,
+        dispatcherSessionId: input.dispatcherSessionId,
+        wait: input.wait,
+        startedAt,
+        scratchDir: '',
+        worktreeDir: input.worktreeDir,
+        initialInput: input.input,
+        idleTimeoutMs: input.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+        wallClockTimeoutMs: input.wallClockTimeoutMs ?? DEFAULT_WALL_CLOCK_TIMEOUT_MS,
+        readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+        spawnStuckTimeoutMs: input.spawnStuckTimeoutMs ?? DEFAULT_SPAWN_STUCK_TIMEOUT_MS,
+        warmupKickIntervalMs: input.warmupKickIntervalMs ?? DEFAULT_WARMUP_KICK_INTERVAL_MS,
+        mcpHandshakeTimeoutMs:
+          input.mcpHandshakeTimeoutMs ?? this.defaultMcpHandshakeTimeoutMs,
+      });
+      // Don't stash `continues` on this rejected record — the map entry
+      // belongs to the in-flight continuation we lost the race to; terminal
+      // cleanup on THIS rec must not remove it.
+      const completion = this.installCompletionPromise(rec);
+      this.runs.set(runId, rec);
+      this.persistInsert(rec, input);
+      this.fail(
+        rec,
+        'concurrent-continuation',
+        `run ${input.continues} already has an active continuation (runId=${existing}) — wait for it to finish`,
+      );
+      return { runId, sessionId, startedAt, completion, queued: false, position: null };
+    }
 
     // B4 (2026-05-21) — fail-fast on unknown agent names. Without this,
     // `--agent <unknown>` falls through to CC's default coding-assistant
@@ -697,6 +755,13 @@ export class AgentRunManager extends EventEmitter {
             try { globalMaterializeCleanup!(); } catch { /* best-effort */ }
           }
         : podCleanup ?? globalMaterializeCleanup;
+    // Section 21 — stash on the in-memory record so terminal cleanup can
+    // clear the `activeContinuations` map entry. The map registration
+    // itself happens just below (after we know we're committing to spawn).
+    rec.continues = input.continues ?? null;
+    if (isResume && input.continues) {
+      this.activeContinuations.set(input.continues, runId);
+    }
     const completion = this.installCompletionPromise(rec);
 
     const jsonlPath = (this.deps.resolveJsonlPath ?? defaultResolveJsonlPath)(
@@ -916,6 +981,11 @@ export class AgentRunManager extends EventEmitter {
       firstJsonlResolvers: [],
       queuedAt: null,
       pendingSessionOpts: null,
+      // Section 21 — set later by the spawn() caller on the successful
+      // continuation path (so terminal cleanup can clear the map entry).
+      // Default null; the concurrent-continuation rejection record also
+      // keeps null so its terminal flush doesn't touch the live entry.
+      continues: null,
     };
   }
 
@@ -1139,6 +1209,14 @@ export class AgentRunManager extends EventEmitter {
     }
     rec.podCleanup = null;
     rec.session = null;
+    // Section 21 — release the continuation guard so the parent can be
+    // continued again. Skipped if a rejection record never claimed the
+    // entry (continues stayed null on the concurrent-continuation reject
+    // path) or if a same-tick double-rejection somehow stomped the entry
+    // (deleting the right runId only, defensively).
+    if (rec.continues && this.activeContinuations.get(rec.continues) === rec.runId) {
+      this.activeContinuations.delete(rec.continues);
+    }
   }
 
   private armIdleTimer(rec: InternalRun): void {
