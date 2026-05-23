@@ -32,3 +32,28 @@ export type {
   SpawnEvents,
   SpawnState,
 } from './low-level-spawn.ts';
+
+export { AgentRunRegistry } from './agent-run-registry.ts';
+export type {
+  AdmissionTicket,
+  TicketState,
+  AgentRunRegistryOptions,
+} from './agent-run-registry.ts';
+
+export { AgentRun } from './agent-run.ts';
+export type {
+  AgentRunState,
+  AgentRunFailureCause,
+  AgentRunRecord,
+  AgentRunInput,
+  AgentRunDeps,
+  SpawnFactory,
+  SpawnLike,
+} from './agent-run.ts';
+
+export { InteractiveSession } from './interactive-session.ts';
+export type {
+  InteractiveSessionState,
+  InteractiveSessionInput,
+  InteractiveSessionDeps,
+} from './interactive-session.ts';
