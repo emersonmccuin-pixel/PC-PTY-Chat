@@ -12,7 +12,9 @@ import { homedir } from 'node:os';
 
 import type {
   AgentRunPersistedStatus,
+  AgentRunStatusV2,
   GlobalSettings,
+  PendingAskKindV2,
   ULID,
   Workflow,
   WorkItemType,
@@ -32,7 +34,9 @@ import {
   getActiveOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
+  getAgentRunRowV2,
   listAgentRunsForSession,
+  listAgentRunsForSessionV2,
   getGlobalSettings,
   getPendingAsk,
   getProjectById,
@@ -57,6 +61,15 @@ import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { drainPendingForSession, enqueueAndPush } from './services/agent-inbox-emit.ts';
+import {
+  dispatchContinueAgentV2,
+  dispatchFreshAgentV2,
+} from './services/v2/agent-run-factory.ts';
+import {
+  answerPendingAskV2,
+  cancelPendingAskV2,
+  recordExplicitPauseV2,
+} from './services/v2/pause-resume.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -3416,6 +3429,416 @@ app.post('/api/internal/mcp-handshake', async (c) => {
   const found = mgr.notifyMcpConnected(body.projectId as ULID, body.agentSessionId);
   return c.json({ ok: true, found });
 });
+
+// ─── Section 25 Session 9 — v2 routes (live alongside v1) ────────────────
+//
+// The v2 routes back the `pc_*_v2` MCP tools added in Session 9. They share
+// the v1 channel-server + project registry but route every spawn through the
+// v2 stack (`AgentRun` wrapper + Session 7 delivery + Session 8 pause/resume
+// orchestration). v1 routes remain wired as the escape hatch until Phase D
+// (Session 11) deletes them.
+
+/** `pc_invoke_agent_v2` HTTP surface. Mirrors v1's `pc_invoke_agent` route
+ *  shape — same input contract, same response shape — but every spawn goes
+ *  through the v2 `AgentRun` wrapper. Terminal `agent-completed` / `agent-
+ *  failed` envelopes flow via `enqueueAndPushV2` (durable inbox + best-
+ *  effort channel push). */
+app.post('/api/projects/:projectId/agents/v2/:name/invoke', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const agentName = c.req.param('name').trim();
+  if (!agentName) return c.json({ ok: false, error: 'agent name required' }, 400);
+
+  const body = await c.req.json<{
+    input?: string;
+    parentWorkItemId?: ULID;
+    parentInvokeDepth?: number;
+    dispatcherSessionId?: string;
+  }>();
+
+  const input = typeof body.input === 'string' ? body.input : '';
+  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
+  const parentWorkItemId =
+    typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
+      400,
+    );
+  }
+
+  // Depth cap. Same shape as v1.
+  const parentInvokeDepth =
+    typeof body.parentInvokeDepth === 'number' ? body.parentInvokeDepth : 0;
+  const depthCheck = checkInvokeDepth(parentInvokeDepth);
+  if (!depthCheck.ok) {
+    return c.json({ ok: false, error: depthCheck.error, cause: depthCheck.cause }, 400);
+  }
+
+  const result = dispatchFreshAgentV2(
+    {
+      projectId,
+      worktreeDir: project.folderPath,
+      agentName,
+      input,
+      dispatcherSessionId,
+      parentWorkItemId,
+      invokeDepth: depthCheck.childDepth,
+      slug: project.slug,
+    },
+    { channelServer },
+  );
+
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.error, cause: result.cause });
+  }
+
+  // 16b.7 — audit row on the parent work item (v1 helper survives unchanged).
+  recordAgentInvoke({
+    workItemId: parentWorkItemId,
+    agentName,
+    sessionId: result.ccSessionId,
+    runId: result.agentRunId,
+    mode: 'async',
+    input,
+    now: Date.now(),
+  });
+
+  // v2 dispatches are always async on the wire (the orchestrator never blocks;
+  // the wait:true / sync path was a v1 artifact for nested-agent chains —
+  // those can re-add a wait flag later if needed, but v1 + v2 parallel-build
+  // doesn't need the surface today). Match the v1 async response shape so the
+  // orchestrator's existing handler protocol doesn't need a separate parser.
+  return c.json({
+    ok: true,
+    mode: 'async',
+    sessionId: result.ccSessionId,
+    runId: result.agentRunId,
+    agentName: result.podName,
+    startedAt: result.startedAt,
+    status: result.initialState,
+  });
+});
+
+/** `pc_continue_agent_v2` HTTP surface. Mirrors v1's `pc_continue_agent` —
+ *  same ownership check + JSONL-retention guard + single-active-continuation
+ *  guard — but every spawn goes through the v2 `AgentRun` wrapper. Reuses
+ *  Session 8's `continueAgentV2` plan + the agent-run factory's
+ *  `dispatchContinueAgentV2` orchestration. */
+app.post('/api/projects/:projectId/agent-runs/v2/:runId/continue', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const parentAgentRunId = c.req.param('runId') as ULID;
+  const body = await c.req.json<{
+    input?: string;
+    dispatcherSessionId?: string;
+  }>();
+
+  const input = typeof body.input === 'string' ? body.input : '';
+  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
+      400,
+    );
+  }
+
+  // Ownership check happens at the agent_runs_v2 level — the factory's
+  // continue plan reads the parent row + the dispatcherSessionId field. We
+  // re-check here so the 403 happens BEFORE pod materialisation, matching
+  // v1's surface. (The plan would still reject internally if we skipped this.)
+  const parentRow = getAgentRunRowV2(parentAgentRunId);
+  if (!parentRow) {
+    return c.json(
+      { ok: false, error: `unknown run: ${parentAgentRunId}`, cause: 'run-not-found' },
+      404,
+    );
+  }
+  if (parentRow.projectId !== projectId) {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${parentAgentRunId} not in project ${projectId}`,
+        cause: 'wrong-project',
+      },
+      400,
+    );
+  }
+  if (parentRow.dispatcherSessionId !== dispatcherSessionId) {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${parentAgentRunId} was dispatched by a different orchestrator session — only the dispatcher can continue it`,
+        cause: 'ownership-mismatch',
+      },
+      403,
+    );
+  }
+
+  const result = dispatchContinueAgentV2(
+    {
+      projectId,
+      worktreeDir: project.folderPath,
+      parentAgentRunId,
+      input,
+      dispatcherSessionId,
+      slug: project.slug,
+    },
+    { channelServer },
+  );
+
+  if (!result.ok) {
+    const statusFor: Record<string, number> = {
+      'run-not-found': 404,
+      'not-continuable': 409,
+      'concurrent-continuation': 409,
+      'session-expired': 410,
+      'project-missing': 404,
+      'unknown-agent': 404,
+      'pod-materialisation-failed': 500,
+      'scratch-mkdir-failed': 500,
+    };
+    return c.json(
+      { ok: false, error: result.error, cause: result.cause },
+      (statusFor[result.cause] ?? 400) as 400,
+    );
+  }
+
+  // Audit row on the parent work item — continuation reuses the same pattern
+  // as v1's continue route.
+  recordAgentInvoke({
+    workItemId: parentRow.parentWorkItemId,
+    agentName: result.podName,
+    sessionId: result.ccSessionId,
+    runId: result.agentRunId,
+    mode: 'async',
+    input,
+    now: Date.now(),
+  });
+
+  return c.json({
+    ok: true,
+    mode: 'async',
+    sessionId: result.ccSessionId,
+    runId: result.agentRunId,
+    agentName: result.podName,
+    startedAt: result.startedAt,
+    status: result.initialState,
+    continues: parentAgentRunId,
+  });
+});
+
+/** `pc_list_my_runs_v2` HTTP surface. Reads from the v2 agent_runs_v2 table.
+ *  Same response shape as v1's `by-dispatcher` route. */
+app.get('/api/projects/:projectId/agent-runs/v2/by-dispatcher', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const dispatcherSessionId = (c.req.query('dispatcherSessionId') ?? '').trim();
+  if (!dispatcherSessionId) {
+    return c.json({ ok: false, error: 'dispatcherSessionId query param required' }, 400);
+  }
+  const podName = (c.req.query('agentName') ?? '').trim() || undefined;
+  const statusRaw = (c.req.query('status') ?? '').trim();
+  const VALID_V2_STATUSES: AgentRunStatusV2[] = [
+    'queued',
+    'spawning',
+    'running',
+    'paused',
+    'completed',
+    'failed',
+    'cancelled',
+  ];
+  const status =
+    statusRaw && (VALID_V2_STATUSES as string[]).includes(statusRaw)
+      ? (statusRaw as AgentRunStatusV2)
+      : undefined;
+  const limitRaw = Number(c.req.query('limit') ?? 20);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
+
+  const rows = listAgentRunsForSessionV2(projectId, dispatcherSessionId, {
+    podName,
+    status,
+    limit,
+  });
+  const SUMMARY_LEN = 80;
+  const summarised = rows.map((r) => ({
+    runId: r.id,
+    agentName: r.podName,
+    status: r.status,
+    dispatchedAt: r.queuedAt,
+    completedAt: r.completedAt,
+    summary:
+      (r.input ?? '').length > SUMMARY_LEN
+        ? (r.input ?? '').slice(0, SUMMARY_LEN).trimEnd() + '…'
+        : (r.input ?? ''),
+    continues: r.continues,
+  }));
+  return c.json({ ok: true, runs: summarised });
+});
+
+/** v2 `pc_ask_orchestrator_v2` / `pc_ask_user_v2` / `pc_request_approval_v2`
+ *  HTTP surface. Routes through Session 8's `recordExplicitPauseV2` which
+ *  flips the AgentRun in-memory state to paused + persists pending_asks_v2 +
+ *  delivers via v2 hybrid transport. Replaces v1's three-kind pending-asks
+ *  route with a single endpoint that uses the bare v2 kind taxonomy
+ *  (`orchestrator | user | approval` per design §1 glossary). */
+app.post('/api/projects/:projectId/agent-pending-asks-v2', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const body = await c.req.json<{
+    agentRunId?: string;
+    kind?: PendingAskKindV2;
+    promptBody?: string;
+    context?: string;
+    options?: PendingAskOption[];
+  }>();
+
+  const agentRunId =
+    typeof body.agentRunId === 'string' ? (body.agentRunId.trim() as ULID) : ('' as ULID);
+  if (!agentRunId) return c.json({ ok: false, error: 'agentRunId required' }, 400);
+
+  const kind = body.kind;
+  if (kind !== 'orchestrator' && kind !== 'user' && kind !== 'approval') {
+    return c.json(
+      { ok: false, error: 'kind must be orchestrator | user | approval' },
+      400,
+    );
+  }
+
+  const promptBody = typeof body.promptBody === 'string' ? body.promptBody : '';
+  if (!promptBody.trim()) return c.json({ ok: false, error: 'promptBody required' }, 400);
+
+  if (kind === 'approval') {
+    if (!Array.isArray(body.options) || body.options.length === 0) {
+      return c.json(
+        { ok: false, error: 'options required (non-empty array) for kind=approval' },
+        400,
+      );
+    }
+  }
+
+  const result = recordExplicitPauseV2(
+    {
+      agentRunId,
+      kind,
+      promptBody,
+      context: typeof body.context === 'string' ? body.context : null,
+      options: Array.isArray(body.options) ? body.options : null,
+    },
+    { channelServer, slug: project.slug },
+  );
+
+  if (!result.ok) {
+    const statusFor: Record<string, number> = {
+      'unknown-run': 404,
+      'wrong-state': 409,
+    };
+    return c.json(
+      { ok: false, error: result.error, cause: result.cause },
+      (statusFor[result.cause] ?? 400) as 400,
+    );
+  }
+
+  return c.json({
+    ok: true,
+    pendingAskId: result.pendingAskId,
+    status: 'waiting',
+    eventDelivered: result.eventDelivered,
+  });
+});
+
+/** v2 `pc_answer_pending_v2` HTTP surface. Reuses Session 8's
+ *  `answerPendingAskV2` which atomically flips the row to answered, persists
+ *  the spawning transition + pod-revision-at-resume, and drives the
+ *  AgentRun's `_resumeWithAnswer`. */
+app.post(
+  '/api/projects/:projectId/agent-pending-asks-v2/:askId/answer',
+  async (c) => {
+    const projectId = c.req.param('projectId') as ULID;
+    const project = getProjectById(projectId);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+    const pendingAskId = c.req.param('askId') as ULID;
+    const body = await c.req.json<{
+      answer?: string;
+      answeredBy?: 'orchestrator' | 'user';
+    }>();
+
+    const answer = typeof body.answer === 'string' ? body.answer : '';
+    if (!answer) return c.json({ ok: false, error: 'answer required' }, 400);
+    const answeredBy = body.answeredBy;
+    if (answeredBy !== 'orchestrator' && answeredBy !== 'user') {
+      return c.json({ ok: false, error: 'answeredBy must be orchestrator | user' }, 400);
+    }
+
+    const result = answerPendingAskV2(
+      { pendingAskId, answer, answeredBy },
+      { channelServer, slug: project.slug },
+    );
+
+    if (!result.ok) {
+      const statusFor: Record<string, number> = {
+        'unknown-pending-ask': 404,
+        'already-answered': 409,
+        cancelled: 409,
+        'unknown-run': 404,
+        'wrong-state': 409,
+        'resume-failed': 500,
+      };
+      return c.json(
+        { ok: false, error: result.error, cause: result.cause },
+        (statusFor[result.cause] ?? 400) as 400,
+      );
+    }
+
+    return c.json({
+      ok: true,
+      agentRunId: result.agentRunId,
+      ccSessionId: result.ccSessionId,
+      podRevisionDrifted: result.podRevisionDrifted,
+      podRevisionAtDispatch: result.podRevisionAtDispatch,
+      podRevisionAtResume: result.podRevisionAtResume,
+    });
+  },
+);
+
+/** v2 pending-ask cancel surface. Lets the orchestrator (or any caller) drop
+ *  a pending pause without resuming the agent. The agent gets cancelled
+ *  through the registry's `run.cancel()` path. */
+app.post(
+  '/api/projects/:projectId/agent-pending-asks-v2/:askId/cancel',
+  async (c) => {
+    const projectId = c.req.param('projectId') as ULID;
+    const project = getProjectById(projectId);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+    const pendingAskId = c.req.param('askId') as ULID;
+    const result = cancelPendingAskV2({ pendingAskId }, {});
+    if (!result.ok) {
+      const statusFor: Record<string, number> = {
+        'unknown-pending-ask': 404,
+        'already-terminal': 409,
+      };
+      return c.json(
+        { ok: false, error: result.error, cause: result.cause },
+        (statusFor[result.cause] ?? 400) as 400,
+      );
+    }
+    return c.json({ ok: true, agentRunId: result.agentRunId });
+  },
+);
 
 // ── Static / SPA fallback ─────────────────────────────────────────────────
 

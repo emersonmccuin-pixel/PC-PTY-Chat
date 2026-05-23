@@ -54,4 +54,12 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_list_agent_audit',
   // Section 24 — agent ready-ping protocol
   'mcp__pc-rig__pc_check_in',
+  // Section 25 Session 9 — v2 tools (parallel-build alongside v1 until Phase D)
+  'mcp__pc-rig__pc_invoke_agent_v2',
+  'mcp__pc-rig__pc_continue_agent_v2',
+  'mcp__pc-rig__pc_list_my_runs_v2',
+  'mcp__pc-rig__pc_ask_orchestrator_v2',
+  'mcp__pc-rig__pc_ask_user_v2',
+  'mcp__pc-rig__pc_request_approval_v2',
+  'mcp__pc-rig__pc_answer_pending_v2',
 ] as const;

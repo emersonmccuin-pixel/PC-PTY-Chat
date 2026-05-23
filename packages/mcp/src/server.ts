@@ -764,6 +764,168 @@ export const TOOLS = [
       required: ['pendingAskId', 'answer', 'answeredBy'],
     },
   },
+  // ─── Section 25 Session 9 — v2 tools (live alongside v1 until Phase D) ───
+  {
+    name: 'pc_invoke_agent_v2',
+    description:
+      "v2 dispatch. Same shape as `pc_invoke_agent` minus the `wait` param (v2 dispatches are always async — the orchestrator never blocks the chat composer). Spawns the named pod through the v2 AgentRun wrapper (Section 25 rebuild); terminal `agent-completed` / `agent-failed` events still arrive on your next turn as channel blocks, same handler protocol entries #4+#5. Use during the parallel-build phase to validate the v2 stack end-to-end without committing to it as the only path — `pc_invoke_agent` (v1) remains wired as the escape hatch until Phase D.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'pod name (kebab-case)' },
+        input: {
+          type: 'string',
+          description: "free-form input — becomes the child's first user message",
+        },
+        parentWorkItemId: {
+          type: 'string',
+          description:
+            'optional work-item ULID to attach the child to; defaults to PC_AGENT_PARENT_WORK_ITEM_ID',
+        },
+      },
+      required: ['name', 'input'],
+    },
+  },
+  {
+    name: 'pc_continue_agent_v2',
+    description:
+      "v2 continuation. Same shape as `pc_continue_agent`. Resumes a terminal v2 agent run (status: completed | failed) with a follow-up input by spawning via `--resume <ccSessionId>`. Cancelled runs cannot be continued — start a fresh dispatch instead. Per-parent single-active-continuation guard (409 on concurrent). JSONL retention guard (410 on session-expired). Use during the parallel-build phase to validate the v2 continuation flow.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        runId: { type: 'string', description: 'ULID of the prior v2 AgentRun to continue' },
+        input: {
+          type: 'string',
+          description:
+            "free-form follow-up — becomes the next user message in the resumed conversation. Phrase as a continuation, not a fresh request.",
+        },
+      },
+      required: ['runId', 'input'],
+    },
+  },
+  {
+    name: 'pc_list_my_runs_v2',
+    description:
+      "List recent v2 agent runs YOU dispatched in this project (reads from `agent_runs_v2`, scoped to caller's `pc_session_id`). Same response row shape as v1's `pc_list_my_runs`; use during parallel-build to verify v2 persistence.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentName: {
+          type: 'string',
+          description: 'optional — filter by pod name (kebab-case)',
+        },
+        status: {
+          type: 'string',
+          enum: ['queued', 'spawning', 'running', 'paused', 'completed', 'failed', 'cancelled'],
+          description:
+            'optional — filter by persisted v2 status. v2 persists the full state machine (no `running` collapsing pauses).',
+        },
+        limit: {
+          type: 'number',
+          description: 'optional — cap on returned rows. Default 20, max 100.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'pc_ask_orchestrator_v2',
+    description:
+      "v2 ask-orchestrator. Pause your run (v2 AgentRun wrapper transitions running→paused) and ask the dispatcher a question. Returns `{ ok, pendingAskId, status: 'waiting' }`. Same envelope shape as v1 on the wire — the orchestrator's handler protocol entry #1 still applies. Requires PC_AGENT_RUN_ID + PC_DISPATCHER_SESSION_ID in env (set by the v2 spawn path).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'the question to ask the orchestrator' },
+        context: {
+          type: 'string',
+          description:
+            'optional context — recent transcript snippet, files inspected, candidate options',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'pc_ask_user_v2',
+    description:
+      "v2 ask-user. Pause your run and route a question to the user via the orchestrator-as-proxy. Same envelope as v1 on the wire (handler protocol entry #2). Multi-choice `options` array supported. Requires PC_AGENT_RUN_ID + PC_DISPATCHER_SESSION_ID.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'the question to surface to the user' },
+        context: {
+          type: 'string',
+          description: 'optional context — what you tried, why you need the user',
+        },
+        options: {
+          type: 'array',
+          description:
+            'optional multi-choice options ([{value, label}, ...]). When supplied, the orchestrator renders them as a numbered list; the user reply will be one of the option values.',
+          items: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: 'machine value returned as the answer' },
+              label: { type: 'string', description: 'user-facing label for this choice' },
+            },
+            required: ['value', 'label'],
+          },
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'pc_request_approval_v2',
+    description:
+      "v2 request-approval. Pause your run and request explicit human approval. Same envelope as v1 (handler protocol entry #3). `options` is required and must be non-empty.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        decision: {
+          type: 'string',
+          description:
+            'the decision the user is being asked to approve — what will happen, in plain English',
+        },
+        options: {
+          type: 'array',
+          description: 'non-empty list of approval choices ([{value, label}, ...])',
+          items: {
+            type: 'object',
+            properties: {
+              value: { type: 'string', description: 'machine value returned as the answer' },
+              label: { type: 'string', description: 'user-facing label for this choice' },
+            },
+            required: ['value', 'label'],
+          },
+        },
+        context: {
+          type: 'string',
+          description:
+            'optional context — what produced this decision, alternatives, what the user should weigh',
+        },
+      },
+      required: ['decision', 'options'],
+    },
+  },
+  {
+    name: 'pc_answer_pending_v2',
+    description:
+      "v2 answer-pending. Resume a paused v2 agent (pending_asks_v2 row) with an answer. Atomic open→answered flip. Idempotent: a second call returns `cause: 'already-answered'`. Pod-revision drift (pod edited between dispatch and resume) surfaces in the response as `podRevisionDrifted: true`.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pendingAskId: { type: 'string', description: 'pending-ask ULID from the agent-asks-* event' },
+        answer: { type: 'string', description: 'the answer to thread back into the paused agent' },
+        answeredBy: {
+          type: 'string',
+          enum: ['orchestrator', 'user'],
+          description:
+            '"orchestrator" when answered from your own context, "user" when forwarding the user\'s reply',
+        },
+      },
+      required: ['pendingAskId', 'answer', 'answeredBy'],
+    },
+  },
   {
     name: 'pc_check_in',
     description:
@@ -2832,6 +2994,299 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    // ─── Section 25 Session 9 — v2 tool dispatch (parallel-build) ────────
+    case 'pc_invoke_agent_v2': {
+      const name = typeof args.name === 'string' ? args.name.trim() : '';
+      const input = typeof args.input === 'string' ? args.input : '';
+      if (!name || !input.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_invoke_agent_v2: name and input required' }],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_invoke_agent_v2: PC_PROJECT_ID not set' },
+          ],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_invoke_agent_v2: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const parentWorkItemId =
+        typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
+          ? args.parentWorkItemId.trim()
+          : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
+      const parentInvokeDepth =
+        Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
+      const payload: Record<string, unknown> = {
+        input,
+        parentInvokeDepth,
+        dispatcherSessionId,
+      };
+      if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/agents/v2/${encodeURIComponent(name)}/invoke`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_invoke_agent_v2 failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_invoke_agent_v2 failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_continue_agent_v2': {
+      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
+      const input = typeof args.input === 'string' ? args.input : '';
+      if (!runId || !input.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_continue_agent_v2: runId and input required' }],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_continue_agent_v2: PC_PROJECT_ID not set' },
+          ],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_continue_agent_v2: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/agent-runs/v2/${encodeURIComponent(runId)}/continue`,
+          { input, dispatcherSessionId },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_continue_agent_v2 failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_continue_agent_v2 failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_my_runs_v2': {
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_list_my_runs_v2: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_list_my_runs_v2: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const params = new URLSearchParams();
+      params.set('dispatcherSessionId', dispatcherSessionId);
+      if (typeof args.agentName === 'string' && args.agentName.trim()) {
+        params.set('agentName', args.agentName.trim());
+      }
+      if (typeof args.status === 'string' && args.status.trim()) {
+        params.set('status', args.status.trim());
+      }
+      if (typeof args.limit === 'number' && Number.isFinite(args.limit)) {
+        params.set('limit', String(Math.floor(args.limit)));
+      }
+      try {
+        const res = await getServer(
+          `/api/projects/${PROJECT_ID}/agent-runs/v2/by-dispatcher?${params.toString()}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_list_my_runs_v2 failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_list_my_runs_v2 failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_ask_orchestrator_v2':
+    case 'pc_ask_user_v2':
+    case 'pc_request_approval_v2': {
+      const toolName = req.params.name;
+      const isApproval = toolName === 'pc_request_approval_v2';
+      const isAskUser = toolName === 'pc_ask_user_v2';
+      const promptField = isApproval ? 'decision' : 'question';
+      const promptValue =
+        typeof args[promptField] === 'string' ? (args[promptField] as string).trim() : '';
+      const context = typeof args.context === 'string' ? args.context : undefined;
+      const options = Array.isArray(args.options) ? args.options : undefined;
+      if (!promptValue) {
+        return {
+          content: [{ type: 'text', text: `${toolName}: ${promptField} required` }],
+          isError: true,
+        };
+      }
+      if (isApproval && (!options || options.length === 0)) {
+        return {
+          content: [{ type: 'text', text: `${toolName}: options required (non-empty array)` }],
+          isError: true,
+        };
+      }
+      const runId = process.env.PC_AGENT_RUN_ID ?? '';
+      if (!runId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `${toolName}: PC_AGENT_RUN_ID not set — only v2-dispatched agents can pause-and-ask`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: `${toolName}: PC_PROJECT_ID not set` }],
+          isError: true,
+        };
+      }
+      const kind: 'orchestrator' | 'user' | 'approval' = isApproval
+        ? 'approval'
+        : isAskUser
+          ? 'user'
+          : 'orchestrator';
+      const payload: Record<string, unknown> = {
+        agentRunId: runId,
+        kind,
+        promptBody: promptValue,
+      };
+      if (context !== undefined) payload.context = context;
+      if (options !== undefined) payload.options = options;
+      try {
+        const res = await postServer(projectPath('agent-pending-asks-v2'), payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `${toolName} failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `${toolName} failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_answer_pending_v2': {
+      const pendingAskId = typeof args.pendingAskId === 'string' ? args.pendingAskId.trim() : '';
+      const answer = typeof args.answer === 'string' ? args.answer : '';
+      const answeredByRaw = typeof args.answeredBy === 'string' ? args.answeredBy : '';
+      if (!pendingAskId || !answer) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_answer_pending_v2: pendingAskId and answer required' },
+          ],
+          isError: true,
+        };
+      }
+      if (answeredByRaw !== 'orchestrator' && answeredByRaw !== 'user') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_answer_pending_v2: answeredBy must be "orchestrator" or "user"',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(
+          projectPath(`agent-pending-asks-v2/${encodeURIComponent(pendingAskId)}/answer`),
+          { answer, answeredBy: answeredByRaw },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_answer_pending_v2 failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_answer_pending_v2 failed: ${(err as Error).message}` },
+          ],
           isError: true,
         };
       }
