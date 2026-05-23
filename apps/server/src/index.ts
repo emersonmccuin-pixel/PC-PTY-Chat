@@ -34,6 +34,7 @@ import {
 import {
   countWorkItemsInStage,
   createPendingAsk,
+  depositInstruction,
   findActiveContinuation,
   getActiveOrchestratorSession,
   dismissFailedRun,
@@ -48,6 +49,7 @@ import {
   listWaitingPendingAsksForProject,
   newId,
   reassignStage,
+  reconcileOrphanedInstructionDeposits,
   reorderProjects,
   runMigrations,
   setGlobalSettings,
@@ -101,6 +103,7 @@ import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { defaultJsonlPath, respawnAgentWithAnswer } from './services/agent-resume.ts';
+import { awaitInstruction, notifyDeposit } from './services/instruction-deposit-service.ts';
 import {
   recordAgentAnswer,
   recordAgentCompleted,
@@ -396,6 +399,25 @@ channelServer.start();
     }
   } catch (err) {
     console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
+  }
+  // Section 24 — instruction_deposits orphan sweep. Any `waiting` row whose
+  // target run isn't `running` anymore (the run died, or the server bounced
+  // after deposit but before consume) is flipped to `cancelled`. Must run
+  // AFTER `mgr.reconcileOrphans()` because it predicates on the post-reconcile
+  // `agent_runs.status` value — running rows that just got swept to `failed`
+  // need to be seen as terminal here.
+  try {
+    const cancelled = reconcileOrphanedInstructionDeposits(Date.now());
+    if (cancelled > 0) {
+      console.log(
+        `[instruction-deposits] cancelled ${cancelled} orphaned waiting deposit(s) from prior server lifetime`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      '[instruction-deposits] orphan reconciliation failed:',
+      (err as Error).message,
+    );
   }
 }
 
@@ -3668,6 +3690,32 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   };
   if (!acked) ackResponse.cause = 'ack-timeout';
   return c.json(ackResponse);
+});
+
+/** Section 24 — internal long-poll endpoint posted by pc-rig's
+ *  `pc_check_in` tool on agent boot. Holds the request up to 60s for an
+ *  orchestrator-deposited instruction keyed by `runId`. Returns the
+ *  consumed row (instruction text + `source: 'orchestrator'` +
+ *  `depositedAt`) when one lands; returns a null envelope on timeout —
+ *  the system-prompt fragment instructs the agent to end the turn
+ *  cleanly when `input` is null. Atomic-consume guard lives in the repo
+ *  layer; this endpoint is the thin HTTP shell over `awaitInstruction`. */
+app.post('/api/internal/instruction-fetch', async (c) => {
+  const body = await c.req.json<{ runId?: string }>();
+  const runId = typeof body.runId === 'string' ? body.runId.trim() : '';
+  if (!runId) {
+    return c.json({ ok: false, error: 'runId required' }, 400);
+  }
+  const row = await awaitInstruction(runId as ULID);
+  if (!row) {
+    return c.json({ ok: true, input: null, source: null, depositedAt: null });
+  }
+  return c.json({
+    ok: true,
+    input: row.instruction,
+    source: 'orchestrator',
+    depositedAt: row.depositedAt,
+  });
 });
 
 /** Section 22 — internal endpoint posted by pc-rig (the per-spawn MCP
