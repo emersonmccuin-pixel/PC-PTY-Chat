@@ -2403,8 +2403,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      const wait =
-        args.wait === undefined ? !process.env.PC_SESSION_ID : args.wait === true;
+      // Orchestrator must never block — the chat composer needs to stay
+      // responsive to the user. If the orchestrator (PC_SESSION_ID set)
+      // accidentally passes wait:true, coerce to false and log it so the
+      // pattern is visible in stderr. Agents can still dispatch sync
+      // (default true) when chaining nested work.
+      const callerIsOrchestrator = !!process.env.PC_SESSION_ID;
+      if (callerIsOrchestrator && args.wait === true) {
+        console.warn(
+          '[pc-rig] pc_invoke_agent called with wait:true from the orchestrator session — coercing to wait:false. The orchestrator never blocks the user; the agent result lands on a later turn as an agent-completed channel event.',
+        );
+      }
+      const wait = callerIsOrchestrator
+        ? false
+        : args.wait === undefined
+          ? true
+          : args.wait === true;
       const parentWorkItemId =
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
           ? args.parentWorkItemId.trim()
@@ -2523,8 +2537,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      const wait =
-        args.wait === undefined ? !process.env.PC_SESSION_ID : args.wait === true;
+      // Same orchestrator-never-blocks rule as pc_invoke_agent — see the
+      // comment there. Continuations from the orchestrator are always async.
+      const callerIsOrchestrator = !!process.env.PC_SESSION_ID;
+      if (callerIsOrchestrator && args.wait === true) {
+        console.warn(
+          '[pc-rig] pc_continue_agent called with wait:true from the orchestrator session — coercing to wait:false. Orchestrator continuations are always async; the result lands on a later turn as an agent-completed channel event.',
+        );
+      }
+      const wait = callerIsOrchestrator
+        ? false
+        : args.wait === undefined
+          ? true
+          : args.wait === true;
       const payload: Record<string, unknown> = { input, dispatcherSessionId };
       if (wait !== undefined) payload.wait = wait;
       try {
