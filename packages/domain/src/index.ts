@@ -206,3 +206,5 @@ export {
   PENDING_ASK_KINDS,
   PENDING_ASK_STATUSES,
 } from './agent-comms.ts';
+export type { AgentRunFailureCause, AgentRunPersistedStatus, AgentRunRow } from './agent-run.ts';
+export { AGENT_RUN_FAILURE_CAUSES, AGENT_RUN_PERSISTED_STATUSES } from './agent-run.ts';

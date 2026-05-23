@@ -7,6 +7,8 @@ import type {
   AgentInboxStatus,
   AgentModel,
   AgentOutputDestination,
+  AgentRunFailureCause,
+  AgentRunPersistedStatus,
   FieldSchemaType,
   GlobalSettings,
   NodeOutput,
@@ -643,4 +645,75 @@ export const agentDeliveryAudit = sqliteTable(
     driver: text('driver').notNull().default('unknown').$type<AgentDeliveryDriver>(),
   },
   (t) => [index('agent_delivery_audit_inbox_idx').on(t.inboxId)],
+);
+
+/**
+ * Section 21 — Persisted agent runs.
+ *
+ * One row per `pc_invoke_agent` / `pc_continue_agent` dispatch. Inserted at
+ * spawn time with `status = 'running'`; updated to a terminal status
+ * (`completed | failed | cancelled`) on completion. Survives server restart
+ * so the orchestrator can `pc_list_my_runs` + `pc_continue_agent` against
+ * runs from prior process lifetimes (subject to the JSONL-retention
+ * backstop in 18.8).
+ *
+ * Non-terminal in-memory states (`spawning`, `paused`, `queued`) are NOT
+ * persisted — they're transient and only meaningful to the live
+ * AgentRunManager. Rows stuck in `running` after a server bounce are
+ * orphans; boot-time reconciliation sweeps them to `failed` with
+ * `failure_cause = 'server-restart'`.
+ *
+ * Section 21 continuation: `continues` is a nullable self-FK to a prior
+ * `agent_runs.id`. New row per continuation (not appended to the parent);
+ * the lineage chain is reconstructed by walking `continues` backwards. The
+ * row's `session_id` matches the parent's (CC-side `--resume <id>` reuses
+ * the same provider session-id).
+ */
+export const agentRuns = sqliteTable(
+  'agent_runs',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    agentName: text('agent_name').notNull(),
+    /** PC session-id (ULID) of the orchestrator that dispatched this run.
+     *  Ownership check for `pc_continue_agent` — only the dispatcher can
+     *  continue. Note: this is PC's ULID (matches `PC_SESSION_ID`), NOT
+     *  CC's provider session-id. */
+    dispatcherSessionId: text('dispatcher_session_id').notNull(),
+    /** CC's provider session-id. Minted via `--session-id <uuid>` at
+     *  original spawn; reused via `--resume <uuid>` on continuation.
+     *  Continuation rows carry the same `session_id` as their parent
+     *  (one CC-side conversation history shared by N AgentRunRows). */
+    sessionId: text('session_id').notNull(),
+    /** Verbatim original input passed to `pc_invoke_agent` /
+     *  `pc_continue_agent`. Stored in full so `pc_list_my_runs` summary
+     *  policy can change without lossy backfill. */
+    input: text('input').notNull(),
+    parentWorkItemId: text('parent_work_item_id').$type<ULID | null>(),
+    parentInvokeDepth: integer('parent_invoke_depth').notNull(),
+    status: text('status').notNull().$type<AgentRunPersistedStatus>(),
+    /** Final assistant text — populated on terminal `completed`. */
+    result: text('result'),
+    failureReason: text('failure_reason'),
+    failureCause: text('failure_cause').$type<AgentRunFailureCause | null>(),
+    /** Section 21 — null for original dispatches, FK to parent row's id
+     *  for continuations. */
+    continues: text('continues').$type<ULID | null>(),
+    dispatchedAt: integer('dispatched_at').notNull(),
+    completedAt: integer('completed_at'),
+  },
+  (t) => [
+    /** `pc_list_my_runs` hot path: filter by dispatcher session, newest
+     *  first. */
+    index('agent_runs_session_dispatched_idx').on(t.dispatcherSessionId, t.dispatchedAt),
+    /** Continuation-chain navigation + concurrent-continuation guard
+     *  ("does this parent already have a non-terminal continuation?"). */
+    index('agent_runs_continues_idx').on(t.continues),
+    /** Project scope filter for cross-project diagnostics + restart-time
+     *  reconciliation sweep. */
+    index('agent_runs_project_idx').on(t.projectId),
+  ],
 );

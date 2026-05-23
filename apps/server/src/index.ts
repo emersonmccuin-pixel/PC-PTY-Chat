@@ -392,6 +392,19 @@ channelServer.start();
     },
   );
   setAgentRunManager(mgr);
+  // Section 21 — sweep orphaned `running` agent_runs rows that outlived a
+  // prior server lifetime. Idempotent + cheap (single UPDATE); runs once at
+  // boot. Logged so a non-zero count signals the prior server died mid-run.
+  try {
+    const reconciled = mgr.reconcileOrphans();
+    if (reconciled > 0) {
+      console.log(
+        `[agent-runs] reconciled ${reconciled} orphaned running row(s) from prior server lifetime`,
+      );
+    }
+  } catch (err) {
+    console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
+  }
 }
 
 const app = new Hono();

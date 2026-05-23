@@ -46,8 +46,11 @@ import { defaultLibraryDir } from './agent-library.ts';
 import {
   getAgentByName,
   getGlobalSettings,
+  insertAgentRunRow,
   listWaitingPendingAsksForSession,
+  markAgentRunTerminal,
   newId,
+  reconcileOrphanedRunningRuns,
 } from '@pc/db';
 import { clampMaxConcurrent, type ULID } from '@pc/domain';
 import {
@@ -150,6 +153,11 @@ export interface AgentRunRecord {
   runId: ULID;
   sessionId: string;
   agentName: string;
+  /** Effective model slug for this run. Resolved at spawn from the pod's
+   *  `model` (or `'opus'` if null / `'inherit'`). Powers the Activity panel
+   *  card's model pill. Pod-less spawns (flat-file fallback, unknown-agent
+   *  failure path) record `'opus'` to match PtySession's default. */
+  model: string;
   projectId: ULID;
   parentWorkItemId: ULID | null;
   /** Section 18.5a — CC sessionId of the orchestrator that dispatched this
@@ -213,6 +221,12 @@ export interface AgentRunSpawnInput {
    *  the wait entirely (immediate fallback to the pre-Section-22 path —
    *  used by the existing warmup-kick test to preserve its semantics). */
   mcpHandshakeTimeoutMs?: number;
+  /** Section 21 — when this spawn is a continuation of a prior run, the
+   *  prior run's id. Propagated into the persisted `agent_runs.continues`
+   *  FK so lineage can be reconstructed by `pc_list_my_runs`. Caller
+   *  (`pc_continue_agent` route) is responsible for validating ownership /
+   *  state before passing it; the manager just records what it's given. */
+  continues?: ULID | null;
 }
 
 export interface AgentRunSpawnResult {
@@ -402,6 +416,78 @@ export class AgentRunManager extends EventEmitter {
     this.emit('run-changed', this.snapshot(rec));
   }
 
+  /** Section 21 — durably record a run at spawn time. Persists row with
+   *  `status = 'running'`; terminal status flips via `persistTerminal`.
+   *  Queued runs are persisted as 'running' too — from the persistence
+   *  layer's POV, "we have a row, it's not terminal" is all that matters;
+   *  the transient queue state stays in-memory.
+   *
+   *  Wrapped in try/catch + console.error: in-memory state is authoritative
+   *  at runtime; DB write is for cross-restart durability. A failure here
+   *  surfaces loudly in logs but doesn't crash the spawn — worst case is
+   *  the run not appearing in `pc_list_my_runs` until a future restart.  */
+  private persistInsert(rec: InternalRun, input: AgentRunSpawnInput): void {
+    try {
+      insertAgentRunRow({
+        id: rec.runId,
+        projectId: rec.projectId,
+        agentName: rec.agentName,
+        dispatcherSessionId: rec.dispatcherSessionId,
+        sessionId: rec.sessionId,
+        input: input.input,
+        parentWorkItemId: rec.parentWorkItemId,
+        parentInvokeDepth:
+          Number.isFinite(input.invokeDepth) && (input.invokeDepth ?? 0) > 0
+            ? Math.floor(input.invokeDepth as number)
+            : 1,
+        continues: input.continues ?? null,
+        dispatchedAt: rec.startedAt,
+      });
+    } catch (err) {
+      console.error(
+        `[agent-runs] persistInsert failed for runId=${rec.runId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /** Section 21 — flip the persisted row to a terminal status. Called from
+   *  both `complete` (status='completed') and `failWithCause`
+   *  (status='failed' | 'cancelled'). Idempotent — `markAgentRunTerminal`
+   *  is just an UPDATE and repeat calls overwrite with the same values.
+   *  Best-effort like `persistInsert`. */
+  private persistTerminal(rec: InternalRun): void {
+    if (!this.isTerminal(rec.status)) return;
+    const status =
+      rec.status === 'completed' || rec.status === 'failed' || rec.status === 'cancelled'
+        ? rec.status
+        : 'failed';
+    try {
+      markAgentRunTerminal({
+        id: rec.runId,
+        status,
+        result: status === 'completed' ? rec.result : null,
+        failureReason: rec.failureReason,
+        failureCause: rec.failureCause,
+        completedAt: rec.endedAt ?? Date.now(),
+      });
+    } catch (err) {
+      console.error(
+        `[agent-runs] persistTerminal failed for runId=${rec.runId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /** Section 21 — boot-time reconciliation. Rows stuck in `running` after a
+   *  server bounce represent runs whose live AgentRunManager died with
+   *  them; flip to `failed` with `cause = 'server-restart'` so subsequent
+   *  `pc_list_my_runs` queries don't surface them as in-flight. Returns
+   *  the count of rows reconciled (for boot logging). */
+  reconcileOrphans(): number {
+    return reconcileOrphanedRunningRuns(Date.now());
+  }
+
   /** Mint a runId + sessionId, materialise the pod, spawn the agent, and
    *  hand back a Promise that resolves on terminal. Throws synchronously
    *  only on pod-resolution failure for an unknown agent name; any post-
@@ -441,6 +527,7 @@ export class AgentRunManager extends EventEmitter {
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
+      this.persistInsert(rec, input);
       this.fail(
         rec,
         'unknown-agent',
@@ -476,6 +563,7 @@ export class AgentRunManager extends EventEmitter {
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
+      this.persistInsert(rec, input);
       this.fail(rec, 'spawn-failed', `scratchDir mkdir failed: ${(err as Error).message}`);
       return { runId, sessionId, startedAt, completion, queued: false, position: null };
     }
@@ -516,6 +604,7 @@ export class AgentRunManager extends EventEmitter {
       });
       const completion = this.installCompletionPromise(rec);
       this.runs.set(runId, rec);
+      this.persistInsert(rec, input);
       this.fail(
         rec,
         'spawn-failed',
@@ -557,6 +646,7 @@ export class AgentRunManager extends EventEmitter {
         });
         const completion = this.installCompletionPromise(rec);
         this.runs.set(runId, rec);
+        this.persistInsert(rec, input);
         this.fail(
           rec,
           'spawn-failed',
@@ -649,6 +739,7 @@ export class AgentRunManager extends EventEmitter {
       rec.queuedAt = startedAt;
     }
     this.runs.set(runId, rec);
+    this.persistInsert(rec, input);
     if (atCap) {
       this.queue.push(runId);
       this.emitRunChanged(rec);
@@ -773,6 +864,10 @@ export class AgentRunManager extends EventEmitter {
       runId: args.runId,
       sessionId: args.sessionId,
       agentName: args.agentName,
+      // Pre-existing WIP placeholder — AgentRunRecord.model was partially
+      // added by a prior session; pod-row resolution path isn't wired. Default
+      // matches the field comment's pod-less-spawn fallback.
+      model: 'opus',
       projectId: args.projectId,
       parentWorkItemId: args.parentWorkItemId,
       dispatcherSessionId: args.dispatcherSessionId,
@@ -986,6 +1081,7 @@ export class AgentRunManager extends EventEmitter {
     }
     this.cleanupOnTerminal(rec);
     this.flushFirstJsonlResolvers(rec);
+    this.persistTerminal(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
     // Section 18.7 — this run freed a cap slot. Drain queue head if any.
@@ -1017,6 +1113,7 @@ export class AgentRunManager extends EventEmitter {
     }
     this.cleanupOnTerminal(rec);
     this.flushFirstJsonlResolvers(rec);
+    this.persistTerminal(rec);
     this.emitRunChanged(rec);
     rec.resolveCompletion?.(this.snapshot(rec));
     if (wasHoldingSlot) this.processQueue();
@@ -1323,6 +1420,7 @@ export class AgentRunManager extends EventEmitter {
       runId: rec.runId,
       sessionId: rec.sessionId,
       agentName: rec.agentName,
+      model: rec.model,
       projectId: rec.projectId,
       parentWorkItemId: rec.parentWorkItemId,
       dispatcherSessionId: rec.dispatcherSessionId,

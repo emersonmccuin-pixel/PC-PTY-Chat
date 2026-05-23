@@ -158,6 +158,20 @@ export type {
 } from './repos/agent-inbox.ts';
 
 export {
+  findActiveContinuation,
+  getAgentRunRow,
+  insertAgentRunRow,
+  listAgentRunsForSession,
+  markAgentRunTerminal,
+  reconcileOrphanedRunningRuns,
+} from './repos/agent-runs.ts';
+export type {
+  InsertAgentRunRowInput,
+  ListAgentRunsForSessionOptions,
+  MarkAgentRunTerminalInput,
+} from './repos/agent-runs.ts';
+
+export {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
