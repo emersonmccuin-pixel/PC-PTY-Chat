@@ -220,3 +220,25 @@ export {
 } from './agent-comms.ts';
 export type { AgentRunFailureCause, AgentRunPersistedStatus, AgentRunRow } from './agent-run.ts';
 export { AGENT_RUN_FAILURE_CAUSES, AGENT_RUN_PERSISTED_STATUSES } from './agent-run.ts';
+export type {
+  AgentDeliveryAuditRowV2,
+  AgentInboxDriverV2,
+  AgentInboxEventKindV2,
+  AgentInboxRowV2,
+  AgentInboxStatusV2,
+  AgentRunFailureCauseV2,
+  AgentRunRowV2,
+  AgentRunStatusV2,
+  PendingAskKindV2,
+  PendingAskRowV2,
+  PendingAskStatusV2,
+} from './agent-v2.ts';
+export {
+  AGENT_INBOX_DRIVERS_V2,
+  AGENT_INBOX_EVENT_KINDS_V2,
+  AGENT_INBOX_STATUSES_V2,
+  AGENT_RUN_FAILURE_CAUSES_V2,
+  AGENT_RUN_STATUSES_V2,
+  PENDING_ASK_KINDS_V2,
+  PENDING_ASK_STATUSES_V2,
+} from './agent-v2.ts';

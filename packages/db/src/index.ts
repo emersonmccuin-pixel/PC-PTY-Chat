@@ -157,6 +157,19 @@ export type {
   RecordChannelPushAttemptInput,
 } from './repos/agent-inbox.ts';
 
+// Section 25 — v2 inbox repo (parallel build alongside v1).
+export {
+  enqueueInboxRowV2,
+  getAuditForInboxV2,
+  getInboxRowV2,
+  listPendingForSessionV2,
+  markInboxDeliveredV2,
+} from './repos/agent-inbox-v2.ts';
+export type {
+  EnqueueInboxRowV2Input,
+  MarkInboxDeliveredV2Input,
+} from './repos/agent-inbox-v2.ts';
+
 export {
   findActiveContinuation,
   getAgentRunRow,

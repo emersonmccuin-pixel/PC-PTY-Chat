@@ -57,3 +57,10 @@ export type {
   InteractiveSessionInput,
   InteractiveSessionDeps,
 } from './interactive-session.ts';
+
+export { JsonlTailerV2 } from './tailer.ts';
+export type {
+  JsonlEventV2,
+  JsonlEventV2Kind,
+  JsonlTailerV2Options,
+} from './tailer.ts';

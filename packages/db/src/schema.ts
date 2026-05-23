@@ -773,3 +773,13 @@ export const instructionDeposits = sqliteTable(
     index('instruction_deposits_status_idx').on(t.status),
   ],
 );
+
+// Section 25 — agent system v2 tables. Defined in schema-v2.ts; re-exported
+// here so drizzle-kit's single-file config picks them up. The separate-file
+// split keeps the Phase D cutover diff small + reviewable.
+export {
+  agentRunsV2,
+  pendingAsksV2,
+  agentInboxV2,
+  agentDeliveryAuditV2,
+} from './schema-v2.ts';
