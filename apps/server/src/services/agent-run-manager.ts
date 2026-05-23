@@ -90,22 +90,6 @@ const DEFAULT_WARMUP_KICK_INTERVAL_MS = 30_000;
  *  `warmupPrompt: null` in `AgentRunManagerDeps` (tests + emergency knob). */
 const DEFAULT_WARMUP_PROMPT = 'Reply with only the word OK.';
 
-/** Section 24 (post-pivot) — on `--resume`, defer the initialInput send until
- *  stdout has been silent for this long. The Layer 0 labs harness proved
- *  38/38 reliability across fresh/concurrent/sequential/long-conversation/
- *  immediate-resume scenarios when sending after quiet-stdout ≥1500ms past
- *  the bypass-permissions bar render. Heuristic timing (not a positive
- *  readiness signal) — but the alternative (Section 24's `pc_check_in`
- *  autonomous ping design) doesn't work because claude.exe `--resume`
- *  rehydrates the conversation and waits for a user prompt to take a new
- *  turn (verified in CC source `main.tsx:3733`). 1500ms matches the labs;
- *  raising it on resume-of-very-long-conversations is the documented escape
- *  hatch (lab timing data: 1814–2668ms quiet windows on 102-row JSONLs). */
-const RESUME_QUIET_WINDOW_MS = 1500;
-/** Section 24 — poll interval for the quiet-window watcher. Mirrors the
- *  labs harness's 250ms tick. */
-const RESUME_QUIET_POLL_MS = 250;
-
 /** Section 22 — wait at most this long after PtySession `ready` for the
  *  `mcp-connected` notification (posted by pc-rig's `oninitialized`) before
  *  falling back to the pre-Section-22 behavior (send warmup at ready + arm
@@ -385,23 +369,11 @@ interface InternalRun extends AgentRunRecord {
    *  under-cap path consumes them immediately via `finishSpawn`; the queued
    *  path stashes them on the record + consumes when the queue drains. */
   pendingSessionOpts: PtySessionOptions | null;
-  /** Section 24 (post-pivot) — true when the spawn is a `--resume`. The
-   *  state handler defers the initialInput send via the quiet-window poller
-   *  instead of firing immediately on `state: 'ready'`. */
+  /** Section 24 (post-pivot-2) — true when the spawn is a `--resume`. The
+   *  state handler defers the initialInput send via the MCP-handshake gate
+   *  (mirroring Section 22's fresh-dispatch warmup-gate) instead of firing
+   *  immediately on `state: 'ready'`. */
   isResume: boolean;
-  /** Section 24 (post-pivot) — last time PtySession emitted a stdout chunk.
-   *  The quiet-window poller measures `now - lastChunkAt` to decide when to
-   *  fire the deferred send. */
-  lastChunkAt: number;
-  /** Section 24 (post-pivot) — interval handle for the quiet-window poller.
-   *  Cleared when the send fires or the run reaches terminal. */
-  quietWindowPoller: unknown;
-  /** Section 24 (post-pivot) — timestamp when the session first reached
-   *  `state: 'ready'`. The poller requires both `now - lastChunkAt` and
-   *  `now - readyAt` to exceed RESUME_QUIET_WINDOW_MS to mirror the labs
-   *  harness's gating (two conditions guard against firing too early when
-   *  ready fires before stdout has actually flushed). */
-  readyAt: number | null;
 }
 
 /** AgentRunManager is an EventEmitter — Section 16b.8.1 + 16b.8.3.
@@ -741,32 +713,31 @@ export class AgentRunManager extends EventEmitter {
     if (isResume && input.continues) {
       this.activeContinuations.set(input.continues, runId);
     }
-    // Section 21 (post-smoke fix) — on `--resume`, skip the warmup turn +
-    // Section-22 MCP-handshake gate entirely. The resumed CC's interactive
-    // prompt boots in a different state than a fresh spawn (loads JSONL +
-    // re-renders prior conversation + writes bookkeeping rows); our
-    // warmup-text-then-wait pattern never resolves — the warmup text gets
-    // delivered but claude.exe doesn't treat it as a real user prompt, so
-    // no `jsonl-turn-end` fires and the spawn-stuck timer kills the run at
-    // 120s. Mirror agent-resume.ts's pause-resume pattern: pre-set
-    // warmupSent + mcpConnected so the state handler gates on neither.
+    // Section 21 (post-smoke fix) — on `--resume`, skip the warmup turn.
+    // The resumed CC's interactive prompt boots in a different state than a
+    // fresh spawn (loads JSONL + re-renders prior conversation + writes
+    // bookkeeping rows); our warmup-text-then-wait pattern never resolves —
+    // the warmup text gets delivered but claude.exe doesn't treat it as a
+    // real user prompt, so no `jsonl-turn-end` fires and the spawn-stuck
+    // timer kills the run at 120s. Pre-set `warmupSent: true` so the
+    // fresh-dispatch warmup-gate skips this run.
     //
     // Section 24 (post-pivot) — the original ready-ping design assumed the
     // resumed agent would autonomously call `pc_check_in` driven by an
     // appended system-prompt fragment. claude.exe `--resume` rehydrates the
     // conversation and waits for a user prompt; system-prompt content alone
-    // doesn't trigger a turn (verified in CC source `main.tsx:3733` — the
-    // `--resume` path passes `initialMessages: resumeData.messages` and
-    // never references the positional `[prompt]` argv or any new user
-    // message). Resume now goes through the labs-proven quiet-window send
-    // (Section 24 follow-up): defer the `session.send(initialInput)` until
-    // stdout has been quiet for `RESUME_QUIET_WINDOW_MS` post-ready, then
-    // type the orchestrator's input directly. The deposit + pc_check_in
-    // infrastructure remains for future use cases but is vestigial on the
-    // happy path.
+    // doesn't trigger a turn (verified in CC source `main.tsx:3733`).
+    //
+    // Section 24 (post-pivot-2) — resume now goes through the labs-proven
+    // MCP-handshake gate (analogous to Section 22's fresh-dispatch gate).
+    // `mcpConnected` is INTENTIONALLY NOT pre-set: the resume gate at
+    // `state: 'ready'` arms a timer waiting for pc-rig's `oninitialized` POST
+    // to flip `mcpConnected` true (via `notifyMcpConnected`). Pre-setting
+    // would make the gate take the synchronous fast path and defeat the
+    // purpose. The earlier pre-set was needed when resume had no gate of
+    // its own and reused the fresh-dispatch warmup-gate's mcp check.
     if (isResume) {
       rec.warmupSent = true;
-      rec.mcpConnected = true;
       rec.isResume = true;
     }
     const completion = this.installCompletionPromise(rec);
@@ -1015,12 +986,10 @@ export class AgentRunManager extends EventEmitter {
       // Default null; the concurrent-continuation rejection record also
       // keeps null so its terminal flush doesn't touch the live entry.
       continues: null,
-      // Section 24 (post-pivot) — defaults; spawn() flips isResume on the
-      // continuation path. readyAt is filled when state hits 'ready'.
+      // Section 24 (post-pivot-2) — defaults; spawn() flips isResume on the
+      // continuation path. Resume gating now uses the MCP-handshake path
+      // (mcpConnected + mcpHandshakeTimer) inherited from Section 22.
       isResume: false,
-      lastChunkAt: 0,
-      quietWindowPoller: null,
-      readyAt: null,
     };
   }
 
@@ -1033,27 +1002,8 @@ export class AgentRunManager extends EventEmitter {
   private attachToSession(rec: InternalRun, session: AgentSessionLike): void {
     rec.session = session;
 
-    // Section 24 (post-pivot) — track stdout silence so the resume path's
-    // quiet-window poller can decide when claude.exe is done flushing the
-    // prior conversation. Mirrors the lab harness's `lastChunkAt` book-
-    // keeping. Listener fires for both 'chunk' and 'raw' — same payload
-    // semantically; we use 'chunk' (ANSI-stripped) since that's what the
-    // FakeSession used by tests emits when present.
-    session.on('chunk', () => {
-      rec.lastChunkAt = Date.now();
-    });
-
     session.on('state', (state: SessionState) => {
       if (this.isTerminal(rec.status)) return;
-      if (state === 'ready' && rec.readyAt === null) {
-        // Section 24 (post-pivot) — pin the ready timestamp once. The
-        // quiet-window poller measures against this to require BOTH stdout
-        // silence AND a minimum sinceReady gap before firing the send.
-        // Pinning here covers all branches (fresh warmup-gated, legacy
-        // warmup-disabled, attachResumedSession's idempotent re-fire).
-        rec.readyAt = Date.now();
-        if (rec.lastChunkAt === 0) rec.lastChunkAt = rec.readyAt;
-      }
       if (state === 'ready' && !rec.warmupSent && this.warmupPrompt !== null) {
         // Section 22 — gate warmup on pc-rig's `mcp-connected` POST. Banner-
         // render (state === 'ready') fires BEFORE CC's MCP client finishes
@@ -1081,18 +1031,34 @@ export class AgentRunManager extends EventEmitter {
           }, rec.mcpHandshakeTimeoutMs);
         }
       } else if (state === 'ready' && rec.isResume && !rec.initialInputSent) {
-        // Section 24 (post-pivot) — quiet-window-gated send for resumed
-        // sessions. Banner-render (`state: 'ready'`) on resume fires while
-        // claude.exe is still replaying the prior conversation to stdout +
-        // re-mounting its REPL. Sending the orchestrator's input here is
-        // too early: the labs reproduction (`labs/agent-resume-repro/`)
-        // proved the typed bytes get absorbed without ever surfacing as a
-        // user prompt. Wait for stdout to be quiet ≥1500ms past ready,
-        // then send.
+        // Section 24 (post-pivot-2) — MCP-handshake-gated send for resumed
+        // sessions. The earlier pivot used a 1500ms-stdout-quiet heuristic;
+        // labs verified it on a clean sandbox but it fails in real CC when
+        // any UI element animates (e.g., the "X% of weekly limit" banner at
+        // high subscription usage keeps resetting lastChunkAt indefinitely).
+        // MCP-handshake is a positive protocol signal that fires regardless
+        // of stdout animation — pc-rig's `oninitialized` POSTs in once CC's
+        // MCP client sends `initialized`, and labs 3/3 PASS at high quota.
+        // Mirror the fresh-dispatch warmup-gate (above): fast path if mcp
+        // already connected, else arm the handshake timer + send when
+        // notifyMcpConnected fires. Fallback fire on timeout so we don't
+        // hang if pc-rig's POST never arrives.
         rec.status = 'running';
         this.clearSpawnStuckTimer(rec);
         this.emitRunChanged(rec); // spawning → running
-        this.scheduleResumeQuietWindowSend(rec);
+        if (rec.mcpConnected) {
+          this.sendResumeInput(rec);
+        } else if (rec.mcpHandshakeTimeoutMs === 0) {
+          // Test / emergency knob: skip the wait entirely.
+          this.sendResumeInput(rec);
+        } else {
+          rec.mcpHandshakeTimer = this.scheduleTimeout(() => {
+            rec.mcpHandshakeTimer = null;
+            if (this.isTerminal(rec.status)) return;
+            if (rec.initialInputSent) return; // notify-then-fire raced us
+            this.sendResumeInput(rec);
+          }, rec.mcpHandshakeTimeoutMs);
+        }
       } else if (state === 'ready' && !rec.initialInputSent) {
         // Legacy path: warmup disabled (tests + emergency knob). Send the
         // real initialInput immediately on ready.
@@ -1390,59 +1356,6 @@ export class AgentRunManager extends EventEmitter {
     }
   }
 
-  /** Section 24 (post-pivot) — defers the resume-spawn's initialInput send
-   *  until claude.exe finishes flushing the prior conversation to stdout.
-   *  Polls every RESUME_QUIET_POLL_MS; fires the send when both
-   *  `now - lastChunkAt` AND `now - readyAt` exceed RESUME_QUIET_WINDOW_MS.
-   *  Mirrors the labs harness's gating (`labs/agent-resume-repro/repro.mjs`
-   *  phaseB: 38/38 PASS across fresh / concurrent / sequential / long-
-   *  conversation / immediate-resume scenarios). Cleared in `clearTimers`
-   *  on terminal so a never-quiet session doesn't leak the interval. */
-  private scheduleResumeQuietWindowSend(rec: InternalRun): void {
-    if (rec.quietWindowPoller) return;
-    if (rec.initialInputSent) return;
-    if (!rec.session) return;
-    const setI =
-      this.deps.setTimeout ?? ((cb: () => void, ms: number) => globalThis.setTimeout(cb, ms));
-    const clearI =
-      this.deps.clearTimeout ?? ((h: unknown) => globalThis.clearTimeout(h as NodeJS.Timeout));
-    // Use repeating setTimeout (not setInterval) so the test-injected
-    // setTimeout dep works the same way as the warmup-kick path.
-    const tick = (): void => {
-      rec.quietWindowPoller = null;
-      if (this.isTerminal(rec.status)) return;
-      if (rec.initialInputSent) return;
-      const now = Date.now();
-      const sinceReady = rec.readyAt !== null ? now - rec.readyAt : 0;
-      const quietFor = rec.lastChunkAt !== 0 ? now - rec.lastChunkAt : 0;
-      if (sinceReady >= RESUME_QUIET_WINDOW_MS && quietFor >= RESUME_QUIET_WINDOW_MS) {
-        rec.initialInputSent = true;
-        try {
-          rec.session?.send(rec.initialInput);
-        } catch (err) {
-          this.fail(
-            rec,
-            'spawn-failed',
-            `quiet-window send initialInput failed: ${(err as Error).message}`,
-          );
-        }
-        return;
-      }
-      rec.quietWindowPoller = setI(tick, RESUME_QUIET_POLL_MS);
-    };
-    rec.quietWindowPoller = setI(tick, RESUME_QUIET_POLL_MS);
-    // Silence the unused-import warning + reserve handle for future cleanup.
-    void clearI;
-  }
-
-  private clearQuietWindowPoller(rec: InternalRun): void {
-    if (rec.quietWindowPoller) {
-      const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
-      clearT(rec.quietWindowPoller);
-      rec.quietWindowPoller = null;
-    }
-  }
-
   /** Section 22 — helper for the warmup-send path. Shared by the three
    *  trigger points: (a) ready-state with mcp already connected, (b)
    *  notifyMcpConnected arriving after ready, (c) handshake-timeout
@@ -1466,6 +1379,30 @@ export class AgentRunManager extends EventEmitter {
     }
   }
 
+  /** Section 24 (post-pivot-2) — resume-path equivalent of `fireWarmup`. The
+   *  resume case has no warmup turn (warmupSent is pre-set true so the
+   *  fresh-dispatch warmup-gate skips it); the gate fires the orchestrator's
+   *  follow-up `initialInput` directly once MCP is connected. Shared by
+   *  three trigger points like fireWarmup is: (a) ready-state with mcp
+   *  already connected, (b) notifyMcpConnected arriving after ready,
+   *  (c) handshake-timeout fallback. */
+  private sendResumeInput(rec: InternalRun): void {
+    if (this.isTerminal(rec.status)) return;
+    if (rec.initialInputSent) return;
+    if (!rec.session) return;
+    rec.initialInputSent = true;
+    this.clearMcpHandshakeTimer(rec);
+    try {
+      rec.session.send(rec.initialInput);
+    } catch (err) {
+      this.fail(
+        rec,
+        'spawn-failed',
+        `send resume initialInput failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
   /** Section 22 — schedule a one-shot timer via the deps-injected setTimeout
    *  (tests pass a fake clock). Returns the handle so callers can stash it
    *  on InternalRun + clear it later. */
@@ -1486,10 +1423,14 @@ export class AgentRunManager extends EventEmitter {
   /** Section 22 — called by the apps/server `/api/internal/mcp-handshake`
    *  route when pc-rig's `oninitialized` POSTs in. Locates the run by
    *  `sessionId`, marks it MCP-connected, and (if the PtySession has
-   *  already hit `ready`) fires the warmup immediately without arming the
-   *  kick. Idempotent — a second POST is a no-op. Returns true if we
-   *  found a matching run, false otherwise (run-not-found is non-fatal —
-   *  the timeout fallback in attachToSession catches all cases). */
+   *  already hit `ready`) fires the appropriate send immediately.
+   *  Idempotent — a second POST is a no-op. Returns true if we found a
+   *  matching run, false otherwise (run-not-found is non-fatal — the
+   *  timeout fallback in attachToSession catches all cases).
+   *
+   *  Section 24 (post-pivot-2) — branches on `isResume`. Resume runs need
+   *  `sendResumeInput` (no warmup turn, the orchestrator's follow-up is
+   *  the next user message). Fresh dispatches stay on `fireWarmup`. */
   notifyMcpConnected(projectId: ULID, sessionId: string): boolean {
     let target: InternalRun | null = null;
     for (const r of this.runs.values()) {
@@ -1504,11 +1445,15 @@ export class AgentRunManager extends EventEmitter {
     target.mcpConnected = true;
     this.clearMcpHandshakeTimer(target);
     // If the session is already at 'ready', the state handler is waiting
-    // on us — fire the warmup now (no kick; handshake confirmed). If
-    // ready hasn't fired yet, the state handler will see mcpConnected=true
-    // and take the fast path when it does.
+    // on us — fire now (no kick / no delay; handshake confirmed). If ready
+    // hasn't fired yet, the state handler will see mcpConnected=true and
+    // take the fast path when it does.
     if (target.session && target.session.getState() === 'ready') {
-      this.fireWarmup(target, { armKick: false });
+      if (target.isResume) {
+        this.sendResumeInput(target);
+      } else {
+        this.fireWarmup(target, { armKick: false });
+      }
     }
     return true;
   }
@@ -1620,7 +1565,6 @@ export class AgentRunManager extends EventEmitter {
     this.clearSpawnStuckTimer(rec);
     this.clearWarmupKick(rec);
     this.clearMcpHandshakeTimer(rec);
-    this.clearQuietWindowPoller(rec);
     if (rec.wallClockTimer) {
       const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
       clearT(rec.wallClockTimer);

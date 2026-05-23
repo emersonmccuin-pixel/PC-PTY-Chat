@@ -2209,17 +2209,17 @@ test('Section 21 — resume option threads --resume + reuses providerSessionId +
   );
 });
 
-// Section 24 (post-pivot) — quiet-window-gated send for resumed spawns.
-// On `state: 'ready'`, the manager defers `session.send(initialInput)` via
-// a poller that waits until stdout has been silent for ≥1500ms past ready
-// AND ≥1500ms since the last chunk. The labs harness proved 38/38 PASS
-// under this gating. Original Section 24 design (autonomous pc_check_in
-// tool call) didn't work because claude.exe --resume waits for user input
-// to trigger a turn.
-test('Section 24 (post-pivot) — resume defers initialInput send until stdout-quiet window passes', async () => {
+// Section 24 (post-pivot-2) — MCP-handshake-gated send for resumed spawns.
+// The earlier quiet-window pivot lab-passed 38/38 in a clean sandbox but
+// failed in real CC at high subscription usage: the "X% of weekly limit"
+// banner animates stdout indefinitely so `lastChunkAt` never goes quiet.
+// MCP-handshake is a positive protocol signal that fires regardless of UI
+// animation. Mirrors the fresh-dispatch warmup-gate (Section 22). Labs
+// 3/3 PASS at high quota. See docs/buildout/agent-ready-ping-protocol.md.
+test('Section 24 (post-pivot-2) — resume defers initialInput send until mcp-connected fires', async () => {
   const p = createProject({
-    slug: 'arm-quiet-window',
-    name: 'ARM Quiet Window',
+    slug: 'arm-resume-mcp',
+    name: 'ARM Resume MCP',
     stages,
     folderPath: tmpDataDir,
   });
@@ -2227,7 +2227,7 @@ test('Section 24 (post-pivot) — resume defers initialInput send until stdout-q
   const mgr = new AgentRunManager({
     warmupPrompt: null,
     createSession: factory,
-    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-quiet-window', pid, rid),
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-resume-mcp', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
 
@@ -2237,7 +2237,7 @@ test('Section 24 (post-pivot) — resume defers initialInput send until stdout-q
     input: 'find a date math lib',
     wait: true,
     projectId: p.id as ULID,
-    dispatcherSessionId: 'quiet-window-dispatcher',
+    dispatcherSessionId: 'resume-mcp-dispatcher',
     worktreeDir: tmpDataDir,
   });
   const s0 = sessions[0]!;
@@ -2245,31 +2245,29 @@ test('Section 24 (post-pivot) — resume defers initialInput send until stdout-q
   s0.emitTurnEnd('use date-fns');
   await original.completion;
 
-  // Continuation — Section 24 (post-pivot) path. The manager arms a
-  // quiet-window poller on ready instead of firing the send immediately.
-  // We use real wall-clock timers here (no fake setTimeout injection) so
-  // the poller actually runs; the test waits ~2s for the quiet window to
-  // elapse. Spawn-stuck (120s) and wall-clock (2h) defaults stay well
-  // outside this window.
+  // Continuation — resume path. The manager arms the mcp-handshake gate on
+  // ready instead of firing the send immediately. Generous timeout so the
+  // notify path drives the send, not the fallback.
   const cont = mgr.spawn({
     agentName: 'researcher',
     input: 'expand on point 3',
     wait: true,
     projectId: p.id as ULID,
-    dispatcherSessionId: 'quiet-window-dispatcher',
+    dispatcherSessionId: 'resume-mcp-dispatcher',
     worktreeDir: tmpDataDir,
     continues: original.runId,
     resume: { providerSessionId: original.sessionId },
+    mcpHandshakeTimeoutMs: 5_000,
   });
   const s1 = sessions[1]!;
+  const sessionId = s1.lastOpts.claudeSessionId!;
 
-  // On ready, the manager does NOT send synchronously — the poller is
-  // armed instead.
+  // On ready, the manager does NOT send synchronously — handshake gate armed.
   s1.becomeReady();
   assert.equal(
     s1.sent.length,
     0,
-    'resume defers send on ready (quiet-window poller armed)',
+    'resume defers send on ready (handshake gate armed)',
   );
   assert.equal(
     mgr.get(cont.runId)?.status,
@@ -2277,14 +2275,12 @@ test('Section 24 (post-pivot) — resume defers initialInput send until stdout-q
     'resume flips spawning → running on ready (send pending)',
   );
 
-  // Wait past the quiet window (1500ms threshold + small buffer for the
-  // poll cadence). No chunks emitted in this window → quietFor grows
-  // unbounded → poller fires the send on its next tick.
-  await new Promise<void>((r) => setTimeout(r, 1800));
+  // mcp-connected POST arrives → send fires immediately.
+  mgr.notifyMcpConnected(p.id as ULID, sessionId);
   assert.deepEqual(
     s1.sent,
     ['expand on point 3'],
-    'quiet window passed: initialInput sent via PTY',
+    'mcp-connected confirmed: initialInput sent via PTY',
   );
 
   // Drive to completion.
@@ -2292,4 +2288,127 @@ test('Section 24 (post-pivot) — resume defers initialInput send until stdout-q
   const contResult = await cont.completion;
   assert.equal(contResult.status, 'completed');
   assert.equal(contResult.result, 'point 3 expanded: ...');
+});
+
+// Section 24 (post-pivot-2) — when mcp-connected arrives BEFORE ready, the
+// state handler takes the fast path on its first ready signal: send fires
+// synchronously, no timer armed.
+test('Section 24 (post-pivot-2) — resume + mcp-connected before ready: fast path', async () => {
+  const p = createProject({
+    slug: 'arm-resume-mcp-fast',
+    name: 'ARM Resume MCP Fast',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-resume-mcp-fast', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a date math lib',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-mcp-fast-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('use date-fns');
+  await original.completion;
+
+  const cont = mgr.spawn({
+    agentName: 'researcher',
+    input: 'expand on point 3',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-mcp-fast-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+    mcpHandshakeTimeoutMs: 5_000,
+  });
+  const s1 = sessions[1]!;
+  const sessionId = s1.lastOpts.claudeSessionId!;
+
+  // pc-rig handshake POST races us to ready.
+  const found = mgr.notifyMcpConnected(p.id as ULID, sessionId);
+  assert.equal(found, true);
+  assert.equal(s1.sent.length, 0, 'no send before ready even when mcp-connected');
+
+  // Ready: fast path fires send immediately.
+  s1.becomeReady();
+  assert.deepEqual(
+    s1.sent,
+    ['expand on point 3'],
+    'fast path: mcp-connected + ready → immediate send',
+  );
+
+  s1.emitTurnEnd('done');
+  const result = await cont.completion;
+  assert.equal(result.status, 'completed');
+});
+
+// Section 24 (post-pivot-2) — if mcp-connected NEVER arrives (pc-rig POST
+// failure, stale bundle, etc.), the handshake timer fires the fallback:
+// send goes out at the deadline anyway. Defense-in-depth — we don't hang.
+test('Section 24 (post-pivot-2) — resume + mcp-connected never arrives: timer fires fallback', async () => {
+  const p = createProject({
+    slug: 'arm-resume-mcp-timeout',
+    name: 'ARM Resume MCP Timeout',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-resume-mcp-timeout', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a date math lib',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-mcp-timeout-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('use date-fns');
+  await original.completion;
+
+  const cont = mgr.spawn({
+    agentName: 'researcher',
+    input: 'expand on point 3',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-mcp-timeout-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+    mcpHandshakeTimeoutMs: 40, // small; want the timeout to fire
+    spawnStuckTimeoutMs: 5_000,
+  });
+  const s1 = sessions[1]!;
+
+  // Ready arrives; send deferred waiting on handshake.
+  s1.becomeReady();
+  assert.equal(s1.sent.length, 0);
+
+  // Wait past the handshake timeout: fallback fires the send.
+  await new Promise<void>((r) => setTimeout(r, 90));
+  assert.deepEqual(
+    s1.sent,
+    ['expand on point 3'],
+    'fallback fire: timer-triggered send went through',
+  );
+
+  s1.emitTurnEnd('done');
+  const result = await cont.completion;
+  assert.equal(result.status, 'completed');
 });
