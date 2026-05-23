@@ -557,11 +557,19 @@ function stringify(err: unknown): string {
   return String(err);
 }
 
-/** Extract the assistant's text from a JSONL event if it's an assistant
- *  message row. Returns null otherwise. Used to populate the AgentRunRecord's
- *  `result` field on completed. Conservative — the canonical extractor lives
- *  in Session 7's tailer; this is a lightweight subset for the wrapper. */
+/** Extract the assistant's text from a JSONL event. Handles both the v1
+ *  JsonlTailer event shape (`{ kind: 'jsonl-turn-end', text, stopReason }`)
+ *  AND the v2 JsonlTailerV2 / fake-event shape that carries a raw `row`
+ *  field. Returns null when neither shape applies. */
 function extractAssistantText(ev: JsonlEvent): string | null {
+  // v1/v2 typed shape — `jsonl-turn-end` carries the assistant text directly
+  // on the event.
+  if ((ev as { kind?: unknown }).kind === 'jsonl-turn-end') {
+    const t = (ev as { text?: unknown }).text;
+    return typeof t === 'string' && t.length > 0 ? t : null;
+  }
+  // Raw-row fallback — Session 6 tests + future v2 tailer pass-throughs feed
+  // events shaped as `{ row: <jsonl-line-as-object> }`.
   const row = (ev as { row?: unknown }).row ?? (ev as { entry?: unknown }).entry;
   if (!row || typeof row !== 'object') return null;
   const r = row as Record<string, unknown>;
@@ -585,11 +593,21 @@ function extractAssistantText(ev: JsonlEvent): string | null {
   return null;
 }
 
-/** Turn-end signal — assistant row with stop_reason !== 'tool_use'. The
- *  full signal set (system stop_hook_summary, queue-protocol shift) lives
- *  in Session 7's tailer; this is the lightweight version sufficient for
- *  Session 6's state machine tests. */
+/** Turn-end signal — assistant row with stop_reason !== 'tool_use'. Detects
+ *  both event shapes: the v1 JsonlTailer's `kind: 'jsonl-turn-end'` (the
+ *  production tailer Session 5's LowLevelSpawn wires through) AND the
+ *  raw-row shape used by Session 6's unit tests + Session 7's
+ *  JsonlTailerV2 (which carries `row` alongside `kind`). */
 function isTurnEnd(ev: JsonlEvent): boolean {
+  // v1/v2 typed shape — the tailer itself decided this line ends the turn.
+  // The tailer filters out `tool_use` stop reasons before emitting, so this
+  // event kind is by-definition a real turn boundary.
+  if ((ev as { kind?: unknown }).kind === 'jsonl-turn-end') {
+    const stopReason = (ev as { stopReason?: unknown }).stopReason;
+    if (stopReason === 'tool_use') return false;
+    return true;
+  }
+  // Raw-row fallback (Session 6 fake events / future inline detection).
   const row = (ev as { row?: unknown }).row ?? (ev as { entry?: unknown }).entry;
   if (!row || typeof row !== 'object') return false;
   const r = row as Record<string, unknown>;

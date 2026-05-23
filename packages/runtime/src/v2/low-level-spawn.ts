@@ -17,7 +17,7 @@
 
 import pty from 'node-pty';
 import { EventEmitter } from 'node:events';
-import { existsSync, createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { existsSync, createWriteStream, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { dirname } from 'node:path';
 import { JsonlTailer, type JsonlEvent } from '../jsonl-tailer.ts';
 import { scrubIdeEnv } from './env-scrub.ts';
@@ -393,7 +393,14 @@ export class LowLevelSpawn extends EventEmitter {
 
   /** Poll the deterministic JSONL path for first-existence then attach the
    *  tailer. CC mints the file lazily — fresh dispatches typically see it
-   *  appear ~1-2s after the first user turn. */
+   *  appear ~1-2s after the first user turn.
+   *
+   *  Resume mode: skip past existing lines so the tailer only emits events
+   *  from CC's new appends. Without this guard, the prior conversation's
+   *  assistant turn-ends replay as fresh `kind: 'jsonl-turn-end'` events and
+   *  race the wrapper's `running` listener into completing the run before
+   *  the resumed agent's actual answer arrives. (Same root cause +
+   *  same fix as Section 21's v1-side `e5b9b53`.) */
   private attachJsonlTailer(): void {
     if (this.state === 'exited') return;
     const path = this.resolvedJsonlPath;
@@ -402,7 +409,19 @@ export class LowLevelSpawn extends EventEmitter {
     const tryAttach = () => {
       if (this.tailer || this.state === 'exited') return;
       if (existsSync(path)) {
-        this.tailer = new JsonlTailer({ filePath: path, startLine: 0 });
+        let startLine = 0;
+        if (this.input.mode === 'resume') {
+          try {
+            const existing = readFileSync(path, 'utf-8');
+            startLine = existing.split('\n').filter(Boolean).length;
+          } catch {
+            // Best-effort. Falling back to 0 inherits the replay bug on this
+            // run but doesn't hard-fail; surfaces as a premature complete()
+            // that the user can re-dispatch around.
+            startLine = 0;
+          }
+        }
+        this.tailer = new JsonlTailer({ filePath: path, startLine });
         this.tailer.on('event', (ev: JsonlEvent) => this.emit('jsonl-event', ev));
         this.tailer.start();
         return;

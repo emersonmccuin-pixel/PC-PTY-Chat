@@ -70,6 +70,7 @@ import {
   cancelPendingAskV2,
   recordExplicitPauseV2,
 } from './services/v2/pause-resume.ts';
+import { getActiveRunRegistry } from './services/v2/active-runs.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -3425,9 +3426,19 @@ app.post('/api/internal/mcp-handshake', async (c) => {
   if (!body.projectId || !body.agentSessionId) {
     return c.json({ ok: false, error: 'projectId + agentSessionId required' }, 400);
   }
+  // Section 25 Session 9 — v2 spawns register in the active-runs registry
+  // keyed by ccProviderSessionId. The v1 AgentRunManager's
+  // notifyMcpConnected can't see those. Route the handshake to whichever
+  // surface owns the session — v2 takes priority because the v2 transport
+  // becomes the default in Phase D.
+  const v2Entry = getActiveRunRegistry().getByCcSession(body.agentSessionId);
+  if (v2Entry) {
+    v2Entry.run.notifyMcpHandshake();
+    return c.json({ ok: true, found: true, transport: 'v2' });
+  }
   const mgr = getAgentRunManager();
   const found = mgr.notifyMcpConnected(body.projectId as ULID, body.agentSessionId);
-  return c.json({ ok: true, found });
+  return c.json({ ok: true, found, transport: 'v1' });
 });
 
 // ─── Section 25 Session 9 — v2 routes (live alongside v1) ────────────────
