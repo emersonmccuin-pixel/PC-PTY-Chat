@@ -1,0 +1,19 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1600" height="900" fill="#050403"></rect>
+
+  <path d="M120 454V362L235 306H295" stroke="#DCA52E" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M356 306H444" stroke="#DCA52E" stroke-width="24" stroke-linecap="round"></path>
+  <rect x="234" y="252" width="122" height="108" rx="22" fill="#DCA52E"></rect>
+  <circle cx="476" cy="306" r="40" fill="#DCA52E"></circle>
+
+  <path d="M120 504V596L235 652H295" stroke="#806342" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M356 652H444" stroke="#806342" stroke-width="24" stroke-linecap="round"></path>
+  <rect x="234" y="598" width="122" height="108" rx="22" fill="#806342"></rect>
+  <circle cx="476" cy="652" r="40" fill="#806342"></circle>
+
+  <rect x="248" y="462" width="34" height="34" rx="8" fill="#59442A"></rect>
+  <rect x="310" y="462" width="34" height="34" rx="8" fill="#B9822B"></rect>
+  <rect x="372" y="462" width="34" height="34" rx="8" fill="#F2D29A"></rect>
+
+  <text x="595" y="560" fill="#E6C77F" font-family="Inter, Arial, Helvetica, sans-serif" font-size="220" font-weight="650" letter-spacing="-7">caisson</text>
+</svg>
