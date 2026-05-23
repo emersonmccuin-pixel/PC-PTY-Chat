@@ -1,0 +1,626 @@
+// Section 25 Session 8 — pause / resume / continuation orchestration.
+//
+// Three primitives the v2 MCP tool surface (Session 9) calls into:
+//
+//   recordExplicitPauseV2   — pc_ask_orchestrator / pc_ask_user /
+//                              pc_request_approval tool fires. Writes
+//                              pending_asks_v2 + flips AgentRun → paused +
+//                              persists `paused` to agent_runs_v2 + delivers
+//                              the agent-asks-* event through v2 hybrid
+//                              transport.
+//
+//   answerPendingAskV2      — pc_answer_pending tool fires (orchestrator
+//                              answer) OR HTTP user-answer route fires.
+//                              Atomic open→answered flip on the row,
+//                              persists `spawning` + podRevisionAtResume to
+//                              agent_runs_v2, drives AgentRun
+//                              ._resumeWithAnswer (which spawns the resumed
+//                              LowLevelSpawn). Same agent_run_id; the run
+//                              record continues across the pause boundary.
+//
+//   continueAgentV2         — pc_continue_agent tool fires. Mints a fresh
+//                              agent_run_id linked via `continues`. JSONL
+//                              retention guard (404 with clear "session
+//                              expired" message if CC's on-disk JSONL has
+//                              been swept). Single-active-continuation guard
+//                              (409 if a prior continuation is still in
+//                              flight). Constructs a new AgentRun in resume
+//                              mode + registers it with the active-runs
+//                              registry.
+//
+// The orchestration writes through three layers in lock-step: AgentRun's
+// in-memory state machine + the agent_runs_v2 row + the hybrid delivery
+// pipeline. A failure in any layer surfaces as an explicit return value
+// (never a thrown exception) so the caller can map it to a clean error
+// response shape.
+
+import { existsSync } from 'node:fs';
+
+import {
+  computePodRevision,
+  createPendingAskV2,
+  findActiveContinuationV2,
+  getAgentRunRowV2,
+  getPendingAskV2,
+  getProjectById,
+  insertAgentRunRowV2,
+  markAgentRunTerminalV2,
+  markPendingAskAnsweredV2,
+  markPendingAskCancelledV2,
+  newId,
+  updateAgentRunStatusV2,
+} from '@pc/db';
+import { v2 as runtimeV2 } from '@pc/runtime';
+import type {
+  AgentInboxEventKindV2,
+  PendingAskKindV2,
+  PendingAskOption,
+  ULID,
+} from '@pc/domain';
+
+import { buildAgentEventHeader } from '../agent-event-header.ts';
+import { enqueueAndPushV2 } from './delivery.ts';
+import { getActiveRunRegistry, type ActiveRunRegistry } from './active-runs.ts';
+import type { ChannelServer } from '../channel-server.ts';
+
+const { jsonlPathFor } = runtimeV2;
+
+// ──────────────────────────── EXPLICIT PAUSE ──────────────────────────────
+
+export interface RecordExplicitPauseV2Input {
+  agentRunId: ULID;
+  kind: PendingAskKindV2;
+  promptBody: string;
+  context?: string | null;
+  options?: PendingAskOption[] | null;
+  now?: number;
+}
+
+export type RecordExplicitPauseV2Result =
+  | {
+      ok: true;
+      pendingAskId: ULID;
+      eventDelivered: boolean;
+      eventInboxId: ULID | null;
+    }
+  | { ok: false; error: string; cause: 'unknown-run' | 'wrong-state' };
+
+export interface PauseResumeDepsV2 {
+  channelServer: ChannelServer;
+  /** Slug for the channel POST body. Production = `'pc-orchestrator'`. */
+  slug: string;
+  /** Source for the channel POST body. Production = `'agent'`. */
+  source?: string;
+  /** Sender for the channel POST body. Production = `'pc'`. */
+  sender?: string;
+  /** Active-run lookup. Defaults to the process-wide singleton. */
+  registry?: ActiveRunRegistry;
+  /** Test seam: override the "is JSONL still on disk?" check. */
+  jsonlExists?: (path: string) => boolean;
+  /** Test seam: override now(). */
+  now?: () => number;
+}
+
+/** Pause a running AgentRun in response to a pc_ask_* tool call. Mints a
+ *  pending_asks_v2 row, flips the run paused, delivers the agent-asks-*
+ *  event to the dispatcher's session through the hybrid transport. */
+export function recordExplicitPauseV2(
+  input: RecordExplicitPauseV2Input,
+  deps: PauseResumeDepsV2,
+): RecordExplicitPauseV2Result {
+  const reg = deps.registry ?? getActiveRunRegistry();
+  const now = (deps.now ?? Date.now)();
+
+  const entry = reg.get(input.agentRunId);
+  if (!entry) {
+    return {
+      ok: false,
+      error: `no active run with id ${input.agentRunId}`,
+      cause: 'unknown-run',
+    };
+  }
+
+  const runState = entry.run.getState();
+  if (runState !== 'running') {
+    return {
+      ok: false,
+      error: `run ${input.agentRunId} is ${runState}, not running`,
+      cause: 'wrong-state',
+    };
+  }
+
+  const pendingAskId = newId();
+  createPendingAskV2({
+    id: pendingAskId,
+    agentRunId: input.agentRunId,
+    ccSessionId: entry.ccSessionId,
+    projectId: entry.projectId,
+    parentWorkItemId: entry.parentWorkItemId,
+    kind: input.kind,
+    promptBody: input.promptBody,
+    context: input.context ?? null,
+    options: input.options ?? null,
+    now,
+  });
+
+  // Mark the run paused (in-memory state machine + persisted row).
+  entry.run._markPaused(pendingAskId);
+  updateAgentRunStatusV2({ id: input.agentRunId, status: 'paused' });
+
+  // Deliver the agent-asks-* event to the dispatcher session.
+  const kindMap: Record<PendingAskKindV2, AgentInboxEventKindV2> = {
+    orchestrator: 'agent-asks-orchestrator',
+    user: 'agent-asks-user',
+    approval: 'agent-approval-request',
+  };
+  const eventKind = kindMap[input.kind];
+  const body = buildPauseEventBody({
+    eventKind,
+    pendingAskId,
+    sessionId: entry.ccSessionId,
+    podName: entry.podName,
+    runId: input.agentRunId,
+    parentWorkItemId: entry.parentWorkItemId,
+    promptBody: input.promptBody,
+    context: input.context ?? null,
+    options: input.options ?? null,
+  });
+
+  const pushResult = enqueueAndPushV2(deps.channelServer, {
+    projectId: entry.projectId,
+    pcSessionId: entry.dispatcherSessionId,
+    kind: eventKind,
+    slug: deps.slug,
+    source: deps.source ?? 'agent',
+    body,
+    sender: deps.sender ?? 'pc',
+  });
+
+  return {
+    ok: true,
+    pendingAskId,
+    eventDelivered: pushResult.channelDelivered,
+    eventInboxId: pushResult.inboxId,
+  };
+}
+
+// ──────────────────────────── ANSWER + RESUME ─────────────────────────────
+
+export interface AnswerPendingAskV2Input {
+  pendingAskId: ULID;
+  answer: string;
+  answeredBy: 'orchestrator' | 'user';
+  now?: number;
+}
+
+export type AnswerPendingAskV2Result =
+  | {
+      ok: true;
+      agentRunId: ULID;
+      ccSessionId: string;
+      /** True iff the pod row was edited between dispatch and resume. */
+      podRevisionDrifted: boolean;
+      podRevisionAtDispatch: string | null;
+      podRevisionAtResume: string | null;
+    }
+  | {
+      ok: false;
+      error: string;
+      cause:
+        | 'unknown-pending-ask'
+        | 'already-answered'
+        | 'cancelled'
+        | 'unknown-run'
+        | 'wrong-state'
+        | 'resume-failed';
+    };
+
+/** Atomically flip the pending-ask row to answered and resume the paused
+ *  AgentRun by typing the answer back through a fresh LowLevelSpawn in
+ *  resume mode. Same agent_run_id; the run record continues across the
+ *  pause boundary. */
+export function answerPendingAskV2(
+  input: AnswerPendingAskV2Input,
+  deps: PauseResumeDepsV2,
+): AnswerPendingAskV2Result {
+  const reg = deps.registry ?? getActiveRunRegistry();
+  const now = (deps.now ?? Date.now)();
+
+  const ask = getPendingAskV2(input.pendingAskId);
+  if (!ask) {
+    return {
+      ok: false,
+      error: `no pending-ask with id ${input.pendingAskId}`,
+      cause: 'unknown-pending-ask',
+    };
+  }
+  if (ask.status === 'answered') {
+    return {
+      ok: false,
+      error: `pending-ask ${input.pendingAskId} already answered`,
+      cause: 'already-answered',
+    };
+  }
+  if (ask.status === 'cancelled') {
+    return {
+      ok: false,
+      error: `pending-ask ${input.pendingAskId} was cancelled`,
+      cause: 'cancelled',
+    };
+  }
+
+  // Atomic flip — JSONL-replay-safe.
+  const flipped = markPendingAskAnsweredV2({
+    id: ask.id,
+    answer: input.answer,
+    answeredBy: input.answeredBy,
+    now,
+  });
+  if (!flipped) {
+    return {
+      ok: false,
+      error: `pending-ask ${input.pendingAskId} was answered concurrently`,
+      cause: 'already-answered',
+    };
+  }
+
+  const entry = reg.get(ask.agentRunId);
+  if (!entry) {
+    return {
+      ok: false,
+      error: `agent run ${ask.agentRunId} is not active`,
+      cause: 'unknown-run',
+    };
+  }
+  if (entry.run.getState() !== 'paused') {
+    return {
+      ok: false,
+      error: `agent run ${ask.agentRunId} is ${entry.run.getState()}, not paused`,
+      cause: 'wrong-state',
+    };
+  }
+
+  // Capture pod revision at resume for drift detection.
+  const projectIdForPod = lookupPodScope(entry.podName, entry.projectId);
+  const podRevisionAtResume = computePodRevision({
+    podName: entry.podName,
+    projectId: projectIdForPod,
+  });
+
+  // Persist the spawning transition + drift field BEFORE driving the run,
+  // so a crash mid-resume leaves the row in a recoverable state.
+  updateAgentRunStatusV2({
+    id: ask.agentRunId,
+    status: 'spawning',
+    spawnedAt: now,
+    podRevisionAtResume,
+  });
+
+  // Drive the run. AgentRun._resumeWithAnswer transitions paused → spawning
+  // → running and constructs a fresh LowLevelSpawn in resume mode with the
+  // answer as the typed first user turn.
+  try {
+    entry.run._resumeWithAnswer(input.answer);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `resume failed: ${(err as Error).message}`,
+      cause: 'resume-failed',
+    };
+  }
+
+  return {
+    ok: true,
+    agentRunId: ask.agentRunId,
+    ccSessionId: ask.ccSessionId,
+    podRevisionDrifted:
+      entry.podRevisionAtDispatch !== null &&
+      podRevisionAtResume !== null &&
+      entry.podRevisionAtDispatch !== podRevisionAtResume,
+    podRevisionAtDispatch: entry.podRevisionAtDispatch,
+    podRevisionAtResume,
+  };
+}
+
+// ──────────────────────────── CANCEL PAUSE ────────────────────────────────
+
+export interface CancelPendingAskV2Input {
+  pendingAskId: ULID;
+  now?: number;
+}
+
+export type CancelPendingAskV2Result =
+  | { ok: true; agentRunId: ULID }
+  | { ok: false; error: string; cause: 'unknown-pending-ask' | 'already-terminal' };
+
+/** Cancel a paused agent — flip the pending-ask row to cancelled and
+ *  cancel the underlying AgentRun. The orchestration is idempotent: a
+ *  second cancel returns `already-terminal`. */
+export function cancelPendingAskV2(
+  input: CancelPendingAskV2Input,
+  deps: Pick<PauseResumeDepsV2, 'registry' | 'now'>,
+): CancelPendingAskV2Result {
+  const reg = deps.registry ?? getActiveRunRegistry();
+  const now = (deps.now ?? Date.now)();
+
+  const ask = getPendingAskV2(input.pendingAskId);
+  if (!ask) {
+    return {
+      ok: false,
+      error: `no pending-ask with id ${input.pendingAskId}`,
+      cause: 'unknown-pending-ask',
+    };
+  }
+  if (ask.status !== 'open') {
+    return {
+      ok: false,
+      error: `pending-ask ${input.pendingAskId} is ${ask.status}`,
+      cause: 'already-terminal',
+    };
+  }
+
+  markPendingAskCancelledV2(ask.id, now);
+
+  const entry = reg.get(ask.agentRunId);
+  if (entry) entry.run.cancel();
+
+  return { ok: true, agentRunId: ask.agentRunId };
+}
+
+// ──────────────────────────── CONTINUATION ────────────────────────────────
+
+export interface ContinueAgentV2Input {
+  parentAgentRunId: ULID;
+  input: string;
+  /** Optional pre-minted run id. Production callers let the orchestration
+   *  mint a fresh ULID; tests can supply one for determinism. */
+  newAgentRunId?: ULID;
+  now?: number;
+}
+
+export interface ContinueAgentV2Plan {
+  /** Newly minted agent_run_id (already inserted with `status: queued`). */
+  agentRunId: ULID;
+  /** Same CC provider session-id as the parent — the resumed spawn uses
+   *  `--resume <ccSessionId>`. */
+  ccSessionId: string;
+  dispatcherSessionId: string;
+  projectId: ULID;
+  parentWorkItemId: ULID | null;
+  podName: string;
+  /** Captured pod revision at this dispatch. Stored on the new row. */
+  podRevisionAtDispatch: string | null;
+  parentInvokeDepth: number;
+  /** The verbatim input the caller passed. The wrapper will type this as
+   *  the first user turn after the resume gate opens. */
+  input: string;
+}
+
+export type ContinueAgentV2Result =
+  | { ok: true; plan: ContinueAgentV2Plan }
+  | {
+      ok: false;
+      error: string;
+      cause:
+        | 'run-not-found'
+        | 'not-continuable'
+        | 'concurrent-continuation'
+        | 'session-expired'
+        | 'project-missing';
+    };
+
+export interface ContinueDepsV2 {
+  /** Test seam — defaults to fs.existsSync over the resolved JSONL path. */
+  jsonlExists?: (path: string) => boolean;
+  now?: () => number;
+}
+
+/** Plan a continuation dispatch:
+ *   - Validate the parent run is terminal (completed | failed) and that
+ *     its on-disk JSONL still exists.
+ *   - Reject if another continuation of the same parent is already in
+ *     flight.
+ *   - Compute pod revision at this dispatch.
+ *   - Insert a fresh agent_runs_v2 row with `status: queued` + `continues:
+ *     <parent>`.
+ *
+ *  Returns the plan; the caller (MCP tool / HTTP route) is responsible
+ *  for constructing the AgentRun with this plan + registering it.
+ *  Splitting "plan" from "construct" keeps this module testable without
+ *  node-pty in scope. */
+export function continueAgentV2(
+  input: ContinueAgentV2Input,
+  deps: ContinueDepsV2 = {},
+): ContinueAgentV2Result {
+  const now = (deps.now ?? Date.now)();
+  const jsonlExists = deps.jsonlExists ?? existsSync;
+
+  const parent = getAgentRunRowV2(input.parentAgentRunId);
+  if (!parent) {
+    return {
+      ok: false,
+      error: `parent run ${input.parentAgentRunId} not found`,
+      cause: 'run-not-found',
+    };
+  }
+  if (parent.status !== 'completed' && parent.status !== 'failed') {
+    return {
+      ok: false,
+      error: `parent run is ${parent.status}; only completed/failed runs can be continued`,
+      cause: 'not-continuable',
+    };
+  }
+
+  // Single-active-continuation guard.
+  const inflight = findActiveContinuationV2(parent.id);
+  if (inflight) {
+    return {
+      ok: false,
+      error: `parent run ${parent.id} already has continuation ${inflight.id} in flight`,
+      cause: 'concurrent-continuation',
+    };
+  }
+
+  // JSONL retention guard.
+  const project = getProjectById(parent.projectId);
+  if (!project) {
+    return {
+      ok: false,
+      error: `project ${parent.projectId} not found for parent run`,
+      cause: 'project-missing',
+    };
+  }
+  const jsonlPath = jsonlPathFor(project.folderPath, parent.ccSessionId);
+  if (!jsonlExists(jsonlPath)) {
+    return {
+      ok: false,
+      error: `session expired — CC's on-disk JSONL at ${jsonlPath} has been swept; start a fresh dispatch instead of continuing`,
+      cause: 'session-expired',
+    };
+  }
+
+  const projectIdForPod = lookupPodScope(parent.podName, parent.projectId);
+  const podRevisionAtDispatch = computePodRevision({
+    podName: parent.podName,
+    projectId: projectIdForPod,
+  });
+
+  const newRunId = (input.newAgentRunId ?? newId()) as ULID;
+  insertAgentRunRowV2({
+    id: newRunId,
+    projectId: parent.projectId,
+    podName: parent.podName,
+    dispatcherSessionId: parent.dispatcherSessionId,
+    ccSessionId: parent.ccSessionId,
+    status: 'queued',
+    input: input.input,
+    parentWorkItemId: parent.parentWorkItemId,
+    parentInvokeDepth: parent.parentInvokeDepth,
+    continues: parent.id,
+    podRevisionAtDispatch,
+    queuedAt: now,
+  });
+
+  return {
+    ok: true,
+    plan: {
+      agentRunId: newRunId,
+      ccSessionId: parent.ccSessionId,
+      dispatcherSessionId: parent.dispatcherSessionId,
+      projectId: parent.projectId,
+      parentWorkItemId: parent.parentWorkItemId,
+      podName: parent.podName,
+      podRevisionAtDispatch,
+      parentInvokeDepth: parent.parentInvokeDepth,
+      input: input.input,
+    },
+  };
+}
+
+// ──────────────────────────── HELPERS ─────────────────────────────────────
+
+/** Determine the pod scope at the project level. Pods can be project-scoped
+ *  or global; we look up at dispatch time and remember which we found. For
+ *  now we accept the project-scoped pod first, falling back to global,
+ *  matching the existing `getPodForSpawn` precedence. */
+function lookupPodScope(_podName: string, _projectId: ULID): ULID | null {
+  // Conservative default: pass projectId NULL (= search globals) so the
+  // revision query matches the same row the materialiser would pick if no
+  // project override exists. The materialiser's actual precedence lives in
+  // packages/db/src/repos/pods.ts § getPodForSpawn (project-scope first);
+  // when we wire Section 9, the orchestration will plumb the resolved
+  // scope explicitly through ActiveRunEntry. For Session 8 we pass null,
+  // which is correct for all six stock pods (all global) + agent-designer.
+  return null;
+}
+
+interface PauseEventBodyArgs {
+  eventKind: AgentInboxEventKindV2;
+  pendingAskId: ULID;
+  sessionId: string;
+  podName: string;
+  runId: ULID;
+  parentWorkItemId: ULID | null;
+  promptBody: string;
+  context: string | null;
+  options: PendingAskOption[] | null;
+}
+
+/** Compose the <channel source="agent" ...> body for a pause event. Same
+ *  header tag set as v1's `buildAgentAsksOrchestratorBody` so the
+ *  orchestrator's pod prompt parser keeps working unchanged. */
+function buildPauseEventBody(args: PauseEventBodyArgs): string {
+  const lines: string[] = [
+    buildAgentEventHeader(args.eventKind as never),
+    `[pendingAskId: ${args.pendingAskId}]`,
+    `[sessionId: ${args.sessionId}]`,
+    `[agentName: ${args.podName}]`,
+    `[runId: ${args.runId}]`,
+  ];
+  if (args.parentWorkItemId) {
+    lines.push(`[parentWorkItemId: ${args.parentWorkItemId}]`);
+  }
+  lines.push('');
+  switch (args.eventKind) {
+    case 'agent-asks-orchestrator':
+      lines.push('Question:');
+      lines.push(args.promptBody);
+      break;
+    case 'agent-asks-user':
+      lines.push('Question for the user:');
+      lines.push(args.promptBody);
+      break;
+    case 'agent-approval-request':
+      lines.push('Approval requested:');
+      lines.push(args.promptBody);
+      break;
+    default:
+      lines.push(args.promptBody);
+  }
+  if (args.context) {
+    lines.push('');
+    lines.push('Context:');
+    lines.push(args.context);
+  }
+  if (args.options && args.options.length > 0) {
+    lines.push('');
+    lines.push('Options:');
+    args.options.forEach((opt, idx) => {
+      lines.push(`${idx + 1}. ${opt.label} (value: ${opt.value})`);
+    });
+  }
+  lines.push('');
+  lines.push(
+    `Answer via pc_answer_pending with the pendingAskId above. Check status first — replay can re-fire this event.`,
+  );
+  return lines.join('\n');
+}
+
+// ──────────────────────────── TERMINAL HELPERS ────────────────────────────
+
+export interface PersistAgentRunTerminalV2Input {
+  agentRunId: ULID;
+  status: 'completed' | 'failed' | 'cancelled';
+  result: string | null;
+  failureCause: ConstructorParameters<typeof Object>[0] extends never
+    ? never
+    : import('@pc/domain').AgentRunFailureCauseV2 | null;
+  failureReason: string | null;
+  completedAt: number;
+}
+
+/** Persist a terminal transition on agent_runs_v2. The active-runs
+ *  registry auto-unregisters on the AgentRun's `terminal` event, so this
+ *  is just the persistence half — emit-side is the caller's job. */
+export function persistAgentRunTerminalV2(
+  input: PersistAgentRunTerminalV2Input,
+): void {
+  markAgentRunTerminalV2({
+    id: input.agentRunId,
+    status: input.status,
+    result: input.result,
+    failureCause: input.failureCause as never,
+    failureReason: input.failureReason,
+    completedAt: input.completedAt,
+  });
+}

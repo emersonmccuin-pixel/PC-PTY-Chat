@@ -170,6 +170,44 @@ export type {
   MarkInboxDeliveredV2Input,
 } from './repos/agent-inbox-v2.ts';
 
+// Section 25 Session 8 — v2 pending-asks repo.
+export {
+  createPendingAskV2,
+  getPendingAskV2,
+  listOpenPendingAsksV2ForProject,
+  listOpenPendingAsksV2ForSession,
+  markPendingAskAnsweredV2,
+  markPendingAskCancelledV2,
+} from './repos/pending-asks-v2.ts';
+export type {
+  AnswerPendingAskV2Input,
+  CreatePendingAskV2Input,
+} from './repos/pending-asks-v2.ts';
+
+// Section 25 Session 8 — pod-revision helper for v2 drift detection.
+export {
+  computePodRevision,
+  podRevisionsDiffer,
+} from './repos/pod-revision.ts';
+export type { ComputePodRevisionInput } from './repos/pod-revision.ts';
+
+// Section 25 Session 8 — v2 agent-runs repo.
+export {
+  findActiveContinuationV2,
+  getAgentRunRowV2,
+  insertAgentRunRowV2,
+  listAgentRunsForSessionV2,
+  markAgentRunTerminalV2,
+  reconcileOrphanedRunningRunsV2,
+  updateAgentRunStatusV2,
+} from './repos/agent-runs-v2.ts';
+export type {
+  InsertAgentRunRowV2Input,
+  ListAgentRunsForSessionV2Options,
+  MarkAgentRunTerminalV2Input,
+  UpdateAgentRunStatusV2Input,
+} from './repos/agent-runs-v2.ts';
+
 export {
   findActiveContinuation,
   getAgentRunRow,
