@@ -18,6 +18,7 @@ import {
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
+import { formatToolLabel } from '@/lib/tool-labels';
 import { Markdown } from './Markdown';
 import { ContextTab } from './agents/ContextTab';
 import { CreatePodModal } from './agents/CreatePodModal';
@@ -494,9 +495,10 @@ function DetailPane({
               {pod.tools.map((t) => (
                 <span
                   key={t}
-                  className="border border-border/60 bg-card px-2 py-0.5 text-[11px] font-mono text-foreground"
+                  title={t}
+                  className="border border-border/60 bg-card px-2 py-0.5 text-[11px] text-foreground"
                 >
-                  {t}
+                  {formatToolLabel(t)}
                 </span>
               ))}
             </div>
