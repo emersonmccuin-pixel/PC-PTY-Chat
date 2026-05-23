@@ -616,6 +616,31 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_list_my_runs',
+    description:
+      "List recent agent runs YOU dispatched in this project. Use when you've lost track of a runId (\"what runs did I kick off recently?\") and need to pick one to continue via pc_continue_agent. Filters: agentName, status (running | completed | failed | cancelled), limit (default 20, max 100). Returns newest-first. Each row: { runId, agentName, status, dispatchedAt, completedAt, summary, continues } — summary is the first ~80 chars of the original input so you can pattern-match. Ownership is implicit (rows are filtered by your dispatcher session id).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentName: {
+          type: 'string',
+          description: "optional — filter by agent name (kebab-case, e.g. 'researcher')",
+        },
+        status: {
+          type: 'string',
+          enum: ['running', 'completed', 'failed', 'cancelled'],
+          description:
+            "optional — filter by persisted status. 'running' surfaces in-flight + paused; terminal states are completed/failed/cancelled.",
+        },
+        limit: {
+          type: 'number',
+          description: 'optional — cap on returned rows. Default 20, max 100.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'pc_continue_agent',
     description:
       "Resume a recent agent run with a follow-up input. Use this when you want to refine a completed result (\"expand on point 3\", \"now look at X\") or recover from a failed run (\"that path was wrong, try Y\"). The agent's prior conversation is preserved — phrase your input as a follow-up, not a fresh ask. Returns the same shape as pc_invoke_agent (sync or async per wait). Continuation is scoped to runs YOU dispatched (ownership check on dispatcherSessionId). Only completed/failed runs are continuable — cancelled runs require a fresh dispatch. Each parent run allows at most one active continuation in flight. JSONL retention (default 30 days) backstops the lookup; expired runs return cause='session-expired'.",
@@ -2407,6 +2432,58 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_invoke_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_my_runs': {
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_list_my_runs: PC_PROJECT_ID not set — cannot route query' },
+          ],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_list_my_runs: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot scope query',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const params = new URLSearchParams();
+      params.set('dispatcherSessionId', dispatcherSessionId);
+      if (typeof args.agentName === 'string' && args.agentName.trim()) {
+        params.set('agentName', args.agentName.trim());
+      }
+      if (typeof args.status === 'string' && args.status.trim()) {
+        params.set('status', args.status.trim());
+      }
+      if (typeof args.limit === 'number' && Number.isFinite(args.limit)) {
+        params.set('limit', String(Math.floor(args.limit)));
+      }
+      try {
+        const res = await getServer(
+          `/api/projects/${PROJECT_ID}/agent-runs/by-dispatcher?${params.toString()}`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_list_my_runs failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_my_runs failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

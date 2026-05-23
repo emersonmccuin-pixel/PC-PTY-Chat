@@ -99,13 +99,19 @@ export interface ListAgentRunsForSessionOptions {
   limit: number;
 }
 
-/** `pc_list_my_runs` hot path. Filter by dispatcher session, optionally
- *  by agent name / status, newest first. */
+/** `pc_list_my_runs` hot path. Filter by (project, dispatcher session),
+ *  optionally by agent name / status. Newest first. Project scoping is
+ *  load-bearing — a stale dispatcherSessionId from a prior project must
+ *  not surface another project's rows. */
 export function listAgentRunsForSession(
+  projectId: ULID,
   dispatcherSessionId: string,
   opts: ListAgentRunsForSessionOptions,
 ): AgentRunRow[] {
-  const filters = [eq(agentRuns.dispatcherSessionId, dispatcherSessionId)];
+  const filters = [
+    eq(agentRuns.projectId, projectId),
+    eq(agentRuns.dispatcherSessionId, dispatcherSessionId),
+  ];
   if (opts.agentName) filters.push(eq(agentRuns.agentName, opts.agentName));
   if (opts.status) filters.push(eq(agentRuns.status, opts.status));
   return getDb()

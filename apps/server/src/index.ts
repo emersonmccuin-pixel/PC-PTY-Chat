@@ -10,7 +10,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { homedir } from 'node:os';
 
-import type { AgentDef, GlobalSettings, ULID, Workflow, WorkItemType } from '@pc/domain';
+import type {
+  AgentDef,
+  AgentRunPersistedStatus,
+  GlobalSettings,
+  ULID,
+  Workflow,
+  WorkItemType,
+} from '@pc/domain';
 import {
   isWorkItemType,
   parseAgentFile,
@@ -31,6 +38,7 @@ import {
   getActiveOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
+  listAgentRunsForSession,
   getGlobalSettings,
   getPendingAsk,
   getProjectById,
@@ -3314,6 +3322,68 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   };
   if (!acked) ackResponse.cause = 'ack-timeout';
   return c.json(ackResponse);
+});
+
+/** Section 21 — `pc_list_my_runs`' HTTP surface. The orchestrator calls
+ *  this to recover a runId that scrolled out of its active context
+ *  ("which researcher run did I dispatch about date math earlier?"). Reads
+ *  from the persisted `agent_runs` table — includes terminal rows — so
+ *  RECENTLY-completed dispatches surface (the in-memory list-active
+ *  endpoint above only shows in-flight).
+ *
+ *  Scope: rows owned by THIS orchestrator session in THIS project. The
+ *  dispatcherSessionId filter is the ownership check; cross-session reads
+ *  return empty.
+ *
+ *  Row shape: `{ runId, agentName, status, dispatchedAt, completedAt,
+ *  summary }`. `summary` = first ~80 chars of the original `input` so the
+ *  orchestrator can pattern-match what it asked for. */
+app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const dispatcherSessionId = (c.req.query('dispatcherSessionId') ?? '').trim();
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId query param required' },
+      400,
+    );
+  }
+  const agentName = (c.req.query('agentName') ?? '').trim() || undefined;
+  const statusRaw = (c.req.query('status') ?? '').trim();
+  const VALID_STATUSES: AgentRunPersistedStatus[] = [
+    'running',
+    'completed',
+    'failed',
+    'cancelled',
+  ];
+  const status =
+    statusRaw && (VALID_STATUSES as string[]).includes(statusRaw)
+      ? (statusRaw as AgentRunPersistedStatus)
+      : undefined;
+  const limitRaw = Number(c.req.query('limit') ?? 20);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
+
+  const rows = listAgentRunsForSession(projectId, dispatcherSessionId, {
+    agentName,
+    status,
+    limit,
+  });
+  // Trim input → summary; full input stays in the DB but the orchestrator
+  // only needs a recognisable preview.
+  const SUMMARY_LEN = 80;
+  const summarised = rows.map((r) => ({
+    runId: r.id,
+    agentName: r.agentName,
+    status: r.status,
+    dispatchedAt: r.dispatchedAt,
+    completedAt: r.completedAt,
+    summary:
+      r.input.length > SUMMARY_LEN ? r.input.slice(0, SUMMARY_LEN).trimEnd() + '…' : r.input,
+    continues: r.continues,
+  }));
+  return c.json({ ok: true, runs: summarised });
 });
 
 /** Section 16b.8.1 — list this project's active agent runs. The Activity
