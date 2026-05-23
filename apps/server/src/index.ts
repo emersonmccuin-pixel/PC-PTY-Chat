@@ -27,8 +27,10 @@ import {
 import {
   countWorkItemsInStage,
   createPendingAsk,
+  findActiveContinuation,
   getActiveOrchestratorSession,
   dismissFailedRun,
+  getAgentRunRow,
   getGlobalSettings,
   getPendingAsk,
   getProjectById,
@@ -91,7 +93,7 @@ import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
-import { respawnAgentWithAnswer } from './services/agent-resume.ts';
+import { defaultJsonlPath, respawnAgentWithAnswer } from './services/agent-resume.ts';
 import {
   recordAgentAnswer,
   recordAgentCompleted,
@@ -3337,6 +3339,267 @@ app.post('/api/projects/:projectId/agent-runs/:runId/cancel', (c) => {
   }
   const ok = mgr.cancel(runId, 'cancelled by user via Activity Panel');
   return c.json({ ok, status: mgr.get(runId)?.status ?? null });
+});
+
+/** Section 21 — `pc_continue_agent`'s HTTP surface. Resumes a recent
+ *  terminal AgentRun with a follow-up input. Spawns a fresh claude.exe via
+ *  `--resume <providerSessionId>` so the agent re-attaches to its prior
+ *  conversation. New AgentRunRecord; linked to parent via `continues`.
+ *
+ *  Guards (all return `{ ok: false, cause }` so the orchestrator can react):
+ *    - `run-not-found`            — no row for runId.
+ *    - `wrong-project`            — row exists but in a different project.
+ *    - `ownership-mismatch`       — caller is not the dispatcher of the run.
+ *    - `not-continuable`          — row was cancelled (deliberate kill;
+ *                                   resume from partial state is unsafe).
+ *    - `not-terminal`             — row is still in-flight or queued.
+ *    - `concurrent-continuation`  — another continuation is already running.
+ *    - `session-expired`          — JSONL retention sweep removed the file.
+ */
+app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+  const runId = c.req.param('runId') as ULID;
+
+  const body = await c.req.json<{
+    input?: string;
+    wait?: boolean;
+    dispatcherSessionId?: string;
+  }>();
+
+  const input = typeof body.input === 'string' ? body.input : '';
+  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
+  const wait = body.wait !== false; // default true per the contract (matches invoke)
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
+      400,
+    );
+  }
+
+  const row = getAgentRunRow(runId);
+  if (!row) {
+    return c.json({ ok: false, error: `unknown run: ${runId}`, cause: 'run-not-found' }, 404);
+  }
+  if (row.projectId !== projectId) {
+    return c.json(
+      { ok: false, error: `run ${runId} not in project ${projectId}`, cause: 'wrong-project' },
+      400,
+    );
+  }
+  if (row.dispatcherSessionId !== dispatcherSessionId) {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${runId} was dispatched by a different orchestrator session — only the dispatcher can continue it`,
+        cause: 'ownership-mismatch',
+      },
+      403,
+    );
+  }
+  if (row.status === 'cancelled') {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${runId} was cancelled — cancelled runs cannot be continued, start a fresh dispatch`,
+        cause: 'not-continuable',
+      },
+      409,
+    );
+  }
+  if (row.status !== 'completed' && row.status !== 'failed') {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${runId} is still in-flight (status=${row.status}) — wait for it to finish before continuing`,
+        cause: 'not-terminal',
+      },
+      409,
+    );
+  }
+  const active = findActiveContinuation(runId);
+  if (active) {
+    return c.json(
+      {
+        ok: false,
+        error: `run ${runId} already has an active continuation (runId=${active.id}) — wait for it to finish`,
+        cause: 'concurrent-continuation',
+      },
+      409,
+    );
+  }
+  const jsonlPath = defaultJsonlPath(project.folderPath, row.sessionId);
+  if (!existsSync(jsonlPath)) {
+    const retentionDays = readSettings().jsonl.retentionDays;
+    const windowLabel = retentionDays === 'never' ? 'no retention configured' : `sweep window: ${retentionDays} days`;
+    return c.json(
+      {
+        ok: false,
+        error: `session JSONL for run ${runId} no longer on disk (${windowLabel}) — start a fresh dispatch`,
+        cause: 'session-expired',
+      },
+      410,
+    );
+  }
+
+  const mgr = getAgentRunManager();
+  const spawn = mgr.spawn({
+    agentName: row.agentName,
+    input,
+    wait,
+    projectId,
+    dispatcherSessionId,
+    worktreeDir: project.folderPath,
+    parentWorkItemId: row.parentWorkItemId,
+    invokeDepth: row.parentInvokeDepth, // inherit — continuation is the same agent, same nesting
+    continues: runId,
+    resume: { providerSessionId: row.sessionId },
+  });
+
+  // 16b.7 — audit row on the parent work item. Continuation reuses the
+  // pattern; the audit log gets a fresh row for the new dispatch.
+  recordAgentInvoke({
+    workItemId: row.parentWorkItemId,
+    agentName: row.agentName,
+    sessionId: spawn.sessionId,
+    runId: spawn.runId,
+    mode: wait ? 'sync' : 'async',
+    input,
+    now: Date.now(),
+  });
+
+  if (wait) {
+    const rec = await spawn.completion;
+    if (rec.status === 'completed') {
+      recordAgentCompleted({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        result: rec.result ?? '',
+        now: Date.now(),
+      });
+      return c.json({
+        ok: true,
+        mode: 'sync',
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        agentName: rec.agentName,
+        result: rec.result,
+        continues: runId,
+      });
+    }
+    recordAgentFailed({
+      workItemId: rec.parentWorkItemId,
+      agentName: rec.agentName,
+      sessionId: rec.sessionId,
+      runId: rec.runId,
+      reason: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
+      cause: rec.failureCause ?? rec.status,
+      now: Date.now(),
+    });
+    return c.json({
+      ok: false,
+      error: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
+      cause: rec.failureCause === 'unknown-agent' ? 'unknown-agent' : 'spawn-failed',
+    });
+  }
+
+  // Async path — mirrors invoke route's background completion subscription.
+  void spawn.completion.then((rec) => {
+    if (rec.status === 'completed') {
+      recordAgentCompleted({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        result: rec.result ?? '',
+        now: Date.now(),
+      });
+      enqueueAndPush(channelServer, {
+        projectId,
+        recipientSessionId: rec.dispatcherSessionId,
+        eventKind: 'agent-completed',
+        slug: project.slug,
+        source: 'agent',
+        body: buildAgentCompletedBody({
+          runId: rec.runId,
+          sessionId: rec.sessionId,
+          agentName: rec.agentName,
+          parentWorkItemId: rec.parentWorkItemId,
+          result: rec.result,
+        }),
+        sender: 'pc',
+      });
+    } else {
+      recordAgentFailed({
+        workItemId: rec.parentWorkItemId,
+        agentName: rec.agentName,
+        sessionId: rec.sessionId,
+        runId: rec.runId,
+        reason: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
+        cause: rec.failureCause ?? rec.status,
+        now: Date.now(),
+      });
+      enqueueAndPush(channelServer, {
+        projectId,
+        recipientSessionId: rec.dispatcherSessionId,
+        eventKind: 'agent-failed',
+        slug: project.slug,
+        source: 'agent',
+        body: buildAgentFailedBody({
+          runId: rec.runId,
+          sessionId: rec.sessionId,
+          agentName: rec.agentName,
+          parentWorkItemId: rec.parentWorkItemId,
+          reason:
+            rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
+          cause: agentFailureCauseToPayload(rec.failureCause),
+        }),
+        sender: 'pc',
+      });
+    }
+  });
+
+  if (spawn.queued) {
+    return c.json({
+      ok: true,
+      mode: 'async',
+      status: 'queued',
+      sessionId: spawn.sessionId,
+      runId: spawn.runId,
+      agentName: row.agentName,
+      startedAt: spawn.startedAt,
+      position: spawn.position,
+      continues: runId,
+    });
+  }
+
+  const ackTimeoutMs = readSettings().agentDispatch.ackTimeoutMs;
+  let ackTimer: NodeJS.Timeout | undefined;
+  const ackTimerP = new Promise<void>((r) => {
+    ackTimer = setTimeout(r, ackTimeoutMs);
+  });
+  await Promise.race([mgr.waitForFirstJsonl(spawn.runId), ackTimerP]);
+  if (ackTimer) clearTimeout(ackTimer);
+
+  const acked = mgr.getFirstJsonlAt(spawn.runId) !== null;
+  const ackResponse: Record<string, unknown> = {
+    ok: true,
+    mode: 'async',
+    sessionId: spawn.sessionId,
+    runId: spawn.runId,
+    agentName: row.agentName,
+    startedAt: spawn.startedAt,
+    acked,
+    continues: runId,
+  };
+  if (!acked) ackResponse.cause = 'ack-timeout';
+  return c.json(ackResponse);
 });
 
 /** Section 22 — internal endpoint posted by pc-rig (the per-spawn MCP

@@ -32,6 +32,7 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_list_field_schemas',
   'mcp__pc-rig__pc_attach_to_work_item',
   'mcp__pc-rig__pc_invoke_agent',
+  'mcp__pc-rig__pc_continue_agent',
   'mcp__pc-rig__pc_ask_orchestrator',
   'mcp__pc-rig__pc_ask_user',
   'mcp__pc-rig__pc_request_approval',

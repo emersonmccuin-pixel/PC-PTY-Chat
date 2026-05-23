@@ -616,6 +616,31 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_continue_agent',
+    description:
+      "Resume a recent agent run with a follow-up input. Use this when you want to refine a completed result (\"expand on point 3\", \"now look at X\") or recover from a failed run (\"that path was wrong, try Y\"). The agent's prior conversation is preserved — phrase your input as a follow-up, not a fresh ask. Returns the same shape as pc_invoke_agent (sync or async per wait). Continuation is scoped to runs YOU dispatched (ownership check on dispatcherSessionId). Only completed/failed runs are continuable — cancelled runs require a fresh dispatch. Each parent run allows at most one active continuation in flight. JSONL retention (default 30 days) backstops the lookup; expired runs return cause='session-expired'.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        runId: {
+          type: 'string',
+          description: 'ULID of the prior AgentRunRecord to continue',
+        },
+        input: {
+          type: 'string',
+          description:
+            "free-form follow-up — becomes the next user message in the resumed conversation. Phrase as a continuation, not a fresh request.",
+        },
+        wait: {
+          type: 'boolean',
+          description:
+            'true → block until the child finishes; false → return immediately + terminal event lands on next turn. Orchestrator defaults to false.',
+        },
+      },
+      required: ['runId', 'input'],
+    },
+  },
+  {
     name: 'pc_ask_orchestrator',
     description:
       "Pause your run and ask the orchestrator a question. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator answers. agentName + sessionId are read from PC_AGENT_NAME / PC_AGENT_SESSION_ID env vars set at spawn time; agents not spawned via pc_invoke_agent cannot call this.",
@@ -2382,6 +2407,62 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_invoke_agent failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_continue_agent': {
+      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
+      const input = typeof args.input === 'string' ? args.input : '';
+      if (!runId || !input.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_continue_agent: runId and input required' }],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_continue_agent: PC_PROJECT_ID not set — cannot route continue' },
+          ],
+          isError: true,
+        };
+      }
+      // Section 21 — same dispatcherSessionId contract as pc_invoke_agent.
+      // The HTTP route uses it for the ownership check (run must have been
+      // dispatched by the same orchestrator session that's continuing it).
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_continue_agent: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot verify ownership',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const wait = args.wait === undefined ? undefined : args.wait === true;
+      const payload: Record<string, unknown> = { input, dispatcherSessionId };
+      if (wait !== undefined) payload.wait = wait;
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/agent-runs/${encodeURIComponent(runId)}/continue`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_continue_agent failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_continue_agent failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

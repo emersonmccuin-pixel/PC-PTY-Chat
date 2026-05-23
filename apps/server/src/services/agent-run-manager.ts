@@ -227,6 +227,14 @@ export interface AgentRunSpawnInput {
    *  (`pc_continue_agent` route) is responsible for validating ownership /
    *  state before passing it; the manager just records what it's given. */
   continues?: ULID | null;
+  /** Section 21 — when set, the spawn reuses the named CC provider session
+   *  id instead of minting a fresh one. Triggers `--resume <providerSessionId>`
+   *  in the underlying PtySession. Reuses the prior run's deterministic JSONL
+   *  path (resolves against the same providerSessionId). Caller is responsible
+   *  for verifying the JSONL still exists on disk before passing this option
+   *  — Section 18.8's 30-day sweep can have removed it. When omitted, the
+   *  spawn mints a fresh provider session id (original-dispatch shape). */
+  resume?: { providerSessionId: string } | null;
 }
 
 export interface AgentRunSpawnResult {
@@ -494,7 +502,11 @@ export class AgentRunManager extends EventEmitter {
    *  spawn failure surfaces via `completion`. */
   spawn(input: AgentRunSpawnInput): AgentRunSpawnResult {
     const runId = newId() as ULID;
-    const sessionId = randomUUID();
+    // Section 21 — continuation reuses the prior run's CC provider session id
+    // so `--resume <id>` re-attaches to the same JSONL. Original dispatches
+    // mint a fresh UUID (Section 15 deterministic-ownership shape).
+    const sessionId = input.resume?.providerSessionId ?? randomUUID();
+    const isResume = !!input.resume;
     const startedAt = Date.now();
 
     // B4 (2026-05-21) — fail-fast on unknown agent names. Without this,
@@ -698,7 +710,7 @@ export class AgentRunManager extends EventEmitter {
       eventsPath: resolve(scratchDir, 'events.jsonl'),
       transcriptPath: resolve(scratchDir, 'transcript.log'),
       claudeSessionId: sessionId,
-      resume: false,
+      resume: isResume,
       jsonlPath,
       jsonlStartLine: 0,
       agentName: input.agentName,

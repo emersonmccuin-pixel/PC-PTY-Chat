@@ -23,6 +23,7 @@ const {
   createProject,
   createPendingAsk,
   markPendingAskAnswered,
+  getAgentRunRow,
 } = await import('@pc/db');
 import type { Stage, ULID } from '@pc/domain';
 
@@ -1983,4 +1984,93 @@ test('spawn-stuck timer cleared when run transitions to running (happy path unaf
   const result = await completion;
   assert.equal(result.status, 'completed');
   assert.equal(result.failureCause, null);
+});
+
+// Section 21 — continuation: spawn with `resume: { providerSessionId }`
+// reuses the prior run's CC session id, passes `--resume` to PtySession (via
+// the resume: true sessionOpts flag), and persists the new row with
+// `continues` pointing at the parent. Fresh runId; shared sessionId.
+test('Section 21 — resume option threads --resume + reuses providerSessionId + persists continues link', async () => {
+  const p = createProject({
+    slug: 'arm-continue',
+    name: 'ARM Continue',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-continue', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  // Original dispatch — mints a fresh provider session id.
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a date math lib',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'continue-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  const s0 = sessions[0]!;
+  assert.equal(s0.lastOpts.resume, false, 'original spawn uses --session-id, not --resume');
+  s0.becomeReady();
+  s0.emitTurnEnd('use date-fns');
+  const originalResult = await original.completion;
+  assert.equal(originalResult.status, 'completed');
+  const originalRow = getAgentRunRow(original.runId);
+  assert.equal(originalRow?.status, 'completed', 'original row persisted as completed');
+  assert.equal(originalRow?.continues, null, 'original row has no continues link');
+
+  // Continuation — reuses providerSessionId, sets resume: true on the PTY
+  // opts, and the new row links back to the original via `continues`.
+  const cont = mgr.spawn({
+    agentName: 'researcher',
+    input: 'expand on point 3',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'continue-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+  });
+  assert.notEqual(cont.runId, original.runId, 'continuation gets a fresh runId');
+  assert.equal(
+    cont.sessionId,
+    original.sessionId,
+    'continuation reuses the prior providerSessionId',
+  );
+  const s1 = sessions[1]!;
+  assert.equal(s1.lastOpts.resume, true, 'continuation spawn passes --resume to PtySession');
+  assert.equal(
+    s1.lastOpts.claudeSessionId,
+    original.sessionId,
+    'PtySession spawned with the prior providerSessionId',
+  );
+  assert.equal(
+    s1.lastOpts.extraEnv?.PC_AGENT_SESSION_ID,
+    original.sessionId,
+    'PC_AGENT_SESSION_ID reflects the reused session id',
+  );
+
+  // Drive continuation to completion and verify persistence of the link.
+  s1.becomeReady();
+  s1.emitTurnEnd('point 3 expanded: ...');
+  const contResult = await cont.completion;
+  assert.equal(contResult.status, 'completed');
+  assert.equal(contResult.result, 'point 3 expanded: ...');
+  const contRow = getAgentRunRow(cont.runId);
+  assert.equal(contRow?.status, 'completed');
+  assert.equal(
+    contRow?.continues,
+    original.runId,
+    'continuation row persists the continues FK',
+  );
+  assert.equal(
+    contRow?.sessionId,
+    original.sessionId,
+    'persisted sessionId matches the reused provider session id',
+  );
 });
