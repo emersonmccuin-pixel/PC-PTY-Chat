@@ -29,3 +29,7 @@ export {
   renderMcpConfig,
 } from './pod-materializer.ts';
 export type { MaterializePodOptions, MaterializedPod } from './pod-materializer.ts';
+
+// Section 25 — agent system v2. Both v1 + v2 surfaces coexist throughout
+// Phase A (Sessions 5–8). Cutover in Phase D (Session 11).
+export * as v2 from './v2/index.ts';

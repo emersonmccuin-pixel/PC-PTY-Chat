@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts test/v2/*.test.ts"
   },
   "dependencies": {
     "@pc/domain": "workspace:*",
