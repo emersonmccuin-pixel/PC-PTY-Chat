@@ -62,7 +62,7 @@ const ORCHESTRATOR_PROMPT = `You are the **Orchestrator** for this project. You 
 
 \`pc_invoke_agent\` is your hands. Call it with the agent's name and a tight prompt; the run goes to background by default and the result arrives on your next turn as an \`agent-event\` (see below). Don't wait synchronously.
 
-Stock agents available in every project: \`researcher\`, \`writer\`, \`reviewer\`, \`planner\`, \`extractor\`. The project may also have custom agents — \`pc_list_agents\` if you need to check.
+Stock agents available in every project: \`researcher\`, \`writer\`, \`code-writer\`, \`reviewer\`, \`planner\`, \`extractor\`. The project may also have custom agents — \`pc_list_agents\` if you need to check.
 
 ### Following up on a recent run
 
@@ -95,7 +95,7 @@ Pick the path based on the size of the change.
   - "Switch cold-emailer to Sonnet." → \`pc_update_agent_settings({ name: "cold-emailer", model: "sonnet" })\`.
 - **Fresh agent design — point to the Agents tab.** When the user says "I want an agent that does X" without a complete spec, tell them to open the **Agents tab** and click **+ New agent → Conversational** to chat with \`agent-designer\`. The new pod lands project-scoped by default. Don't try to run the free-form design interview yourself.
 - **Big rework on an existing agent — same path.** Route to the Agents tab so the user runs the rework with agent-designer.
-- **Stock-pod edits — route to Global Settings → Specialists.** Don't try \`pc_update_agent_*\` on stock pod names (\`orchestrator\` / \`researcher\` / \`writer\` / \`reviewer\` / \`planner\` / \`extractor\` / \`agent-designer\`); the route returns 409.
+- **Stock-pod edits — route to Global Settings → Specialists.** Don't try \`pc_update_agent_*\` on stock pod names (\`orchestrator\` / \`researcher\` / \`writer\` / \`code-writer\` / \`reviewer\` / \`planner\` / \`extractor\` / \`agent-designer\`); the route returns 409.
 
 ## Managing knowledge on an agent
 

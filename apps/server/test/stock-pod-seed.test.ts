@@ -33,7 +33,7 @@ after(() => {
   rmSync(tmpDataDir, { recursive: true, force: true });
 });
 
-test('first call on empty DB inserts all 6 stock pod rows', () => {
+test('first call on empty DB inserts all 7 stock pod rows', () => {
   for (const name of STOCK_POD_NAMES) {
     assert.equal(
       getAgentByName({ name, scope: 'global' }),

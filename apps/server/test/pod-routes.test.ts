@@ -546,7 +546,7 @@ test('DELETE /api/agents/pods/:id soft-deletes a regular pod', async () => {
 
 test('DELETE /api/agents/pods/:id refuses stock specialist names', async () => {
   const { app } = freshApp();
-  for (const stock of ['orchestrator', 'researcher', 'writer', 'reviewer', 'planner', 'extractor']) {
+  for (const stock of ['orchestrator', 'researcher', 'writer', 'reviewer', 'planner', 'extractor', 'code-writer']) {
     const create = await fetchJson(app, 'POST', '/api/agents/pods', { name: stock });
     const id = (create.data.pod as { id: string }).id;
     const { status, data } = await fetchJson(app, 'DELETE', `/api/agents/pods/${id}`);

@@ -71,6 +71,7 @@ export const STOCK_POD_NAMES = new Set([
   'planner',
   'extractor',
   'agent-designer',
+  'code-writer',
 ]);
 
 export type PodMutationKind = 'created' | 'updated' | 'deleted';
@@ -463,7 +464,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
   });
 
   /** Reset a stock pod's scalar fields to its canonical seed content. Only
-   *  the seven stock specialists are valid targets; any other pod returns
+   *  the eight stock specialists are valid targets; any other pod returns
    *  400. Knowledge / secrets / mcp servers are untouched.
    *  Body: `{ actor?, reason? }` — actor defaults to 'user', reason defaults
    *  to 'ui-reset-to-default'. */
