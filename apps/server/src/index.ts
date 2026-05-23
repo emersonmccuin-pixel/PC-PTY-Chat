@@ -913,10 +913,10 @@ app.post('/api/agents', async (c) => {
  *  global), and project-only (per-project file with no matching global).
  *  Replaces the legacy `{ agents }` shape. */
 app.get('/api/projects/:projectId/agents', (c) => {
-  const id = c.req.param('projectId');
+  const id = c.req.param('projectId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const resolved = listResolvedAgents(runtime.folderPath);
+  const resolved = listResolvedAgents(id);
   return c.json({ ok: true, ...resolved });
 });
 

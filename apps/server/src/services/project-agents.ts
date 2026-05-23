@@ -1,12 +1,10 @@
 // Per-project agents.
 //
-// 17e.2 (2026-05-21) — `listResolvedAgents` now reads from the DB pod table
-// (global scope only) and no longer scans
-// `<folder>/.claude/agents/*.md`. v1 has no project-scope pod creation
-// path, so `overrides` + `projectOnly` are always empty arrays; the response
-// shape is preserved for web-client backwards compat until 17d ships the
-// new Pod UI. The kind taxonomy reduces to a single value (`'global'`) in
-// practice.
+// `listResolvedAgents` returns the agents a project's orchestrator (and the
+// legacy Settings panel) should see: stock specialists + this project's own
+// project-scope pods. Non-stock globals (user-promoted reusables) are
+// intentionally hidden — promote-to-global is a copy-source pool for the
+// create-agent flow, NOT auto-availability across all projects.
 //
 // The per-project file functions (`listProjectAgents`, `readProjectAgent`,
 // `writeProjectAgent`, `deleteProjectAgent`) are retained for now — they
@@ -18,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'no
 import { join, resolve } from 'node:path';
 
 import { listAgents } from '@pc/db';
-import type { AgentDef, PodAgentRow } from '@pc/domain';
+import type { AgentDef, PodAgentRow, ULID } from '@pc/domain';
 import { serializeAgentFile } from '@pc/domain';
 
 import {
@@ -27,6 +25,24 @@ import {
   safeAgentName,
   toEntry,
 } from './agent-library.ts';
+
+// Stock-pod names. Kept in lockstep with pod-routes.ts:71 and
+// AgentsList.tsx:25 — future consolidation candidate. Orchestrator is in
+// the set (for delete/reset gates elsewhere) but excluded from the listing
+// below since it can't dispatch to itself.
+const STOCK_POD_NAMES = new Set([
+  'orchestrator',
+  'researcher',
+  'writer',
+  'reviewer',
+  'planner',
+  'extractor',
+  'agent-designer',
+  'code-writer',
+]);
+const LISTABLE_STOCK_PODS = new Set(
+  [...STOCK_POD_NAMES].filter((name) => name !== 'orchestrator'),
+);
 
 function agentsDir(folderPath: string): string {
   return resolve(folderPath, '.claude', 'agents');
@@ -75,23 +91,26 @@ export function deleteProjectAgent(folderPath: string, name: string): void {
 
 /** Resolved view of an agent in a project context.
  *
- *  17e.2 collapse: every entry's `kind` is `'global'` in v1 (no
- *  project-scope pod creation path yet — that's 17c). The union is kept
- *  for type compatibility with the existing web client until 17d's Pod UI
- *  replaces it. */
+ *  `kind` reflects where the row came from: a stock global, a project-scope
+ *  pod that shadows a stock by name (override), or a project-scope pod
+ *  unique to this project. */
 export type ResolvedAgentKind = 'global' | 'override' | 'project';
 
 export interface ResolvedAgent extends AgentEntry {
   kind: ResolvedAgentKind;
-  /** Carry-over for the override flow; never populated post-17e.2. */
+  /** Reserved for the override flow (would carry the stock body so the UI
+   *  can show a diff). Not populated yet. */
   globalBody?: string;
 }
 
 export interface ResolvedAgentList {
+  /** Stock specialists that aren't overridden by a project-scope pod of the
+   *  same name. Excludes `orchestrator` (it doesn't dispatch to itself). */
   globals: ResolvedAgent[];
-  /** Always `[]` post-17e.2. Retained for API back-compat. */
+  /** Project-scope pods whose name matches a stock specialist — they shadow
+   *  the stock pod for this project. */
   overrides: ResolvedAgent[];
-  /** Always `[]` post-17e.2. Retained for API back-compat. */
+  /** Project-scope pods unique to this project (name not in stock set). */
   projectOnly: ResolvedAgent[];
 }
 
@@ -119,15 +138,45 @@ function podRowToResolvedAgent(row: PodAgentRow): ResolvedAgent {
   };
 }
 
-/** Return the full agent picture for a project. In v1 this is "every live
- *  global pod" — pods are global-scope only, so no overrides or project-only
- *  entries are produced. The `_folderPath` parameter is unused but kept to
- *  preserve the route signature until 17d. */
-export function listResolvedAgents(_folderPath: string): ResolvedAgentList {
-  const rows = listAgents({ scope: 'global' });
-  return {
-    globals: rows.map(podRowToResolvedAgent),
-    overrides: [],
-    projectOnly: [],
-  };
+/** Return the agents this project's orchestrator should see: stock
+ *  specialists + this project's own project-scope pods. Non-stock globals
+ *  (user-promoted reusables) are hidden — they're a copy-source pool for
+ *  the create-agent flow, not auto-availability. A project-scope pod whose
+ *  name matches a stock specialist shadows the stock; both ends up in
+ *  `overrides` and the shadowed stock entry is omitted from `globals`. */
+export function listResolvedAgents(projectId: ULID): ResolvedAgentList {
+  const rows = listAgents({ projectId, includeGlobals: true });
+
+  const stockRows: PodAgentRow[] = [];
+  const projectRows: PodAgentRow[] = [];
+  for (const row of rows) {
+    if (row.scope === 'global' && LISTABLE_STOCK_PODS.has(row.name)) {
+      stockRows.push(row);
+    } else if (row.scope === 'project') {
+      projectRows.push(row);
+    }
+    // Non-stock globals and the orchestrator stock row are intentionally
+    // dropped here.
+  }
+
+  const overrides: ResolvedAgent[] = [];
+  const projectOnly: ResolvedAgent[] = [];
+  const overriddenNames = new Set<string>();
+  for (const row of projectRows) {
+    const entry = podRowToResolvedAgent(row);
+    if (LISTABLE_STOCK_PODS.has(row.name)) {
+      entry.kind = 'override';
+      overrides.push(entry);
+      overriddenNames.add(row.name);
+    } else {
+      entry.kind = 'project';
+      projectOnly.push(entry);
+    }
+  }
+
+  const globals = stockRows
+    .filter((row) => !overriddenNames.has(row.name))
+    .map(podRowToResolvedAgent);
+
+  return { globals, overrides, projectOnly };
 }
