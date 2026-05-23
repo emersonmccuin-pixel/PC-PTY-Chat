@@ -18,6 +18,7 @@ import {
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
+import { Markdown } from './Markdown';
 import { ContextTab } from './agents/ContextTab';
 import { CreatePodModal } from './agents/CreatePodModal';
 import { PodDetailModal } from './agents/PodDetailModal';
@@ -511,6 +512,14 @@ function DetailPane({
             onChanged={() => void loadBundle()}
             readOnly={isStock}
           />
+        </DetailSection>
+
+        <DetailSection title="Prompt">
+          {pod.prompt ? (
+            <Markdown text={pod.prompt} />
+          ) : (
+            <div className="text-[11px] italic text-muted-foreground">(no prompt)</div>
+          )}
         </DetailSection>
       </div>
 
