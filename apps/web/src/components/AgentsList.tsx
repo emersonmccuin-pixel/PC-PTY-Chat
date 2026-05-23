@@ -11,7 +11,13 @@
 
 import { useMemo, useState } from 'react';
 
-import { api, STOCK_POD_NAMES, type Pod, type Project } from '@/api/client';
+import {
+  api,
+  resolveModelLabel,
+  STOCK_POD_NAMES,
+  type Pod,
+  type Project,
+} from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
 import { CreatePodModal } from './agents/CreatePodModal';
@@ -207,7 +213,7 @@ function PodRow({
           </button>
         )}
         <div className="flex flex-col items-end text-[10px] text-muted-foreground">
-          {pod.model && <span>{pod.model}</span>}
+          <span>{resolveModelLabel(pod.model)}</span>
           <span>edited {editedAgo}</span>
         </div>
       </div>

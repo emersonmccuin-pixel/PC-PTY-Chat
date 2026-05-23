@@ -1392,6 +1392,16 @@ export const AGENT_COLORS: readonly AgentColor[] = [
 ];
 
 export type AgentModelShort = 'haiku' | 'sonnet' | 'opus' | 'inherit';
+
+/** Friendly label for the Agents tab + anywhere else a pod's *stored* model
+ *  is rendered. Resolves `'inherit'` to the actual model that'd be used at
+ *  spawn time (currently always `'opus'` per agent-run-manager.ts — kept in
+ *  sync with that fallback). Form/input components should keep using the
+ *  raw `pod.model` value so users can still set "inherit." */
+export function resolveModelLabel(model: string | null | undefined): string {
+  if (!model || model === 'inherit') return 'opus';
+  return model;
+}
 export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = [
   'haiku',
   'sonnet',
