@@ -89,14 +89,16 @@ export interface InlineMcpServer {
 
 export type AgentMcpServerRef = string | InlineMcpServer;
 
-/** Output destination for an agent — one of the six D13 destinations.
+/** Output destination for an agent — one of the seven destinations.
  *  Captured in the agent's frontmatter under `pc.outputDestination` so the
  *  UI and workflow runtime can reason about an agent's shape without
  *  parsing the body. Defaults to `attachment` when authoring a reusable
  *  agent standalone; `passthrough` when the agent is intended for use
- *  inside a workflow chain. */
+ *  inside a workflow chain; `chat` for general-purpose dispatched agents
+ *  whose output lands in the orchestrator chat panel. */
 export type AgentOutputDestination =
   | 'passthrough'
+  | 'chat'
   | 'attachment'
   | 'work-item-child'
   | 'work-item-update'
@@ -105,6 +107,7 @@ export type AgentOutputDestination =
 
 export const AGENT_OUTPUT_DESTINATIONS: readonly AgentOutputDestination[] = [
   'passthrough',
+  'chat',
   'attachment',
   'work-item-child',
   'work-item-update',
