@@ -23,7 +23,7 @@
 // status guard cover the safety case.
 
 import { EventEmitter } from 'node:events';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import {
@@ -98,6 +98,15 @@ export function defaultJsonlPath(folderPath: string, sessionId: string): string 
     encodeCwdForClaude(folderPath),
     `${sessionId}.jsonl`,
   );
+}
+
+function countJsonlLines(filePath: string): number {
+  try {
+    if (!existsSync(filePath)) return 0;
+    return readFileSync(filePath, 'utf-8').split('\n').filter(Boolean).length;
+  } catch {
+    return 0;
+  }
 }
 
 /** Re-spawn a paused agent with the answer threaded in as the next user
@@ -191,6 +200,7 @@ export async function respawnAgentWithAnswer(
   }
 
   const jsonlPath = resolveJsonlPath(project.folderPath, ask.sessionId);
+  const jsonlStartLine = countJsonlLines(jsonlPath);
 
   // Section 18.5a — re-establish PC_AGENT_* env vars on resume so the
   // resumed agent can pause again (its pc-rig MCP child reads them on
@@ -223,7 +233,10 @@ export async function respawnAgentWithAnswer(
     resume: true,
     extraEnv: resumedExtraEnv,
     jsonlPath,
-    jsonlStartLine: 0, // Resume tails from the top; caller-side dedup is the orchestrator's job.
+    // `--resume` reloads the prior conversation from the same JSONL. The
+    // runtime tailer must start at EOF so historical turn-ends don't re-enter
+    // AgentRunManager after the pending ask has already been marked answered.
+    jsonlStartLine,
     agentName: ask.agentName,
     mcpConfigPath: podPrep?.mcpConfigPath,
     loadDevChannels: false,

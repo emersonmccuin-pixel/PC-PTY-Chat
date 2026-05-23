@@ -8,7 +8,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -316,6 +316,15 @@ test('respawn primitive re-attaches resumed session to the tracked run (16b.4.2)
   // Resume — pass the SAME manager via deps so the resumed session re-
   // attaches to the original run (vs. running ungoverned).
   const { factory: resumeFactory, sessions: resumeSessions } = makeFakeFactory();
+  const resumeJsonlPath = join(tmpDataDir, 'ar-mgr-attach-resume.jsonl');
+  writeFileSync(
+    resumeJsonlPath,
+    [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"user","message":{}}',
+      '{"type":"assistant","message":{}}',
+    ].join('\n') + '\n',
+  );
   const result = await respawnAgentWithAnswer(
     {
       pendingAskId,
@@ -327,13 +336,18 @@ test('respawn primitive re-attaches resumed session to the tracked run (16b.4.2)
       agentRunManager: mgr,
       createSession: resumeFactory,
       sessionDataDirFor: () => join(tmpDataDir, 'scratch-mgr-attach'),
-      resolveJsonlPath: () => '/dev/null',
+      resolveJsonlPath: () => resumeJsonlPath,
       readyTimeoutMs: 2_000,
     },
   );
 
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(resumeSessions.length, 1, 'one resumed session spawned');
+  assert.equal(
+    resumeSessions[0]!.lastOpts.jsonlStartLine,
+    3,
+    'paused-agent resume skips historical JSONL already on disk',
+  );
   assert.deepEqual(
     resumeSessions[0]!.sent,
     ['use date-fns'],

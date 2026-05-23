@@ -2403,7 +2403,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      const wait = args.wait === undefined ? undefined : args.wait === true;
+      const wait =
+        args.wait === undefined ? !process.env.PC_SESSION_ID : args.wait === true;
       const parentWorkItemId =
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
           ? args.parentWorkItemId.trim()
@@ -2522,7 +2523,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
-      const wait = args.wait === undefined ? undefined : args.wait === true;
+      const wait =
+        args.wait === undefined ? !process.env.PC_SESSION_ID : args.wait === true;
       const payload: Record<string, unknown> = { input, dispatcherSessionId };
       if (wait !== undefined) payload.wait = wait;
       try {
