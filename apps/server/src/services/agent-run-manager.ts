@@ -36,7 +36,7 @@
 //   - 'cancelled' (cancel() called)
 
 import { EventEmitter } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -92,23 +92,21 @@ const DEFAULT_WARMUP_KICK_INTERVAL_MS = 30_000;
  *  `warmupPrompt: null` in `AgentRunManagerDeps` (tests + emergency knob). */
 const DEFAULT_WARMUP_PROMPT = 'Reply with only the word OK.';
 
-/** Section 24.5 — appended to the resume spawn's system prompt via
- *  `--append-system-prompt-file`. The agent's first action must be a
- *  `pc_check_in` call to fetch the orchestrator's queued instruction.
- *  Treat the tool's return value as the next user message; if it returns
- *  `input: null`, end the turn cleanly (no queued follow-up). Do not call
- *  `pc_check_in` more than once. Pod prompts have no notion of
- *  continuation — this fragment supplies it for resume spawns only. */
-const CONTINUATION_SYSTEM_PROMPT_FRAGMENT = `## Continuation protocol (resumed run)
-
-You are resuming a previous run via \`--resume\`. The orchestrator may have queued a follow-up instruction for you while PC was setting up this resumed session.
-
-**Your first action must be to call \`pc_check_in\` (no arguments).** It returns one of:
-
-- \`{ "input": "<text>", "source": "orchestrator", "depositedAt": <ts> }\` — the orchestrator's follow-up. Treat \`input\` as the next user message and respond normally.
-- \`{ "input": null, "source": null, "depositedAt": null }\` — there is no queued instruction. End your turn without further action.
-
-Do not call \`pc_check_in\` more than once in this session. Do not skip it — even if your prior conversation seems complete, the orchestrator may have queued a refinement or clarification.`;
+/** Section 24 (post-pivot) — on `--resume`, defer the initialInput send until
+ *  stdout has been silent for this long. The Layer 0 labs harness proved
+ *  38/38 reliability across fresh/concurrent/sequential/long-conversation/
+ *  immediate-resume scenarios when sending after quiet-stdout ≥1500ms past
+ *  the bypass-permissions bar render. Heuristic timing (not a positive
+ *  readiness signal) — but the alternative (Section 24's `pc_check_in`
+ *  autonomous ping design) doesn't work because claude.exe `--resume`
+ *  rehydrates the conversation and waits for a user prompt to take a new
+ *  turn (verified in CC source `main.tsx:3733`). 1500ms matches the labs;
+ *  raising it on resume-of-very-long-conversations is the documented escape
+ *  hatch (lab timing data: 1814–2668ms quiet windows on 102-row JSONLs). */
+const RESUME_QUIET_WINDOW_MS = 1500;
+/** Section 24 — poll interval for the quiet-window watcher. Mirrors the
+ *  labs harness's 250ms tick. */
+const RESUME_QUIET_POLL_MS = 250;
 
 /** Section 22 — wait at most this long after PtySession `ready` for the
  *  `mcp-connected` notification (posted by pc-rig's `oninitialized`) before
@@ -389,6 +387,23 @@ interface InternalRun extends AgentRunRecord {
    *  under-cap path consumes them immediately via `finishSpawn`; the queued
    *  path stashes them on the record + consumes when the queue drains. */
   pendingSessionOpts: PtySessionOptions | null;
+  /** Section 24 (post-pivot) — true when the spawn is a `--resume`. The
+   *  state handler defers the initialInput send via the quiet-window poller
+   *  instead of firing immediately on `state: 'ready'`. */
+  isResume: boolean;
+  /** Section 24 (post-pivot) — last time PtySession emitted a stdout chunk.
+   *  The quiet-window poller measures `now - lastChunkAt` to decide when to
+   *  fire the deferred send. */
+  lastChunkAt: number;
+  /** Section 24 (post-pivot) — interval handle for the quiet-window poller.
+   *  Cleared when the send fires or the run reaches terminal. */
+  quietWindowPoller: unknown;
+  /** Section 24 (post-pivot) — timestamp when the session first reached
+   *  `state: 'ready'`. The poller requires both `now - lastChunkAt` and
+   *  `now - readyAt` to exceed RESUME_QUIET_WINDOW_MS to mirror the labs
+   *  harness's gating (two conditions guard against firing too early when
+   *  ready fires before stdout has actually flushed). */
+  readyAt: number | null;
 }
 
 /** AgentRunManager is an EventEmitter — Section 16b.8.1 + 16b.8.3.
@@ -788,14 +803,25 @@ export class AgentRunManager extends EventEmitter {
     // delivered but claude.exe doesn't treat it as a real user prompt, so
     // no `jsonl-turn-end` fires and the spawn-stuck timer kills the run at
     // 120s. Mirror agent-resume.ts's pause-resume pattern: pre-set
-    // warmupSent + mcpConnected so the state handler's legacy branch
-    // fires the real initialInput immediately on `state: 'ready'`.
-    // Tools-not-bound MCP race exposure is the same as pause-resume which
-    // works fine in practice — the resumed CC's model state was bound at
-    // a prior moment when MCP was definitely connected.
+    // warmupSent + mcpConnected so the state handler gates on neither.
+    //
+    // Section 24 (post-pivot) — the original ready-ping design assumed the
+    // resumed agent would autonomously call `pc_check_in` driven by an
+    // appended system-prompt fragment. claude.exe `--resume` rehydrates the
+    // conversation and waits for a user prompt; system-prompt content alone
+    // doesn't trigger a turn (verified in CC source `main.tsx:3733` — the
+    // `--resume` path passes `initialMessages: resumeData.messages` and
+    // never references the positional `[prompt]` argv or any new user
+    // message). Resume now goes through the labs-proven quiet-window send
+    // (Section 24 follow-up): defer the `session.send(initialInput)` until
+    // stdout has been quiet for `RESUME_QUIET_WINDOW_MS` post-ready, then
+    // type the orchestrator's input directly. The deposit + pc_check_in
+    // infrastructure remains for future use cases but is vestigial on the
+    // happy path.
     if (isResume) {
       rec.warmupSent = true;
       rec.mcpConnected = true;
+      rec.isResume = true;
     }
     const completion = this.installCompletionPromise(rec);
 
@@ -826,32 +852,6 @@ export class AgentRunManager extends EventEmitter {
       }
     }
 
-    // Section 24.5 — on resume, write the ready-ping system-prompt fragment
-    // into the scratch dir + pass it via `--append-system-prompt-file`. The
-    // fragment instructs the agent that its first action MUST be to call
-    // `pc_check_in` to receive the orchestrator's queued instruction. Without
-    // the fragment the model has no idea it should ping — pod prompts have
-    // no notion of continuation. Fresh dispatches do NOT get the fragment;
-    // their first user message is the orchestrator's input, delivered via
-    // PTY by the existing send-on-ready path.
-    let continuationFragmentPath: string | undefined;
-    if (isResume) {
-      continuationFragmentPath = resolve(scratchDir, 'continuation-instruction.md');
-      try {
-        writeFileSync(continuationFragmentPath, CONTINUATION_SYSTEM_PROMPT_FRAGMENT);
-      } catch (err) {
-        // Best-effort. Without the fragment the agent won't know to ping +
-        // the deposit will time out; the orchestrator sees ack-timeout. We
-        // log + continue rather than fail-fast because the broken path is
-        // recoverable (orphan reconciler cleans the deposit, orchestrator
-        // can re-dispatch).
-        console.warn(
-          `[agent-runs] failed to write continuation-instruction.md for runId=${runId}: ${(err as Error).message}`,
-        );
-        continuationFragmentPath = undefined;
-      }
-    }
-
     rec.pendingSessionOpts = {
       workspaceDir: input.worktreeDir,
       stopMarkerPath: resolve(scratchDir, 'stop-markers.txt'),
@@ -864,7 +864,6 @@ export class AgentRunManager extends EventEmitter {
       agentName: input.agentName,
       mcpConfigPath: podPrep?.mcpConfigPath,
       loadDevChannels: false,
-      appendSystemPromptPath: continuationFragmentPath,
       extraEnv: {
         ...(podPrep?.extraEnv ?? {}),
         PC_AGENT_NAME: input.agentName,
@@ -1070,6 +1069,12 @@ export class AgentRunManager extends EventEmitter {
       // Default null; the concurrent-continuation rejection record also
       // keeps null so its terminal flush doesn't touch the live entry.
       continues: null,
+      // Section 24 (post-pivot) — defaults; spawn() flips isResume on the
+      // continuation path. readyAt is filled when state hits 'ready'.
+      isResume: false,
+      lastChunkAt: 0,
+      quietWindowPoller: null,
+      readyAt: null,
     };
   }
 
@@ -1082,8 +1087,27 @@ export class AgentRunManager extends EventEmitter {
   private attachToSession(rec: InternalRun, session: AgentSessionLike): void {
     rec.session = session;
 
+    // Section 24 (post-pivot) — track stdout silence so the resume path's
+    // quiet-window poller can decide when claude.exe is done flushing the
+    // prior conversation. Mirrors the lab harness's `lastChunkAt` book-
+    // keeping. Listener fires for both 'chunk' and 'raw' — same payload
+    // semantically; we use 'chunk' (ANSI-stripped) since that's what the
+    // FakeSession used by tests emits when present.
+    session.on('chunk', () => {
+      rec.lastChunkAt = Date.now();
+    });
+
     session.on('state', (state: SessionState) => {
       if (this.isTerminal(rec.status)) return;
+      if (state === 'ready' && rec.readyAt === null) {
+        // Section 24 (post-pivot) — pin the ready timestamp once. The
+        // quiet-window poller measures against this to require BOTH stdout
+        // silence AND a minimum sinceReady gap before firing the send.
+        // Pinning here covers all branches (fresh warmup-gated, legacy
+        // warmup-disabled, attachResumedSession's idempotent re-fire).
+        rec.readyAt = Date.now();
+        if (rec.lastChunkAt === 0) rec.lastChunkAt = rec.readyAt;
+      }
       if (state === 'ready' && !rec.warmupSent && this.warmupPrompt !== null) {
         // Section 22 — gate warmup on pc-rig's `mcp-connected` POST. Banner-
         // render (state === 'ready') fires BEFORE CC's MCP client finishes
@@ -1110,6 +1134,19 @@ export class AgentRunManager extends EventEmitter {
             this.fireWarmup(rec, { armKick: true });
           }, rec.mcpHandshakeTimeoutMs);
         }
+      } else if (state === 'ready' && rec.isResume && !rec.initialInputSent) {
+        // Section 24 (post-pivot) — quiet-window-gated send for resumed
+        // sessions. Banner-render (`state: 'ready'`) on resume fires while
+        // claude.exe is still replaying the prior conversation to stdout +
+        // re-mounting its REPL. Sending the orchestrator's input here is
+        // too early: the labs reproduction (`labs/agent-resume-repro/`)
+        // proved the typed bytes get absorbed without ever surfacing as a
+        // user prompt. Wait for stdout to be quiet ≥1500ms past ready,
+        // then send.
+        rec.status = 'running';
+        this.clearSpawnStuckTimer(rec);
+        this.emitRunChanged(rec); // spawning → running
+        this.scheduleResumeQuietWindowSend(rec);
       } else if (state === 'ready' && !rec.initialInputSent) {
         // Legacy path: warmup disabled (tests + emergency knob). Send the
         // real initialInput immediately on ready.
@@ -1141,9 +1178,16 @@ export class AgentRunManager extends EventEmitter {
       // Suppress all downstream handlers for this event: it isn't the
       // agent's real first event (no ack), it isn't a terminal turn (no
       // complete/pause), and we don't want it in firstJsonlAt math.
+      //
+      // Section 24 (post-pivot) — `!rec.isResume` guard: resume path
+      // doesn't fire a warmup turn (warmupSent is pre-set true so
+      // `attachToSession` skips the warmup branch). The first turn-end on
+      // resume is the agent's actual response to the orchestrator's
+      // follow-up — it MUST flow through to `onTurnEnd` for completion.
       if (
         rec.warmupSent &&
         !rec.initialInputSent &&
+        !rec.isResume &&
         ev.kind === 'jsonl-turn-end'
       ) {
         rec.initialInputSent = true;
@@ -1400,6 +1444,59 @@ export class AgentRunManager extends EventEmitter {
     }
   }
 
+  /** Section 24 (post-pivot) — defers the resume-spawn's initialInput send
+   *  until claude.exe finishes flushing the prior conversation to stdout.
+   *  Polls every RESUME_QUIET_POLL_MS; fires the send when both
+   *  `now - lastChunkAt` AND `now - readyAt` exceed RESUME_QUIET_WINDOW_MS.
+   *  Mirrors the labs harness's gating (`labs/agent-resume-repro/repro.mjs`
+   *  phaseB: 38/38 PASS across fresh / concurrent / sequential / long-
+   *  conversation / immediate-resume scenarios). Cleared in `clearTimers`
+   *  on terminal so a never-quiet session doesn't leak the interval. */
+  private scheduleResumeQuietWindowSend(rec: InternalRun): void {
+    if (rec.quietWindowPoller) return;
+    if (rec.initialInputSent) return;
+    if (!rec.session) return;
+    const setI =
+      this.deps.setTimeout ?? ((cb: () => void, ms: number) => globalThis.setTimeout(cb, ms));
+    const clearI =
+      this.deps.clearTimeout ?? ((h: unknown) => globalThis.clearTimeout(h as NodeJS.Timeout));
+    // Use repeating setTimeout (not setInterval) so the test-injected
+    // setTimeout dep works the same way as the warmup-kick path.
+    const tick = (): void => {
+      rec.quietWindowPoller = null;
+      if (this.isTerminal(rec.status)) return;
+      if (rec.initialInputSent) return;
+      const now = Date.now();
+      const sinceReady = rec.readyAt !== null ? now - rec.readyAt : 0;
+      const quietFor = rec.lastChunkAt !== 0 ? now - rec.lastChunkAt : 0;
+      if (sinceReady >= RESUME_QUIET_WINDOW_MS && quietFor >= RESUME_QUIET_WINDOW_MS) {
+        rec.initialInputSent = true;
+        try {
+          rec.session?.send(rec.initialInput);
+        } catch (err) {
+          this.fail(
+            rec,
+            'spawn-failed',
+            `quiet-window send initialInput failed: ${(err as Error).message}`,
+          );
+        }
+        return;
+      }
+      rec.quietWindowPoller = setI(tick, RESUME_QUIET_POLL_MS);
+    };
+    rec.quietWindowPoller = setI(tick, RESUME_QUIET_POLL_MS);
+    // Silence the unused-import warning + reserve handle for future cleanup.
+    void clearI;
+  }
+
+  private clearQuietWindowPoller(rec: InternalRun): void {
+    if (rec.quietWindowPoller) {
+      const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
+      clearT(rec.quietWindowPoller);
+      rec.quietWindowPoller = null;
+    }
+  }
+
   /** Section 22 — helper for the warmup-send path. Shared by the three
    *  trigger points: (a) ready-state with mcp already connected, (b)
    *  notifyMcpConnected arriving after ready, (c) handshake-timeout
@@ -1577,6 +1674,7 @@ export class AgentRunManager extends EventEmitter {
     this.clearSpawnStuckTimer(rec);
     this.clearWarmupKick(rec);
     this.clearMcpHandshakeTimer(rec);
+    this.clearQuietWindowPoller(rec);
     if (rec.wallClockTimer) {
       const clearT = this.deps.clearTimeout ?? ((h) => globalThis.clearTimeout(h as NodeJS.Timeout));
       clearT(rec.wallClockTimer);

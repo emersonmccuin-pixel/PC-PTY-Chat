@@ -2165,19 +2165,13 @@ test('Section 21 — resume skips historical JSONL replay (jsonlStartLine pinned
   );
 
   // Drive continuation to completion to keep the test hygienic + verify the
-  // FakeSession's flow still works against the resume path.
+  // FakeSession's flow still works against the resume path. The send-on-
+  // ready behaviour itself is covered by the Section 24 (post-pivot) test
+  // below — this test's focus is jsonlStartLine pinning. On Section 24's
+  // quiet-window gating, `s.sent` would only populate after the poller
+  // fires (≥1500ms post-ready); the synchronous `emitTurnEnd` here
+  // terminates the run before that, so `s.sent` stays empty by design.
   s.becomeReady();
-  // Section 24 supersedes the prior Section 21 send-on-ready behaviour:
-  // resume spawn does NOT type initialInput into the PTY. The orchestrator's
-  // `pc_continue_agent` route deposits the instruction via `depositInstruction`
-  // and the agent's first action on boot is `pc_check_in` (system-prompt
-  // fragment instructs it). No PTY send; the agent reads the instruction
-  // from its first tool call's return value.
-  assert.deepEqual(
-    s.sent,
-    [],
-    'Section 24 — resume does NOT send via PTY; agent fetches via pc_check_in',
-  );
   s.emitTurnEnd('refined');
   const result = await cont.completion;
   assert.equal(result.status, 'completed');
@@ -2273,17 +2267,17 @@ test('Section 21 — resume option threads --resume + reuses providerSessionId +
   );
 });
 
-// Section 24 — agent ready-ping protocol. Continuation spawn delivers the
-// orchestrator's input via `pc_check_in` tool return, NOT by typing into
-// the PTY. The spawn writes a continuation-instruction.md fragment and
-// passes it to the PtySession via `appendSystemPromptPath`. On `ready`,
-// the manager does NOT call `session.send(input)`; the agent's first
-// non-system JSONL event (the `pc_check_in` tool call) satisfies the
-// ack-wait contract.
-test('Section 24 — resume spawn writes append-fragment + skips PTY send of input', async () => {
+// Section 24 (post-pivot) — quiet-window-gated send for resumed spawns.
+// On `state: 'ready'`, the manager defers `session.send(initialInput)` via
+// a poller that waits until stdout has been silent for ≥1500ms past ready
+// AND ≥1500ms since the last chunk. The labs harness proved 38/38 PASS
+// under this gating. Original Section 24 design (autonomous pc_check_in
+// tool call) didn't work because claude.exe --resume waits for user input
+// to trigger a turn.
+test('Section 24 (post-pivot) — resume defers initialInput send until stdout-quiet window passes', async () => {
   const p = createProject({
-    slug: 'arm-ready-ping',
-    name: 'ARM Ready-ping',
+    slug: 'arm-quiet-window',
+    name: 'ARM Quiet Window',
     stages,
     folderPath: tmpDataDir,
   });
@@ -2291,7 +2285,7 @@ test('Section 24 — resume spawn writes append-fragment + skips PTY send of inp
   const mgr = new AgentRunManager({
     warmupPrompt: null,
     createSession: factory,
-    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ready-ping', pid, rid),
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-quiet-window', pid, rid),
     resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
   });
 
@@ -2301,7 +2295,7 @@ test('Section 24 — resume spawn writes append-fragment + skips PTY send of inp
     input: 'find a date math lib',
     wait: true,
     projectId: p.id as ULID,
-    dispatcherSessionId: 'ready-ping-dispatcher',
+    dispatcherSessionId: 'quiet-window-dispatcher',
     worktreeDir: tmpDataDir,
   });
   const s0 = sessions[0]!;
@@ -2309,70 +2303,51 @@ test('Section 24 — resume spawn writes append-fragment + skips PTY send of inp
   s0.emitTurnEnd('use date-fns');
   await original.completion;
 
-  // Continuation — Section 24 path.
+  // Continuation — Section 24 (post-pivot) path. The manager arms a
+  // quiet-window poller on ready instead of firing the send immediately.
+  // We use real wall-clock timers here (no fake setTimeout injection) so
+  // the poller actually runs; the test waits ~2s for the quiet window to
+  // elapse. Spawn-stuck (120s) and wall-clock (2h) defaults stay well
+  // outside this window.
   const cont = mgr.spawn({
     agentName: 'researcher',
     input: 'expand on point 3',
     wait: true,
     projectId: p.id as ULID,
-    dispatcherSessionId: 'ready-ping-dispatcher',
+    dispatcherSessionId: 'quiet-window-dispatcher',
     worktreeDir: tmpDataDir,
     continues: original.runId,
     resume: { providerSessionId: original.sessionId },
   });
   const s1 = sessions[1]!;
 
-  // 24.5 — appendSystemPromptPath populated, file written with the fragment.
-  assert.ok(
-    s1.lastOpts.appendSystemPromptPath,
-    'continuation spawn passes appendSystemPromptPath',
-  );
-  assert.ok(
-    existsSync(s1.lastOpts.appendSystemPromptPath),
-    'continuation-instruction.md exists on disk before spawn ships',
-  );
-  const fragmentText = readFileSync(s1.lastOpts.appendSystemPromptPath, 'utf-8');
-  assert.match(
-    fragmentText,
-    /pc_check_in/,
-    'fragment references the pc_check_in tool',
-  );
-  assert.match(
-    fragmentText,
-    /resumed/i,
-    'fragment frames the agent as resuming',
-  );
-
-  // 24.4 — on ready, the manager does NOT send the input. The agent will
-  // fetch it via pc_check_in instead. `initialInputSent` is pre-set true
-  // for resume so the legacy send-on-ready branch is skipped.
+  // On ready, the manager does NOT send synchronously — the poller is
+  // armed instead.
   s1.becomeReady();
   assert.equal(
     s1.sent.length,
     0,
-    'no PTY send on ready — orchestrator input is delivered via pc_check_in tool return, not by typing',
+    'resume defers send on ready (quiet-window poller armed)',
   );
-  const recAfterReady = mgr.get(cont.runId);
   assert.equal(
-    recAfterReady?.status,
+    mgr.get(cont.runId)?.status,
     'running',
-    'resume spawn flips spawning → running on ready (no warmup, no input send)',
+    'resume flips spawning → running on ready (send pending)',
   );
 
-  // The agent's first JSONL event (its pc_check_in tool call) satisfies
-  // ack; the manager then sees a turn-end to complete the run.
-  s1.emitToolCall('mcp__pc-rig__pc_check_in', {});
-  // No-op for completion — tool calls don't end the turn. Drive a turn-end
-  // with the agent's final reply.
+  // Wait past the quiet window (1500ms threshold + small buffer for the
+  // poll cadence). No chunks emitted in this window → quietFor grows
+  // unbounded → poller fires the send on its next tick.
+  await new Promise<void>((r) => setTimeout(r, 1800));
+  assert.deepEqual(
+    s1.sent,
+    ['expand on point 3'],
+    'quiet window passed: initialInput sent via PTY',
+  );
+
+  // Drive to completion.
   s1.emitTurnEnd('point 3 expanded: ...');
   const contResult = await cont.completion;
   assert.equal(contResult.status, 'completed');
   assert.equal(contResult.result, 'point 3 expanded: ...');
-
-  // FirstJsonlAt should have fired on the pc_check_in tool call (ack
-  // contract preserved without sending input via PTY).
-  assert.ok(
-    mgr.getFirstJsonlAt(cont.runId),
-    'firstJsonlAt fired on the pc_check_in tool call (ack contract still satisfied)',
-  );
 });
