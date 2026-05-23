@@ -253,10 +253,15 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
   {
-    slug: 'mcp__pc-rig__pc_check_in',
-    label: 'Check in for an instruction',
-    description:
-      "Resumed-run readiness ping — fetches the orchestrator's queued follow-up.",
+    slug: 'mcp__pc-rig__pc_continue_agent',
+    label: 'Continue an agent run',
+    description: 'Resume a terminal AgentRun with a follow-up input.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_list_my_runs',
+    label: 'List my agent runs',
+    description: "List recent agent runs YOU dispatched (scoped to caller's session).",
     source: 'pc-rig',
   },
 
@@ -346,49 +351,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
 
-  // --- pc-rig: v2 surface (Section 25 Session 9; parallel-build) -----------
-  {
-    slug: 'mcp__pc-rig__pc_invoke_agent_v2',
-    label: 'Dispatch another agent (v2)',
-    description: 'v2 — spawn a pod through the rebuilt AgentRun wrapper.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_continue_agent_v2',
-    label: 'Continue an agent run (v2)',
-    description: 'v2 — resume a terminal AgentRun with a follow-up input.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_list_my_runs_v2',
-    label: 'List my agent runs (v2)',
-    description: 'v2 — list recent dispatches from agent_runs_v2.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_ask_orchestrator_v2',
-    label: 'Ask the orchestrator (v2)',
-    description: 'v2 — pause and ask the dispatching orchestrator a question.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_ask_user_v2',
-    label: 'Ask the user (v2)',
-    description: 'v2 — pause and ask the user via the orchestrator-as-proxy.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_request_approval_v2',
-    label: 'Request approval (v2)',
-    description: 'v2 — pause and request explicit approval before proceeding.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_answer_pending_v2',
-    label: 'Answer a pending ask (v2)',
-    description: 'v2 — reply to a paused agent (atomic open→answered flip).',
-    source: 'pc-rig',
-  },
 ];
 
 const BY_SLUG = new Map(TOOL_CATALOG.map((e) => [e.slug, e]));

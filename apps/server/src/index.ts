@@ -11,10 +11,10 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { homedir } from 'node:os';
 
 import type {
-  AgentRunPersistedStatus,
   AgentRunStatusV2,
   GlobalSettings,
   PendingAskKindV2,
+  PendingAskOption,
   ULID,
   Workflow,
   WorkItemType,
@@ -28,26 +28,19 @@ import {
 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
-  createPendingAsk,
-  depositInstruction,
-  findActiveContinuation,
   getActiveOrchestratorSession,
   dismissFailedRun,
-  getAgentRunRow,
   getAgentRunRowV2,
   listActiveAgentRunsForProjectV2,
-  listAgentRunsForSession,
   listAgentRunsForSessionV2,
   getGlobalSettings,
-  getPendingAsk,
   getProjectById,
   listFailedRunDismissalsForProject,
   listOrchestratorSessionsForProject,
   listProjects,
-  listWaitingPendingAsksForProject,
   newId,
   reassignStage,
-  reconcileOrphanedInstructionDeposits,
+  reconcileOrphanedRunningRunsV2,
   reorderProjects,
   runMigrations,
   setGlobalSettings,
@@ -61,7 +54,7 @@ import {
 import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
-import { drainPendingForSession, enqueueAndPush } from './services/agent-inbox-emit.ts';
+import { drainPendingForSessionV2 } from './services/v2/delivery.ts';
 import {
   dispatchContinueAgentV2,
   dispatchFreshAgentV2,
@@ -104,33 +97,8 @@ import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.t
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
-import { defaultJsonlPath, respawnAgentWithAnswer } from './services/agent-resume.ts';
-import { awaitInstruction, notifyDeposit } from './services/instruction-deposit-service.ts';
-import {
-  recordAgentAnswer,
-  recordAgentCompleted,
-  recordAgentFailed,
-  recordAgentInvoke,
-  recordAgentPause,
-} from './services/agent-audit.ts';
-import {
-  buildAgentApprovalRequestBody,
-  buildAgentAsksOrchestratorBody,
-  buildAgentAsksUserBody,
-  buildAgentCompletedBody,
-  buildAgentFailedBody,
-  buildAgentQueuedStartedBody,
-} from './services/agent-event-header.ts';
-import {
-  AgentRunManager,
-  checkInvokeDepth,
-  getAgentRunManager,
-  setAgentRunManager,
-  type AgentRunFailureCause,
-  type AgentRunRecord,
-} from './services/agent-run-manager.ts';
-import type { JsonlEvent } from '@pc/runtime';
-import type { AgentFailedPayload, PendingAskKind, PendingAskOption } from '@pc/domain';
+import { recordAgentInvoke } from './services/agent-audit.ts';
+import { checkInvokeDepth } from './services/invoke-depth.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
@@ -278,11 +246,11 @@ const channelServer = new ChannelServer({
   onEvent: (projectId, event) => {
     broadcastTo(projectId, { type: 'channel-event', projectId, event });
   },
-  // 18.3 — When a fresh bridge registers (post-restart / post-respawn),
-  // drain any pending inbox rows for the (projectId, sessionId) pair so the
-  // orchestrator catches up autonomously.
+  // 18.3 / Phase D — When a fresh bridge registers (post-restart / post-
+  // respawn), drain any pending inbox rows for the (projectId, sessionId)
+  // pair so the orchestrator catches up autonomously.
   onRegister: ({ projectId, sessionId, slug }) => {
-    const result = drainPendingForSession(channelServer, projectId, sessionId, slug);
+    const result = drainPendingForSessionV2(channelServer, projectId, sessionId, slug);
     if (result.attempted > 0) {
       console.log(
         `[channel] auto-flush ${projectId} / ${sessionId}: drained ${result.drained}/${result.attempted}`,
@@ -312,78 +280,15 @@ channelServer.start();
     });
 }
 
-// Section 16b.4 — Singleton AgentRunManager. The `pc_invoke_agent` HTTP
-// route consumes it; the resume primitive (agent-resume.ts) consults it
-// via `findRunIdBySession` so resumed sessions re-attach to the tracked
-// run. Test code overrides via `setAgentRunManager(new AgentRunManager(...))`.
-//
-// 16b.8.1 — Manager emits `run-changed` on every state transition; rebroadcast
-// to project subscribers as `{ type: 'agent-run-changed', record }` so the
-// Activity Panel's running-agents region updates live. Listener is attached
-// once at boot; the singleton's lifetime matches the process.
-//
-// 16b.8.3 — Manager also emits `run-jsonl-event` for every JSONL event
-// from a run's PtySession; rebroadcast as `{ type: 'agent-jsonl-event',
-// runId, event }` so the Activity Panel's live-transcript modal can
-// filter by runId.
+// Phase D — boot-time orphan sweep on agent_runs. v1's AgentRunManager init
+// block + instruction_deposits scaffold are gone; the v2 `agent-run-factory`
+// owns dispatch + broadcast wiring per-spawn (`broadcast` dep is injected at
+// route time). Orphan sweep stays as a boot-time idempotent UPDATE on the
+// v2 table — any non-terminal row outlives a prior server lifetime and gets
+// flipped to `failed` so the Activity Panel doesn't show stale running cards.
 {
-  const mgr = new AgentRunManager();
-  mgr.on('run-changed', (record: AgentRunRecord) => {
-    broadcastTo(record.projectId, { type: 'agent-run-changed', record });
-  });
-  mgr.on(
-    'run-jsonl-event',
-    (payload: { runId: ULID; projectId: ULID; event: JsonlEvent }) => {
-      broadcastTo(payload.projectId, {
-        type: 'agent-jsonl-event',
-        runId: payload.runId,
-        event: payload.event,
-      });
-    },
-  );
-  // Section 18.7 — emit `agent-queued-started` to the dispatching
-  // orchestrator's stream whenever a previously-queued dispatch actually
-  // fires. Rides the hybrid transport (inbox + best-effort channel) like
-  // the terminal events so post-restart catch-up still works. Slug lookup
-  // happens at fire time because the project's slug isn't on the payload.
-  mgr.on(
-    'agent-queued-started',
-    (payload: {
-      runId: ULID;
-      sessionId: string;
-      agentName: string;
-      projectId: ULID;
-      dispatcherSessionId: string;
-      parentWorkItemId: ULID | null;
-      queuedAt: number;
-      startedAt: number;
-    }) => {
-      const project = getProjectById(payload.projectId);
-      if (!project) return; // defensive — project soft-deleted mid-flight
-      enqueueAndPush(channelServer, {
-        projectId: payload.projectId,
-        recipientSessionId: payload.dispatcherSessionId,
-        eventKind: 'agent-queued-started',
-        slug: project.slug,
-        source: 'agent',
-        body: buildAgentQueuedStartedBody({
-          runId: payload.runId,
-          sessionId: payload.sessionId,
-          agentName: payload.agentName,
-          parentWorkItemId: payload.parentWorkItemId,
-          queuedAt: payload.queuedAt,
-          startedAt: payload.startedAt,
-        }),
-        sender: 'pc',
-      });
-    },
-  );
-  setAgentRunManager(mgr);
-  // Section 21 — sweep orphaned `running` agent_runs rows that outlived a
-  // prior server lifetime. Idempotent + cheap (single UPDATE); runs once at
-  // boot. Logged so a non-zero count signals the prior server died mid-run.
   try {
-    const reconciled = mgr.reconcileOrphans();
+    const reconciled = reconcileOrphanedRunningRunsV2(Date.now());
     if (reconciled > 0) {
       console.log(
         `[agent-runs] reconciled ${reconciled} orphaned running row(s) from prior server lifetime`,
@@ -391,25 +296,6 @@ channelServer.start();
     }
   } catch (err) {
     console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
-  }
-  // Section 24 — instruction_deposits orphan sweep. Any `waiting` row whose
-  // target run isn't `running` anymore (the run died, or the server bounced
-  // after deposit but before consume) is flipped to `cancelled`. Must run
-  // AFTER `mgr.reconcileOrphans()` because it predicates on the post-reconcile
-  // `agent_runs.status` value — running rows that just got swept to `failed`
-  // need to be seen as terminal here.
-  try {
-    const cancelled = reconcileOrphanedInstructionDeposits(Date.now());
-    if (cancelled > 0) {
-      console.log(
-        `[instruction-deposits] cancelled ${cancelled} orphaned waiting deposit(s) from prior server lifetime`,
-      );
-    }
-  } catch (err) {
-    console.error(
-      '[instruction-deposits] orphan reconciliation failed:',
-      (err as Error).message,
-    );
   }
 }
 
@@ -2530,572 +2416,18 @@ app.post('/api/projects/:projectId/channel-send', async (c) => {
   }
 });
 
-// ── Section 16b — Agent comms primitives ──────────────────────────────────
 
-/** Create a pending-ask (paused-agent wait) for the given project. Wired
- *  from the `pc_ask_orchestrator` MCP tool today; 16b.5 / 16b.6 add
- *  `kind: 'ask-user'` and `kind: 'approval'` paths through the same
- *  endpoint. Emits an `agent-asks-orchestrator` channel event to the
- *  project's registered orchestrator child after the row lands. */
-app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+// ── Section 16b / Section 25 Phase D — Agent comms primitives ──────────────
 
-  const body = await c.req.json<{
-    sessionId?: string;
-    agentName?: string;
-    kind?: PendingAskKind;
-    question?: string;
-    context?: string;
-    options?: PendingAskOption[];
-    runId?: ULID | null;
-    parentWorkItemId?: ULID | null;
-    /** Section 18.5a — dispatching orchestrator's CC sessionId, forwarded
-     *  from the agent's pc-rig MCP server's `PC_DISPATCHER_SESSION_ID`
-     *  env. The pause channel event routes back to THIS session. */
-    dispatcherSessionId?: string;
-  }>();
-
-  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-  const agentName = typeof body.agentName === 'string' ? body.agentName.trim() : '';
-  const kind = body.kind;
-  const question = typeof body.question === 'string' ? body.question : '';
-  const dispatcherSessionId =
-    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
-  if (!sessionId) return c.json({ ok: false, error: 'sessionId required' }, 400);
-  if (!agentName) return c.json({ ok: false, error: 'agentName required' }, 400);
-  if (!dispatcherSessionId) {
-    return c.json(
-      {
-        ok: false,
-        error:
-          'dispatcherSessionId required (agent must forward PC_DISPATCHER_SESSION_ID — only agents spawned via pc_invoke_agent can pause-and-ask)',
-      },
-      400,
-    );
-  }
-  if (kind !== 'ask-orchestrator' && kind !== 'ask-user' && kind !== 'approval') {
-    return c.json({ ok: false, error: 'kind must be ask-orchestrator | ask-user | approval' }, 400);
-  }
-  if (!question.trim()) return c.json({ ok: false, error: 'question required' }, 400);
-  if (kind === 'approval') {
-    if (!Array.isArray(body.options) || body.options.length === 0) {
-      return c.json(
-        { ok: false, error: 'options required (non-empty array) for kind=approval' },
-        400,
-      );
-    }
-  }
-
-  const pendingAskId = newId();
-  const row = createPendingAsk({
-    id: pendingAskId,
-    sessionId,
-    agentName,
-    projectId,
-    runId: body.runId ?? null,
-    parentWorkItemId: body.parentWorkItemId ?? null,
-    kind,
-    question,
-    context: typeof body.context === 'string' ? body.context : null,
-    options: Array.isArray(body.options) ? body.options : null,
-    now: Date.now(),
-  });
-
-  // 16b.3 → 16b.5 → 16b.6: each kind picks a different body builder; all
-  // three reuse the same pending_asks row + the same channel-server emit
-  // path. Approval requires a non-empty options list (validated above for
-  // kind === 'approval').
-  let eventBody: string | null = null;
-  if (kind === 'ask-orchestrator') {
-    eventBody = buildAgentAsksOrchestratorBody({
-      pendingAskId,
-      sessionId,
-      agentName,
-      runId: row.runId,
-      parentWorkItemId: row.parentWorkItemId,
-      question,
-      context: row.context,
-    });
-  } else if (kind === 'ask-user') {
-    eventBody = buildAgentAsksUserBody({
-      pendingAskId,
-      sessionId,
-      agentName,
-      runId: row.runId,
-      parentWorkItemId: row.parentWorkItemId,
-      question,
-      context: row.context,
-      options: row.options,
-    });
-  } else if (kind === 'approval') {
-    eventBody = buildAgentApprovalRequestBody({
-      pendingAskId,
-      sessionId,
-      agentName,
-      runId: row.runId,
-      parentWorkItemId: row.parentWorkItemId,
-      decision: question,
-      context: row.context,
-      // Safe: validated as a non-empty array above.
-      options: row.options ?? [],
-    });
-  }
-  if (eventBody) {
-    // 18.3 — hybrid emit: inbox row + best-effort channel push + audit.
-    // `ask-user` stays on the channel-only path (no inbox kind) — the
-    // architecture-review lock merges it into `ask-orchestrator` in the
-    // 16b.E2E close; until then, ask-user channel events don't have a
-    // matching `AgentInboxEventKind`. Loss of channel push for ask-user
-    // is recoverable via the pending-asks list endpoint.
-    if (kind === 'ask-user') {
-      channelServer.emitToSession({
-        projectId,
-        recipientSessionId: dispatcherSessionId,
-        slug: project.slug,
-        source: 'agent',
-        body: eventBody,
-        sender: 'pc',
-      });
-    } else {
-      enqueueAndPush(channelServer, {
-        projectId,
-        recipientSessionId: dispatcherSessionId,
-        eventKind: kind === 'ask-orchestrator'
-          ? 'agent-asks-orchestrator'
-          : 'agent-approval-request',
-        slug: project.slug,
-        source: 'agent',
-        body: eventBody,
-        sender: 'pc',
-      });
-    }
-  }
-
-  // 16b.7 — audit row on the parent work item.
-  recordAgentPause({
-    workItemId: row.parentWorkItemId,
-    agentName,
-    sessionId,
-    runId: row.runId,
-    pendingAskId,
-    kind,
-    prompt: question,
-    now: Date.now(),
-  });
-
-  return c.json({ ok: true, pendingAskId, status: 'waiting' });
-});
-
-/** List waiting pending-asks for a project — feeds the orchestrator's
- *  boot-time "you have N agents waiting on you" surface + Activity Panel
- *  scoping (16b.8). */
-app.get('/api/projects/:projectId/agent-pending-asks', (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-  const rows = listWaitingPendingAsksForProject(projectId);
-  return c.json({ ok: true, pendingAsks: rows });
-});
-
-/** Resume a paused agent with an answer. Atomically flips waiting→answered
- *  + re-spawns the agent with `--agent <name> --resume <sessionId>` +
- *  writes the answer as the next user message. Wired from the
- *  `pc_answer_pending` MCP tool. */
-app.post('/api/projects/:projectId/agent-pending-asks/:askId/answer', async (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-
-  const askId = c.req.param('askId') as ULID;
-  const body = await c.req.json<{ answer?: string; answeredBy?: 'orchestrator' | 'user' }>();
-  const answer = typeof body.answer === 'string' ? body.answer : '';
-  const answeredBy = body.answeredBy;
-  if (!answer) return c.json({ ok: false, error: 'answer required' }, 400);
-  if (answeredBy !== 'orchestrator' && answeredBy !== 'user') {
-    return c.json({ ok: false, error: 'answeredBy must be orchestrator | user' }, 400);
-  }
-
-  // Snapshot the pending-ask before respawn flips the row — we need
-  // parentWorkItemId + agent context for the audit row + we want to skip
-  // audit when the answer didn't actually take effect (already-answered,
-  // unknown id, etc.). `respawnAgentWithAnswer` re-reads the row internally;
-  // the double-read is fine for one row.
-  const askBefore = getPendingAsk(askId);
-
-  const now = Date.now();
-  const result = await respawnAgentWithAnswer({
-    pendingAskId: askId,
-    answer,
-    answeredBy,
-    now,
-  });
-
-  // 16b.7 — audit only when the answer actually landed (atomic flip won).
-  if (result.ok && askBefore?.parentWorkItemId) {
-    recordAgentAnswer({
-      workItemId: askBefore.parentWorkItemId,
-      agentName: askBefore.agentName,
-      sessionId: askBefore.sessionId,
-      runId: askBefore.runId,
-      pendingAskId: askId,
-      answeredBy,
-      answer,
-      now,
-    });
-  }
-
-  // Always 200 — the result envelope carries the success/error shape the
-  // MCP tool returns to the orchestrator. Same convention as
-  // /workflow/node-complete + friends.
-  return c.json(result);
-});
-
-// ── Agent invoke (16b.4) ──────────────────────────────────────────────────
-
-/** Map `AgentRunFailureCause` → the structured `agent-failed` payload
- *  `cause` field (the narrow domain enum the orchestrator pod prompt
- *  parses). The pod prompt's handler-protocol §5 documents `timeout` /
- *  `cancelled` / `unknown-agent` / `spawn-failed` / `error` as the
- *  distinguishable causes the orchestrator suggests next steps from;
- *  collapse only the runtime-internal `spawn-exit` (process died mid-turn
- *  with no clearer reason) and `null` to the generic `'error'` bucket. */
-function agentFailureCauseToPayload(
-  cause: AgentRunFailureCause | null,
-): AgentFailedPayload['cause'] {
-  switch (cause) {
-    case 'timeout':
-    case 'idle-timeout':
-      return 'timeout';
-    case 'cancelled':
-      return 'cancelled';
-    case 'unknown-agent':
-      return 'unknown-agent';
-    case 'spawn-failed':
-    case 'spawn-stuck':
-    case 'concurrent-continuation':
-      // The async/wire path is unlikely to see 'concurrent-continuation'
-      // (the route's sync DB-check catches it before the wire format
-      // matters), but if a same-tick race surfaces it via the background
-      // emit, map to the closest closed-set value the orchestrator pod
-      // prompt's handler-protocol §5 already understands.
-      return 'spawn-failed';
-    case 'spawn-exit':
-    case null:
-    default:
-      return 'error';
-  }
-}
-
-/** `pc_invoke_agent`'s HTTP surface. Spawns the named agent in the project's
- *  worktree via the `AgentRunManager` singleton. `wait: true` blocks the
- *  caller's tool call until the child finishes; `wait: false` returns the
- *  run handle immediately and emits a terminal `agent-completed` /
- *  `agent-failed` channel event to the project when the child finishes.
- *
- *  Sync caller (orchestrator with `wait: true` overridden) sees the result
- *  as a normal tool result. Async caller (orchestrator default `wait: false`)
- *  sees the run handle now and the terminal event on its next turn — the
- *  orchestrator pod prompt's handler protocol entries #4 + #5 surface it. */
-app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-
-  const agentName = c.req.param('name').trim();
-  if (!agentName) return c.json({ ok: false, error: 'agent name required' }, 400);
-
-  const body = await c.req.json<{
-    input?: string;
-    wait?: boolean;
-    parentWorkItemId?: ULID;
-    parentInvokeDepth?: number;
-    /** Section 18.5a — orchestrator's CC sessionId, forwarded from the
-     *  pc-rig MCP server's `PC_SESSION_ID` env. Terminal channel events
-     *  route back to this session. */
-    dispatcherSessionId?: string;
-  }>();
-
-  const input = typeof body.input === 'string' ? body.input : '';
-  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
-  const wait = body.wait !== false; // default true per the contract
-  const parentWorkItemId =
-    typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
-  const dispatcherSessionId =
-    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
-  if (!dispatcherSessionId) {
-    return c.json(
-      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
-      400,
-    );
-  }
-
-  // 16b.4.5 — depth cap. Caller forwards `parentInvokeDepth` from
-  // `PC_AGENT_INVOKE_DEPTH`; orchestrator-initiated calls omit it (parent
-  // depth 0 → child depth 1). Reject before spawning so a runaway chain
-  // can't burn the subscription.
-  const parentInvokeDepth =
-    typeof body.parentInvokeDepth === 'number' ? body.parentInvokeDepth : 0;
-  const depthCheck = checkInvokeDepth(parentInvokeDepth);
-  if (!depthCheck.ok) {
-    return c.json({ ok: false, error: depthCheck.error, cause: depthCheck.cause }, 400);
-  }
-
-  const mgr = getAgentRunManager();
-  const spawn = mgr.spawn({
-    agentName,
-    input,
-    wait,
-    projectId,
-    dispatcherSessionId,
-    worktreeDir: project.folderPath,
-    parentWorkItemId,
-    invokeDepth: depthCheck.childDepth,
-  });
-
-  // 16b.7 — audit row on the parent work item.
-  recordAgentInvoke({
-    workItemId: parentWorkItemId,
-    agentName,
-    sessionId: spawn.sessionId,
-    runId: spawn.runId,
-    mode: wait ? 'sync' : 'async',
-    input,
-    now: Date.now(),
-  });
-
-  if (wait) {
-    // Block in-turn until the child reaches a terminal state. The completion
-    // Promise resolves on completed / failed / cancelled — never rejects.
-    const rec = await spawn.completion;
-    if (rec.status === 'completed') {
-      recordAgentCompleted({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        result: rec.result ?? '',
-        now: Date.now(),
-      });
-      return c.json({
-        ok: true,
-        mode: 'sync',
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        agentName: rec.agentName,
-        result: rec.result,
-      });
-    }
-    recordAgentFailed({
-      workItemId: rec.parentWorkItemId,
-      agentName: rec.agentName,
-      sessionId: rec.sessionId,
-      runId: rec.runId,
-      reason: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
-      cause: rec.failureCause ?? rec.status,
-      now: Date.now(),
-    });
-    return c.json({
-      ok: false,
-      error: rec.failureReason ?? `agent ${agentName} did not complete (${rec.status})`,
-      cause:
-        rec.failureCause === 'unknown-agent'
-          ? 'unknown-agent'
-          : rec.failureCause === 'concurrent-continuation'
-          ? 'concurrent-continuation'
-          : 'spawn-failed',
-    });
-  }
-
-  // Fire-and-forget — subscribe to completion in the background. The
-  // terminal event lands on the caller's channel stream when the child
-  // finishes; the caller will see it as a `<channel>` block on its next
-  // turn (orchestrator handler protocol entries #4 + #5).
-  void spawn.completion.then((rec) => {
-    if (rec.status === 'completed') {
-      recordAgentCompleted({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        result: rec.result ?? '',
-        now: Date.now(),
-      });
-      enqueueAndPush(channelServer, {
-        projectId,
-        recipientSessionId: rec.dispatcherSessionId,
-        eventKind: 'agent-completed',
-        slug: project.slug,
-        source: 'agent',
-        body: buildAgentCompletedBody({
-          runId: rec.runId,
-          sessionId: rec.sessionId,
-          agentName: rec.agentName,
-          parentWorkItemId: rec.parentWorkItemId,
-          result: rec.result,
-        }),
-        sender: 'pc',
-      });
-    } else {
-      recordAgentFailed({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        reason:
-          rec.failureReason ?? `agent ${rec.agentName} did not complete (${rec.status})`,
-        cause: rec.failureCause ?? rec.status,
-        now: Date.now(),
-      });
-      enqueueAndPush(channelServer, {
-        projectId,
-        recipientSessionId: rec.dispatcherSessionId,
-        eventKind: 'agent-failed',
-        slug: project.slug,
-        source: 'agent',
-        body: buildAgentFailedBody({
-          runId: rec.runId,
-          sessionId: rec.sessionId,
-          agentName: rec.agentName,
-          parentWorkItemId: rec.parentWorkItemId,
-          reason:
-            rec.failureReason ?? `agent ${rec.agentName} did not complete (${rec.status})`,
-          cause: agentFailureCauseToPayload(rec.failureCause),
-        }),
-        sender: 'pc',
-      });
-    }
-  });
-
-  // Section 18.7 — queued dispatches return immediately with the queue
-  // position; no ack-wait because there's no agent yet. The
-  // `agent-queued-started` event fires later when the queue drains and
-  // the run actually spawns; the terminal `agent-completed` /
-  // `agent-failed` event still flows via the background emit above.
-  if (spawn.queued) {
-    return c.json({
-      ok: true,
-      mode: 'async',
-      status: 'queued',
-      sessionId: spawn.sessionId,
-      runId: spawn.runId,
-      agentName,
-      startedAt: spawn.startedAt,
-      position: spawn.position,
-    });
-  }
-
-  // Section 18.6 — brief ack-wait. Block the caller until the spawned agent
-  // emits its first non-system JSONL event (confirms CC booted, read the
-  // prompt, model is engaged) OR the ack timer fires. The full terminal
-  // event still flows via the background channel emit above; this only
-  // confirms the dispatch landed. Sync-failing spawns (unknown-agent etc.)
-  // flush the resolver via terminal — `firstJsonlAt` stays null so the
-  // response correctly reports `acked: false`.
-  const ackTimeoutMs = readSettings().agentDispatch.ackTimeoutMs;
-  let ackTimer: NodeJS.Timeout | undefined;
-  const ackTimerP = new Promise<void>((r) => {
-    ackTimer = setTimeout(r, ackTimeoutMs);
-  });
-  await Promise.race([mgr.waitForFirstJsonl(spawn.runId), ackTimerP]);
-  if (ackTimer) clearTimeout(ackTimer);
-
-  const acked = mgr.getFirstJsonlAt(spawn.runId) !== null;
-  const ackResponse: Record<string, unknown> = {
-    ok: true,
-    mode: 'async',
-    sessionId: spawn.sessionId,
-    runId: spawn.runId,
-    agentName,
-    startedAt: spawn.startedAt,
-    acked,
-  };
-  if (!acked) ackResponse.cause = 'ack-timeout';
-  return c.json(ackResponse);
-});
-
-/** Section 21 — `pc_list_my_runs`' HTTP surface. The orchestrator calls
- *  this to recover a runId that scrolled out of its active context
- *  ("which researcher run did I dispatch about date math earlier?"). Reads
- *  from the persisted `agent_runs` table — includes terminal rows — so
- *  RECENTLY-completed dispatches surface (the in-memory list-active
- *  endpoint above only shows in-flight).
- *
- *  Scope: rows owned by THIS orchestrator session in THIS project. The
- *  dispatcherSessionId filter is the ownership check; cross-session reads
- *  return empty.
- *
- *  Row shape: `{ runId, agentName, status, dispatchedAt, completedAt,
- *  summary }`. `summary` = first ~80 chars of the original `input` so the
- *  orchestrator can pattern-match what it asked for. */
-app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-
-  const dispatcherSessionId = (c.req.query('dispatcherSessionId') ?? '').trim();
-  if (!dispatcherSessionId) {
-    return c.json(
-      { ok: false, error: 'dispatcherSessionId query param required' },
-      400,
-    );
-  }
-  const agentName = (c.req.query('agentName') ?? '').trim() || undefined;
-  const statusRaw = (c.req.query('status') ?? '').trim();
-  const VALID_STATUSES: AgentRunPersistedStatus[] = [
-    'running',
-    'completed',
-    'failed',
-    'cancelled',
-  ];
-  const status =
-    statusRaw && (VALID_STATUSES as string[]).includes(statusRaw)
-      ? (statusRaw as AgentRunPersistedStatus)
-      : undefined;
-  const limitRaw = Number(c.req.query('limit') ?? 20);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
-
-  const rows = listAgentRunsForSession(projectId, dispatcherSessionId, {
-    agentName,
-    status,
-    limit,
-  });
-  // Trim input → summary; full input stays in the DB but the orchestrator
-  // only needs a recognisable preview.
-  const SUMMARY_LEN = 80;
-  const summarised = rows.map((r) => ({
-    runId: r.id,
-    agentName: r.agentName,
-    status: r.status,
-    dispatchedAt: r.dispatchedAt,
-    completedAt: r.completedAt,
-    summary:
-      r.input.length > SUMMARY_LEN ? r.input.slice(0, SUMMARY_LEN).trimEnd() + '…' : r.input,
-    continues: r.continues,
-  }));
-  return c.json({ ok: true, runs: summarised });
-});
-
-/** Section 16b.8.1 — list this project's active agent runs. The Activity
- *  Panel calls this on mount + applies subsequent `agent-run-changed` WS
- *  envelopes as deltas. Returns the in-memory snapshot; terminal-state
- *  runs filter out (UI's "running agents" region only shows in-flight). */
+/** Activity Panel snapshot: this project's active agent runs (queued |
+ *  spawning | running | paused). Card filtering happens client-side; the
+ *  panel applies subsequent `agent-run-changed` WS envelopes as deltas. */
 app.get('/api/projects/:projectId/agent-runs', (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-  const mgr = getAgentRunManager();
-  const all = mgr.listForProject(projectId);
-  const active = all.filter(
-    (r) => r.status !== 'completed' && r.status !== 'failed' && r.status !== 'cancelled',
-  );
-  // Session 10 — merge v2 rows (queued | spawning | running | paused) into
-  // the v1 in-memory snapshot so the Activity Panel shows v2 dispatches on
-  // mount the same way it shows v1 ones. Shaped to the v1 AgentRunRecord
-  // surface the panel's `useResourceList<AgentRunRecord>` expects.
-  const v2Rows = listActiveAgentRunsForProjectV2(projectId);
-  const v2Shimmed = v2Rows.map((r) => ({
+  const rows = listActiveAgentRunsForProjectV2(projectId);
+  const shimmed = rows.map((r) => ({
     runId: r.id,
     sessionId: r.ccSessionId,
     agentName: r.podName,
@@ -3112,380 +2444,61 @@ app.get('/api/projects/:projectId/agent-runs', (c) => {
     failureCause: r.failureCause,
     endedAt: r.completedAt,
   }));
-  return c.json({ ok: true, runs: [...active, ...v2Shimmed] });
+  return c.json({ ok: true, runs: shimmed });
 });
 
-/** Section 16b.8.1 — cancel an in-flight agent run. Matches the workflow-
- *  run cancel route shape (`POST /workflow-runs/:runId/cancel`). The
- *  manager's `cancel` flips status → cancelled + kills the active session
- *  + resolves the completion Promise; the `run-changed` emit at the end of
- *  `failWithCause` triggers the WS broadcast that removes the card. */
+/** Cancel an in-flight agent run. Looks up the AgentRun via the active-runs
+ *  registry; `run.cancel()` flips the state machine to `cancelled` + kills
+ *  the underlying LowLevelSpawn + triggers terminal handlers (which persist
+ *  the row + emit the channel envelope). */
 app.post('/api/projects/:projectId/agent-runs/:runId/cancel', (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
   const runId = c.req.param('runId') as ULID;
-  const mgr = getAgentRunManager();
-  const rec = mgr.get(runId);
-  if (!rec) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
-  if (rec.projectId !== projectId) {
+  const entry = getActiveRunRegistry().get(runId);
+  if (!entry) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+  if (entry.projectId !== projectId) {
     return c.json({ ok: false, error: `run ${runId} not in project ${projectId}` }, 400);
   }
-  const ok = mgr.cancel(runId, 'cancelled by user via Activity Panel');
-  return c.json({ ok, status: mgr.get(runId)?.status ?? null });
+  entry.run.cancel();
+  return c.json({ ok: true, status: 'cancelled' });
 });
 
-/** Section 21 — `pc_continue_agent`'s HTTP surface. Resumes a recent
- *  terminal AgentRun with a follow-up input. Spawns a fresh claude.exe via
- *  `--resume <providerSessionId>` so the agent re-attaches to its prior
- *  conversation. New AgentRunRecord; linked to parent via `continues`.
- *
- *  Guards (all return `{ ok: false, cause }` so the orchestrator can react):
- *    - `run-not-found`            — no row for runId.
- *    - `wrong-project`            — row exists but in a different project.
- *    - `ownership-mismatch`       — caller is not the dispatcher of the run.
- *    - `not-continuable`          — row was cancelled (deliberate kill;
- *                                   resume from partial state is unsafe).
- *    - `not-terminal`             — row is still in-flight or queued.
- *    - `concurrent-continuation`  — another continuation is already running.
- *    - `session-expired`          — JSONL retention sweep removed the file.
- */
-app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
-  const projectId = c.req.param('projectId') as ULID;
-  const project = getProjectById(projectId);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-
-  const runId = c.req.param('runId') as ULID;
-
-  const body = await c.req.json<{
-    input?: string;
-    wait?: boolean;
-    dispatcherSessionId?: string;
-  }>();
-
-  const input = typeof body.input === 'string' ? body.input : '';
-  if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
-  const wait = body.wait !== false; // default true per the contract (matches invoke)
-  const dispatcherSessionId =
-    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
-  if (!dispatcherSessionId) {
-    return c.json(
-      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
-      400,
-    );
-  }
-
-  const row = getAgentRunRow(runId);
-  if (!row) {
-    return c.json({ ok: false, error: `unknown run: ${runId}`, cause: 'run-not-found' }, 404);
-  }
-  if (row.projectId !== projectId) {
-    return c.json(
-      { ok: false, error: `run ${runId} not in project ${projectId}`, cause: 'wrong-project' },
-      400,
-    );
-  }
-  if (row.dispatcherSessionId !== dispatcherSessionId) {
-    return c.json(
-      {
-        ok: false,
-        error: `run ${runId} was dispatched by a different orchestrator session — only the dispatcher can continue it`,
-        cause: 'ownership-mismatch',
-      },
-      403,
-    );
-  }
-  if (row.status === 'cancelled') {
-    return c.json(
-      {
-        ok: false,
-        error: `run ${runId} was cancelled — cancelled runs cannot be continued, start a fresh dispatch`,
-        cause: 'not-continuable',
-      },
-      409,
-    );
-  }
-  if (row.status !== 'completed' && row.status !== 'failed') {
-    return c.json(
-      {
-        ok: false,
-        error: `run ${runId} is still in-flight (status=${row.status}) — wait for it to finish before continuing`,
-        cause: 'not-terminal',
-      },
-      409,
-    );
-  }
-  const active = findActiveContinuation(runId);
-  if (active) {
-    return c.json(
-      {
-        ok: false,
-        error: `run ${runId} already has an active continuation (runId=${active.id}) — wait for it to finish`,
-        cause: 'concurrent-continuation',
-      },
-      409,
-    );
-  }
-  const jsonlPath = defaultJsonlPath(project.folderPath, row.sessionId);
-  if (!existsSync(jsonlPath)) {
-    const retentionDays = readSettings().jsonl.retentionDays;
-    const windowLabel = retentionDays === 'never' ? 'no retention configured' : `sweep window: ${retentionDays} days`;
-    return c.json(
-      {
-        ok: false,
-        error: `session JSONL for run ${runId} no longer on disk (${windowLabel}) — start a fresh dispatch`,
-        cause: 'session-expired',
-      },
-      410,
-    );
-  }
-
-  const mgr = getAgentRunManager();
-
-  // Section 24 (post-pivot) — `mgr.spawn` types the orchestrator's `input`
-  // into the resumed PTY via the quiet-window-gated send path (defers until
-  // claude.exe is done flushing the prior conversation). Section 24's
-  // original `pc_check_in` deposit-then-fetch design didn't work because
-  // claude.exe `--resume` waits for a user prompt to take a new turn —
-  // system-prompt content alone doesn't trigger autonomous tool calls.
-  // The deposit infrastructure (24.1–24.3 + the pc_check_in MCP tool) ships
-  // but is unused on the happy path. See `agent-run-manager.ts §
-  // scheduleResumeQuietWindowSend`.
-  const spawn = mgr.spawn({
-    agentName: row.agentName,
-    input,
-    wait,
-    projectId,
-    dispatcherSessionId,
-    worktreeDir: project.folderPath,
-    parentWorkItemId: row.parentWorkItemId,
-    invokeDepth: row.parentInvokeDepth, // inherit — continuation is the same agent, same nesting
-    continues: runId,
-    resume: { providerSessionId: row.sessionId },
-  });
-
-  // 16b.7 — audit row on the parent work item. Continuation reuses the
-  // pattern; the audit log gets a fresh row for the new dispatch.
-  recordAgentInvoke({
-    workItemId: row.parentWorkItemId,
-    agentName: row.agentName,
-    sessionId: spawn.sessionId,
-    runId: spawn.runId,
-    mode: wait ? 'sync' : 'async',
-    input,
-    now: Date.now(),
-  });
-
-  if (wait) {
-    const rec = await spawn.completion;
-    if (rec.status === 'completed') {
-      recordAgentCompleted({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        result: rec.result ?? '',
-        now: Date.now(),
-      });
-      return c.json({
-        ok: true,
-        mode: 'sync',
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        agentName: rec.agentName,
-        result: rec.result,
-        continues: runId,
-      });
-    }
-    recordAgentFailed({
-      workItemId: rec.parentWorkItemId,
-      agentName: rec.agentName,
-      sessionId: rec.sessionId,
-      runId: rec.runId,
-      reason: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
-      cause: rec.failureCause ?? rec.status,
-      now: Date.now(),
-    });
-    return c.json({
-      ok: false,
-      error: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
-      cause:
-        rec.failureCause === 'unknown-agent'
-          ? 'unknown-agent'
-          : rec.failureCause === 'concurrent-continuation'
-          ? 'concurrent-continuation'
-          : 'spawn-failed',
-    });
-  }
-
-  // Async path — mirrors invoke route's background completion subscription.
-  void spawn.completion.then((rec) => {
-    if (rec.status === 'completed') {
-      recordAgentCompleted({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        result: rec.result ?? '',
-        now: Date.now(),
-      });
-      enqueueAndPush(channelServer, {
-        projectId,
-        recipientSessionId: rec.dispatcherSessionId,
-        eventKind: 'agent-completed',
-        slug: project.slug,
-        source: 'agent',
-        body: buildAgentCompletedBody({
-          runId: rec.runId,
-          sessionId: rec.sessionId,
-          agentName: rec.agentName,
-          parentWorkItemId: rec.parentWorkItemId,
-          result: rec.result,
-        }),
-        sender: 'pc',
-      });
-    } else {
-      recordAgentFailed({
-        workItemId: rec.parentWorkItemId,
-        agentName: rec.agentName,
-        sessionId: rec.sessionId,
-        runId: rec.runId,
-        reason: rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
-        cause: rec.failureCause ?? rec.status,
-        now: Date.now(),
-      });
-      enqueueAndPush(channelServer, {
-        projectId,
-        recipientSessionId: rec.dispatcherSessionId,
-        eventKind: 'agent-failed',
-        slug: project.slug,
-        source: 'agent',
-        body: buildAgentFailedBody({
-          runId: rec.runId,
-          sessionId: rec.sessionId,
-          agentName: rec.agentName,
-          parentWorkItemId: rec.parentWorkItemId,
-          reason:
-            rec.failureReason ?? `continuation of ${runId} did not complete (${rec.status})`,
-          cause: agentFailureCauseToPayload(rec.failureCause),
-        }),
-        sender: 'pc',
-      });
-    }
-  });
-
-  if (spawn.queued) {
-    return c.json({
-      ok: true,
-      mode: 'async',
-      status: 'queued',
-      sessionId: spawn.sessionId,
-      runId: spawn.runId,
-      agentName: row.agentName,
-      startedAt: spawn.startedAt,
-      position: spawn.position,
-      continues: runId,
-    });
-  }
-
-  const ackTimeoutMs = readSettings().agentDispatch.ackTimeoutMs;
-  let ackTimer: NodeJS.Timeout | undefined;
-  const ackTimerP = new Promise<void>((r) => {
-    ackTimer = setTimeout(r, ackTimeoutMs);
-  });
-  await Promise.race([mgr.waitForFirstJsonl(spawn.runId), ackTimerP]);
-  if (ackTimer) clearTimeout(ackTimer);
-
-  const acked = mgr.getFirstJsonlAt(spawn.runId) !== null;
-  const ackResponse: Record<string, unknown> = {
-    ok: true,
-    mode: 'async',
-    sessionId: spawn.sessionId,
-    runId: spawn.runId,
-    agentName: row.agentName,
-    startedAt: spawn.startedAt,
-    acked,
-    continues: runId,
-  };
-  if (!acked) ackResponse.cause = 'ack-timeout';
-  return c.json(ackResponse);
-});
-
-/** Section 24 — internal long-poll endpoint posted by pc-rig's
- *  `pc_check_in` tool on agent boot. Holds the request up to 60s for an
- *  orchestrator-deposited instruction keyed by `runId`. Returns the
- *  consumed row (instruction text + `source: 'orchestrator'` +
- *  `depositedAt`) when one lands; returns a null envelope on timeout —
- *  the system-prompt fragment instructs the agent to end the turn
- *  cleanly when `input` is null. Atomic-consume guard lives in the repo
- *  layer; this endpoint is the thin HTTP shell over `awaitInstruction`. */
-app.post('/api/internal/instruction-fetch', async (c) => {
-  const body = await c.req.json<{ runId?: string }>();
-  const runId = typeof body.runId === 'string' ? body.runId.trim() : '';
-  if (!runId) {
-    return c.json({ ok: false, error: 'runId required' }, 400);
-  }
-  const row = await awaitInstruction(runId as ULID);
-  if (!row) {
-    return c.json({ ok: true, input: null, source: null, depositedAt: null });
-  }
-  return c.json({
-    ok: true,
-    input: row.instruction,
-    source: 'orchestrator',
-    depositedAt: row.depositedAt,
-  });
-});
-
-/** Section 22 — internal endpoint posted by pc-rig (the per-spawn MCP
- *  child) when CC's MCP client finishes the JSON-RPC handshake (the
- *  `initialized` notification). Routes the signal to AgentRunManager
- *  which gates its programmatic spawn-time warmup-send on this instead
- *  of on the banner-render `state: 'ready'` — closing the per-spawn race
- *  where the warmup's submit Enter got eaten by the in-progress
- *  handshake. Fire-and-forget from pc-rig's side; this route just
- *  acknowledges the routing happened. */
+/** Section 22 / Phase D — internal endpoint posted by pc-rig (the per-spawn
+ *  MCP child) when CC's MCP client finishes the JSON-RPC handshake (the
+ *  `initialized` notification). Routes the signal to whichever surface owns
+ *  the session: the v2 active-runs registry (dispatched agents) or the
+ *  workflow-subagent-handshake map (workflow-runtime subagents). */
 app.post('/api/internal/mcp-handshake', async (c) => {
   const body = await c.req.json<{ projectId?: string; agentSessionId?: string }>();
   if (!body.projectId || !body.agentSessionId) {
     return c.json({ ok: false, error: 'projectId + agentSessionId required' }, 400);
   }
-  // Section 25 Session 9 — v2 spawns register in the active-runs registry
-  // keyed by ccProviderSessionId. The v1 AgentRunManager's
-  // notifyMcpConnected can't see those. Route the handshake to whichever
-  // surface owns the session — v2 takes priority because the v2 transport
-  // becomes the default in Phase D.
   const v2Entry = getActiveRunRegistry().getByCcSession(body.agentSessionId);
   if (v2Entry) {
     v2Entry.run.notifyMcpHandshake();
-    return c.json({ ok: true, found: true, transport: 'v2' });
+    return c.json({ ok: true, found: true, transport: 'agent' });
   }
-  // Session 10 — workflow subagent spawns use LowLevelSpawn directly without
-  // an AgentRun wrapper, so they don't enter the active-runs registry. The
-  // workflow-subagent-handshake module owns a parallel map of CC session-ids
-  // → notify-fn callbacks for that population.
   if (notifyWorkflowSubagentHandshake(body.agentSessionId)) {
-    return c.json({ ok: true, found: true, transport: 'v2-workflow' });
+    return c.json({ ok: true, found: true, transport: 'workflow' });
   }
-  const mgr = getAgentRunManager();
-  const found = mgr.notifyMcpConnected(body.projectId as ULID, body.agentSessionId);
-  return c.json({ ok: true, found, transport: 'v1' });
+  return c.json({ ok: true, found: false });
 });
 
-// ─── Section 25 Session 9 — v2 routes (live alongside v1) ────────────────
+// ─── Section 25 / Phase D — agent dispatch + comms routes ────────────────
 //
-// The v2 routes back the `pc_*_v2` MCP tools added in Session 9. They share
-// the v1 channel-server + project registry but route every spawn through the
-// v2 stack (`AgentRun` wrapper + Session 7 delivery + Session 8 pause/resume
-// orchestration). v1 routes remain wired as the escape hatch until Phase D
-// (Session 11) deletes them.
+// Routes back the `pc_*` MCP tools: invoke, continue, list-my-runs, ask-
+// orchestrator, ask-user, request-approval, answer-pending. Every spawn
+// flows through the v2 `AgentRun` wrapper + Session 7 delivery + Session 8
+// pause/resume orchestration.
 
 /** `pc_invoke_agent_v2` HTTP surface. Mirrors v1's `pc_invoke_agent` route
  *  shape — same input contract, same response shape — but every spawn goes
  *  through the v2 `AgentRun` wrapper. Terminal `agent-completed` / `agent-
  *  failed` envelopes flow via `enqueueAndPushV2` (durable inbox + best-
  *  effort channel push). */
-app.post('/api/projects/:projectId/agents/v2/:name/invoke', async (c) => {
+app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
@@ -3574,7 +2587,7 @@ app.post('/api/projects/:projectId/agents/v2/:name/invoke', async (c) => {
  *  guard — but every spawn goes through the v2 `AgentRun` wrapper. Reuses
  *  Session 8's `continueAgentV2` plan + the agent-run factory's
  *  `dispatchContinueAgentV2` orchestration. */
-app.post('/api/projects/:projectId/agent-runs/v2/:runId/continue', async (c) => {
+app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
@@ -3686,7 +2699,7 @@ app.post('/api/projects/:projectId/agent-runs/v2/:runId/continue', async (c) => 
 
 /** `pc_list_my_runs_v2` HTTP surface. Reads from the v2 agent_runs_v2 table.
  *  Same response shape as v1's `by-dispatcher` route. */
-app.get('/api/projects/:projectId/agent-runs/v2/by-dispatcher', (c) => {
+app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
@@ -3740,7 +2753,7 @@ app.get('/api/projects/:projectId/agent-runs/v2/by-dispatcher', (c) => {
  *  delivers via v2 hybrid transport. Replaces v1's three-kind pending-asks
  *  route with a single endpoint that uses the bare v2 kind taxonomy
  *  (`orchestrator | user | approval` per design §1 glossary). */
-app.post('/api/projects/:projectId/agent-pending-asks-v2', async (c) => {
+app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
@@ -3812,7 +2825,7 @@ app.post('/api/projects/:projectId/agent-pending-asks-v2', async (c) => {
  *  the spawning transition + pod-revision-at-resume, and drives the
  *  AgentRun's `_resumeWithAnswer`. */
 app.post(
-  '/api/projects/:projectId/agent-pending-asks-v2/:askId/answer',
+  '/api/projects/:projectId/agent-pending-asks/:askId/answer',
   async (c) => {
     const projectId = c.req.param('projectId') as ULID;
     const project = getProjectById(projectId);
@@ -3866,7 +2879,7 @@ app.post(
  *  a pending pause without resuming the agent. The agent gets cancelled
  *  through the registry's `run.cancel()` path. */
 app.post(
-  '/api/projects/:projectId/agent-pending-asks-v2/:askId/cancel',
+  '/api/projects/:projectId/agent-pending-asks/:askId/cancel',
   async (c) => {
     const projectId = c.req.param('projectId') as ULID;
     const project = getProjectById(projectId);

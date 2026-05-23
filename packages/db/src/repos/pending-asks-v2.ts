@@ -18,7 +18,7 @@ import type {
 } from '@pc/domain';
 
 import { getDb } from '../connection.ts';
-import { pendingAsksV2 } from '../schema-v2.ts';
+import { pendingAsks } from '../schema-v2.ts';
 
 export interface CreatePendingAskV2Input {
   id: ULID;
@@ -54,15 +54,15 @@ export function createPendingAskV2(input: CreatePendingAskV2Input): PendingAskRo
     answeredAt: null,
     cancelledAt: null,
   };
-  getDb().insert(pendingAsksV2).values(row).run();
+  getDb().insert(pendingAsks).values(row).run();
   return row;
 }
 
 export function getPendingAskV2(id: ULID): PendingAskRowV2 | null {
   const row = getDb()
     .select()
-    .from(pendingAsksV2)
-    .where(eq(pendingAsksV2.id, id))
+    .from(pendingAsks)
+    .where(eq(pendingAsks.id, id))
     .get();
   return row ?? null;
 }
@@ -72,9 +72,9 @@ export function getPendingAskV2(id: ULID): PendingAskRowV2 | null {
 export function listOpenPendingAsksV2ForProject(projectId: ULID): PendingAskRowV2[] {
   return getDb()
     .select()
-    .from(pendingAsksV2)
-    .where(and(eq(pendingAsksV2.projectId, projectId), eq(pendingAsksV2.status, 'open')))
-    .orderBy(asc(pendingAsksV2.createdAt))
+    .from(pendingAsks)
+    .where(and(eq(pendingAsks.projectId, projectId), eq(pendingAsks.status, 'open')))
+    .orderBy(asc(pendingAsks.createdAt))
     .all();
 }
 
@@ -84,9 +84,9 @@ export function listOpenPendingAsksV2ForProject(projectId: ULID): PendingAskRowV
 export function listOpenPendingAsksV2ForSession(ccSessionId: string): PendingAskRowV2[] {
   return getDb()
     .select()
-    .from(pendingAsksV2)
-    .where(and(eq(pendingAsksV2.ccSessionId, ccSessionId), eq(pendingAsksV2.status, 'open')))
-    .orderBy(asc(pendingAsksV2.createdAt))
+    .from(pendingAsks)
+    .where(and(eq(pendingAsks.ccSessionId, ccSessionId), eq(pendingAsks.status, 'open')))
+    .orderBy(asc(pendingAsks.createdAt))
     .all();
 }
 
@@ -103,14 +103,14 @@ export interface AnswerPendingAskV2Input {
  *  caller. */
 export function markPendingAskAnsweredV2(input: AnswerPendingAskV2Input): boolean {
   const res = getDb()
-    .update(pendingAsksV2)
+    .update(pendingAsks)
     .set({
       status: 'answered',
       answerBody: input.answer,
       answeredBy: input.answeredBy,
       answeredAt: input.now,
     })
-    .where(and(eq(pendingAsksV2.id, input.id), eq(pendingAsksV2.status, 'open')))
+    .where(and(eq(pendingAsks.id, input.id), eq(pendingAsks.status, 'open')))
     .run();
   return res.changes > 0;
 }
@@ -120,9 +120,9 @@ export function markPendingAskAnsweredV2(input: AnswerPendingAskV2Input): boolea
  *  cancelled. */
 export function markPendingAskCancelledV2(id: ULID, now: number): boolean {
   const res = getDb()
-    .update(pendingAsksV2)
+    .update(pendingAsks)
     .set({ status: 'cancelled', cancelledAt: now })
-    .where(and(eq(pendingAsksV2.id, id), eq(pendingAsksV2.status, 'open')))
+    .where(and(eq(pendingAsks.id, id), eq(pendingAsks.status, 'open')))
     .run();
   return res.changes > 0;
 }

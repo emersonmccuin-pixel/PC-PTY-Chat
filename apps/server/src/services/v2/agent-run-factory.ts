@@ -58,6 +58,7 @@ import { v2 as runtimeV2 } from '@pc/runtime';
 import {
   buildAgentCompletedBody,
   buildAgentFailedBody,
+  buildAgentQueuedStartedBody,
 } from '../agent-event-header.ts';
 import { preparePodSpawn, type PodSpawnPrep } from '../pod-spawn.ts';
 import type { ChannelServer } from '../channel-server.ts';
@@ -133,12 +134,14 @@ export interface DispatchAgentV2Deps {
   scratchDirFor?: (projectId: ULID, agentRunId: ULID) => string;
   /** Test seam: AgentRun factory. Production = `new AgentRun(...)`. */
   agentRunFactory?: typeof defaultAgentRunFactory;
-  /** Session 10 — WS broadcast hook for the Activity Panel adapter shim.
-   *  Called on every state transition + terminal with the v2 row snapshot
-   *  shimmed into a v1-shape `AgentRunRecord` envelope. Production wires
-   *  this to apps/server's `broadcastTo(projectId, env)`; tests can leave
-   *  it undefined (no-op). */
-  broadcast?: (env: { type: 'agent-run-changed'; record: unknown }) => void;
+  /** Session 10 / Phase D — WS broadcast hook. Carries:
+   *   - `{ type: 'agent-run-changed', record }` on state transition + terminal
+   *     (Activity Panel adapter shim — v1-shape `AgentRunRecord`).
+   *   - `{ type: 'agent-jsonl-event', runId, event }` per JSONL event
+   *     (Activity Panel live-transcript modal — filtered by runId).
+   *  Production wires this to apps/server's `broadcastTo(projectId, env)`.
+   *  Tests can leave it undefined (no-op). */
+  broadcast?: (env: { type: string; [key: string]: unknown }) => void;
   now?: () => number;
 }
 
@@ -545,6 +548,46 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     } else if (next === 'paused') {
       broadcastStateChanged('paused');
     }
+  });
+
+  // Phase D — Activity Panel live-transcript modal subscribes to
+  // `agent-jsonl-event` envelopes filtered by runId. Fan every JSONL event
+  // out via the broadcast dep so the panel sees the same surface v1 produced.
+  run.on('jsonl-event', (event: unknown) => {
+    if (!args.deps.broadcast) return;
+    try {
+      args.deps.broadcast({
+        type: 'agent-jsonl-event',
+        runId: args.agentRunId,
+        event,
+      });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  // Phase D — emit `agent-queued-started` channel envelope to the dispatcher
+  // when a previously-queued dispatch actually fires. Rides the hybrid
+  // transport (inbox + best-effort channel) so post-restart catch-up still
+  // works.
+  run.on('queued-started', () => {
+    const startedAt = Date.now();
+    enqueueAndPushV2(args.deps.channelServer, {
+      projectId: args.input.projectId,
+      pcSessionId: args.input.dispatcherSessionId,
+      kind: 'agent-queued-started' as AgentInboxEventKindV2,
+      slug: args.input.slug,
+      source: 'agent',
+      body: buildAgentQueuedStartedBody({
+        runId: args.agentRunId,
+        sessionId: args.ccSessionId,
+        agentName: args.podName,
+        parentWorkItemId: args.input.parentWorkItemId ?? null,
+        queuedAt: startedAt,
+        startedAt,
+      }),
+      sender: 'pc',
+    });
   });
 
   // Terminal handling: persist row + emit channel envelope to dispatcher +

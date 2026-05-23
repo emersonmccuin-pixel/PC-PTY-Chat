@@ -20,7 +20,7 @@ import type {
 
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentDeliveryAuditV2, agentInboxV2 } from '../schema-v2.ts';
+import { agentDeliveryAudit, agentInbox } from '../schema-v2.ts';
 
 export interface EnqueueInboxRowV2Input {
   projectId: ULID;
@@ -44,7 +44,7 @@ export function enqueueInboxRowV2(input: EnqueueInboxRowV2Input): AgentInboxRowV
     createdAt: input.now,
     deliveredAt: null,
   };
-  getDb().insert(agentInboxV2).values(row).run();
+  getDb().insert(agentInbox).values(row).run();
   return row;
 }
 
@@ -53,15 +53,15 @@ export function enqueueInboxRowV2(input: EnqueueInboxRowV2Input): AgentInboxRowV
 export function listPendingForSessionV2(pcSessionId: string): AgentInboxRowV2[] {
   return getDb()
     .select()
-    .from(agentInboxV2)
-    .where(and(eq(agentInboxV2.pcSessionId, pcSessionId), eq(agentInboxV2.status, 'pending')))
-    .orderBy(asc(agentInboxV2.createdAt))
+    .from(agentInbox)
+    .where(and(eq(agentInbox.pcSessionId, pcSessionId), eq(agentInbox.status, 'pending')))
+    .orderBy(asc(agentInbox.createdAt))
     .all();
 }
 
 /** Single-row read for diagnostics + tests. */
 export function getInboxRowV2(id: ULID): AgentInboxRowV2 | null {
-  const row = getDb().select().from(agentInboxV2).where(eq(agentInboxV2.id, id)).get();
+  const row = getDb().select().from(agentInbox).where(eq(agentInbox.id, id)).get();
   return row ?? null;
 }
 
@@ -83,25 +83,25 @@ export function markInboxDeliveredV2(input: MarkInboxDeliveredV2Input): boolean 
     // the read (atomicity comes from the WHERE status='pending' guard).
     const row = tx
       .select()
-      .from(agentInboxV2)
-      .where(eq(agentInboxV2.id, input.inboxId))
+      .from(agentInbox)
+      .where(eq(agentInbox.id, input.inboxId))
       .get();
     if (!row) return false;
     if (row.status !== 'pending') return false;
 
     const res = tx
-      .update(agentInboxV2)
+      .update(agentInbox)
       .set({
         status: 'delivered',
         driver: input.driver,
         deliveredAt: input.deliveredAt,
       })
-      .where(and(eq(agentInboxV2.id, input.inboxId), eq(agentInboxV2.status, 'pending')))
+      .where(and(eq(agentInbox.id, input.inboxId), eq(agentInbox.status, 'pending')))
       .run();
     if (res.changes === 0) return false;
 
     const latencyMs = Math.max(0, input.deliveredAt - row.createdAt);
-    tx.insert(agentDeliveryAuditV2)
+    tx.insert(agentDeliveryAudit)
       .values({
         id: newId(),
         inboxId: input.inboxId,
@@ -119,8 +119,8 @@ export function markInboxDeliveredV2(input: MarkInboxDeliveredV2Input): boolean 
 export function getAuditForInboxV2(inboxId: ULID): AgentDeliveryAuditRowV2 | null {
   const row = getDb()
     .select()
-    .from(agentDeliveryAuditV2)
-    .where(eq(agentDeliveryAuditV2.inboxId, inboxId))
+    .from(agentDeliveryAudit)
+    .where(eq(agentDeliveryAudit.inboxId, inboxId))
     .get();
   return row ?? null;
 }

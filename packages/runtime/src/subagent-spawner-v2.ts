@@ -29,27 +29,90 @@
 
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import type { EventEmitter } from 'node:events';
 import { LowLevelSpawn, type LowLevelSpawnInput } from './v2/low-level-spawn.ts';
 import type { SpawnLike } from './v2/agent-run.ts';
 import type { JsonlEvent } from './jsonl-tailer.ts';
-import type {
-  SubagentSpawnFailureCause,
-  SubagentSpawnRequest,
-  SubagentSpawnSuccess,
-  SubagentSpawnFailure,
-  SubagentSpawnResult,
-  SubagentSpawnHandle,
-} from './subagent-spawner.ts';
+import type { SessionState } from './pty-session.ts';
 
-// Re-export the v1 types so callers can import everything from one place.
-export type {
-  SubagentSpawnFailureCause,
-  SubagentSpawnRequest,
-  SubagentSpawnSuccess,
-  SubagentSpawnFailure,
-  SubagentSpawnResult,
-  SubagentSpawnHandle,
-};
+export type SubagentSpawnFailureCause =
+  | 'spawn-error'
+  | 'idle-timeout'
+  | 'wall-clock-timeout'
+  | 'empty-turn'
+  | 'mcp-tool-error'
+  | 'killed';
+
+export interface SubagentSpawnRequest {
+  /** Agent name → `--agent <name>`. claude.exe reads frontmatter (tools,
+   *  model, prompt) from `<worktree>/.claude/agents/<name>.md`. */
+  agentName: string;
+  /** Worktree path. cwd for the spawned helper. */
+  worktreeDir: string;
+  /** Initial input sent after the helper reaches banner-ready. */
+  initialInput: string;
+  /** Per-dispatch session data dir. Spawner writes stop-markers, events.jsonl,
+   *  transcript.log inside. Caller mints + creates the dir. */
+  sessionDataDir: string;
+  /** PC_SESSION_ID env var. Stop / event-capture / ask-intercept hooks route
+   *  writes back into `sessionDataDir/sessions/<pcSessionId>/…`. */
+  pcSessionId: string;
+  /** Optional override of the default `--model opus`. */
+  model?: string;
+  /** D47 idle cutoff. Default 300_000 (5 min). */
+  idleTimeoutMs?: number;
+  /** D47 wall-clock fail-safe. Default 7_200_000 (2 h). */
+  wallClockTimeoutMs?: number;
+  /** Override the claude.exe path. */
+  claudeExe?: string;
+  /** Extra env vars merged on top of PC_SESSION_ID. */
+  extraEnv?: Record<string, string>;
+  /** JSONL paths claimed by prior or sibling dispatches in the same worktree. */
+  excludeJsonlPaths?: readonly string[];
+  /** Override `--mcp-config` for the spawn. */
+  mcpConfigPath?: string;
+}
+
+export interface SubagentSpawnSuccess {
+  kind: 'success';
+  /** Concatenated text blocks from the final assistant message. */
+  lastAssistantText: string;
+  /** Structured payload passed to pc_complete_node, if the helper called it. */
+  pcCompletePayload: unknown | null;
+  /** Absolute path to the transcript file on disk. */
+  transcriptPath: string;
+  /** Absolute path to the JSONL file claude.exe wrote into. */
+  jsonlPath: string | null;
+}
+
+export interface SubagentSpawnFailure {
+  kind: 'failure';
+  cause: SubagentSpawnFailureCause;
+  message: string;
+  transcriptPath: string;
+  jsonlPath: string | null;
+  partialAssistantText: string;
+}
+
+export type SubagentSpawnResult = SubagentSpawnSuccess | SubagentSpawnFailure;
+
+export interface SubagentSpawnHandle {
+  /** Resolves once on success or failure. Never rejects. */
+  done: Promise<SubagentSpawnResult>;
+  /** Force-kill the dispatch. No-op if already resolved. */
+  kill(reason?: string): void;
+  /** Transcript path on disk. */
+  transcriptPath(): string;
+  /** JSONL path once discovery resolved; null until then. */
+  jsonlPath(): string | null;
+}
+
+/** Minimal session shape used by legacy callers + tests. */
+export interface SubagentSessionLike extends EventEmitter {
+  send(text: string): void;
+  kill(): void;
+  getState(): SessionState;
+}
 
 /** Workflow-spawner deps. */
 export interface SubagentSpawnerV2Deps {

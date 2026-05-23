@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { spawnSubagentV2 } from '../src/subagent-spawner-v2.ts';
-import type { SubagentSpawnRequest } from '../src/subagent-spawner.ts';
+import type { SubagentSpawnRequest } from '../src/subagent-spawner-v2.ts';
 import type { SpawnLike } from '../src/v2/agent-run.ts';
 import type { SpawnState } from '../src/v2/low-level-spawn.ts';
 import type { ReadyTimestamps } from '../src/v2/ready-gate.ts';

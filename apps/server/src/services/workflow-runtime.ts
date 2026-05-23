@@ -79,7 +79,6 @@ import {
 import type { NodeEdges } from '@pc/domain';
 import {
   encodeCwdForClaude,
-  spawnSubagent as v1SpawnSubagent,
   spawnSubagentV2,
   type SubagentSpawnHandle,
   type SubagentSpawnRequest,
@@ -88,19 +87,16 @@ import {
   registerWorkflowSubagentHandshake,
 } from './v2/workflow-subagent-handshake.ts';
 
-// Section 25 Session 10 — default spawner switched to v2. Wraps the v2 entry
-// with the apps/server handshake-registry binding so workflow-spawned
-// subagents receive their MCP `oninitialized` notification via the existing
-// /api/internal/mcp-handshake route. Tests can still inject a custom
-// `subagentSpawner` to bypass the live spawn path entirely.
+// Section 25 Phase D — workflow subagent spawner is `spawnSubagentV2` (the
+// LowLevelSpawn-based v2 path). Wraps the runtime entry with the apps/server
+// handshake-registry binding so workflow-spawned subagents receive their MCP
+// `oninitialized` notification via the existing /api/internal/mcp-handshake
+// route. Tests can still inject a custom `subagentSpawner` to bypass the
+// live spawn path entirely.
 const defaultSpawnSubagent = (req: SubagentSpawnRequest): SubagentSpawnHandle =>
   spawnSubagentV2(req, {
     registerHandshakeListener: registerWorkflowSubagentHandshake,
   });
-
-// Re-export the v1 entry under the legacy name in case a follow-up needs an
-// emergency rollback. Not currently wired anywhere.
-void v1SpawnSubagent;
 
 import { runHttpStep } from './http-step.ts';
 import { runAttachToWorkItemStep } from './attach-to-work-item-step.ts';

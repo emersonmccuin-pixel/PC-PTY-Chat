@@ -133,31 +133,7 @@ export {
   listFailedRunDismissalsForRuns,
 } from './repos/failed-run-dismissals.ts';
 
-export {
-  createPendingAsk,
-  getPendingAsk,
-  listWaitingPendingAsksForProject,
-  listWaitingPendingAsksForSession,
-  markPendingAskAnswered,
-  markPendingAskCancelled,
-} from './repos/pending-asks.ts';
-export type { AnswerPendingAskInput, CreatePendingAskInput } from './repos/pending-asks.ts';
-
-export {
-  enqueueInboxRow,
-  getAuditForInbox,
-  getInboxRow,
-  listPendingForSession,
-  markInboxDelivered,
-  recordChannelPushAttempt,
-} from './repos/agent-inbox.ts';
-export type {
-  EnqueueInboxRowInput,
-  MarkInboxDeliveredInput,
-  RecordChannelPushAttemptInput,
-} from './repos/agent-inbox.ts';
-
-// Section 25 — v2 inbox repo (parallel build alongside v1).
+// Section 25 — agent inbox / delivery repo (bare names post-Phase-D).
 export {
   enqueueInboxRowV2,
   getAuditForInboxV2,
@@ -170,7 +146,7 @@ export type {
   MarkInboxDeliveredV2Input,
 } from './repos/agent-inbox-v2.ts';
 
-// Section 25 Session 8 — v2 pending-asks repo.
+// Section 25 — pending asks repo.
 export {
   createPendingAskV2,
   getPendingAskV2,
@@ -184,14 +160,14 @@ export type {
   CreatePendingAskV2Input,
 } from './repos/pending-asks-v2.ts';
 
-// Section 25 Session 8 — pod-revision helper for v2 drift detection.
+// Section 25 — pod-revision helper for drift detection.
 export {
   computePodRevision,
   podRevisionsDiffer,
 } from './repos/pod-revision.ts';
 export type { ComputePodRevisionInput } from './repos/pod-revision.ts';
 
-// Section 25 Session 8 — v2 agent-runs repo.
+// Section 25 — agent runs repo.
 export {
   findActiveContinuationV2,
   getAgentRunRowV2,
@@ -208,29 +184,6 @@ export type {
   MarkAgentRunTerminalV2Input,
   UpdateAgentRunStatusV2Input,
 } from './repos/agent-runs-v2.ts';
-
-export {
-  findActiveContinuation,
-  getAgentRunRow,
-  insertAgentRunRow,
-  listAgentRunsForSession,
-  markAgentRunTerminal,
-  reconcileOrphanedRunningRuns,
-} from './repos/agent-runs.ts';
-
-export {
-  cancelInstruction,
-  consumeInstructionForRun,
-  depositInstruction,
-  findWaitingForRun,
-  reconcileOrphanedInstructionDeposits,
-} from './repos/instruction-deposits.ts';
-export type { DepositInstructionInput } from './repos/instruction-deposits.ts';
-export type {
-  InsertAgentRunRowInput,
-  ListAgentRunsForSessionOptions,
-  MarkAgentRunTerminalInput,
-} from './repos/agent-runs.ts';
 
 export {
   createOrchestratorSession,

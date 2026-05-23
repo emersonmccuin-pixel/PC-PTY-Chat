@@ -611,186 +611,7 @@ export const TOOLS = [
   {
     name: 'pc_invoke_agent',
     description:
-      "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. With wait: true (default for background agents) the call blocks until the child finishes and returns { ok, mode: 'sync', sessionId, runId, result }; with wait: false (orchestrator default — don't block the chat composer) the call returns { ok, mode: 'async', sessionId, runId, startedAt } immediately and the terminal agent-completed / agent-failed channel event lands on your next turn (orchestrator handler protocol entries #4 + #5). Optional parentWorkItemId pins the child to a work-item — defaults to PC_AGENT_PARENT_WORK_ITEM_ID when called from inside another agent. The project route URL is derived from PC_PROJECT_ID.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'pod-row name of the agent to dispatch (kebab-case)',
-        },
-        input: {
-          type: 'string',
-          description: "free-form input — becomes the child's first user message",
-        },
-        wait: {
-          type: 'boolean',
-          description:
-            'true → block until the child finishes; false → return immediately + terminal event lands on next turn. Orchestrator defaults to false; background agents default to true.',
-        },
-        parentWorkItemId: {
-          type: 'string',
-          description:
-            'optional work-item ULID to attach the child to; defaults to PC_AGENT_PARENT_WORK_ITEM_ID',
-        },
-      },
-      required: ['name', 'input'],
-    },
-  },
-  {
-    name: 'pc_list_my_runs',
-    description:
-      "List recent agent runs YOU dispatched in this project. Use when you've lost track of a runId (\"what runs did I kick off recently?\") and need to pick one to continue via pc_continue_agent. Filters: agentName, status (running | completed | failed | cancelled), limit (default 20, max 100). Returns newest-first. Each row: { runId, agentName, status, dispatchedAt, completedAt, summary, continues } — summary is the first ~80 chars of the original input so you can pattern-match. Ownership is implicit (rows are filtered by your dispatcher session id).",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        agentName: {
-          type: 'string',
-          description: "optional — filter by agent name (kebab-case, e.g. 'researcher')",
-        },
-        status: {
-          type: 'string',
-          enum: ['running', 'completed', 'failed', 'cancelled'],
-          description:
-            "optional — filter by persisted status. 'running' surfaces in-flight + paused; terminal states are completed/failed/cancelled.",
-        },
-        limit: {
-          type: 'number',
-          description: 'optional — cap on returned rows. Default 20, max 100.',
-        },
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'pc_continue_agent',
-    description:
-      "Resume a recent agent run with a follow-up input. Use this when you want to refine a completed result (\"expand on point 3\", \"now look at X\") or recover from a failed run (\"that path was wrong, try Y\"). The agent's prior conversation is preserved — phrase your input as a follow-up, not a fresh ask. Returns the same shape as pc_invoke_agent (sync or async per wait). Continuation is scoped to runs YOU dispatched (ownership check on dispatcherSessionId). Only completed/failed runs are continuable — cancelled runs require a fresh dispatch. Each parent run allows at most one active continuation in flight. JSONL retention (default 30 days) backstops the lookup; expired runs return cause='session-expired'.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        runId: {
-          type: 'string',
-          description: 'ULID of the prior AgentRunRecord to continue',
-        },
-        input: {
-          type: 'string',
-          description:
-            "free-form follow-up — becomes the next user message in the resumed conversation. Phrase as a continuation, not a fresh request.",
-        },
-        wait: {
-          type: 'boolean',
-          description:
-            'true → block until the child finishes; false → return immediately + terminal event lands on next turn. Orchestrator defaults to false.',
-        },
-      },
-      required: ['runId', 'input'],
-    },
-  },
-  {
-    name: 'pc_ask_orchestrator',
-    description:
-      "Pause your run and ask the orchestrator a question. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator answers. agentName + sessionId are read from PC_AGENT_NAME / PC_AGENT_SESSION_ID env vars set at spawn time; agents not spawned via pc_invoke_agent cannot call this.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        question: { type: 'string', description: 'the question to ask the orchestrator' },
-        context: {
-          type: 'string',
-          description:
-            'optional context — recent transcript snippet, files inspected, candidate options. Helps the orchestrator decide whether it can answer directly or needs to escalate to the user.',
-        },
-      },
-      required: ['question'],
-    },
-  },
-  {
-    name: 'pc_ask_user',
-    description:
-      "Pause your run and route a question to the user via the orchestrator-as-proxy. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the answer arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally — the runtime resumes you once the orchestrator forwards the user's reply. Use this when the question genuinely needs the human (intent / preference / approval-flavoured judgment); use pc_ask_orchestrator first if the orchestrator might know from project context.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        question: { type: 'string', description: 'the question to surface to the user' },
-        context: {
-          type: 'string',
-          description:
-            'optional context — what you tried, what you found, why you need the user to weigh in',
-        },
-        options: {
-          type: 'array',
-          description:
-            'optional multi-choice options ([{value, label}, ...]). When supplied, the orchestrator renders them as a numbered list; the user reply will be one of the option values.',
-          items: {
-            type: 'object',
-            properties: {
-              value: { type: 'string', description: 'machine value returned as the answer' },
-              label: { type: 'string', description: 'user-facing label for this choice' },
-            },
-            required: ['value', 'label'],
-          },
-        },
-      },
-      required: ['question'],
-    },
-  },
-  {
-    name: 'pc_request_approval',
-    description:
-      "Pause your run and request explicit human approval for a decision. Returns { ok: true, pendingAskId, status: 'waiting' } immediately; the user's decision arrives as the next user message when your session resumes via --resume. After calling this tool, do not call any other tools and end your turn naturally. Use this when proceeding requires explicit go/no-go (destructive operations, irreversible writes, expensive commits). Options is required and must be non-empty — typically [{value:'approve', label:'Approve'}, {value:'reject', label:'Reject'}, optionally {value:'revise', label:'Revise'}].",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        decision: {
-          type: 'string',
-          description:
-            'the decision the user is being asked to approve — what will happen, in plain English',
-        },
-        options: {
-          type: 'array',
-          description: 'non-empty list of approval choices ([{value, label}, ...])',
-          items: {
-            type: 'object',
-            properties: {
-              value: { type: 'string', description: 'machine value returned as the answer' },
-              label: { type: 'string', description: 'user-facing label for this choice' },
-            },
-            required: ['value', 'label'],
-          },
-        },
-        context: {
-          type: 'string',
-          description:
-            'optional context — what produced this decision, what the alternatives are, what the user should weigh',
-        },
-      },
-      required: ['decision', 'options'],
-    },
-  },
-  {
-    name: 'pc_answer_pending',
-    description:
-      'Resume a paused agent with an answer. Atomically flips the pending-ask row waiting→answered, re-spawns the agent with --resume <sessionId>, and writes the answer as the next user message. Idempotent: a second call for the same pendingAskId returns ok: false, cause: "already-answered". Orchestrator usage only — agents that need to forward an answer to a different paused agent should use pc_ask_orchestrator instead.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        pendingAskId: { type: 'string', description: 'pending-ask ULID from the agent-asks-* event' },
-        answer: { type: 'string', description: 'the answer to thread back into the paused agent' },
-        answeredBy: {
-          type: 'string',
-          enum: ['orchestrator', 'user'],
-          description:
-            '"orchestrator" when answered from your own context, "user" when forwarding the user\'s reply (typically after a pc_ask_user round-trip)',
-        },
-      },
-      required: ['pendingAskId', 'answer', 'answeredBy'],
-    },
-  },
-  // ─── Section 25 Session 9 — v2 tools (live alongside v1 until Phase D) ───
-  {
-    name: 'pc_invoke_agent_v2',
-    description:
-      "v2 dispatch. Same shape as `pc_invoke_agent` minus the `wait` param (v2 dispatches are always async — the orchestrator never blocks the chat composer). Spawns the named pod through the v2 AgentRun wrapper (Section 25 rebuild); terminal `agent-completed` / `agent-failed` events still arrive on your next turn as channel blocks, same handler protocol entries #4+#5. Use during the parallel-build phase to validate the v2 stack end-to-end without committing to it as the only path — `pc_invoke_agent` (v1) remains wired as the escape hatch until Phase D.",
+      "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. Always async — returns `{ ok, mode: 'async', sessionId, runId, agentName, startedAt, status }` immediately. The terminal `agent-completed` / `agent-failed` channel event lands on your next turn (handler protocol entries #4 + #5). Optional `parentWorkItemId` pins the child to a work-item — defaults to `PC_AGENT_PARENT_WORK_ITEM_ID` when called from inside another agent. The project route URL is derived from `PC_PROJECT_ID`.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -809,13 +630,13 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_continue_agent_v2',
+    name: 'pc_continue_agent',
     description:
-      "v2 continuation. Same shape as `pc_continue_agent`. Resumes a terminal v2 agent run (status: completed | failed) with a follow-up input by spawning via `--resume <ccSessionId>`. Cancelled runs cannot be continued — start a fresh dispatch instead. Per-parent single-active-continuation guard (409 on concurrent). JSONL retention guard (410 on session-expired). Use during the parallel-build phase to validate the v2 continuation flow.",
+      "Resume a recent terminal agent run (`completed` or `failed`) with a follow-up input by spawning via `--resume <ccSessionId>` — the prior conversation is preserved so phrase your input as a continuation, not a fresh ask. Cancelled runs cannot be continued; start a fresh dispatch. Single-active-continuation guard per parent (409 on concurrent). JSONL retention guard (410 on session-expired). Returns the same shape as `pc_invoke_agent`.",
     inputSchema: {
       type: 'object',
       properties: {
-        runId: { type: 'string', description: 'ULID of the prior v2 AgentRun to continue' },
+        runId: { type: 'string', description: 'ULID of the prior AgentRun to continue' },
         input: {
           type: 'string',
           description:
@@ -826,9 +647,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_list_my_runs_v2',
+    name: 'pc_list_my_runs',
     description:
-      "List recent v2 agent runs YOU dispatched in this project (reads from `agent_runs_v2`, scoped to caller's `pc_session_id`). Same response row shape as v1's `pc_list_my_runs`; use during parallel-build to verify v2 persistence.",
+      "List recent agent runs YOU dispatched in this project (scoped to caller's `pc_session_id`). Use when you've lost track of a runId and need to pick one to continue via `pc_continue_agent`. Filters: `agentName`, `status`, `limit` (default 20, max 100). Newest-first. Row shape: `{ runId, agentName, status, dispatchedAt, completedAt, summary, continues }`.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -840,7 +661,7 @@ export const TOOLS = [
           type: 'string',
           enum: ['queued', 'spawning', 'running', 'paused', 'completed', 'failed', 'cancelled'],
           description:
-            'optional — filter by persisted v2 status. v2 persists the full state machine (no `running` collapsing pauses).',
+            'optional — filter by persisted status (full state machine).',
         },
         limit: {
           type: 'number',
@@ -851,9 +672,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_ask_orchestrator_v2',
+    name: 'pc_ask_orchestrator',
     description:
-      "v2 ask-orchestrator. Pause your run (v2 AgentRun wrapper transitions running→paused) and ask the dispatcher a question. Returns `{ ok, pendingAskId, status: 'waiting' }`. Same envelope shape as v1 on the wire — the orchestrator's handler protocol entry #1 still applies. Requires PC_AGENT_RUN_ID + PC_DISPATCHER_SESSION_ID in env (set by the v2 spawn path).",
+      "Pause your run and ask the dispatcher a question. Returns `{ ok, pendingAskId, status: 'waiting' }` immediately; the answer arrives as the next user message when your session resumes via --resume. After calling, do not call any other tools and end your turn naturally. Requires `PC_AGENT_RUN_ID` + `PC_DISPATCHER_SESSION_ID` in env (set by the spawn path).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -868,9 +689,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_ask_user_v2',
+    name: 'pc_ask_user',
     description:
-      "v2 ask-user. Pause your run and route a question to the user via the orchestrator-as-proxy. Same envelope as v1 on the wire (handler protocol entry #2). Multi-choice `options` array supported. Requires PC_AGENT_RUN_ID + PC_DISPATCHER_SESSION_ID.",
+      "Pause your run and route a question to the user via the orchestrator-as-proxy. Returns `{ ok, pendingAskId, status: 'waiting' }` immediately; the answer arrives as the next user message when your session resumes. After calling, do not call any other tools and end your turn naturally. Use this when the question genuinely needs the human; use `pc_ask_orchestrator` first if the orchestrator might know from project context. Multi-choice `options` array supported.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -897,9 +718,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_request_approval_v2',
+    name: 'pc_request_approval',
     description:
-      "v2 request-approval. Pause your run and request explicit human approval. Same envelope as v1 (handler protocol entry #3). `options` is required and must be non-empty.",
+      "Pause your run and request explicit human approval for a decision. Returns `{ ok, pendingAskId, status: 'waiting' }` immediately; the user's decision arrives as the next user message when your session resumes. Use this when proceeding requires explicit go/no-go (destructive operations, irreversible writes). `options` is required and must be non-empty.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -930,9 +751,9 @@ export const TOOLS = [
     },
   },
   {
-    name: 'pc_answer_pending_v2',
+    name: 'pc_answer_pending',
     description:
-      "v2 answer-pending. Resume a paused v2 agent (pending_asks_v2 row) with an answer. Atomic open→answered flip. Idempotent: a second call returns `cause: 'already-answered'`. Pod-revision drift (pod edited between dispatch and resume) surfaces in the response as `podRevisionDrifted: true`.",
+      'Resume a paused agent with an answer. Atomic open→answered flip. Idempotent: a second call returns `cause: "already-answered"`. Pod-revision drift (pod edited between dispatch and resume) surfaces in the response as `podRevisionDrifted: true`. Orchestrator usage only — agents that need to forward an answer should use pc_ask_orchestrator instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -946,16 +767,6 @@ export const TOOLS = [
         },
       },
       required: ['pendingAskId', 'answer', 'answeredBy'],
-    },
-  },
-  {
-    name: 'pc_check_in',
-    description:
-      "Ready-ping for a resumed run. The first thing you do on boot when continuing a prior conversation. PC may have queued a follow-up instruction from the orchestrator before your spawn finished — this tool blocks (up to 60s) for that instruction and returns it as { input, source: 'orchestrator', depositedAt }. If no instruction is queued, returns { input: null, source: null, depositedAt: null } — that means there's nothing new for you and you should end your turn without further action. Do NOT call this tool more than once per session. PC_AGENT_RUN_ID identifies your run; you do not need to pass it.",
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: [],
     },
   },
 ] as const;
@@ -2601,19 +2412,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (!PROJECT_ID) {
         return {
           content: [
-            { type: 'text', text: 'pc_invoke_agent: PC_PROJECT_ID not set — cannot route invoke' },
+            { type: 'text', text: 'pc_invoke_agent: PC_PROJECT_ID not set' },
           ],
           isError: true,
         };
       }
-      // Section 18.5a — forward the caller's CC sessionId so the route can
-      // route terminal channel events back to the right orchestrator. PC sets
-      // PC_SESSION_ID on every orchestrator spawn (project-runtime); child
-      // MCP processes inherit it. Agents-as-callers also inherit
-      // PC_DISPATCHER_SESSION_ID — when the orchestrator's sessionId isn't
-      // in env, fall back to the dispatcher's so nested invocations route
-      // to the original orchestrator (not the parent agent, which can't
-      // process channel events itself).
       const dispatcherSessionId =
         process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
       if (!dispatcherSessionId) {
@@ -2621,40 +2424,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: 'text',
-              text: 'pc_invoke_agent: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot route terminal events back',
+              text: 'pc_invoke_agent: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set',
             },
           ],
           isError: true,
         };
       }
-      // Orchestrator must never block — the chat composer needs to stay
-      // responsive to the user. If the orchestrator (PC_SESSION_ID set)
-      // accidentally passes wait:true, coerce to false and log it so the
-      // pattern is visible in stderr. Agents can still dispatch sync
-      // (default true) when chaining nested work.
-      const callerIsOrchestrator = !!process.env.PC_SESSION_ID;
-      if (callerIsOrchestrator && args.wait === true) {
-        console.warn(
-          '[pc-rig] pc_invoke_agent called with wait:true from the orchestrator session — coercing to wait:false. The orchestrator never blocks the user; the agent result lands on a later turn as an agent-completed channel event.',
-        );
-      }
-      const wait = callerIsOrchestrator
-        ? false
-        : args.wait === undefined
-          ? true
-          : args.wait === true;
       const parentWorkItemId =
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
           ? args.parentWorkItemId.trim()
           : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      // 16b.4.5 — forward the caller's depth so the route can enforce the
-      // nesting cap. Orchestrator (no env var) → parentInvokeDepth=0; an
-      // agent dispatched at depth N reports parentInvokeDepth=N. Malformed
-      // values clamp at the route via `checkInvokeDepth`.
       const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
-      const parentInvokeDepth = Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
-      const payload: Record<string, unknown> = { input, parentInvokeDepth, dispatcherSessionId };
-      if (wait !== undefined) payload.wait = wait;
+      const parentInvokeDepth =
+        Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
+      const payload: Record<string, unknown> = {
+        input,
+        parentInvokeDepth,
+        dispatcherSessionId,
+      };
       if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
       try {
         const res = await postServer(
@@ -2665,22 +2452,34 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return { content: [{ type: 'text', text: res.body }] };
         }
         return {
-          content: [{ type: 'text', text: `pc_invoke_agent failed (${res.status}): ${res.body}` }],
+          content: [
+            { type: 'text', text: `pc_invoke_agent failed (${res.status}): ${res.body}` },
+          ],
           isError: true,
         };
       } catch (err) {
         return {
-          content: [{ type: 'text', text: `pc_invoke_agent failed: ${(err as Error).message}` }],
+          content: [
+            { type: 'text', text: `pc_invoke_agent failed: ${(err as Error).message}` },
+          ],
           isError: true,
         };
       }
     }
 
-    case 'pc_list_my_runs': {
+    case 'pc_continue_agent': {
+      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
+      const input = typeof args.input === 'string' ? args.input : '';
+      if (!runId || !input.trim()) {
+        return {
+          content: [{ type: 'text', text: 'pc_continue_agent: runId and input required' }],
+          isError: true,
+        };
+      }
       if (!PROJECT_ID) {
         return {
           content: [
-            { type: 'text', text: 'pc_list_my_runs: PC_PROJECT_ID not set — cannot route query' },
+            { type: 'text', text: 'pc_continue_agent: PC_PROJECT_ID not set' },
           ],
           isError: true,
         };
@@ -2692,7 +2491,51 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: 'text',
-              text: 'pc_list_my_runs: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot scope query',
+              text: 'pc_continue_agent: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/agent-runs/${encodeURIComponent(runId)}/continue`,
+          { input, dispatcherSessionId },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_continue_agent failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_continue_agent failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_my_runs': {
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_list_my_runs: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_list_my_runs: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
             },
           ],
           isError: true,
@@ -2717,522 +2560,27 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return { content: [{ type: 'text', text: res.body }] };
         }
         return {
-          content: [{ type: 'text', text: `pc_list_my_runs failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_list_my_runs failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_continue_agent': {
-      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
-      const input = typeof args.input === 'string' ? args.input : '';
-      if (!runId || !input.trim()) {
-        return {
-          content: [{ type: 'text', text: 'pc_continue_agent: runId and input required' }],
-          isError: true,
-        };
-      }
-      if (!PROJECT_ID) {
-        return {
           content: [
-            { type: 'text', text: 'pc_continue_agent: PC_PROJECT_ID not set — cannot route continue' },
-          ],
-          isError: true,
-        };
-      }
-      // Section 21 — same dispatcherSessionId contract as pc_invoke_agent.
-      // The HTTP route uses it for the ownership check (run must have been
-      // dispatched by the same orchestrator session that's continuing it).
-      const dispatcherSessionId =
-        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_continue_agent: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set — cannot verify ownership',
-            },
-          ],
-          isError: true,
-        };
-      }
-      // Same orchestrator-never-blocks rule as pc_invoke_agent — see the
-      // comment there. Continuations from the orchestrator are always async.
-      const callerIsOrchestrator = !!process.env.PC_SESSION_ID;
-      if (callerIsOrchestrator && args.wait === true) {
-        console.warn(
-          '[pc-rig] pc_continue_agent called with wait:true from the orchestrator session — coercing to wait:false. Orchestrator continuations are always async; the result lands on a later turn as an agent-completed channel event.',
-        );
-      }
-      const wait = callerIsOrchestrator
-        ? false
-        : args.wait === undefined
-          ? true
-          : args.wait === true;
-      const payload: Record<string, unknown> = { input, dispatcherSessionId };
-      if (wait !== undefined) payload.wait = wait;
-      try {
-        const res = await postServer(
-          `/api/projects/${PROJECT_ID}/agent-runs/${encodeURIComponent(runId)}/continue`,
-          payload,
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_continue_agent failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_continue_agent failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_ask_orchestrator': {
-      const question = typeof args.question === 'string' ? args.question.trim() : '';
-      const context = typeof args.context === 'string' ? args.context : undefined;
-      if (!question) {
-        return {
-          content: [{ type: 'text', text: 'pc_ask_orchestrator: question required' }],
-          isError: true,
-        };
-      }
-      // PC sets these at agent spawn time (16b.4). If they're not in env,
-      // this isn't a paused-able agent — fail loud rather than mint a row
-      // pointing at a session we can't resume.
-      const agentName = process.env.PC_AGENT_NAME ?? '';
-      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
-      if (!agentName || !sessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_ask_orchestrator: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
-            },
-          ],
-          isError: true,
-        };
-      }
-      const runId = process.env.PC_AGENT_RUN_ID || undefined;
-      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      // Section 18.5a — forward dispatcher's CC sessionId so the route can
-      // emit the pause channel event back to the orchestrator that originally
-      // dispatched this agent.
-      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_ask_orchestrator: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const payload: Record<string, unknown> = {
-          sessionId,
-          agentName,
-          kind: 'ask-orchestrator',
-          question,
-          dispatcherSessionId,
-        };
-        if (context !== undefined) payload.context = context;
-        if (runId !== undefined) payload.runId = runId;
-        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
-        const res = await postServer(projectPath('agent-pending-asks'), payload);
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [
-            { type: 'text', text: `pc_ask_orchestrator failed (${res.status}): ${res.body}` },
+            { type: 'text', text: `pc_list_my_runs failed (${res.status}): ${res.body}` },
           ],
           isError: true,
         };
       } catch (err) {
         return {
-          content: [{ type: 'text', text: `pc_ask_orchestrator failed: ${(err as Error).message}` }],
+          content: [
+            { type: 'text', text: `pc_list_my_runs failed: ${(err as Error).message}` },
+          ],
           isError: true,
         };
       }
     }
 
-    case 'pc_ask_user': {
-      const question = typeof args.question === 'string' ? args.question.trim() : '';
-      const context = typeof args.context === 'string' ? args.context : undefined;
-      const options = Array.isArray(args.options) ? args.options : undefined;
-      if (!question) {
-        return {
-          content: [{ type: 'text', text: 'pc_ask_user: question required' }],
-          isError: true,
-        };
-      }
-      const agentName = process.env.PC_AGENT_NAME ?? '';
-      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
-      if (!agentName || !sessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_ask_user: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
-            },
-          ],
-          isError: true,
-        };
-      }
-      const runId = process.env.PC_AGENT_RUN_ID || undefined;
-      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_ask_user: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const payload: Record<string, unknown> = {
-          sessionId,
-          agentName,
-          kind: 'ask-user',
-          question,
-          dispatcherSessionId,
-        };
-        if (context !== undefined) payload.context = context;
-        if (options !== undefined) payload.options = options;
-        if (runId !== undefined) payload.runId = runId;
-        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
-        const res = await postServer(projectPath('agent-pending-asks'), payload);
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_ask_user failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_ask_user failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
+    case 'pc_ask_orchestrator':
+    case 'pc_ask_user':
     case 'pc_request_approval': {
-      const decision = typeof args.decision === 'string' ? args.decision.trim() : '';
-      const context = typeof args.context === 'string' ? args.context : undefined;
-      const options = Array.isArray(args.options) ? args.options : [];
-      if (!decision) {
-        return {
-          content: [{ type: 'text', text: 'pc_request_approval: decision required' }],
-          isError: true,
-        };
-      }
-      if (options.length === 0) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_request_approval: options required (non-empty array)' },
-          ],
-          isError: true,
-        };
-      }
-      const agentName = process.env.PC_AGENT_NAME ?? '';
-      const sessionId = process.env.PC_AGENT_SESSION_ID ?? '';
-      if (!agentName || !sessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_request_approval: PC_AGENT_NAME / PC_AGENT_SESSION_ID not set — only agents spawned via pc_invoke_agent can pause-and-ask',
-            },
-          ],
-          isError: true,
-        };
-      }
-      const runId = process.env.PC_AGENT_RUN_ID || undefined;
-      const parentWorkItemId = process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      const dispatcherSessionId = process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_request_approval: PC_DISPATCHER_SESSION_ID not set — agent runtime must thread the dispatcher session id through to enable channel routing',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const payload: Record<string, unknown> = {
-          sessionId,
-          agentName,
-          kind: 'approval',
-          // The pending-ask route uses `question` for the prose; we pass
-          // the decision text under that field. The body builder labels it
-          // "Approval requested:" so the orchestrator surface stays clear.
-          question: decision,
-          options,
-          dispatcherSessionId,
-        };
-        if (context !== undefined) payload.context = context;
-        if (runId !== undefined) payload.runId = runId;
-        if (parentWorkItemId !== undefined) payload.parentWorkItemId = parentWorkItemId;
-        const res = await postServer(projectPath('agent-pending-asks'), payload);
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [
-            { type: 'text', text: `pc_request_approval failed (${res.status}): ${res.body}` },
-          ],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_request_approval failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_answer_pending': {
-      const pendingAskId = typeof args.pendingAskId === 'string' ? args.pendingAskId.trim() : '';
-      const answer = typeof args.answer === 'string' ? args.answer : '';
-      const answeredByRaw = typeof args.answeredBy === 'string' ? args.answeredBy : '';
-      if (!pendingAskId || !answer) {
-        return {
-          content: [{ type: 'text', text: 'pc_answer_pending: pendingAskId and answer required' }],
-          isError: true,
-        };
-      }
-      if (answeredByRaw !== 'orchestrator' && answeredByRaw !== 'user') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_answer_pending: answeredBy must be "orchestrator" or "user"',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer(
-          projectPath(`agent-pending-asks/${encodeURIComponent(pendingAskId)}/answer`),
-          { answer, answeredBy: answeredByRaw },
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_answer_pending failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    // ─── Section 25 Session 9 — v2 tool dispatch (parallel-build) ────────
-    case 'pc_invoke_agent_v2': {
-      const name = typeof args.name === 'string' ? args.name.trim() : '';
-      const input = typeof args.input === 'string' ? args.input : '';
-      if (!name || !input.trim()) {
-        return {
-          content: [{ type: 'text', text: 'pc_invoke_agent_v2: name and input required' }],
-          isError: true,
-        };
-      }
-      if (!PROJECT_ID) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_invoke_agent_v2: PC_PROJECT_ID not set' },
-          ],
-          isError: true,
-        };
-      }
-      const dispatcherSessionId =
-        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_invoke_agent_v2: PC_SESSION_ID (orchestrator) or PC_DISPATCHER_SESSION_ID (agent) not set',
-            },
-          ],
-          isError: true,
-        };
-      }
-      const parentWorkItemId =
-        typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
-          ? args.parentWorkItemId.trim()
-          : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
-      const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
-      const parentInvokeDepth =
-        Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
-      const payload: Record<string, unknown> = {
-        input,
-        parentInvokeDepth,
-        dispatcherSessionId,
-      };
-      if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
-      try {
-        const res = await postServer(
-          `/api/projects/${PROJECT_ID}/agents/v2/${encodeURIComponent(name)}/invoke`,
-          payload,
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [
-            { type: 'text', text: `pc_invoke_agent_v2 failed (${res.status}): ${res.body}` },
-          ],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [
-            { type: 'text', text: `pc_invoke_agent_v2 failed: ${(err as Error).message}` },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_continue_agent_v2': {
-      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
-      const input = typeof args.input === 'string' ? args.input : '';
-      if (!runId || !input.trim()) {
-        return {
-          content: [{ type: 'text', text: 'pc_continue_agent_v2: runId and input required' }],
-          isError: true,
-        };
-      }
-      if (!PROJECT_ID) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_continue_agent_v2: PC_PROJECT_ID not set' },
-          ],
-          isError: true,
-        };
-      }
-      const dispatcherSessionId =
-        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_continue_agent_v2: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer(
-          `/api/projects/${PROJECT_ID}/agent-runs/v2/${encodeURIComponent(runId)}/continue`,
-          { input, dispatcherSessionId },
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [
-            { type: 'text', text: `pc_continue_agent_v2 failed (${res.status}): ${res.body}` },
-          ],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [
-            { type: 'text', text: `pc_continue_agent_v2 failed: ${(err as Error).message}` },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_list_my_runs_v2': {
-      if (!PROJECT_ID) {
-        return {
-          content: [{ type: 'text', text: 'pc_list_my_runs_v2: PC_PROJECT_ID not set' }],
-          isError: true,
-        };
-      }
-      const dispatcherSessionId =
-        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
-      if (!dispatcherSessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_list_my_runs_v2: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
-            },
-          ],
-          isError: true,
-        };
-      }
-      const params = new URLSearchParams();
-      params.set('dispatcherSessionId', dispatcherSessionId);
-      if (typeof args.agentName === 'string' && args.agentName.trim()) {
-        params.set('agentName', args.agentName.trim());
-      }
-      if (typeof args.status === 'string' && args.status.trim()) {
-        params.set('status', args.status.trim());
-      }
-      if (typeof args.limit === 'number' && Number.isFinite(args.limit)) {
-        params.set('limit', String(Math.floor(args.limit)));
-      }
-      try {
-        const res = await getServer(
-          `/api/projects/${PROJECT_ID}/agent-runs/v2/by-dispatcher?${params.toString()}`,
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [
-            { type: 'text', text: `pc_list_my_runs_v2 failed (${res.status}): ${res.body}` },
-          ],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [
-            { type: 'text', text: `pc_list_my_runs_v2 failed: ${(err as Error).message}` },
-          ],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_ask_orchestrator_v2':
-    case 'pc_ask_user_v2':
-    case 'pc_request_approval_v2': {
       const toolName = req.params.name;
-      const isApproval = toolName === 'pc_request_approval_v2';
-      const isAskUser = toolName === 'pc_ask_user_v2';
+      const isApproval = toolName === 'pc_request_approval';
+      const isAskUser = toolName === 'pc_ask_user';
       const promptField = isApproval ? 'decision' : 'question';
       const promptValue =
         typeof args[promptField] === 'string' ? (args[promptField] as string).trim() : '';
@@ -3281,7 +2629,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (context !== undefined) payload.context = context;
       if (options !== undefined) payload.options = options;
       try {
-        const res = await postServer(projectPath('agent-pending-asks-v2'), payload);
+        const res = await postServer(projectPath('agent-pending-asks'), payload);
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -3297,14 +2645,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    case 'pc_answer_pending_v2': {
+    case 'pc_answer_pending': {
       const pendingAskId = typeof args.pendingAskId === 'string' ? args.pendingAskId.trim() : '';
       const answer = typeof args.answer === 'string' ? args.answer : '';
       const answeredByRaw = typeof args.answeredBy === 'string' ? args.answeredBy : '';
       if (!pendingAskId || !answer) {
         return {
           content: [
-            { type: 'text', text: 'pc_answer_pending_v2: pendingAskId and answer required' },
+            { type: 'text', text: 'pc_answer_pending: pendingAskId and answer required' },
           ],
           isError: true,
         };
@@ -3314,7 +2662,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: 'text',
-              text: 'pc_answer_pending_v2: answeredBy must be "orchestrator" or "user"',
+              text: 'pc_answer_pending: answeredBy must be "orchestrator" or "user"',
             },
           ],
           isError: true,
@@ -3322,7 +2670,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         const res = await postServer(
-          projectPath(`agent-pending-asks-v2/${encodeURIComponent(pendingAskId)}/answer`),
+          projectPath(`agent-pending-asks/${encodeURIComponent(pendingAskId)}/answer`),
           { answer, answeredBy: answeredByRaw },
         );
         if (res.status >= 200 && res.status < 300) {
@@ -3330,51 +2678,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         return {
           content: [
-            { type: 'text', text: `pc_answer_pending_v2 failed (${res.status}): ${res.body}` },
+            { type: 'text', text: `pc_answer_pending failed (${res.status}): ${res.body}` },
           ],
           isError: true,
         };
       } catch (err) {
         return {
           content: [
-            { type: 'text', text: `pc_answer_pending_v2 failed: ${(err as Error).message}` },
+            { type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` },
           ],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_check_in': {
-      // Section 24 — ready-ping for resumed agents. Long-polls
-      // /api/internal/instruction-fetch with this agent's runId (set at
-      // spawn time, Section 18.5a). Server holds up to 60s for a queued
-      // instruction from the orchestrator and returns it as the tool
-      // result; on timeout returns a null envelope and the agent's
-      // continuation-time system-prompt fragment tells it to end the turn.
-      const runId = process.env.PC_AGENT_RUN_ID ?? '';
-      if (!runId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_check_in: PC_AGENT_RUN_ID not set — only agents spawned through PC can ping for instructions',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer('/api/internal/instruction-fetch', { runId });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_check_in failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_check_in failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

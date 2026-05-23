@@ -1,7 +1,11 @@
-// Section 18.4 — UserPromptSubmit hook: drain pending agent_inbox rows for
-// this orchestrator's session, mark them delivered with driver='user-prompt',
-// and prepend their payloads as `<channel source="agent" ...>` blocks via
-// the standard `additionalContext` hook output.
+// Section 18.4 / Phase D — UserPromptSubmit hook: drain pending agent_inbox
+// rows for this orchestrator's session, mark them delivered with
+// driver='user-prompt', and prepend their payloads as `<channel source=
+// "agent" ...>` blocks via the standard `additionalContext` hook output.
+//
+// Schema after Phase D: agent_inbox columns are `pc_session_id`, `kind`,
+// `body`. Audit table is INSERT-only — one row per successful delivery —
+// recording { inboxId, driver, deliveredAt, latencyMs }.
 //
 // This is the second of two paths a pending inbox row exits via:
 //   1. Auto-flush on bridge registration / live channel push (18.3) →
@@ -59,30 +63,37 @@ function drainInbox(opts) {
 
     const pending = db
       .prepare(
-        'SELECT id, event_kind, payload_body FROM agent_inbox ' +
-          'WHERE recipient_session_id = ? AND status = ? ORDER BY created_at ASC',
+        'SELECT id, kind, body, created_at FROM agent_inbox ' +
+          'WHERE pc_session_id = ? AND status = ? ORDER BY created_at ASC',
       )
       .all(sessionId, 'pending');
 
     if (pending.length === 0) return { rows: [], drained: 0 };
 
     const flipStmt = db.prepare(
-      'UPDATE agent_inbox SET status = ?, delivered_at = ? WHERE id = ? AND status = ?',
+      'UPDATE agent_inbox SET status = ?, driver = ?, delivered_at = ? WHERE id = ? AND status = ?',
     );
-    const auditStmt = db.prepare(
-      'UPDATE agent_delivery_audit SET driver = ?, hook_drained_at = ? WHERE inbox_id = ?',
+    const auditInsertStmt = db.prepare(
+      'INSERT INTO agent_delivery_audit (id, inbox_id, driver, delivered_at, latency_ms) VALUES (?, ?, ?, ?, ?)',
     );
 
     const drained = [];
     for (const row of pending) {
       const tx = db.transaction(() => {
-        const r = flipStmt.run('delivered', now, row.id, 'pending');
+        const r = flipStmt.run('delivered', 'user-prompt', now, row.id, 'pending');
         if (r.changes === 0) return false;
-        auditStmt.run('user-prompt', now, row.id);
+        const latencyMs = Math.max(0, now - Number(row.created_at));
+        // ULID-ish: 26 chars, time-prefixed; sqlite-side random is fine here
+        // (audit row is observational, not load-bearing for correctness).
+        const auditId = (now.toString(36) + Math.random().toString(36).slice(2, 18))
+          .padEnd(26, '0')
+          .slice(0, 26)
+          .toUpperCase();
+        auditInsertStmt.run(auditId, row.id, 'user-prompt', now, latencyMs);
         return true;
       });
       if (tx()) {
-        drained.push({ id: row.id, eventKind: row.event_kind, payloadBody: row.payload_body });
+        drained.push({ id: row.id, eventKind: row.kind, payloadBody: row.body });
       }
     }
     return { rows: drained, drained: drained.length };

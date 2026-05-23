@@ -21,7 +21,7 @@ import type {
 } from '@pc/domain';
 
 import { getDb } from '../connection.ts';
-import { agentRunsV2 } from '../schema-v2.ts';
+import { agentRuns } from '../schema-v2.ts';
 
 export interface InsertAgentRunRowV2Input {
   /** PC-minted ULID. Matches the AgentRun wrapper's `agentRunId`. */
@@ -70,7 +70,7 @@ export function insertAgentRunRowV2(input: InsertAgentRunRowV2Input): AgentRunRo
     readyAt: null,
     completedAt: null,
   };
-  getDb().insert(agentRunsV2).values(row).run();
+  getDb().insert(agentRuns).values(row).run();
   return row;
 }
 
@@ -96,7 +96,7 @@ export function updateAgentRunStatusV2(input: UpdateAgentRunStatusV2Input): void
   if (input.podRevisionAtResume !== undefined) {
     patch.podRevisionAtResume = input.podRevisionAtResume;
   }
-  getDb().update(agentRunsV2).set(patch).where(eq(agentRunsV2.id, input.id)).run();
+  getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
 }
 
 export interface MarkAgentRunTerminalV2Input {
@@ -112,7 +112,7 @@ export interface MarkAgentRunTerminalV2Input {
  *  with the same terminal status are no-ops. */
 export function markAgentRunTerminalV2(input: MarkAgentRunTerminalV2Input): void {
   getDb()
-    .update(agentRunsV2)
+    .update(agentRuns)
     .set({
       status: input.status,
       result: input.result,
@@ -120,14 +120,14 @@ export function markAgentRunTerminalV2(input: MarkAgentRunTerminalV2Input): void
       failureReason: input.failureReason,
       completedAt: input.completedAt,
     })
-    .where(eq(agentRunsV2.id, input.id))
+    .where(eq(agentRuns.id, input.id))
     .run();
 }
 
 /** Point read by ULID. `pc_continue_agent` calls this to validate the
  *  parent exists + is in a continuable state. */
 export function getAgentRunRowV2(id: ULID): AgentRunRowV2 | null {
-  const row = getDb().select().from(agentRunsV2).where(eq(agentRunsV2.id, id)).get();
+  const row = getDb().select().from(agentRuns).where(eq(agentRuns.id, id)).get();
   return row ?? null;
 }
 
@@ -146,16 +146,16 @@ export function listAgentRunsForSessionV2(
   opts: ListAgentRunsForSessionV2Options,
 ): AgentRunRowV2[] {
   const filters = [
-    eq(agentRunsV2.projectId, projectId),
-    eq(agentRunsV2.dispatcherSessionId, dispatcherSessionId),
+    eq(agentRuns.projectId, projectId),
+    eq(agentRuns.dispatcherSessionId, dispatcherSessionId),
   ];
-  if (opts.podName) filters.push(eq(agentRunsV2.podName, opts.podName));
-  if (opts.status) filters.push(eq(agentRunsV2.status, opts.status));
+  if (opts.podName) filters.push(eq(agentRuns.podName, opts.podName));
+  if (opts.status) filters.push(eq(agentRuns.status, opts.status));
   return getDb()
     .select()
-    .from(agentRunsV2)
+    .from(agentRuns)
     .where(and(...filters))
-    .orderBy(desc(agentRunsV2.queuedAt))
+    .orderBy(desc(agentRuns.queuedAt))
     .limit(opts.limit)
     .all();
 }
@@ -168,14 +168,14 @@ export function listAgentRunsForSessionV2(
 export function listActiveAgentRunsForProjectV2(projectId: ULID): AgentRunRowV2[] {
   return getDb()
     .select()
-    .from(agentRunsV2)
+    .from(agentRuns)
     .where(
       and(
-        eq(agentRunsV2.projectId, projectId),
-        inArray(agentRunsV2.status, ['queued', 'spawning', 'running', 'paused']),
+        eq(agentRuns.projectId, projectId),
+        inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
       ),
     )
-    .orderBy(desc(agentRunsV2.queuedAt))
+    .orderBy(desc(agentRuns.queuedAt))
     .all();
 }
 
@@ -185,11 +185,11 @@ export function listActiveAgentRunsForProjectV2(projectId: ULID): AgentRunRowV2[
 export function findActiveContinuationV2(priorRunId: ULID): AgentRunRowV2 | null {
   const row = getDb()
     .select()
-    .from(agentRunsV2)
+    .from(agentRuns)
     .where(
       and(
-        eq(agentRunsV2.continues, priorRunId),
-        inArray(agentRunsV2.status, ['queued', 'spawning', 'running', 'paused']),
+        eq(agentRuns.continues, priorRunId),
+        inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
       ),
     )
     .get();
@@ -202,14 +202,14 @@ export function findActiveContinuationV2(priorRunId: ULID): AgentRunRowV2 | null
  *  them as live. Returns the count of rows affected. */
 export function reconcileOrphanedRunningRunsV2(now: number): number {
   const res = getDb()
-    .update(agentRunsV2)
+    .update(agentRuns)
     .set({
       status: 'failed',
       failureReason: 'server restarted before this run completed',
       failureCause: 'server-restart',
       completedAt: now,
     })
-    .where(inArray(agentRunsV2.status, ['queued', 'spawning', 'running', 'paused']))
+    .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
     .run();
   return res.changes;
 }
