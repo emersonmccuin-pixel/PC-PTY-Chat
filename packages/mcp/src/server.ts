@@ -219,7 +219,7 @@ export const TOOLS = [
         },
         prompt: { type: 'string', description: "the agent's system prompt body (markdown)" },
         description: { type: 'string', description: 'one-line description for the dispatch picker' },
-        model: { type: 'string', description: "model slug (e.g. 'opus' / 'sonnet' / 'haiku' / 'inherit')" },
+        model: { type: 'string', description: "model slug (e.g. 'opus' / 'sonnet' / 'haiku')" },
         effort: { type: 'string', description: "reasoning effort: low / medium / high / xhigh / max" },
         maxTurns: { type: 'integer', description: 'optional cap on the number of conversation turns' },
         tools: {

@@ -30,18 +30,13 @@ export const AGENT_COLORS: readonly AgentColor[] = [
   'cyan',
 ];
 
-export type AgentModelShort = 'haiku' | 'sonnet' | 'opus' | 'inherit';
+export type AgentModelShort = 'haiku' | 'sonnet' | 'opus';
 
-/** Either a short alias (haiku/sonnet/opus/inherit) or a full model ID
+/** Either a short alias (haiku/sonnet/opus) or a full model ID
  *  (e.g. `claude-opus-4-7`). Validator accepts both. */
 export type AgentModel = AgentModelShort | string;
 
-export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = [
-  'haiku',
-  'sonnet',
-  'opus',
-  'inherit',
-];
+export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = ['haiku', 'sonnet', 'opus'];
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 

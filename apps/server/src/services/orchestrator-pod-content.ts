@@ -13,7 +13,9 @@
 //     section, not the tool list. WebFetch/WebSearch/NotebookEdit/Task are
 //     deliberately off — see the inline comment on the `tools:` field below
 //     for why.
-//   - model `inherit` — lets the spawn-time --model arg or user pref drive.
+//   - model `opus` — concrete value; the user can override per-pod via the
+//     Agents tab. Was `'inherit'` pre-2026-05-23; that alias was retired
+//     because it never resolved to anything but opus in practice.
 //   - maxTurns null — orchestrator session is long-running by design.
 //   - outputDestination `passthrough` — orchestrator's output IS the chat
 //     panel via stdout; doesn't attach to a work item.
@@ -196,7 +198,7 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
   // `pc_invoke_agent` — `Task` would create a parallel CC-internal mechanism
   // with no audit trail in `agent-runs/`).
   tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'mcp__pc-rig__*'],
-  model: 'inherit',
+  model: 'opus',
   effort: null,
   maxTurns: null,
   outputDestination: 'passthrough',

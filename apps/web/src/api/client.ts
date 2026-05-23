@@ -1391,23 +1391,18 @@ export const AGENT_COLORS: readonly AgentColor[] = [
   'cyan',
 ];
 
-export type AgentModelShort = 'haiku' | 'sonnet' | 'opus' | 'inherit';
+export type AgentModelShort = 'haiku' | 'sonnet' | 'opus';
 
 /** Friendly label for the Agents tab + anywhere else a pod's *stored* model
- *  is rendered. Resolves `'inherit'` to the actual model that'd be used at
- *  spawn time (currently always `'opus'` per agent-run-manager.ts — kept in
- *  sync with that fallback). Form/input components should keep using the
- *  raw `pod.model` value so users can still set "inherit." */
+ *  is rendered. Falls back to `'opus'` for `null` or the legacy `'inherit'`
+ *  alias (retired 2026-05-23; drift-reseed migrates live rows to `'opus'`
+ *  on the next boot, but old rows can briefly show through until then).
+ *  Concrete values pass through. */
 export function resolveModelLabel(model: string | null | undefined): string {
   if (!model || model === 'inherit') return 'opus';
   return model;
 }
-export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = [
-  'haiku',
-  'sonnet',
-  'opus',
-  'inherit',
-];
+export const AGENT_MODEL_SHORTCUTS: readonly AgentModelShort[] = ['haiku', 'sonnet', 'opus'];
 
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const AGENT_EFFORTS: readonly AgentEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];

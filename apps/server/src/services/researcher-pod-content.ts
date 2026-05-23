@@ -102,7 +102,7 @@ export const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_request_approval',
   ],
-  model: 'inherit',
+  model: 'opus',
   effort: null,
   maxTurns: null,
   outputDestination: 'passthrough',

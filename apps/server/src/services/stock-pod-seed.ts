@@ -462,7 +462,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_check_in',
   ],
-  model: 'inherit',
+  model: 'opus',
   effort: null,
   maxTurns: null,
   outputDestination: 'passthrough',
