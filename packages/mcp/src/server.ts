@@ -467,6 +467,28 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_list_work_items',
+    description:
+      'List work items in this project. Use this when the orchestrator / an agent needs to find a card by some property (title fragment, stage, parent) rather than knowing its ULID up front. Optional filters: `stage` (stage id slug), `parentId` (a ULID, or `""` for top-level only), `includeArchived` (boolean, default false). When called with no filters, returns the project\'s full work-item set (the same shape the kanban renders from). PC_PROJECT_ID env is the implicit scope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stage: { type: 'string', description: 'optional: stage slug to filter by' },
+        parentId: {
+          type: 'string',
+          description:
+            "optional: parent work item ULID, or empty string '' to only return top-level items",
+        },
+        includeArchived: {
+          type: 'boolean',
+          description: 'when true, also returns soft-deleted work items',
+        },
+        limit: { type: 'number', description: 'optional: cap on rows returned' },
+        cursor: { type: 'string', description: 'optional: pagination cursor (ULID)' },
+      },
+    },
+  },
+  {
     name: 'pc_create_workflow',
     description:
       'Create a NEW project-scoped workflow YAML. Used by the conversational workflow-creator modal (4b). `def` is the typed workflow object (matches the on-disk YAML shape, minus the post-parse `kind:` discriminator). Server validates against the same parser the registry uses, serializes to YAML, writes to `<project>/.project-companion/workflows/<def.id>.yaml`, broadcasts project-workflows-changed. 409 on id collision. 400 on validation errors (returned with per-path messages).',
@@ -2273,6 +2295,36 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_get_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_work_items': {
+      const q = new URLSearchParams();
+      if (typeof args.stage === 'string' && args.stage) q.set('stage', args.stage);
+      if (typeof args.parentId === 'string') q.set('parentId', args.parentId);
+      if (args.includeArchived === true) q.set('includeArchived', '1');
+      if (typeof args.limit === 'number' && Number.isFinite(args.limit)) {
+        q.set('limit', String(args.limit));
+      }
+      if (typeof args.cursor === 'string' && args.cursor) q.set('cursor', args.cursor);
+      const query = q.toString();
+      const suffix = `work-items${query ? `?${query}` : ''}`;
+      try {
+        const res = await getServer(projectPath(suffix));
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_list_work_items failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_work_items failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

@@ -22,6 +22,7 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_run_workflow',
   'mcp__pc-rig__pc_create_agent',
   'mcp__pc-rig__pc_get_work_item',
+  'mcp__pc-rig__pc_list_work_items',
   'mcp__pc-rig__pc_create_workflow',
   'mcp__pc-rig__pc_edit_workflow',
   'mcp__pc-rig__pc_update_workflow_draft',

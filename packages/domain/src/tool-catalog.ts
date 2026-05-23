@@ -145,6 +145,12 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
   {
+    slug: 'mcp__pc-rig__pc_list_work_items',
+    label: 'List work items',
+    description: "Find cards in this project by stage / parent / archive-state.",
+    source: 'pc-rig',
+  },
+  {
     slug: 'mcp__pc-rig__pc_attach_to_work_item',
     label: 'Attach run to work item',
     description: 'Bind the current dispatch to a specific card.',
