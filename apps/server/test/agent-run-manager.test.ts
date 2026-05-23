@@ -2167,6 +2167,14 @@ test('Section 21 — resume skips historical JSONL replay (jsonlStartLine pinned
   // Drive continuation to completion to keep the test hygienic + verify the
   // FakeSession's flow still works against the resume path.
   s.becomeReady();
+  // Section 21 post-smoke fix: on resume the manager skips the warmup turn
+  // entirely (mirrors pause-resume). The real input fires immediately on
+  // state='ready', no "Reply with only the word OK." warmup first.
+  assert.deepEqual(
+    s.sent,
+    ['follow-up'],
+    'resume sends real initialInput immediately on ready, no warmup turn',
+  );
   s.emitTurnEnd('refined');
   const result = await cont.completion;
   assert.equal(result.status, 'completed');

@@ -762,6 +762,23 @@ export class AgentRunManager extends EventEmitter {
     if (isResume && input.continues) {
       this.activeContinuations.set(input.continues, runId);
     }
+    // Section 21 (post-smoke fix) — on `--resume`, skip the warmup turn +
+    // Section-22 MCP-handshake gate entirely. The resumed CC's interactive
+    // prompt boots in a different state than a fresh spawn (loads JSONL +
+    // re-renders prior conversation + writes bookkeeping rows); our
+    // warmup-text-then-wait pattern never resolves — the warmup text gets
+    // delivered but claude.exe doesn't treat it as a real user prompt, so
+    // no `jsonl-turn-end` fires and the spawn-stuck timer kills the run at
+    // 120s. Mirror agent-resume.ts's pause-resume pattern: pre-set
+    // warmupSent + mcpConnected so the state handler's legacy branch
+    // fires the real initialInput immediately on `state: 'ready'`.
+    // Tools-not-bound MCP race exposure is the same as pause-resume which
+    // works fine in practice — the resumed CC's model state was bound at
+    // a prior moment when MCP was definitely connected.
+    if (isResume) {
+      rec.warmupSent = true;
+      rec.mcpConnected = true;
+    }
     const completion = this.installCompletionPromise(rec);
 
     const jsonlPath = (this.deps.resolveJsonlPath ?? defaultResolveJsonlPath)(
