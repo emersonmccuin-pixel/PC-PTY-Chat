@@ -11,20 +11,13 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { homedir } from 'node:os';
 
 import type {
-  AgentDef,
   AgentRunPersistedStatus,
   GlobalSettings,
   ULID,
   Workflow,
   WorkItemType,
 } from '@pc/domain';
-import {
-  isWorkItemType,
-  parseAgentFile,
-  serializeAgentFile,
-  validateAgentDef,
-  withSettingsDefaults,
-} from '@pc/domain';
+import { isWorkItemType, withSettingsDefaults } from '@pc/domain';
 import {
   parseTypedWorkflowDef,
   parseWorkflowText,
@@ -63,7 +56,6 @@ import {
 import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
-import { AgentLibrary, defaultLibraryDir } from './services/agent-library.ts';
 import { drainPendingForSession, enqueueAndPush } from './services/agent-inbox-emit.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
@@ -79,12 +71,6 @@ import {
   readMemoryFile,
   writeMemoryFile,
 } from './services/memory-files.ts';
-import {
-  deleteProjectAgent,
-  listResolvedAgents,
-  readProjectAgent,
-  writeProjectAgent,
-} from './services/project-agents.ts';
 import { browseFolder, BrowseError, listDrives } from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
 import {
@@ -209,16 +195,6 @@ runMigrations();
     );
   }
 }
-
-// Agent library — first-run seed from templates/.project-companion/agents/
-// into ~/.project-companion/agents/. Globals surface in every project's
-// agent list via listResolvedAgents; per-project files in `.claude/agents/`
-// shadow them by name. See Section 3 D2.
-const agentLibrary = new AgentLibrary(
-  defaultLibraryDir(),
-  resolve(TEMPLATES, '.project-companion', 'agents'),
-);
-agentLibrary.bootstrap();
 
 // Per-project WS subscriber map. P14 tags broadcasts with `projectId` so the UI
 // can route events to its active project; for P4 we route at the server by
@@ -888,238 +864,8 @@ app.post('/api/projects', async (c) => {
   }
 });
 
-// ── Agent library ─────────────────────────────────────────────────────────
-
-/** Global library at `~/.project-companion/agents/`. */
-app.get('/api/agents', (c) => {
-  return c.json({ agents: agentLibrary.list() });
-});
-
-/** Write a new library agent. Body: `{ name, body }`. 409 if the name is taken. */
-app.post('/api/agents', async (c) => {
-  const body = await c.req.json<{ name?: string; body?: string }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const text = typeof body.body === 'string' ? body.body : '';
-  if (!name || !text) return c.json({ ok: false, error: 'name and body required' }, 400);
-  try {
-    const agent = agentLibrary.write(name, text);
-    return c.json({ ok: true, agent }, 201);
-  } catch (err) {
-    const msg = (err as Error).message;
-    const is409 = /^agent already exists/.test(msg);
-    const is400 = /^invalid agent name|^agent name required/.test(msg);
-    return c.json({ ok: false, error: msg }, is409 ? 409 : is400 ? 400 : 500);
-  }
-});
-
-/** Resolved per-project agent view per Section 3 D2: globals (live from the
- *  library, no per-project file), overrides (per-project file shadowing a
- *  global), and project-only (per-project file with no matching global).
- *  Replaces the legacy `{ agents }` shape. */
-app.get('/api/projects/:projectId/agents', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const resolved = listResolvedAgents(id);
-  return c.json({ ok: true, ...resolved });
-});
-
-/** Create a NEW project-scoped agent from scratch (3e — conversational
- *  Create Agent path). Accepts the same shapes as PATCH: either raw `body`
- *  or `{ def, markdown }`. 409 if a project file by that name already
- *  exists; 409 with `kind: 'shadows-global'` when a global with that name
- *  exists (the user should pick a different name or use Edit-on-global to
- *  produce an override). Broadcasts `project-agents-changed` on success. */
-app.post('/api/projects/:projectId/agents', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const payload = await c.req.json<{
-    name?: string;
-    body?: string;
-    def?: AgentDef;
-    markdown?: string;
-  }>();
-  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
-  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-
-  if (readProjectAgent(runtime.folderPath, name)) {
-    return c.json({ ok: false, error: `project agent already exists: ${name}` }, 409);
-  }
-  if (agentLibrary.read(name)) {
-    return c.json(
-      {
-        ok: false,
-        kind: 'shadows-global' as const,
-        error: `name "${name}" matches a global. Pick a different name or Edit the global to create a project override.`,
-      },
-      409,
-    );
-  }
-
-  let fileText: string;
-  if (typeof payload.body === 'string') {
-    fileText = payload.body;
-  } else if (payload.def && typeof payload.markdown === 'string') {
-    const validation = validateAgentDef(payload.def);
-    if (!validation.ok) {
-      return c.json({ ok: false, error: 'invalid agent', errors: validation.errors }, 400);
-    }
-    fileText = serializeAgentFile({ def: payload.def, body: payload.markdown });
-  } else {
-    return c.json(
-      { ok: false, error: 'either `body` or `{ def, markdown }` required' },
-      400,
-    );
-  }
-
-  try {
-    const agent = writeProjectAgent(runtime.folderPath, name, fileText);
-    broadcastTo(id, { type: 'project-agents-changed', change: 'created', name });
-    return c.json({ ok: true, agent }, 201);
-  } catch (err) {
-    const msg = (err as Error).message;
-    const is400 = /^invalid agent name|^agent name required/.test(msg);
-    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
-  }
-});
-
-/** Edit an agent in the context of a project. If the name matches a global,
- *  this writes the per-project override file; the global stays untouched.
- *  If not, it edits an existing project-only agent.
- *
- *  Accepts EITHER:
- *    - `{ body: string }` — raw full-file text (YAML-view save path).
- *    - `{ def: AgentDef, markdown: string }` — typed view from the form
- *      editor. Server validates `def`, then serializes via the round-trip
- *      basis (the existing file text), so unknown frontmatter keys,
- *      comments, and YAML node style survive. */
-app.patch('/api/projects/:projectId/agents/:name', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const name = c.req.param('name');
-  const payload = await c.req.json<{ body?: string; def?: AgentDef; markdown?: string }>();
-
-  // Must match either an existing project file or a global by this name.
-  const projectEntry = readProjectAgent(runtime.folderPath, name);
-  const globalEntry = agentLibrary.read(name);
-  if (!projectEntry && !globalEntry) {
-    return c.json({ ok: false, error: `unknown agent: ${name}` }, 404);
-  }
-
-  let fileText: string;
-  if (typeof payload.body === 'string') {
-    fileText = payload.body;
-  } else if (payload.def && typeof payload.markdown === 'string') {
-    const validation = validateAgentDef(payload.def);
-    if (!validation.ok) {
-      return c.json({ ok: false, error: 'invalid agent', errors: validation.errors }, 400);
-    }
-    // Round-trip basis: existing project file if present, else the global
-    // we're about to shadow. Either way the parse-and-diff approach
-    // preserves comments / unknown keys / key order from the basis.
-    const basis = projectEntry?.body ?? globalEntry?.body;
-    fileText = serializeAgentFile({ def: payload.def, body: payload.markdown, original: basis });
-  } else {
-    return c.json(
-      { ok: false, error: 'either `body` or `{ def, markdown }` required' },
-      400,
-    );
-  }
-
-  try {
-    const agent = writeProjectAgent(runtime.folderPath, name, fileText);
-    return c.json({ ok: true, agent });
-  } catch (err) {
-    const msg = (err as Error).message;
-    const is400 = /^invalid agent name|^agent name required/.test(msg);
-    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
-  }
-});
-
-/** Promote a project agent to the global library. Two cases:
- *
- *  - The name matches an existing global → REPLACE the global. The project
- *    file (which is the override) is deleted so this project picks up the
- *    new global cleanly. `kind: 'replaced-global'`.
- *  - The name does NOT match a global → ADD a new global. The project file
- *    is deleted so this project (and all others) sees it as a Global entry.
- *    `kind: 'added-global'`.
- *
- *  The promoted body is validated before write — a broken project agent
- *  can't pollute the global library. */
-app.post('/api/projects/:projectId/agents/:name/promote-to-global', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const name = c.req.param('name');
-
-  const projectEntry = readProjectAgent(runtime.folderPath, name);
-  if (!projectEntry) {
-    return c.json({ ok: false, error: `no project agent named ${name}` }, 404);
-  }
-
-  const parsed = parseAgentFile(projectEntry.body);
-  if (!parsed.ok) {
-    return c.json({ ok: false, error: `cannot promote: ${parsed.message}` }, 400);
-  }
-  const validation = validateAgentDef(parsed.def);
-  if (!validation.ok) {
-    return c.json(
-      { ok: false, error: 'cannot promote: agent has validation errors', errors: validation.errors },
-      400,
-    );
-  }
-
-  try {
-    const { entry, replaced } = agentLibrary.upsert(name, projectEntry.body);
-    deleteProjectAgent(runtime.folderPath, name);
-    return c.json({
-      ok: true,
-      kind: replaced ? ('replaced-global' as const) : ('added-global' as const),
-      agent: entry,
-    });
-  } catch (err) {
-    const msg = (err as Error).message;
-    const is400 = /^invalid agent name|^agent name required/.test(msg);
-    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
-  }
-});
-
-/** Delete a project agent file. Two meanings depending on whether the name
- *  matches a global:
- *
- *  - Override of a global → "reset to global". The global stays in the
- *    library and surfaces unmodified on the next list call.
- *  - Project-only agent → fully removes the agent from the project.
- *
- *  Response includes `kind: 'reset-to-global' | 'project-only'` so the UI
- *  can phrase the confirmation correctly. */
-app.delete('/api/projects/:projectId/agents/:name', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const name = c.req.param('name');
-  const wasGlobal = agentLibrary.read(name) !== null;
-  try {
-    deleteProjectAgent(runtime.folderPath, name);
-    return c.json({ ok: true, kind: wasGlobal ? 'reset-to-global' : 'project-only' });
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (/^unknown project agent/.test(msg)) {
-      return c.json({ ok: false, error: msg }, 404);
-    }
-    if (/^invalid agent name|^agent name required/.test(msg)) {
-      return c.json({ ok: false, error: msg }, 400);
-    }
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-// Section 17d.1 — Pod (DB-resident agent) routes. Live alongside the legacy
-// flat-file routes above; 17e.4 retires the flat-file path. Pods are
-// global-scope in v1; v2 (17c) overlays project rows.
+// Section 17d.1 — Pod (DB-resident agent) routes. Pods are global-scope in
+// v1; v2 (17c) overlays project rows.
 //
 // 17d.10 — `onPodChanged` triggers restart-on-edit for the orchestrator
 // pod across every loaded ProjectRuntime. Worker pods (researcher, etc.)
@@ -1297,81 +1043,6 @@ function replayActiveSessionEvents(projectId: ULID, runtime: ProjectRuntime): vo
     /* best-effort replay */
   }
 }
-
-// ── Agent-creator transient session (Section 3 phase 3e.3) ─────────────────
-//
-// One-off PtySession per project for the conversational "Create Agent" modal.
-// Layers `agent-creator-prompt.md` on top of CC's default system prompt; same
-// project cwd as the orchestrator so `.mcp.json` (pc-rig) is wired in. Lifetime
-// = modal-open. Closes implicitly when `pc_create_agent` fires (the route
-// broadcasts `project-agents-changed`, modal handles cleanup).
-//
-// WS envelopes are distinct from the orchestrator stream so the modal can
-// subscribe without filtering on session origin:
-//   { type: 'agent-creator-state', state }
-//   { type: 'agent-creator-event', event }       — legacy hook events
-//   { type: 'agent-creator-jsonl', event }       — JSONL tailer events
-//   { type: 'agent-creator-exit', code, signal }
-
-function attachAgentCreatorHandlers(
-  projectId: ULID,
-  session: ReturnType<ProjectRuntime['startAgentCreator']>,
-): void {
-  const flag = session as unknown as { __pcAgentCreatorAttached?: boolean };
-  if (flag.__pcAgentCreatorAttached) return;
-  session.on('state', (state: string) =>
-    broadcastTo(projectId, { type: 'agent-creator-state', state }),
-  );
-  session.on('event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'agent-creator-event', event }),
-  );
-  session.on('jsonl-event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'agent-creator-jsonl', event }),
-  );
-  session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    broadcastTo(projectId, { type: 'agent-creator-exit', code, signal });
-  });
-  flag.__pcAgentCreatorAttached = true;
-}
-
-app.post('/api/projects/:projectId/agent-creator/start', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const session = runtime.startAgentCreator();
-  attachAgentCreatorHandlers(id, session);
-  return c.json({ ok: true, state: session.getState() });
-});
-
-app.post('/api/projects/:projectId/agent-creator/send', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const session = runtime.agentCreatorPty();
-  if (!session) return c.json({ ok: false, error: 'no agent-creator session' }, 409);
-  const body = await c.req.json<{ text?: string }>();
-  if (typeof body.text !== 'string' || body.text === '') {
-    return c.json({ ok: false, error: 'text required' }, 400);
-  }
-  session.send(body.text);
-  return c.json({ ok: true });
-});
-
-app.post('/api/projects/:projectId/agent-creator/interrupt', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  runtime.agentCreatorPty()?.interrupt();
-  return c.json({ ok: true });
-});
-
-app.delete('/api/projects/:projectId/agent-creator', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  runtime.endAgentCreator();
-  return c.json({ ok: true });
-});
 
 // ── Agent-designer transient session (17b.12) ─────────────────────────────
 //

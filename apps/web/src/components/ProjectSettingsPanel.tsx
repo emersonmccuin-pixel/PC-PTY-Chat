@@ -11,13 +11,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type Project, type ResolvedAgent } from '@/api/client';
+import { api, type Project } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
-import { useProjectSettingsFocus } from '@/store/project-settings-focus';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
 import { SetupWizardModal } from './SetupWizardModal';
-import { AgentEditor } from './project-settings/AgentEditor';
-import { CreateAgentModal } from './project-settings/CreateAgentModal';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';
 import { StagesEditor } from './project-settings/StagesEditor';
 
@@ -28,13 +25,12 @@ interface ProjectSettingsPanelProps {
   onProjectDeleted: (projectId: string) => void;
 }
 
-type SectionId = 'info' | 'stages' | 'fields' | 'agents' | 'danger';
+type SectionId = 'info' | 'stages' | 'fields' | 'danger';
 
 const SECTIONS: { id: SectionId; label: string; danger?: boolean }[] = [
   { id: 'info', label: 'Project info' },
   { id: 'stages', label: 'Stages' },
   { id: 'fields', label: 'Field schemas' },
-  { id: 'agents', label: 'Agents' },
   { id: 'danger', label: 'Danger zone', danger: true },
 ];
 
@@ -45,22 +41,12 @@ export function ProjectSettingsPanel({
   onProjectDeleted,
 }: ProjectSettingsPanelProps) {
   const [active, setActive] = useState<SectionId>('info');
-  const focusTarget = useProjectSettingsFocus((s) => s.target);
-  const clearFocus = useProjectSettingsFocus((s) => s.setTarget);
 
   // Reset to the first section on project switch — a fresh project shouldn't
   // land deep inside another project's danger zone.
   useEffect(() => {
     setActive('info');
   }, [project.id]);
-
-  // /agents ability redirects here — swap to the agents tab and clear.
-  useEffect(() => {
-    if (focusTarget === 'agents') {
-      setActive('agents');
-      clearFocus(null);
-    }
-  }, [focusTarget, clearFocus]);
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -108,12 +94,6 @@ export function ProjectSettingsPanel({
             {active === 'fields' && (
               <Section title="Field schemas">
                 <FieldSchemasEditor projectId={project.id} />
-              </Section>
-            )}
-
-            {active === 'agents' && (
-              <Section title="Agents">
-                <AgentsSection projectId={project.id} events={events} />
               </Section>
             )}
 
@@ -229,193 +209,6 @@ function ProjectInfoForm({
         {err && <span className="text-xs text-destructive">{err}</span>}
       </div>
     </div>
-  );
-}
-
-// ─── Agents ──────────────────────────────────────────────────────────────────
-//
-// Section 3 D2 model: globals always appear in every project. Editing a
-// global creates a per-project override. Project-only agents are authored
-// just for this project (form-editor authoring lands in 3d).
-
-function AgentsSection({
-  projectId,
-  events,
-}: {
-  projectId: string;
-  events: WsEnvelope[];
-}) {
-  const [list, setList] = useState<{
-    globals: ResolvedAgent[];
-    overrides: ResolvedAgent[];
-    projectOnly: ResolvedAgent[];
-  } | null>(null);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [editingName, setEditingName] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-
-  const refresh = () => {
-    setLoadErr(null);
-    return api
-      .listProjectAgents(projectId)
-      .then(setList)
-      .catch((e: unknown) => setLoadErr((e as Error).message));
-  };
-
-  useEffect(() => {
-    setList(null);
-    setEditingName(null);
-    setCreating(false);
-    void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
-
-  // 3e.3 — refresh on `project-agents-changed` so a newly committed agent
-  // shows up immediately (modal closure path) AND so the section stays in sync
-  // if an agent is created from the orchestrator chat side. Look at the latest
-  // envelope only — the buffer in useProjectWs wraps after MAX_BUFFERED, so
-  // index-based dedup isn't reliable across the wrap.
-  useEffect(() => {
-    const last = events[events.length - 1];
-    if (last?.type === 'project-agents-changed') void refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
-
-  async function resetToGlobal(name: string) {
-    if (
-      !window.confirm(
-        `Reset "${name}" to the global version? Your local customizations will be deleted.`,
-      )
-    ) {
-      return;
-    }
-    try {
-      await api.deleteProjectAgent(projectId, name);
-      setEditingName(null);
-      await refresh();
-    } catch (e) {
-      setLoadErr((e as Error).message);
-    }
-  }
-
-  if (loadErr) return <p className="text-xs text-destructive">{loadErr}</p>;
-  if (!list) return <p className="text-xs text-muted-foreground">Loading…</p>;
-
-  const sections: Array<{
-    title: string;
-    hint: string;
-    items: ResolvedAgent[];
-  }> = [
-    {
-      title: 'Customized globals',
-      hint: 'Project overrides of a global. Reset to drop the override and pick the global up again.',
-      items: list.overrides,
-    },
-    {
-      title: 'Project agents',
-      hint: 'Agents authored just for this project. Edit them like any global.',
-      items: list.projectOnly,
-    },
-    {
-      title: 'Globals',
-      hint: 'Shipped with PC and available in every project. Editing one creates a project override.',
-      items: list.globals,
-    },
-  ];
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">
-          Authored conversationally. Click <span className="font-medium">+ Create Agent</span>{' '}
-          to walk through an interview that produces a complete agent.
-        </p>
-        <button
-          onClick={() => setCreating(true)}
-          className="border border-border bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          + Create Agent
-        </button>
-      </div>
-      {creating && (
-        <CreateAgentModal
-          projectId={projectId}
-          events={events}
-          onClose={() => setCreating(false)}
-        />
-      )}
-      {sections.map((section) => (
-        <div key={section.title}>
-          <div className="mb-1 flex items-baseline justify-between">
-            <span className="text-xs font-medium uppercase tracking-wide text-foreground">
-              {section.title}
-            </span>
-            <span className="text-[10px] text-muted-foreground">
-              {section.items.length === 0 ? 'none' : `${section.items.length}`}
-            </span>
-          </div>
-          <p className="mb-2 text-xs text-muted-foreground">{section.hint}</p>
-          {section.items.length === 0 ? null : (
-            <ul className="space-y-2">
-              {section.items.map((agent) => (
-                <li key={`${agent.kind}-${agent.name}`} className="border border-border bg-card">
-                  {editingName === agent.name ? (
-                    <AgentEditor
-                      projectId={projectId}
-                      agent={agent}
-                      onClose={() => setEditingName(null)}
-                      onSaved={() => {
-                        setEditingName(null);
-                        void refresh();
-                      }}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-between gap-3 px-3 py-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <KindBadge kind={agent.kind} />
-                        <span className="truncate font-mono text-xs text-foreground">
-                          {agent.name}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {agent.kind === 'override' && (
-                          <button
-                            onClick={() => void resetToGlobal(agent.name)}
-                            className="border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                          >
-                            Reset to global
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setEditingName(agent.name)}
-                          className="border border-border px-2 py-1 text-xs hover:bg-muted"
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function KindBadge({ kind }: { kind: ResolvedAgent['kind'] }) {
-  const map: Record<ResolvedAgent['kind'], { label: string; cls: string }> = {
-    global: { label: 'Global', cls: 'bg-muted text-muted-foreground' },
-    override: { label: 'Customized', cls: 'bg-warning/20 text-warning-foreground' },
-    project: { label: 'Project', cls: 'bg-primary/20 text-foreground' },
-  };
-  const { label, cls } = map[kind];
-  return (
-    <span className={`shrink-0 px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${cls}`}>
-      {label}
-    </span>
   );
 }
 

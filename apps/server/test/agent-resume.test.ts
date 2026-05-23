@@ -20,6 +20,7 @@ const {
   newId,
   runMigrations,
   createProject,
+  createAgent,
   createPendingAsk,
   getPendingAsk,
 } = await import('@pc/db');
@@ -37,6 +38,22 @@ const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
 
 before(() => {
   runMigrations();
+  // Agent-name resolution requires a live global pod row. Seed `researcher`
+  // so spawn doesn't fail-fast with cause='unknown-agent'.
+  createAgent(
+    {
+      name: 'researcher',
+      scope: 'global',
+      prompt: 'researcher test stub',
+      tools: [],
+      model: 'sonnet',
+      effort: null,
+      maxTurns: null,
+      outputDestination: null,
+      description: 'researcher test stub',
+    },
+    { actor: 'orchestrator', reason: 'system-seed:test-fixture' },
+  );
 });
 
 after(() => {

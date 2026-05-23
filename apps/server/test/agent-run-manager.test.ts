@@ -21,6 +21,7 @@ const {
   newId,
   runMigrations,
   createProject,
+  createAgent,
   createPendingAsk,
   markPendingAskAnswered,
   getAgentRunRow,
@@ -37,13 +38,24 @@ const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
 
 before(() => {
   runMigrations();
-  // B4 (2026-05-21) — agent-name resolution check requires a pod row OR a
-  // flat-file agent .md in the worktree. Tests pass `worktreeDir: tmpDataDir`
-  // and various names (`researcher`, `a1`, `a2`); write stubs so the spawn
+  // Agent-name resolution requires a live global pod row. Seed minimal rows
+  // for the names the tests dispatch (`researcher`, `a1`, `a2`) so spawn
   // doesn't fail-fast with cause='unknown-agent'.
-  mkdirSync(join(tmpDataDir, '.claude', 'agents'), { recursive: true });
   for (const name of ['researcher', 'a1', 'a2']) {
-    writeFileSync(join(tmpDataDir, '.claude', 'agents', `${name}.md`), `# ${name} (test stub)\n`);
+    createAgent(
+      {
+        name,
+        scope: 'global',
+        prompt: `${name} test stub`,
+        tools: [],
+        model: 'sonnet',
+        effort: null,
+        maxTurns: null,
+        outputDestination: null,
+        description: `${name} test stub`,
+      },
+      { actor: 'orchestrator', reason: 'system-seed:test-fixture' },
+    );
   }
 });
 
@@ -224,76 +236,6 @@ test('warmup turn defers initialInput until first turn-end (18.B-mcp-race)', asy
   assert.equal(result.result, 'use date-fns');
   await tick();
   assert.equal(s.killed, true);
-});
-
-// B7 regression (2026-05-21) — agents that live ONLY in the global library
-// at `~/.project-companion/agents/<name>.md` (Section 3 stock globals) must
-// be materialised into `<worktree>/.claude/agents/<name>.md` at spawn time
-// so CC's `--agent` flag can find them, and cleaned up on terminal.
-test('global flat-file agent → materialised into worktree before spawn; cleaned up on terminal', async () => {
-  const p = createProject({
-    slug: 'arm-b7',
-    name: 'ARM B7',
-    stages,
-    folderPath: tmpDataDir,
-  });
-  const { factory, sessions } = makeFactory();
-
-  // Use an isolated worktree that does NOT have a `.claude/agents/` set up
-  // from the before() block — that's the trigger for the global-flat-file
-  // path (worktree has no project override).
-  const isolatedWorktree = join(tmpDataDir, 'arm-b7-worktree');
-  mkdirSync(isolatedWorktree, { recursive: true });
-
-  // Set up a global library with our test agent.
-  const libDir = join(tmpDataDir, 'arm-b7-lib');
-  mkdirSync(libDir, { recursive: true });
-  writeFileSync(join(libDir, 'b7-global.md'), '# b7-global agent (library fixture)\n');
-  const prevLibEnv = process.env.PC_AGENT_LIBRARY_DIR;
-  process.env.PC_AGENT_LIBRARY_DIR = libDir;
-
-  try {
-    const mgr = new AgentRunManager({
-      warmupPrompt: null, createSession: factory,
-      scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-b7', pid, rid),
-      resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
-    });
-
-    const { runId, completion } = mgr.spawn({
-      agentName: 'b7-global',
-      input: 'go',
-      wait: true,
-      projectId: p.id as ULID,
-      dispatcherSessionId: 'test-dispatcher-session',
-      worktreeDir: isolatedWorktree,
-    });
-
-    // Materialisation must land BEFORE the PtySession reaches ready (CC reads
-    // `.claude/agents/` at startup). Assert immediately after spawn().
-    const materializedPath = join(isolatedWorktree, '.claude', 'agents', 'b7-global.md');
-    assert.equal(
-      existsSync(materializedPath),
-      true,
-      'b7-global.md should be materialised into the worktree at spawn time',
-    );
-
-    sessions[0]!.becomeReady();
-    sessions[0]!.emitTurnEnd('done');
-    const result = await completion;
-    assert.equal(result.status, 'completed');
-    assert.equal(result.runId, runId);
-
-    // Cleanup on terminal: the materialised file should be gone.
-    await tick();
-    assert.equal(
-      existsSync(materializedPath),
-      false,
-      'materialised b7-global.md should be removed on terminal',
-    );
-  } finally {
-    if (prevLibEnv === undefined) delete process.env.PC_AGENT_LIBRARY_DIR;
-    else process.env.PC_AGENT_LIBRARY_DIR = prevLibEnv;
-  }
 });
 
 // B4 regression (2026-05-21) — unknown agent names must fail fast with

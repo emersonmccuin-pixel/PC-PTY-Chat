@@ -7,8 +7,6 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 
 import {
   parseAgentFile,
@@ -17,74 +15,11 @@ import {
   type AgentParseOk,
 } from '../src/index.ts';
 
-const RESEARCHER_MD = resolve(
-  import.meta.dirname,
-  '..',
-  '..',
-  '..',
-  'templates',
-  '.project-companion',
-  'agents',
-  'researcher.md',
-);
-
 function parseOk(text: string): AgentParseOk {
   const r = parseAgentFile(text);
   if (!r.ok) throw new Error(`parse failed: ${r.reason} — ${r.message}`);
   return r;
 }
-
-// --- round-trip on the real fixture ----------------------------------------
-
-test('round-trip: researcher.md is byte-for-byte preserved when no fields change', () => {
-  const original = readFileSync(RESEARCHER_MD, 'utf-8');
-  const parsed = parseOk(original);
-  const out = serializeAgentFile({ def: parsed.def, body: parsed.body, original });
-  assert.equal(out, original);
-});
-
-test('round-trip: researcher.md parsed shape exposes expected fields', () => {
-  const original = readFileSync(RESEARCHER_MD, 'utf-8');
-  const parsed = parseOk(original);
-  assert.equal(parsed.def.name, 'researcher');
-  assert.ok(parsed.def.description && parsed.def.description.length > 0);
-  // researcher.md's `tools:` line is a comma-separated plain scalar; the
-  // typed view normalizes to a string list.
-  assert.ok(Array.isArray(parsed.def.tools));
-  assert.ok(parsed.def.tools!.includes('Read'));
-  assert.ok(parsed.def.tools!.includes('mcp__pc-rig__pc_complete_node'));
-  // Section 3 D2 default; see the build-queue table in buildout/subagents.md.
-  assert.equal(parsed.def.model, 'sonnet');
-  assert.equal(parsed.def.effort, 'medium');
-  assert.equal(parsed.def.maxTurns, 20);
-  assert.equal(parsed.def.color, 'cyan');
-});
-
-// --- round-trip with edits -------------------------------------------------
-
-test('serialize: changing one field updates that field, leaves others byte-stable', () => {
-  const original = readFileSync(RESEARCHER_MD, 'utf-8');
-  const parsed = parseOk(original);
-  const next: AgentDef = { ...parsed.def, model: 'opus' };
-  const out = serializeAgentFile({ def: next, body: parsed.body, original });
-  // Body region unchanged.
-  const reparsed = parseOk(out);
-  assert.equal(reparsed.body, parsed.body);
-  assert.equal(reparsed.def.model, 'opus');
-  assert.equal(reparsed.def.name, parsed.def.name);
-  assert.equal(reparsed.def.description, parsed.def.description);
-});
-
-test('serialize: deleting a field removes the YAML key', () => {
-  const original = readFileSync(RESEARCHER_MD, 'utf-8');
-  const parsed = parseOk(original);
-  const next: AgentDef = { ...parsed.def };
-  delete next.model;
-  const out = serializeAgentFile({ def: next, body: parsed.body, original });
-  const reparsed = parseOk(out);
-  assert.equal(reparsed.def.model, undefined);
-  assert.ok(!out.includes('model:'));
-});
 
 // --- unknown-field preservation --------------------------------------------
 

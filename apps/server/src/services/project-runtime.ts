@@ -51,11 +51,10 @@ export interface ProjectRuntimeOptions {
 
 export class ProjectRuntime {
   private pty: PtySession | null = null;
-  private agentCreator: PtySession | null = null;
-  /** 17b.12 — transient agent-designer session. Same shape as agentCreator
-   *  but spawns CC with `--agent agent-designer` + the materialised pod
-   *  (prompt + tools + knowledge from the agent-designer pod row). One per
-   *  project at a time. Pod-spawn cleanup is bound to the session end. */
+  /** 17b.12 — transient agent-designer session that spawns CC with
+   *  `--agent agent-designer` + the materialised pod (prompt + tools +
+   *  knowledge from the agent-designer pod row). One per project at a time.
+   *  Pod-spawn cleanup is bound to the session end. */
   private agentDesigner: PtySession | null = null;
   private agentDesignerPrep: PodSpawnPrep | null = null;
   private workflowCreator: PtySession | null = null;
@@ -418,10 +417,8 @@ export class ProjectRuntime {
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
-    try { this.agentCreator?.kill(); } catch { /* best-effort */ }
     try { this.workflowCreator?.kill(); } catch { /* best-effort */ }
     this.pty = null;
-    this.agentCreator = null;
     this.workflowCreator = null;
     this.workflowCreatorSessionId = null;
     this.workflow = null;
@@ -431,52 +428,6 @@ export class ProjectRuntime {
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
     this.workflowCreatorDrafts.clear();
-  }
-
-  /** Section 3 phase 3e.3: transient PtySession driving the conversational
-   *  Create-Agent modal. Different from `ensurePty()`:
-   *   - no `orchestrator_sessions` row (Sessions tab never sees it)
-   *   - dedicated `agent-creator-prompt.md` system-prompt layer
-   *   - per-call `ac-<uuid>` PC_SESSION_ID routes hooks into a transient subdir
-   *     under `<dataPath>/sessions/` so events stay isolated from orchestrator
-   *  Only one agent-creator session per project at a time — calling `start`
-   *  again kills any prior one. */
-  startAgentCreator(): PtySession {
-    if (this.agentCreator) {
-      try { this.agentCreator.kill(); } catch { /* best-effort */ }
-      this.agentCreator = null;
-    }
-    this.refreshHooksIfStale();
-    const transientId = `ac-${randomUUID()}`;
-    const sessionDir = this.sessionDataPath(transientId);
-    mkdirSync(sessionDir, { recursive: true });
-    this.agentCreator = new PtySession({
-      workspaceDir: this.project.folderPath,
-      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
-      eventsPath: resolve(sessionDir, 'events.jsonl'),
-      transcriptPath: resolve(sessionDir, 'transcript.log'),
-      extraEnv: { PC_SESSION_ID: transientId },
-      appendSystemPromptPath: resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'agent-creator-prompt.md',
-      ),
-    });
-    return this.agentCreator;
-  }
-
-  /** Returns the live agent-creator PtySession, or null if not started / exited. */
-  agentCreatorPty(): PtySession | null {
-    return this.agentCreator && this.agentCreator.getState() !== 'exited'
-      ? this.agentCreator
-      : null;
-  }
-
-  /** Kill the agent-creator session. Idempotent. */
-  endAgentCreator(): void {
-    if (!this.agentCreator) return;
-    try { this.agentCreator.kill(); } catch { /* best-effort */ }
-    this.agentCreator = null;
   }
 
   /** 17b.12 — transient agent-designer session backed by the agent-designer
@@ -751,23 +702,6 @@ export class ProjectRuntime {
       // `.project-companion/orchestrator-prompt.md` are unused post-16a;
       // safe to leave on disk (no reader) or manually delete.
 
-      // Section 3 phase 3e.3: backfill the agent-creator prompt for the
-      // transient Create-Agent modal session. Same write-if-missing rule.
-      const creatorSrc = resolve(
-        this.opts.templatesDir,
-        '.project-companion',
-        'agent-creator-prompt.md',
-      );
-      const creatorDest = resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'agent-creator-prompt.md',
-      );
-      if (existsSync(creatorSrc) && !existsSync(creatorDest)) {
-        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
-        const raw = readFileSync(creatorSrc, 'utf-8');
-        writeFileSync(creatorDest, renderTemplate(raw, tokens), 'utf-8');
-      }
       // Section 4b phase 4b.3: keep the workflow-creator prompt in lock-step
       // with the trunk template. This file backs a transient session that
       // nobody hand-edits — always re-render so changes to the interview
