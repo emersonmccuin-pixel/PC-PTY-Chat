@@ -52,4 +52,6 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_add_agent_mcp_server',
   'mcp__pc-rig__pc_delete_agent_mcp_server',
   'mcp__pc-rig__pc_list_agent_audit',
+  // Section 24 — agent ready-ping protocol
+  'mcp__pc-rig__pc_check_in',
 ] as const;

@@ -246,6 +246,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: 'Reply to an earlier ask-orchestrator / ask-user / approval.',
     source: 'pc-rig',
   },
+  {
+    slug: 'mcp__pc-rig__pc_check_in',
+    label: 'Check in for an instruction',
+    description:
+      "Resumed-run readiness ping — fetches the orchestrator's queued follow-up.",
+    source: 'pc-rig',
+  },
 
   // --- pc-rig: pod CRUD (17b) ---------------------------------------------
   {

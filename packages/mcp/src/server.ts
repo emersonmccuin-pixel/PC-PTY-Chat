@@ -764,6 +764,16 @@ export const TOOLS = [
       required: ['pendingAskId', 'answer', 'answeredBy'],
     },
   },
+  {
+    name: 'pc_check_in',
+    description:
+      "Ready-ping for a resumed run. The first thing you do on boot when continuing a prior conversation. PC may have queued a follow-up instruction from the orchestrator before your spawn finished — this tool blocks (up to 60s) for that instruction and returns it as { input, source: 'orchestrator', depositedAt }. If no instruction is queued, returns { input: null, source: null, depositedAt: null } — that means there's nothing new for you and you should end your turn without further action. Do NOT call this tool more than once per session. PC_AGENT_RUN_ID identifies your run; you do not need to pass it.",
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
 ] as const;
 
 function projectPath(suffix: string): string {
@@ -2822,6 +2832,42 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_check_in': {
+      // Section 24 — ready-ping for resumed agents. Long-polls
+      // /api/internal/instruction-fetch with this agent's runId (set at
+      // spawn time, Section 18.5a). Server holds up to 60s for a queued
+      // instruction from the orchestrator and returns it as the tool
+      // result; on timeout returns a null envelope and the agent's
+      // continuation-time system-prompt fragment tells it to end the turn.
+      const runId = process.env.PC_AGENT_RUN_ID ?? '';
+      if (!runId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_check_in: PC_AGENT_RUN_ID not set — only agents spawned through PC can ping for instructions',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer('/api/internal/instruction-fetch', { runId });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_check_in failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_check_in failed: ${(err as Error).message}` }],
           isError: true,
         };
       }
