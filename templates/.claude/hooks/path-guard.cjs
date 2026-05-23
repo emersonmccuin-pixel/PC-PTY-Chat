@@ -68,9 +68,18 @@ function extractWorktree(prompt) {
 }
 
 function gateWorkflow() {
-  // Subagents are workflow-only (Section 3 D1). The workflow runtime emits a
-  // dispatch envelope containing "[workflowRunId: <id>]". Any Task call without
-  // that token is a direct orchestrator dispatch; deny it.
+  // PC product policy: subagents inside PC-spawned claude.exe are
+  // workflow-only (Section 3 D1). The workflow runtime emits a dispatch
+  // envelope containing "[workflowRunId: <id>]"; a Task() call without it
+  // is a direct orchestrator dispatch and we deny it.
+  //
+  // BUT: the same `.claude/settings.json` loads in any claude.exe that
+  // opens this repo — including the engineer running Claude Code as a dev
+  // tool. PC's policy doesn't apply there; Task() should work normally.
+  // Distinguish via PC_PROJECT_ID, which apps/server sets on every spawn
+  // (orchestrator + dispatched agent). Absent = outer/dev session = skip.
+  if (!process.env.PC_PROJECT_ID) return;
+
   const prompt = payload.tool_input && payload.tool_input.prompt;
   if (typeof prompt === 'string' && prompt.includes('[workflowRunId:')) return;
   const reason =
