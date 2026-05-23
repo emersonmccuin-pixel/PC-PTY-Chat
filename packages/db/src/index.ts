@@ -196,6 +196,7 @@ export {
   findActiveContinuationV2,
   getAgentRunRowV2,
   insertAgentRunRowV2,
+  listActiveAgentRunsForProjectV2,
   listAgentRunsForSessionV2,
   markAgentRunTerminalV2,
   reconcileOrphanedRunningRunsV2,

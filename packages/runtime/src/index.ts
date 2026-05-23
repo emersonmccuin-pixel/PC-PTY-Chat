@@ -13,6 +13,11 @@ export type {
   SubagentSpawnResult,
   SubagentSpawnSuccess,
 } from './subagent-spawner.ts';
+// Section 25 Session 10 — v2 workflow subagent spawner (LowLevelSpawn-based).
+// Drop-in replacement for `spawnSubagent`. Will become the only spawner once
+// the v1 path is ripped at Phase D.
+export { spawnSubagentV2 } from './subagent-spawner-v2.ts';
+export type { SubagentSpawnerV2Deps } from './subagent-spawner-v2.ts';
 export {
   attachWorktree,
   createWorktree,

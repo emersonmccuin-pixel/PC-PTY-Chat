@@ -133,6 +133,12 @@ export interface DispatchAgentV2Deps {
   scratchDirFor?: (projectId: ULID, agentRunId: ULID) => string;
   /** Test seam: AgentRun factory. Production = `new AgentRun(...)`. */
   agentRunFactory?: typeof defaultAgentRunFactory;
+  /** Session 10 — WS broadcast hook for the Activity Panel adapter shim.
+   *  Called on every state transition + terminal with the v2 row snapshot
+   *  shimmed into a v1-shape `AgentRunRecord` envelope. Production wires
+   *  this to apps/server's `broadcastTo(projectId, env)`; tests can leave
+   *  it undefined (no-op). */
+  broadcast?: (env: { type: 'agent-run-changed'; record: unknown }) => void;
   now?: () => number;
 }
 
@@ -474,8 +480,53 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     podRevisionAtDispatch: args.podRevisionAtDispatch,
   });
 
+  // Session 10 — Activity Panel adapter shim. Build a v1-shape AgentRunRecord
+  // envelope on every state transition + emit through the broadcast hook.
+  // Provides the panel with feature parity for v2 dispatches.
+  const startedAt = (args.deps.now ?? Date.now)();
+  const broadcastStateChanged = (
+    status: 'queued' | 'spawning' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled',
+    extra: { result?: string; failureCause?: AgentRunFailureCauseV2 | null; endedAt?: number } = {},
+  ): void => {
+    if (!args.deps.broadcast) return;
+    const record = {
+      runId: args.agentRunId,
+      sessionId: args.ccSessionId,
+      agentName: args.podName,
+      // Pod-row model lookup isn't load-bearing for the Activity Panel card;
+      // mirror v1's pod-less-spawn fallback so the UI's model pill renders.
+      model: 'opus',
+      projectId: args.input.projectId,
+      parentWorkItemId: args.input.parentWorkItemId ?? null,
+      dispatcherSessionId: args.input.dispatcherSessionId,
+      // v2 dispatches are always async on the wire — the wait=true sync path
+      // was a v1 artifact for nested-agent chains. Match v1's record shape.
+      wait: false,
+      worktreeDir: args.input.worktreeDir,
+      startedAt,
+      status,
+      result: extra.result ?? '',
+      failureReason: extra.failureCause
+        ? describeFailure(extra.failureCause) ?? null
+        : null,
+      failureCause: extra.failureCause ?? null,
+      endedAt: extra.endedAt ?? null,
+    };
+    try {
+      args.deps.broadcast({ type: 'agent-run-changed', record });
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  // Fire initial 'queued' envelope so the panel renders the card the moment
+  // the row lands. State events from AgentRun only fire on TRANSITIONS, not
+  // the initial state, so we emit explicitly here.
+  broadcastStateChanged('queued');
+
   // Persist state-machine transitions. AgentRun emits `state(next, prev)` on
-  // every move; we mirror queued→spawning/running/paused to the DB row.
+  // every move; we mirror queued→spawning/running/paused to the DB row +
+  // broadcast a panel envelope.
   run.on('state', (next: string) => {
     if (next === 'spawning') {
       updateAgentRunStatusV2({
@@ -483,16 +534,21 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
         status: 'spawning',
         spawnedAt: Date.now(),
       });
+      broadcastStateChanged('spawning');
     } else if (next === 'running') {
       updateAgentRunStatusV2({
         id: args.agentRunId,
         status: 'running',
         readyAt: Date.now(),
       });
+      broadcastStateChanged('running');
+    } else if (next === 'paused') {
+      broadcastStateChanged('paused');
     }
   });
 
-  // Terminal handling: persist row + emit channel envelope to dispatcher.
+  // Terminal handling: persist row + emit channel envelope to dispatcher +
+  // emit Activity Panel envelope.
   run.once(
     'terminal',
     (info: { status: 'completed' | 'failed' | 'cancelled'; cause?: string; result?: string }) => {
@@ -520,6 +576,11 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
         terminalStatus: info.status,
         result: info.result ?? '',
         failureCause,
+      });
+      broadcastStateChanged(info.status, {
+        result: info.result,
+        failureCause,
+        endedAt: completedAt,
       });
     },
   );

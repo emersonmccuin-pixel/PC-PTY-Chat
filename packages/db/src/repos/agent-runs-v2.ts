@@ -160,6 +160,25 @@ export function listAgentRunsForSessionV2(
     .all();
 }
 
+/** Section 25 Session 10 — Activity Panel feeder. Lists non-terminal rows
+ *  for a project (queued | spawning | running | paused). Newest first. The
+ *  /api/projects/:projectId/agent-runs route merges these into the v1
+ *  in-memory snapshot so the Activity Panel shows v2 dispatches the same
+ *  way it shows v1 dispatches. */
+export function listActiveAgentRunsForProjectV2(projectId: ULID): AgentRunRowV2[] {
+  return getDb()
+    .select()
+    .from(agentRunsV2)
+    .where(
+      and(
+        eq(agentRunsV2.projectId, projectId),
+        inArray(agentRunsV2.status, ['queued', 'spawning', 'running', 'paused']),
+      ),
+    )
+    .orderBy(desc(agentRunsV2.queuedAt))
+    .all();
+}
+
 /** Concurrent-continuation guard. Returns a non-terminal continuation row
  *  if one exists for `priorRunId`. `pc_continue_agent` rejects with 409
  *  when this comes back non-null. */

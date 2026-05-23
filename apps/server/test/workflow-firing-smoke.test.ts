@@ -1444,3 +1444,100 @@ test('17a.6 / D39 e2e smoke: no pod row for agent name → spawn proceeds withou
     f.cleanup();
   }
 });
+
+// Section 25 Session 10 — D39 v2 smoke. Composes the workflow-runtime with
+// `spawnSubagentV2` + a fake LowLevelSpawn so the v2 path is exercised end-
+// to-end: ready-gate signal → send(initialInput) → pc_complete_node tool
+// call → turn-end → workflow node settles complete. Validates the parallel-
+// build invariant that workflow firing through v2 produces the same node
+// output the v1 path produced.
+test('e2e smoke (Session 10): workflow → spawnSubagentV2 (fake LowLevelSpawn) → node settles complete', async () => {
+  const { spawnSubagentV2 } = await import('@pc/runtime');
+  const { EventEmitter } = await import('node:events');
+  type EE = InstanceType<typeof EventEmitter>;
+
+  let registeredCcSession: string | null = null;
+  const fakeSpawns: Array<{ agentName: string; mode: string }> = [];
+
+  const fakeFactory = () => {
+    const e = new EventEmitter() as EE & {
+      start: () => void;
+      awaitReady: () => Promise<{ handshakeAt: number; composerReadyAt: number; initCompleteAt: number }>;
+      send: (body: string) => Promise<'ok'>;
+      notifyMcpHandshake: () => void;
+      interrupt: () => void;
+      kill: () => void;
+      getState: () => 'ready';
+      getJsonlPath: () => string | null;
+    };
+    e.start = () => {
+      // After start, schedule the turn-end via setImmediate so callers can
+      // attach listeners. Resolve ready first, then emit pc_complete_node
+      // tool call + turn-end on the next tick.
+      setImmediate(() => {
+        e.emit('jsonl-event', {
+          kind: 'jsonl-tool-call',
+          toolUseId: 't1',
+          name: 'mcp__pc-rig__pc_complete_node',
+          input: { workflowRunId: 'r', nodeId: 'investigate', output: 'v2 path works' },
+        });
+        e.emit('jsonl-event', {
+          kind: 'jsonl-turn-end',
+          text: 'all good',
+          stopReason: 'end_turn',
+        });
+      });
+    };
+    e.awaitReady = async () => ({
+      handshakeAt: Date.now(),
+      composerReadyAt: Date.now(),
+      initCompleteAt: Date.now(),
+    });
+    e.send = async () => 'ok';
+    e.notifyMcpHandshake = () => {};
+    e.interrupt = () => {};
+    e.kill = () => {};
+    e.getState = () => 'ready' as const;
+    e.getJsonlPath = () => '/fake/session.jsonl';
+    return e;
+  };
+
+  const spawnerWiredToV2 = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+    fakeSpawns.push({ agentName: req.agentName, mode: 'fresh' });
+    return spawnSubagentV2(req, {
+      createLowLevelSpawn: fakeFactory,
+      registerHandshakeListener: (ccSessionId) => {
+        registeredCcSession = ccSessionId;
+        return () => {};
+      },
+    });
+  };
+
+  const f = await mkFixture(
+    [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
+    { subagentSpawner: spawnerWiredToV2 },
+  );
+  try {
+    // SUBAGENT_WORKFLOW_YAML declares `id: smoke-subagent`; registry looks
+    // up by id (not filename).
+    const run = await f.runtime.runWorkflow('smoke-subagent');
+    for (let i = 0; i < 100; i++) {
+      const fresh = f.runtime['tryGetRun'].call(f.runtime, run.id);
+      if (fresh?.status === 'complete') break;
+      await new Promise((res) => setTimeout(res, 20));
+    }
+    const settled = f.runtime['tryGetRun'].call(f.runtime, run.id);
+    assert.equal(settled?.status, 'complete', 'workflow run reached complete via v2 spawn path');
+    assert.equal(
+      settled?.nodeOutputs?.['investigate']?.output,
+      'v2 path works',
+      'pc_complete_node payload propagated through v2 spawner',
+    );
+    assert.equal(fakeSpawns.length, 1, 'v2 spawner invoked exactly once');
+    assert.equal(fakeSpawns[0]!.agentName, 'researcher');
+    assert.ok(registeredCcSession, 'handshake listener registered');
+    assert.match(registeredCcSession!, /^[0-9a-f-]{36}$/, 'ccSessionId is a UUID');
+  } finally {
+    f.cleanup();
+  }
+});

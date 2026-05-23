@@ -35,6 +35,7 @@ import {
   dismissFailedRun,
   getAgentRunRow,
   getAgentRunRowV2,
+  listActiveAgentRunsForProjectV2,
   listAgentRunsForSession,
   listAgentRunsForSessionV2,
   getGlobalSettings,
@@ -71,6 +72,7 @@ import {
   recordExplicitPauseV2,
 } from './services/v2/pause-resume.ts';
 import { getActiveRunRegistry } from './services/v2/active-runs.ts';
+import { notifyWorkflowSubagentHandshake } from './services/v2/workflow-subagent-handshake.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -3088,7 +3090,29 @@ app.get('/api/projects/:projectId/agent-runs', (c) => {
   const active = all.filter(
     (r) => r.status !== 'completed' && r.status !== 'failed' && r.status !== 'cancelled',
   );
-  return c.json({ ok: true, runs: active });
+  // Session 10 — merge v2 rows (queued | spawning | running | paused) into
+  // the v1 in-memory snapshot so the Activity Panel shows v2 dispatches on
+  // mount the same way it shows v1 ones. Shaped to the v1 AgentRunRecord
+  // surface the panel's `useResourceList<AgentRunRecord>` expects.
+  const v2Rows = listActiveAgentRunsForProjectV2(projectId);
+  const v2Shimmed = v2Rows.map((r) => ({
+    runId: r.id,
+    sessionId: r.ccSessionId,
+    agentName: r.podName,
+    model: 'opus',
+    projectId: r.projectId,
+    parentWorkItemId: r.parentWorkItemId,
+    dispatcherSessionId: r.dispatcherSessionId,
+    wait: false,
+    worktreeDir: project.folderPath,
+    startedAt: r.queuedAt,
+    status: r.status,
+    result: r.result ?? '',
+    failureReason: r.failureReason,
+    failureCause: r.failureCause,
+    endedAt: r.completedAt,
+  }));
+  return c.json({ ok: true, runs: [...active, ...v2Shimmed] });
 });
 
 /** Section 16b.8.1 — cancel an in-flight agent run. Matches the workflow-
@@ -3436,6 +3460,13 @@ app.post('/api/internal/mcp-handshake', async (c) => {
     v2Entry.run.notifyMcpHandshake();
     return c.json({ ok: true, found: true, transport: 'v2' });
   }
+  // Session 10 — workflow subagent spawns use LowLevelSpawn directly without
+  // an AgentRun wrapper, so they don't enter the active-runs registry. The
+  // workflow-subagent-handshake module owns a parallel map of CC session-ids
+  // → notify-fn callbacks for that population.
+  if (notifyWorkflowSubagentHandshake(body.agentSessionId)) {
+    return c.json({ ok: true, found: true, transport: 'v2-workflow' });
+  }
   const mgr = getAgentRunManager();
   const found = mgr.notifyMcpConnected(body.projectId as ULID, body.agentSessionId);
   return c.json({ ok: true, found, transport: 'v1' });
@@ -3501,7 +3532,10 @@ app.post('/api/projects/:projectId/agents/v2/:name/invoke', async (c) => {
       invokeDepth: depthCheck.childDepth,
       slug: project.slug,
     },
-    { channelServer },
+    {
+      channelServer,
+      broadcast: (env) => broadcastTo(projectId, env),
+    },
   );
 
   if (!result.ok) {
@@ -3603,7 +3637,10 @@ app.post('/api/projects/:projectId/agent-runs/v2/:runId/continue', async (c) => 
       dispatcherSessionId,
       slug: project.slug,
     },
-    { channelServer },
+    {
+      channelServer,
+      broadcast: (env) => broadcastTo(projectId, env),
+    },
   );
 
   if (!result.ok) {
