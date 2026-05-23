@@ -71,7 +71,7 @@ export function Shell({
       id="pc-shell-v3"
       className="h-full"
     >
-      <Panel id="rail" defaultSize="15%" minSize="15%" maxSize="15%">
+      <Panel id="rail" defaultSize={240} minSize={240} maxSize={240}>
         <LeftRail
           projects={projects}
           activeProject={activeProject}
@@ -99,11 +99,11 @@ export function Shell({
       <Panel
         id="activity"
         panelRef={activityRef}
-        defaultSize="15%"
-        minSize="15%"
-        maxSize="15%"
+        defaultSize={240}
+        minSize={240}
+        maxSize={240}
         collapsible
-        collapsedSize="0%"
+        collapsedSize={0}
       >
         <ActivityPanel
           project={activeProject}
