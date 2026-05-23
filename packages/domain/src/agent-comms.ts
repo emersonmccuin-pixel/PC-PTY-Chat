@@ -206,6 +206,72 @@ export type AgentChannelEventPayload =
   | AgentCompletedPayload
   | AgentFailedPayload;
 
+// ─── Section 24 — Instruction deposits (agent ready-ping protocol) ───────
+//
+// Inverse direction of `pending_asks`: the orchestrator deposits a follow-up
+// instruction for a resuming agent on a server-side shelf, the agent's first
+// action on boot is `pc_check_in` which atomically consumes the row and
+// returns the instruction. Delivery via tool-call return — never via PTY
+// typing. Closes the original 21.8 bug class (PC sends to claude.exe before
+// claude.exe's input pipe is ready on `--resume`).
+//
+// Lifecycle: `waiting` is the only state that admits consumption; `consumed`
+// (agent pinged + read) and `cancelled` (orphan cleanup / parent run died)
+// are terminal. Single waiting row per run guaranteed by the partial unique
+// index — concurrent-continuation guard on `agent_runs` (Section 21.5)
+// blocks the route layer before a second row could land.
+
+/** Lifecycle of an instruction deposit. */
+export type InstructionDepositStatus = 'waiting' | 'consumed' | 'cancelled';
+
+export const INSTRUCTION_DEPOSIT_STATUSES: readonly InstructionDepositStatus[] = [
+  'waiting',
+  'consumed',
+  'cancelled',
+];
+
+/** A queued instruction waiting for its target agent to ping. Matches the
+ *  `instruction_deposits` table shape. */
+export interface InstructionDepositRow {
+  /** PC-minted ULID. Also the wakeup key in the in-memory EventEmitter. */
+  id: ULID;
+  /** AgentRun row id (matches `PC_AGENT_RUN_ID` in the agent's env). */
+  runId: ULID;
+  projectId: ULID;
+  /** PC session-id of the orchestrator that deposited the instruction. */
+  dispatcherSessionId: string;
+  /** The orchestrator's follow-up message. Returned verbatim to the agent. */
+  instruction: string;
+  status: InstructionDepositStatus;
+  depositedAt: number;
+  consumedAt: number | null;
+  cancelledAt: number | null;
+}
+
+// pc_check_in ─────────────────────────────────────────────────────────────
+
+/** `pc_check_in` — empty-args readiness ping. Server identifies the run via
+ *  `PC_AGENT_RUN_ID` env (set at spawn). Long-polls up to 60s for a queued
+ *  instruction. Returns the instruction on resolve, or a null envelope on
+ *  timeout — the system-prompt fragment instructs the agent to end the turn
+ *  cleanly when `input` is null. */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface PcCheckInInput {}
+
+export type PcCheckInResult = PcCheckInResultDelivered | PcCheckInResultEmpty;
+
+export interface PcCheckInResultDelivered {
+  input: string;
+  source: 'orchestrator';
+  depositedAt: number;
+}
+
+export interface PcCheckInResultEmpty {
+  input: null;
+  source: null;
+  depositedAt: null;
+}
+
 // ─── Section 18 — Inbox + delivery audit (hybrid transport) ───────────────
 //
 // The inbox is the durability layer of the hybrid: every agent → orchestrator

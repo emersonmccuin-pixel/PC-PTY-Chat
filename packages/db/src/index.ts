@@ -165,6 +165,15 @@ export {
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,
 } from './repos/agent-runs.ts';
+
+export {
+  cancelInstruction,
+  consumeInstructionForRun,
+  depositInstruction,
+  findWaitingForRun,
+  reconcileOrphanedInstructionDeposits,
+} from './repos/instruction-deposits.ts';
+export type { DepositInstructionInput } from './repos/instruction-deposits.ts';
 export type {
   InsertAgentRunRowInput,
   ListAgentRunsForSessionOptions,

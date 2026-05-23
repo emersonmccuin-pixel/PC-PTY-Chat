@@ -11,6 +11,7 @@ import type {
   AgentRunPersistedStatus,
   FieldSchemaType,
   GlobalSettings,
+  InstructionDepositStatus,
   NodeOutput,
   PendingAskKind,
   PendingAskOption,
@@ -715,5 +716,60 @@ export const agentRuns = sqliteTable(
     /** Project scope filter for cross-project diagnostics + restart-time
      *  reconciliation sweep. */
     index('agent_runs_project_idx').on(t.projectId),
+  ],
+);
+
+/**
+ * Section 24 — Agent ready-ping protocol.
+ *
+ * The inverse direction of `pending_asks`: the orchestrator deposits a
+ * follow-up instruction here at the same moment it triggers a `--resume`
+ * spawn. The agent's first action on boot is the `pc_check_in` tool call,
+ * which long-polls this table for a `waiting` row keyed by the agent's
+ * `PC_AGENT_RUN_ID` env, atomically flips it to `consumed`, and returns the
+ * instruction as the tool result. Delivery happens via tool return — never
+ * via PTY typing — closing the original 21.8 send-timing bug class.
+ *
+ * Atomic-flip pattern mirrors `pending_asks` (status guard in the UPDATE
+ * WHERE). Concurrent-continuation guard on `agent_runs` (Section 21.5)
+ * blocks the route layer before a second `waiting` row could land for the
+ * same run; the partial unique index here is belt-and-suspenders.
+ */
+export const instructionDeposits = sqliteTable(
+  'instruction_deposits',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    /** AgentRun row id. Matches `PC_AGENT_RUN_ID` in the agent's env. */
+    runId: text('run_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agentRuns.id),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    /** PC session-id (ULID) of the orchestrator that deposited this row.
+     *  Audit-only — the agent does not need to know who deposited. */
+    dispatcherSessionId: text('dispatcher_session_id').notNull(),
+    /** The orchestrator's follow-up message. Returned verbatim by
+     *  `pc_check_in`. */
+    instruction: text('instruction').notNull(),
+    status: text('status')
+      .notNull()
+      .default('waiting')
+      .$type<InstructionDepositStatus>(),
+    depositedAt: integer('deposited_at').notNull(),
+    consumedAt: integer('consumed_at'),
+    cancelledAt: integer('cancelled_at'),
+  },
+  (t) => [
+    /** At most one waiting deposit per run. Section 21.5's
+     *  concurrent-continuation guard is the primary defense; this is the
+     *  DB-level backstop against route-layer races. */
+    uniqueIndex('instruction_deposits_run_waiting_idx')
+      .on(t.runId)
+      .where(sql`status = 'waiting'`),
+    /** Boot-time orphan reconciliation sweep filter. */
+    index('instruction_deposits_status_idx').on(t.status),
   ],
 );
