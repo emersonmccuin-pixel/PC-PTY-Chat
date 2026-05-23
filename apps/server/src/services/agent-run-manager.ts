@@ -36,7 +36,7 @@
 //   - 'cancelled' (cancel() called)
 
 import { EventEmitter } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -769,6 +769,28 @@ export class AgentRunManager extends EventEmitter {
       sessionId,
     );
 
+    // Section 21 — on `--resume`, the prior session's JSONL already contains
+    // its full conversation. Tailing from line 0 would re-emit every
+    // historical assistant turn-end as a fresh `jsonl-turn-end` and the
+    // first one would race `onTurnEnd` into `complete()` — terminating the
+    // continuation before claude.exe even gets to produce new output.
+    // (Symptom: continuation completed in ~200ms with the warmup's "OK"
+    // captured as the result.) Skip past existing lines so the tailer only
+    // emits events from the resumed CC's new appends.
+    let jsonlStartLine = 0;
+    if (isResume) {
+      try {
+        if (existsSync(jsonlPath)) {
+          jsonlStartLine = readFileSync(jsonlPath, 'utf-8').split('\n').filter(Boolean).length;
+        }
+      } catch {
+        // Best-effort. Falling back to 0 means the run inherits the historical-
+        // replay bug but doesn't hard-fail; surfaces in the next turn-end as a
+        // surprise complete().
+        jsonlStartLine = 0;
+      }
+    }
+
     rec.pendingSessionOpts = {
       workspaceDir: input.worktreeDir,
       stopMarkerPath: resolve(scratchDir, 'stop-markers.txt'),
@@ -777,7 +799,7 @@ export class AgentRunManager extends EventEmitter {
       claudeSessionId: sessionId,
       resume: isResume,
       jsonlPath,
-      jsonlStartLine: 0,
+      jsonlStartLine,
       agentName: input.agentName,
       mcpConfigPath: podPrep?.mcpConfigPath,
       loadDevChannels: false,

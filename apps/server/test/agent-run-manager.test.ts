@@ -2083,6 +2083,96 @@ test('Section 21 — second continuation for an in-flight parent is rejected syn
   assert.equal(contCResult.status, 'completed');
 });
 
+// Section 21 — resume must skip the prior session's JSONL replay. If the
+// tailer starts from line 0 on a `--resume`, the prior conversation's
+// historical turn-ends re-fire as fresh events and `onTurnEnd` would
+// terminate the continuation before claude.exe produces new output (the
+// 232ms-result-"OK" bug from the 2026-05-22 user smoke). Spawn must set
+// jsonlStartLine to the current file's line count.
+test('Section 21 — resume skips historical JSONL replay (jsonlStartLine pinned to current EOF)', async () => {
+  const p = createProject({
+    slug: 'arm-resume-skip',
+    name: 'ARM Resume Skip',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+
+  // Use a fixture JSONL path under tmpDataDir so we can pre-seed it with
+  // historical lines. The manager's resolveJsonlPath dep gives full control.
+  const jsonlDir = join(tmpDataDir, 'arm-resume-skip-jsonl');
+  mkdirSync(jsonlDir, { recursive: true });
+  const sharedProviderSession = 'shared-provider-session-id';
+  const sharedJsonlPath = join(jsonlDir, `${sharedProviderSession}.jsonl`);
+
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-resume-skip', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(jsonlDir, `${sid}.jsonl`),
+  });
+
+  // Original dispatch — uses sharedProviderSession via the resolveJsonlPath dep.
+  // Drive original to completion so the JSONL fixture would normally accumulate
+  // turn-end rows in production; we manually seed historical content below.
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'first',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-skip-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  sessions[0]!.becomeReady();
+  sessions[0]!.emitTurnEnd('result-1');
+  await original.completion;
+
+  // Pre-seed the SHARED jsonl path (= what the continuation will resume into)
+  // with 5 historical lines, mimicking the prior session's leftover content.
+  writeFileSync(
+    sharedJsonlPath,
+    [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"user","message":{}}',
+      '{"type":"assistant","message":{}}',
+      '{"type":"user","message":{}}',
+      '{"type":"assistant","message":{}}',
+    ].join('\n') + '\n',
+  );
+
+  const cont = mgr.spawn({
+    agentName: 'researcher',
+    input: 'follow-up',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'resume-skip-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: sharedProviderSession },
+  });
+
+  const s = sessions[1]!;
+  assert.equal(s.lastOpts.resume, true, 'continuation passes --resume to PtySession');
+  assert.equal(
+    s.lastOpts.jsonlPath,
+    sharedJsonlPath,
+    "continuation's tailer attached to the shared (prior) JSONL",
+  );
+  assert.equal(
+    s.lastOpts.jsonlStartLine,
+    5,
+    'jsonlStartLine pinned to current EOF (skips the 5 historical lines)',
+  );
+
+  // Drive continuation to completion to keep the test hygienic + verify the
+  // FakeSession's flow still works against the resume path.
+  s.becomeReady();
+  s.emitTurnEnd('refined');
+  const result = await cont.completion;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.result, 'refined');
+});
+
 // Section 21 — continuation: spawn with `resume: { providerSessionId }`
 // reuses the prior run's CC session id, passes `--resume` to PtySession (via
 // the resume: true sessionOpts flag), and persists the new row with
