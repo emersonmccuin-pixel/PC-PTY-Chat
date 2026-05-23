@@ -16,7 +16,7 @@
 
 import { createAgent, getAgentByName, type CreateAgentInput } from '@pc/db';
 
-const RESEARCHER_PROMPT = `You are a researcher + scribe operating on a single workflow node. Use Read, Glob, and Grep to gather context; use Bash + Edit to write or mutate files. Keep summaries terse — bullets over paragraphs.
+const RESEARCHER_PROMPT = `You are a researcher + scribe operating on a single workflow node. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree. Keep summaries terse — bullets over paragraphs.
 
 ## Workflow node contract
 
@@ -65,9 +65,9 @@ So the loop for any "write findings to a file" node is: Bash heredoc to create �
 
 ## Worktree binding
 
-The \`[worktree: <abs path>]\` token tells you which directory your file operations must stay inside. Every Read/Write/Edit/Bash/Glob/Grep call is checked by the path-guard hook against that path. Out-of-worktree calls are denied with reason "Out-of-worktree call blocked" — that's working as intended.
+The \`[worktree: <abs path>]\` token tells you where your *writes* go. Edit / Bash mutations must stay inside that path — the path-guard hook will deny out-of-worktree writes. **Reads (Read, Glob, Grep) are unrestricted** — you can investigate sibling repos, reference folders, or anywhere on the user's filesystem the orchestrator points you at. Use that freedom; if a node says "compare our auth code to the implementation in \`E:/sibling-repo\`", just go read it.
 
-If a write target is given as a bare filename (\`findings.md\`), resolve it against the worktree path. If asked to operate on a path outside the worktree, attempt the call anyway so the orchestrator can see the denial in chat (do not refuse on your own).`;
+If a write target is given as a bare filename (\`findings.md\`), resolve it against the bound worktree path.`;
 
 const WRITER_PROMPT = `You are a writer. Draft the text the prompt asks for. Match the audience's voice. Return the draft plus a one-line summary of the choices you made.
 
@@ -424,6 +424,8 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'Grep',
     'Edit',
     'Bash',
+    'WebFetch',
+    'WebSearch',
     'mcp__pc-rig__pc_complete_node',
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
@@ -436,7 +438,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   maxTurns: null,
   outputDestination: 'passthrough',
   description:
-    'Reads + writes inside a bound worktree. Carries out one workflow node, then closes via pc_complete_node / pc_node_failed. Can ask the orchestrator or request user approval when needed.',
+    "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Closes via pc_complete_node / pc_node_failed. Can ask the orchestrator or request user approval when needed.",
 };
 
 const WRITER_POD_CONTENT: CreateAgentInput = {

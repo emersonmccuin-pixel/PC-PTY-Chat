@@ -13,7 +13,9 @@
 //   enforce       — PreToolUse on Read|Write|Edit|Bash|Glob|Grep|NotebookEdit:
 //                   if the call is inside a subagent turn (payload.agent_type set)
 //                   and the latest binding has a worktreePath, deny any tool call
-//                   that touches paths outside the worktree.
+//                   that touches paths outside the worktree. Exception:
+//                   READ_ANYWHERE_PODS (currently `researcher`) can call
+//                   Read/Glob/Grep against any path; edits stay bound.
 //
 // Bash enforcement is best-effort: a regex scan for absolute-looking paths in
 // the command string. Not a true sandbox.
@@ -118,6 +120,15 @@ function enforce() {
   if (!wt) return;
 
   const tool = payload.tool_name || '';
+
+  // Pods with cross-worktree read permission: Read/Glob/Grep exempt from
+  // worktree binding. Edit/Write/Bash/NotebookEdit stay bound. Add pod names
+  // here as they earn the exemption.
+  const READ_ANYWHERE_PODS = new Set(['researcher']);
+  if (READ_ANYWHERE_PODS.has(payload.agent_type) && (tool === 'Read' || tool === 'Glob' || tool === 'Grep')) {
+    return;
+  }
+
   const inp = payload.tool_input || {};
   const violations = [];
 
