@@ -3532,6 +3532,21 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   }
 
   const mgr = getAgentRunManager();
+
+  // Section 24 — deposit the follow-up instruction on the server-side shelf
+  // BEFORE spawning. The resumed agent's first action is `pc_check_in`,
+  // which long-polls the deposit and returns it as the next user message.
+  // Delivery happens via tool return — `mgr.spawn` does NOT type `input`
+  // into the PTY on resume (pre-set `initialInputSent = true` in the
+  // manager's resume branch).
+  //
+  // The deposit row references the NEW continuation runId (not the parent),
+  // because spawn mints a fresh runId. We mint it inline so we can deposit
+  // first — `mgr.spawn` accepts a pre-minted runId only via the response
+  // shape, so we use a thin "deposit-then-spawn-then-rewrite" trick: spawn
+  // first to learn the runId, then deposit. The agent's `pc_check_in`
+  // long-poll waits up to 60s — deposit landing within the spawn's
+  // boot-to-pc_check_in window (~5-15s) is the expected case.
   const spawn = mgr.spawn({
     agentName: row.agentName,
     input,
@@ -3544,6 +3559,30 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
     continues: runId,
     resume: { providerSessionId: row.sessionId },
   });
+
+  // Deposit the instruction immediately after spawn returns the runId.
+  // Failures here surface as a deposit-miss → agent's `pc_check_in` times
+  // out at 60s → orchestrator sees ack-timeout (or, if wait:true, the
+  // pause-style timeout). The orphan reconciler cleans the row at next
+  // boot if the agent's run terminated without consuming it.
+  try {
+    depositInstruction({
+      id: newId() as ULID,
+      runId: spawn.runId,
+      projectId,
+      dispatcherSessionId,
+      instruction: input,
+      now: Date.now(),
+    });
+    notifyDeposit(spawn.runId);
+  } catch (err) {
+    // Don't fail the route — the spawn is already in flight. Surface as a
+    // log line; the agent will time out on pc_check_in and the orchestrator
+    // sees ack-timeout.
+    console.error(
+      `[agent-runs] depositInstruction failed for runId=${spawn.runId}: ${(err as Error).message}`,
+    );
+  }
 
   // 16b.7 — audit row on the parent work item. Continuation reuses the
   // pattern; the audit log gets a fresh row for the new dispatch.

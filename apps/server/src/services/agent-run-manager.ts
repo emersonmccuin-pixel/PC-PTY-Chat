@@ -36,7 +36,7 @@
 //   - 'cancelled' (cancel() called)
 
 import { EventEmitter } from 'node:events';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -91,6 +91,24 @@ const DEFAULT_WARMUP_KICK_INTERVAL_MS = 30_000;
  *  ships against a fully-bound tool surface. Disable by passing
  *  `warmupPrompt: null` in `AgentRunManagerDeps` (tests + emergency knob). */
 const DEFAULT_WARMUP_PROMPT = 'Reply with only the word OK.';
+
+/** Section 24.5 — appended to the resume spawn's system prompt via
+ *  `--append-system-prompt-file`. The agent's first action must be a
+ *  `pc_check_in` call to fetch the orchestrator's queued instruction.
+ *  Treat the tool's return value as the next user message; if it returns
+ *  `input: null`, end the turn cleanly (no queued follow-up). Do not call
+ *  `pc_check_in` more than once. Pod prompts have no notion of
+ *  continuation — this fragment supplies it for resume spawns only. */
+const CONTINUATION_SYSTEM_PROMPT_FRAGMENT = `## Continuation protocol (resumed run)
+
+You are resuming a previous run via \`--resume\`. The orchestrator may have queued a follow-up instruction for you while PC was setting up this resumed session.
+
+**Your first action must be to call \`pc_check_in\` (no arguments).** It returns one of:
+
+- \`{ "input": "<text>", "source": "orchestrator", "depositedAt": <ts> }\` — the orchestrator's follow-up. Treat \`input\` as the next user message and respond normally.
+- \`{ "input": null, "source": null, "depositedAt": null }\` — there is no queued instruction. End your turn without further action.
+
+Do not call \`pc_check_in\` more than once in this session. Do not skip it — even if your prior conversation seems complete, the orchestrator may have queued a refinement or clarification.`;
 
 /** Section 22 — wait at most this long after PtySession `ready` for the
  *  `mcp-connected` notification (posted by pc-rig's `oninitialized`) before
@@ -808,6 +826,32 @@ export class AgentRunManager extends EventEmitter {
       }
     }
 
+    // Section 24.5 — on resume, write the ready-ping system-prompt fragment
+    // into the scratch dir + pass it via `--append-system-prompt-file`. The
+    // fragment instructs the agent that its first action MUST be to call
+    // `pc_check_in` to receive the orchestrator's queued instruction. Without
+    // the fragment the model has no idea it should ping — pod prompts have
+    // no notion of continuation. Fresh dispatches do NOT get the fragment;
+    // their first user message is the orchestrator's input, delivered via
+    // PTY by the existing send-on-ready path.
+    let continuationFragmentPath: string | undefined;
+    if (isResume) {
+      continuationFragmentPath = resolve(scratchDir, 'continuation-instruction.md');
+      try {
+        writeFileSync(continuationFragmentPath, CONTINUATION_SYSTEM_PROMPT_FRAGMENT);
+      } catch (err) {
+        // Best-effort. Without the fragment the agent won't know to ping +
+        // the deposit will time out; the orchestrator sees ack-timeout. We
+        // log + continue rather than fail-fast because the broken path is
+        // recoverable (orphan reconciler cleans the deposit, orchestrator
+        // can re-dispatch).
+        console.warn(
+          `[agent-runs] failed to write continuation-instruction.md for runId=${runId}: ${(err as Error).message}`,
+        );
+        continuationFragmentPath = undefined;
+      }
+    }
+
     rec.pendingSessionOpts = {
       workspaceDir: input.worktreeDir,
       stopMarkerPath: resolve(scratchDir, 'stop-markers.txt'),
@@ -820,6 +864,7 @@ export class AgentRunManager extends EventEmitter {
       agentName: input.agentName,
       mcpConfigPath: podPrep?.mcpConfigPath,
       loadDevChannels: false,
+      appendSystemPromptPath: continuationFragmentPath,
       extraEnv: {
         ...(podPrep?.extraEnv ?? {}),
         PC_AGENT_NAME: input.agentName,
