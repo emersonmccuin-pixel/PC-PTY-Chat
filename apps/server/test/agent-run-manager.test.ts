@@ -9,7 +9,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -2167,13 +2167,16 @@ test('Section 21 — resume skips historical JSONL replay (jsonlStartLine pinned
   // Drive continuation to completion to keep the test hygienic + verify the
   // FakeSession's flow still works against the resume path.
   s.becomeReady();
-  // Section 21 post-smoke fix: on resume the manager skips the warmup turn
-  // entirely (mirrors pause-resume). The real input fires immediately on
-  // state='ready', no "Reply with only the word OK." warmup first.
+  // Section 24 supersedes the prior Section 21 send-on-ready behaviour:
+  // resume spawn does NOT type initialInput into the PTY. The orchestrator's
+  // `pc_continue_agent` route deposits the instruction via `depositInstruction`
+  // and the agent's first action on boot is `pc_check_in` (system-prompt
+  // fragment instructs it). No PTY send; the agent reads the instruction
+  // from its first tool call's return value.
   assert.deepEqual(
     s.sent,
-    ['follow-up'],
-    'resume sends real initialInput immediately on ready, no warmup turn',
+    [],
+    'Section 24 — resume does NOT send via PTY; agent fetches via pc_check_in',
   );
   s.emitTurnEnd('refined');
   const result = await cont.completion;
@@ -2267,5 +2270,109 @@ test('Section 21 — resume option threads --resume + reuses providerSessionId +
     contRow?.sessionId,
     original.sessionId,
     'persisted sessionId matches the reused provider session id',
+  );
+});
+
+// Section 24 — agent ready-ping protocol. Continuation spawn delivers the
+// orchestrator's input via `pc_check_in` tool return, NOT by typing into
+// the PTY. The spawn writes a continuation-instruction.md fragment and
+// passes it to the PtySession via `appendSystemPromptPath`. On `ready`,
+// the manager does NOT call `session.send(input)`; the agent's first
+// non-system JSONL event (the `pc_check_in` tool call) satisfies the
+// ack-wait contract.
+test('Section 24 — resume spawn writes append-fragment + skips PTY send of input', async () => {
+  const p = createProject({
+    slug: 'arm-ready-ping',
+    name: 'ARM Ready-ping',
+    stages,
+    folderPath: tmpDataDir,
+  });
+  const { factory, sessions } = makeFactory();
+  const mgr = new AgentRunManager({
+    warmupPrompt: null,
+    createSession: factory,
+    scratchDirFor: (pid, rid) => join(tmpDataDir, 'arm-ready-ping', pid, rid),
+    resolveJsonlPath: (_d, sid) => join(tmpDataDir, `.fake/${sid}.jsonl`),
+  });
+
+  // Original dispatch.
+  const original = mgr.spawn({
+    agentName: 'researcher',
+    input: 'find a date math lib',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'ready-ping-dispatcher',
+    worktreeDir: tmpDataDir,
+  });
+  const s0 = sessions[0]!;
+  s0.becomeReady();
+  s0.emitTurnEnd('use date-fns');
+  await original.completion;
+
+  // Continuation — Section 24 path.
+  const cont = mgr.spawn({
+    agentName: 'researcher',
+    input: 'expand on point 3',
+    wait: true,
+    projectId: p.id as ULID,
+    dispatcherSessionId: 'ready-ping-dispatcher',
+    worktreeDir: tmpDataDir,
+    continues: original.runId,
+    resume: { providerSessionId: original.sessionId },
+  });
+  const s1 = sessions[1]!;
+
+  // 24.5 — appendSystemPromptPath populated, file written with the fragment.
+  assert.ok(
+    s1.lastOpts.appendSystemPromptPath,
+    'continuation spawn passes appendSystemPromptPath',
+  );
+  assert.ok(
+    existsSync(s1.lastOpts.appendSystemPromptPath),
+    'continuation-instruction.md exists on disk before spawn ships',
+  );
+  const fragmentText = readFileSync(s1.lastOpts.appendSystemPromptPath, 'utf-8');
+  assert.match(
+    fragmentText,
+    /pc_check_in/,
+    'fragment references the pc_check_in tool',
+  );
+  assert.match(
+    fragmentText,
+    /resumed/i,
+    'fragment frames the agent as resuming',
+  );
+
+  // 24.4 — on ready, the manager does NOT send the input. The agent will
+  // fetch it via pc_check_in instead. `initialInputSent` is pre-set true
+  // for resume so the legacy send-on-ready branch is skipped.
+  s1.becomeReady();
+  assert.equal(
+    s1.sent.length,
+    0,
+    'no PTY send on ready — orchestrator input is delivered via pc_check_in tool return, not by typing',
+  );
+  const recAfterReady = mgr.get(cont.runId);
+  assert.equal(
+    recAfterReady?.status,
+    'running',
+    'resume spawn flips spawning → running on ready (no warmup, no input send)',
+  );
+
+  // The agent's first JSONL event (its pc_check_in tool call) satisfies
+  // ack; the manager then sees a turn-end to complete the run.
+  s1.emitToolCall('mcp__pc-rig__pc_check_in', {});
+  // No-op for completion — tool calls don't end the turn. Drive a turn-end
+  // with the agent's final reply.
+  s1.emitTurnEnd('point 3 expanded: ...');
+  const contResult = await cont.completion;
+  assert.equal(contResult.status, 'completed');
+  assert.equal(contResult.result, 'point 3 expanded: ...');
+
+  // FirstJsonlAt should have fired on the pc_check_in tool call (ack
+  // contract preserved without sending input via PTY).
+  assert.ok(
+    mgr.getFirstJsonlAt(cont.runId),
+    'firstJsonlAt fired on the pc_check_in tool call (ack contract still satisfied)',
   );
 });
