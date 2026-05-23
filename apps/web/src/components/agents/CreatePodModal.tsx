@@ -15,7 +15,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, type CreatePodInput, type Pod, type Project } from '@/api/client';
+import {
+  api,
+  STOCK_POD_NAMES,
+  type CreatePodInput,
+  type Pod,
+  type Project,
+} from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { AgentDesignerChat } from './AgentDesignerChat';
 
@@ -30,16 +36,6 @@ interface CreatePodModalProps {
 }
 
 type TabKey = 'global-pool' | 'conversational' | 'manual';
-
-const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-]);
 
 export function CreatePodModal({
   project,

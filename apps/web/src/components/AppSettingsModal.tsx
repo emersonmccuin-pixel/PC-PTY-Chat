@@ -18,6 +18,7 @@ import {
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
   FONT_SCALE_STEP,
+  STOCK_POD_NAMES,
   type GlobalSettings,
   type Pod,
   type Project,
@@ -25,16 +26,6 @@ import {
 } from '@/api/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { PodDetailModal } from './agents/PodDetailModal';
-
-const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-]);
 
 type TabId = 'general' | 'storage' | 'specialists';
 

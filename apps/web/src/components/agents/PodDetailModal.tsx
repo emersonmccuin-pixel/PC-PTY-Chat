@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, type Pod, type PodBundle } from '@/api/client';
+import { api, STOCK_POD_NAMES, type Pod, type PodBundle } from '@/api/client';
 import { ContextTab } from './ContextTab';
 import { SecretsTab } from './SecretsTab';
 import { SettingsTab } from './SettingsTab';
@@ -28,15 +28,6 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'history', label: 'History' },
 ];
 
-const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-]);
 
 interface PodDetailModalProps {
   pod: Pod;

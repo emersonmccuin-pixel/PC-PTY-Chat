@@ -236,6 +236,23 @@ export type FilePreview =
 // Wire shapes mirror packages/domain/src/pod.ts. valuePlaintext is INTENTIONALLY
 // omitted from PodSecret — the server never echoes it back.
 
+/** Stock pod names. Mirror of `STOCK_POD_NAMES` in
+ *  `packages/domain/src/stock-pod-names.ts` — kept here inline so the web
+ *  bundle stays free of an `@pc/domain` import (see the file header). The
+ *  server-side drift assertion in `apps/server/src/services/stock-pod-seed.ts`
+ *  catches "seeded set ≠ domain set" mismatches at boot; if you add a stock
+ *  pod here, add it there too. */
+export const STOCK_POD_NAMES: ReadonlySet<string> = new Set([
+  'orchestrator',
+  'researcher',
+  'writer',
+  'code-writer',
+  'reviewer',
+  'planner',
+  'extractor',
+  'agent-designer',
+]);
+
 export type PodScope = 'global' | 'project';
 export type PodKnowledgeKind = 'knowledge' | 'example';
 export type PodAuditActor = 'orchestrator' | 'user';

@@ -15,6 +15,7 @@
 // flat-file `templates/.project-companion/agents/` directory.
 
 import { createAgent, getAgentByName, type CreateAgentInput } from '@pc/db';
+import { STOCK_POD_NAMES } from '@pc/domain';
 
 const RESEARCHER_PROMPT = `You are a researcher + scribe operating on a single workflow node. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree. Keep summaries terse — bullets over paragraphs.
 
@@ -605,10 +606,35 @@ export interface SeedStockPodsResult {
   insertedCount: number;
 }
 
-/** Boot-time seed for the 5 stock specialist pods. INSERT IF NOT EXISTS —
+/** Verify the seeded names + 'orchestrator' (seeded separately) match the
+ *  canonical roster in `@pc/domain`. Cheap module-load tripwire — drift
+ *  here means identity checks elsewhere in the app will silently misbehave. */
+function assertNoStockPodNameDrift(): void {
+  const seeded = new Set<string>(['orchestrator', ...STOCK_POD_CONTENT.map((p) => p.name)]);
+  for (const name of seeded) {
+    if (!STOCK_POD_NAMES.has(name)) {
+      throw new Error(
+        `Stock pod "${name}" is seeded but missing from STOCK_POD_NAMES in @pc/domain. ` +
+          `Add it to packages/domain/src/stock-pod-names.ts.`,
+      );
+    }
+  }
+  for (const name of STOCK_POD_NAMES) {
+    if (!seeded.has(name)) {
+      throw new Error(
+        `Stock pod "${name}" is in STOCK_POD_NAMES but no seed entry exists. ` +
+          `Either drop it from packages/domain/src/stock-pod-names.ts or add a seed.`,
+      );
+    }
+  }
+}
+
+/** Boot-time seed for the stock specialist pods. INSERT IF NOT EXISTS —
  *  rows that already exist are never touched. Idempotent on every subsequent
- *  boot. */
+ *  boot. Runs a drift check first; throws if the seeded set diverges from
+ *  the canonical `STOCK_POD_NAMES` list. */
 export function seedStockPods(): SeedStockPodsResult {
+  assertNoStockPodNameDrift();
   const entries: SeedStockPodEntry[] = [];
   let insertedCount = 0;
   for (const content of STOCK_POD_CONTENT) {

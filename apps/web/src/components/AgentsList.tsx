@@ -11,7 +11,7 @@
 
 import { useMemo, useState } from 'react';
 
-import { api, type Pod, type Project } from '@/api/client';
+import { api, STOCK_POD_NAMES, type Pod, type Project } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
 import { CreatePodModal } from './agents/CreatePodModal';
@@ -21,16 +21,6 @@ interface AgentsListProps {
   project: Project;
   events: WsEnvelope[];
 }
-
-const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-]);
 
 export function AgentsList({ project, events }: AgentsListProps) {
   const { pods, refetch } = useProjectPods(project, events);

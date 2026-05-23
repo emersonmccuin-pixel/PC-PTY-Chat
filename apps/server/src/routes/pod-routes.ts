@@ -59,20 +59,16 @@ import type {
   PodSecretRow,
   ULID,
 } from '@pc/domain';
-import { POD_AUDIT_ACTORS, POD_AUDIT_FIELDS, POD_KNOWLEDGE_KINDS } from '@pc/domain';
+import {
+  POD_AUDIT_ACTORS,
+  POD_AUDIT_FIELDS,
+  POD_KNOWLEDGE_KINDS,
+  STOCK_POD_NAMES,
+} from '@pc/domain';
 
-/** Stock pods seeded at boot — deleting them is structurally disallowed
- *  (DELETE returns 409). Editing is fine; the user can rewrite the prompt. */
-export const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-  'code-writer',
-]);
+/** Re-export for back-compat — moved canonical source to `@pc/domain`
+ *  (`packages/domain/src/stock-pod-names.ts`) in the 2026-05-22 cleanup. */
+export { STOCK_POD_NAMES };
 
 export type PodMutationKind = 'created' | 'updated' | 'deleted';
 

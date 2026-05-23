@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path';
 
 import { listAgents } from '@pc/db';
 import type { AgentDef, PodAgentRow, ULID } from '@pc/domain';
-import { serializeAgentFile } from '@pc/domain';
+import { DISPATCHABLE_STOCK_PODS, serializeAgentFile } from '@pc/domain';
 
 import {
   type AgentEntry,
@@ -25,24 +25,6 @@ import {
   safeAgentName,
   toEntry,
 } from './agent-library.ts';
-
-// Stock-pod names. Kept in lockstep with pod-routes.ts:71 and
-// AgentsList.tsx:25 — future consolidation candidate. Orchestrator is in
-// the set (for delete/reset gates elsewhere) but excluded from the listing
-// below since it can't dispatch to itself.
-const STOCK_POD_NAMES = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-  'code-writer',
-]);
-const LISTABLE_STOCK_PODS = new Set(
-  [...STOCK_POD_NAMES].filter((name) => name !== 'orchestrator'),
-);
 
 function agentsDir(folderPath: string): string {
   return resolve(folderPath, '.claude', 'agents');
@@ -150,7 +132,7 @@ export function listResolvedAgents(projectId: ULID): ResolvedAgentList {
   const stockRows: PodAgentRow[] = [];
   const projectRows: PodAgentRow[] = [];
   for (const row of rows) {
-    if (row.scope === 'global' && LISTABLE_STOCK_PODS.has(row.name)) {
+    if (row.scope === 'global' && DISPATCHABLE_STOCK_PODS.has(row.name)) {
       stockRows.push(row);
     } else if (row.scope === 'project') {
       projectRows.push(row);
@@ -164,7 +146,7 @@ export function listResolvedAgents(projectId: ULID): ResolvedAgentList {
   const overriddenNames = new Set<string>();
   for (const row of projectRows) {
     const entry = podRowToResolvedAgent(row);
-    if (LISTABLE_STOCK_PODS.has(row.name)) {
+    if (DISPATCHABLE_STOCK_PODS.has(row.name)) {
       entry.kind = 'override';
       overrides.push(entry);
       overriddenNames.add(row.name);
