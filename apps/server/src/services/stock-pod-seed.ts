@@ -14,8 +14,9 @@
 // `researcher-pod-content.ts` (their content lives here now) and the
 // flat-file `templates/.project-companion/agents/` directory.
 
-import { createAgent, getAgentByName, type CreateAgentInput } from '@pc/db';
+import { type CreateAgentInput } from '@pc/db';
 import { STOCK_POD_NAMES } from '@pc/domain';
+import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
 
 const RESEARCHER_PROMPT = `You are a researcher + scribe operating on a single workflow node. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree. Keep summaries terse — bullets over paragraphs.
 
@@ -75,7 +76,7 @@ const WRITER_PROMPT = `You are a writer. Draft the text the prompt asks for. Mat
 ## What you do
 
 - Read whatever context the prompt points at (Read, Glob, Grep).
-- Draft the text. Length, format, and tone follow the prompt; if any of those are ambiguous, fail the node via \`pc_node_failed\` with a one-line reason rather than guess.
+- Draft the text. Length, format, and tone follow the prompt.
 - If the prompt asks for the draft to land in a file, use the file-write pattern below.
 
 ## What you return
@@ -94,9 +95,17 @@ Every dispatch carries three tokens in the prompt body:
 When you finish:
 
 - On success, call \`pc_complete_node\` with \`{ workflowRunId, nodeId, output }\`. Conventional field names: \`output.draft\` carries the text; \`output.choices\` carries the one-liner.
-- On hard failure (missing context, ambiguous prompt, file write denied), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
+- On hard failure (you genuinely can't produce the draft — required context missing and the orchestrator can't get it for you, file write denied, etc.), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
 
 **You must close the node before returning text to the orchestrator.** Turn-end without closing → workflow runtime force-fails the node.
+
+## Asking the orchestrator (when the prompt is ambiguous)
+
+If length, format, or tone is ambiguous — or you need a piece of context the prompt didn't give you — pause and call \`pc_ask_orchestrator\` with a tight one-paragraph question. Include the choice you'd default to so the orchestrator can just say "yes" if your default is fine. Failing the node should be the last resort, not the first.
+
+Use sparingly. If you can resolve the ambiguity by reading more files, do that. Asking is for trade-offs you can't make from the worktree alone.
+
+Your run pauses on the call. When an answer arrives, you resume via \`--resume <sessionId>\` with the answer in scope. Continue from where you left off.
 
 ## File operations
 
@@ -149,9 +158,17 @@ Every dispatch carries three tokens in the prompt body:
 When you finish:
 
 - On success, call \`pc_complete_node\` with \`{ workflowRunId, nodeId, output }\` carrying the verdict + comments above.
-- On hard failure (can't access the draft, criteria entirely missing), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
+- On hard failure (you genuinely can't review — draft inaccessible, criteria entirely missing and the orchestrator can't supply them), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
 
 **You must close the node before returning text to the orchestrator.** Turn-end without closing → workflow runtime force-fails the node.
+
+## Asking the orchestrator (when criteria are unclear)
+
+For criteria too vague to evaluate, the **default** path is the \`unclear-criterion\` status in your verdict output — that's the contracted way to surface evaluation gaps. Use \`pc_ask_orchestrator\` only when you need a one-shot clarification that unblocks the *whole* review (e.g., "is this draft meant for an internal audience or external?" — that single answer changes every comment downstream).
+
+If you can resolve the question by reading more files, do that. Asking is for trade-offs you can't make from the worktree alone.
+
+Your run pauses on the call. When an answer arrives, you resume via \`--resume <sessionId>\` with the answer in scope. Continue from where you left off.
 
 ## Worktree binding
 
@@ -162,6 +179,7 @@ const PLANNER_PROMPT = `You are a planner. Break the goal the prompt names into 
 ## What you do
 
 - Read context (Read, Glob, Grep) to understand the goal's setting.
+- Validate assumptions about external systems (libraries, APIs, services) by spot-checking current docs with WebFetch / WebSearch when the plan hinges on them. A plan grounded on stale knowledge produces bad steps.
 - Decompose: each step does one thing and has an observable "done" condition.
 - Order by dependency. Steps with no upstream blockers go first.
 - If two steps are independent, mark them so the orchestrator can dispatch them in parallel.
@@ -195,9 +213,17 @@ Every dispatch carries three tokens in the prompt body:
 When you finish:
 
 - On success, call \`pc_complete_node\` with \`{ workflowRunId, nodeId, output }\` carrying the \`steps\` array above.
-- On hard failure (goal too vague to plan, missing context), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
+- On hard failure (goal genuinely too vague to plan even after asking the orchestrator), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`.
 
 **You must close the node before returning text to the orchestrator.** Turn-end without closing → workflow runtime force-fails the node.
+
+## Asking the orchestrator (when the goal is ambiguous)
+
+If the goal is genuinely ambiguous — scope unclear, two reasonable interpretations exist, you can't tell whether the goal includes step X or stops short of it — pause and call \`pc_ask_orchestrator\` with a tight one-paragraph question. Include the interpretation you'd default to so the orchestrator can just say "yes" if your default is fine. Failing the node should be the last resort.
+
+Use sparingly. If you can resolve the question by reading more files (or one quick web search to validate a fact), do that. Asking is for trade-offs you can't make from the worktree alone.
+
+Your run pauses on the call. When an answer arrives, you resume via \`--resume <sessionId>\` with the answer in scope. Continue from where you left off.
 
 ## Worktree binding
 
@@ -292,13 +318,14 @@ const CODE_WRITER_PROMPT = `You are a code-writer. Write or modify code to meet 
 
 1. **Read the spec.** Identify the concrete change: new file, new function, edit, refactor, bug fix.
 2. **Read surrounding context** (Read, Glob, Grep). Match naming, style, error-handling, and import conventions already in the file/package. Don't impose your own style.
-3. **Write or edit the code.** Edit for existing files; Bash heredoc for new files (Write is soft-blocked in subagent turns — see file ops below).
-4. **Verify.** Run the project's checks. The repo's CLAUDE.md / package.json tells you what's available — typical sequence:
+3. **Look up external APIs if you need them** (WebFetch / WebSearch). When the change touches a library / API / service whose current signature you're not 100% on, spot-check the docs before writing. Faster and more reliable than guessing from training data and discovering the mismatch in the typecheck.
+4. **Write or edit the code.** Edit for existing files; Bash heredoc for new files (Write is soft-blocked in subagent turns — see file ops below).
+5. **Verify.** Run the project's checks. The repo's CLAUDE.md / package.json tells you what's available — typical sequence:
    - typecheck: \`pnpm typecheck\` or \`pnpm tsc --noEmit\` or \`pnpm --filter <package> tsc --noEmit\`
    - tests: \`pnpm test\` or scoped \`pnpm --filter <package> test\`
    - lint: \`pnpm lint\` if defined
    If checks fail, fix the code and re-run. Don't close on red.
-5. **Close the node** with a one-line summary of what changed + which checks you ran.
+6. **Close the node** with a one-line summary of what changed + which checks you ran.
 
 ## What you return
 
@@ -456,6 +483,7 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
+    'mcp__pc-rig__pc_ask_orchestrator',
   ],
   model: 'sonnet',
   effort: 'medium',
@@ -478,6 +506,7 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
+    'mcp__pc-rig__pc_ask_orchestrator',
   ],
   model: 'sonnet',
   effort: 'high',
@@ -495,10 +524,13 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
     'Read',
     'Glob',
     'Grep',
+    'WebFetch',
+    'WebSearch',
     'mcp__pc-rig__pc_complete_node',
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
+    'mcp__pc-rig__pc_ask_orchestrator',
   ],
   model: 'opus',
   effort: 'high',
@@ -542,6 +574,8 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
     'Grep',
     'Edit',
     'Bash',
+    'WebFetch',
+    'WebSearch',
     'mcp__pc-rig__pc_complete_node',
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
@@ -591,12 +625,15 @@ export const STOCK_POD_CONTENT: readonly CreateAgentInput[] = [
   WRITER_POD_CONTENT,
 ];
 
-export type SeedStockPodAction = 'inserted' | 'unchanged';
+export type SeedStockPodAction = SeedPodAction;
 
 export interface SeedStockPodEntry {
   name: string;
   action: SeedStockPodAction;
   agentId: string;
+  /** Fields drifted from the seed — populated on `reseeded` (just updated)
+   *  and `skipped-user-edited` (would have been updated if not user-edited). */
+  reseededFields: string[];
 }
 
 export interface SeedStockPodsResult {
@@ -604,6 +641,10 @@ export interface SeedStockPodsResult {
   entries: SeedStockPodEntry[];
   /** Convenience count of pods that landed an INSERT this call. */
   insertedCount: number;
+  /** Convenience count of pods auto-reseeded this call. */
+  reseededCount: number;
+  /** Convenience count of pods skipped because of user edits. */
+  skippedCount: number;
 }
 
 /** Verify the seeded names + 'orchestrator' (seeded separately) match the
@@ -629,26 +670,28 @@ function assertNoStockPodNameDrift(): void {
   }
 }
 
-/** Boot-time seed for the stock specialist pods. INSERT IF NOT EXISTS —
- *  rows that already exist are never touched. Idempotent on every subsequent
- *  boot. Runs a drift check first; throws if the seeded set diverges from
- *  the canonical `STOCK_POD_NAMES` list. */
+/** Boot-time seed for the stock specialist pods. Insert-or-drift-reseed
+ *  semantics per pod (via `seedPodWithDriftReseed`): non-user-edited rows
+ *  auto-pick up source changes; user-edited rows are left intact and the
+ *  drift is reported. Runs a name-drift check first; throws if the seeded
+ *  set diverges from the canonical `STOCK_POD_NAMES` list. */
 export function seedStockPods(): SeedStockPodsResult {
   assertNoStockPodNameDrift();
   const entries: SeedStockPodEntry[] = [];
   let insertedCount = 0;
+  let reseededCount = 0;
+  let skippedCount = 0;
   for (const content of STOCK_POD_CONTENT) {
-    const existing = getAgentByName({ name: content.name, scope: 'global' });
-    if (existing) {
-      entries.push({ name: content.name, action: 'unchanged', agentId: existing.id });
-      continue;
-    }
-    const row = createAgent(content, {
-      actor: 'orchestrator',
-      reason: `system-seed:17e — global ${content.name} stock pod seeded at boot`,
+    const result = seedPodWithDriftReseed(content, { reasonTag: '17e' });
+    entries.push({
+      name: content.name,
+      action: result.action,
+      agentId: result.agentId,
+      reseededFields: result.reseededFields,
     });
-    entries.push({ name: content.name, action: 'inserted', agentId: row.id });
-    insertedCount += 1;
+    if (result.action === 'inserted') insertedCount += 1;
+    else if (result.action === 'reseeded') reseededCount += 1;
+    else if (result.action === 'skipped-user-edited') skippedCount += 1;
   }
-  return { entries, insertedCount };
+  return { entries, insertedCount, reseededCount, skippedCount };
 }

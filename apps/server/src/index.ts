@@ -97,7 +97,6 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
-import { seedResearcherPodIfMissing } from './services/researcher-pod-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
@@ -165,48 +164,31 @@ runMigrations();
   }
 }
 
-// Section 17e starter (2026-05-21) — seed the global researcher pod if
-// missing. Pulled forward from full 17e as a Section 18 dependency: V-3 +
-// V-4 need a worker agent that can call pc_ask_orchestrator +
-// pc_request_approval, and the flat-file researcher lacks those tools.
-//
-// 17e.1 follow-up (2026-05-21 evening): this seeder coexists with the new
-// `seedStockPods()` call below. Both no-op once the researcher row exists.
-// Deleted in 17e.4 cleanup along with researcher-pod-seed.ts +
-// researcher-pod-content.ts.
-{
-  const result = seedResearcherPodIfMissing();
-  switch (result.action) {
-    case 'inserted':
-      console.log(`[pc] researcher pod seeded (id=${result.agentId})`);
-      break;
-    case 'reseeded':
-      console.log(
-        `[pc] researcher pod auto-reseeded (id=${result.agentId}, fields=[${result.reseededFields.join(', ')}])`,
-      );
-      break;
-    case 'skipped-user-edited':
-      console.warn(
-        `[pc] researcher pod has drifted from RESEARCHER_POD_CONTENT on fields [${result.reseededFields.join(', ')}] but the row has user-authored audit rows — leaving it alone.`,
-      );
-      break;
-    case 'unchanged':
-      break;
-  }
-}
-
-// Section 17e.1 — seed the 4 remaining stock specialist pods (writer /
-// reviewer / planner / extractor) if missing. Researcher entry no-ops on
-// every boot since the 17e-starter seed (above) put it there already.
-// INSERT IF NOT EXISTS — never overwrites existing rows, regardless of
-// content drift. 17e cleanup removes the flat-file
-// `templates/.project-companion/agents/` directory once dispatch smoke
-// (17e.3) is green.
+// Stock specialist pods — insert-or-drift-reseed per pod. Non-user-edited
+// rows auto-pick up source changes; user-edited rows are left intact and a
+// warning is logged so the user knows their row has drifted. Researcher,
+// writer, reviewer, planner, extractor, code-writer, agent-designer all
+// flow through here. (The legacy `seedResearcherPodIfMissing` was retired
+// when seedStockPods got drift-reseed parity — 2026-05-22 cleanup.)
 {
   const result = seedStockPods();
   for (const entry of result.entries) {
-    if (entry.action === 'inserted') {
-      console.log(`[pc] stock pod '${entry.name}' seeded (id=${entry.agentId})`);
+    switch (entry.action) {
+      case 'inserted':
+        console.log(`[pc] stock pod '${entry.name}' seeded (id=${entry.agentId})`);
+        break;
+      case 'reseeded':
+        console.log(
+          `[pc] stock pod '${entry.name}' auto-reseeded (id=${entry.agentId}, fields=[${entry.reseededFields.join(', ')}])`,
+        );
+        break;
+      case 'skipped-user-edited':
+        console.warn(
+          `[pc] stock pod '${entry.name}' has drifted from source on fields [${entry.reseededFields.join(', ')}] but the row has user-authored audit rows — leaving it alone. Use "Reset to default" in Global Settings → Specialists to pick up the seed.`,
+        );
+        break;
+      case 'unchanged':
+        break;
     }
   }
 }

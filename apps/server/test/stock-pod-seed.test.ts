@@ -105,13 +105,12 @@ test('second call is a no-op — 0 inserts, full roster present, no extra audit 
   }
 });
 
-// Locked design: rows that already exist are never touched, regardless of
-// content drift. No auto-reseed.
-test('does NOT overwrite an existing row even when content drifts from the source const', () => {
+// User-edited rows are protected — drift is reported (skipped-user-edited)
+// but the live row is left intact.
+test('user-edited row is left alone — drift is reported, but the user prompt survives', () => {
   const live = getAgentByName({ name: 'writer', scope: 'global' });
   assert.ok(live, 'writer pod should be live from prior tests');
 
-  // User edits the prompt.
   updateAgent(
     live!.id as ULID,
     { prompt: '<<user-customised writer prompt>>' },
@@ -121,8 +120,41 @@ test('does NOT overwrite an existing row even when content drifts from the sourc
   const result = seedStockPods();
   const writerEntry = result.entries.find((e) => e.name === 'writer');
   assert.ok(writerEntry);
-  assert.equal(writerEntry!.action, 'unchanged');
+  assert.equal(writerEntry!.action, 'skipped-user-edited');
+  assert.ok(
+    writerEntry!.reseededFields.includes('prompt'),
+    'prompt should be reported as drifted',
+  );
+  assert.equal(result.skippedCount, 1);
 
   const after = getAgentByName({ name: 'writer', scope: 'global' });
   assert.equal(after!.prompt, '<<user-customised writer prompt>>');
+});
+
+// Non-user-edited rows pick up source drift automatically.
+test('non-user-edited row gets auto-reseeded when source drifts', () => {
+  const live = getAgentByName({ name: 'extractor', scope: 'global' });
+  assert.ok(live, 'extractor pod should be live from prior tests');
+
+  // Simulate prior source content by mutating the live row using a
+  // system-authored audit reason — leaves `hasUserAuthoredEdit` returning
+  // false.
+  updateAgent(
+    live!.id as ULID,
+    { prompt: '<<stale prior-source prompt>>' },
+    { actor: 'orchestrator', reason: 'system-seed:test-drift-fixture' },
+  );
+
+  const result = seedStockPods();
+  const extractorEntry = result.entries.find((e) => e.name === 'extractor');
+  assert.ok(extractorEntry);
+  assert.equal(extractorEntry!.action, 'reseeded');
+  assert.ok(
+    extractorEntry!.reseededFields.includes('prompt'),
+    'prompt should be in the reseeded fields list',
+  );
+
+  const after = getAgentByName({ name: 'extractor', scope: 'global' });
+  const expected = STOCK_POD_CONTENT.find((p) => p.name === 'extractor');
+  assert.equal(after!.prompt, expected!.prompt, 'live row should match the current source');
 });
