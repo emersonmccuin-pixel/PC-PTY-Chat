@@ -543,7 +543,7 @@ export const TOOLS = [
   {
     name: 'pc_list_agents',
     description:
-      'List the agents available to this project. Use this BEFORE asking the user which agent a subagent step should call, or before authoring a subagent step. Returns { ok: true, globals: [{ name, description?, ... }, ...], overrides: [], projectOnly: [] }. Post-17e all live agents are global-scope DB pods and surface in `globals`; the other arrays are kept empty for API back-compat. The `name` is what goes into a subagent step\'s `subagent:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
+      'List the agents available to this project. Use this BEFORE asking the user which agent a subagent step should call, or before authoring a subagent step. Returns { ok: true, globals: [{ name, description?, model?, tools? }, ...], overrides: [], projectOnly: [] } — slimmed for MCP callers (full prompt bodies live on the HTTP route for the web UI, not in this listing). Post-17e all live agents are global-scope DB pods and surface in `globals`; the other arrays are kept empty for API back-compat. The `name` is what goes into a subagent step\'s `subagent:` field. No arguments; PC_PROJECT_ID env is the implicit scope.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -719,6 +719,42 @@ export const TOOLS = [
 function projectPath(suffix: string): string {
   if (!PROJECT_ID) throw new Error('PC_PROJECT_ID is required for project-scoped calls');
   return `/api/projects/${PROJECT_ID}/${suffix.replace(/^\//, '')}`;
+}
+
+/** Project a ResolvedAgent (web-UI-shaped) down to a slim listing entry.
+ *  Falls through to the original body string on any parse / shape mismatch
+ *  so a server-side response change can't crash the tool. */
+function slimAgentList(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as {
+      ok?: unknown;
+      globals?: unknown;
+      overrides?: unknown;
+      projectOnly?: unknown;
+      [k: string]: unknown;
+    };
+    const slimOne = (entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return entry;
+      const r = entry as Record<string, unknown>;
+      const def = (r.def && typeof r.def === 'object' ? r.def : {}) as Record<string, unknown>;
+      const out: Record<string, unknown> = {
+        name: typeof r.name === 'string' ? r.name : def.name,
+      };
+      if (typeof def.description === 'string') out.description = def.description;
+      if (typeof def.model === 'string') out.model = def.model;
+      if (Array.isArray(def.tools) && def.tools.length > 0) out.tools = def.tools;
+      return out;
+    };
+    const slimArr = (v: unknown) => (Array.isArray(v) ? v.map(slimOne) : v);
+    return JSON.stringify({
+      ...parsed,
+      globals: slimArr(parsed.globals),
+      overrides: slimArr(parsed.overrides),
+      projectOnly: slimArr(parsed.projectOnly),
+    });
+  } catch {
+    return body;
+  }
 }
 
 async function postServer(
@@ -2172,7 +2208,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const res = await getServer(projectPath('agents'));
         if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
+          // Route returns ResolvedAgent[] shaped for the web UI's agent
+          // editor (`body` + `markdown` each carry the entire prompt;
+          // `def.name` duplicates the top-level `name`). For MCP callers
+          // the only useful fields are name + description + a couple of
+          // hints for picking an agent — slim it before returning so a
+          // 10-pod project doesn't ship 90k chars into the caller's
+          // context every call.
+          const slim = slimAgentList(res.body);
+          return { content: [{ type: 'text', text: slim }] };
         }
         return {
           content: [{ type: 'text', text: `pc_list_agents failed (${res.status}): ${res.body}` }],
