@@ -11,6 +11,7 @@
 import { useState } from 'react';
 
 import { api, type PodBundle, type PodKnowledge, type ULID } from '@/api/client';
+import { Markdown } from '../Markdown';
 
 interface ContextTabProps {
   podId: ULID;
@@ -18,6 +19,10 @@ interface ContextTabProps {
   loading: boolean;
   error: string | null;
   onChanged: () => void;
+  /** When true: Add / Edit / Delete buttons are hidden so the section becomes
+   *  a pure rendered-markdown viewer. Used when a stock pod is opened from
+   *  the project Agents tab; edits live in Global Settings → Specialists. */
+  readOnly?: boolean;
 }
 
 interface EditState {
@@ -27,7 +32,7 @@ interface EditState {
   draft: { name: string; content: string };
 }
 
-export function ContextTab({ podId, bundle, loading, error, onChanged }: ContextTabProps) {
+export function ContextTab({ podId, bundle, loading, error, onChanged, readOnly }: ContextTabProps) {
   const [edit, setEdit] = useState<EditState | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -110,14 +115,16 @@ export function ContextTab({ podId, bundle, loading, error, onChanged }: Context
         <div className="text-xs text-muted-foreground">
           {rows.length} knowledge {rows.length === 1 ? 'doc' : 'docs'}
         </div>
-        <button
-          type="button"
-          onClick={startNew}
-          disabled={busy || edit !== null}
-          className="border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
-        >
-          + Add doc
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={startNew}
+            disabled={busy || edit !== null}
+            className="border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            + Add doc
+          </button>
+        )}
       </div>
 
       {opError && (
@@ -161,6 +168,7 @@ export function ContextTab({ podId, bundle, loading, error, onChanged }: Context
                 key={row.id}
                 row={row}
                 disabled={busy || edit !== null}
+                readOnly={readOnly}
                 onEdit={() => startEdit(row)}
                 onDelete={() => void remove(row)}
               />
@@ -175,45 +183,52 @@ export function ContextTab({ podId, bundle, loading, error, onChanged }: Context
 function KnowledgeRow({
   row,
   disabled,
+  readOnly,
   onEdit,
   onDelete,
 }: {
   row: PodKnowledge;
   disabled: boolean;
+  readOnly?: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const preview = row.content.length > 200 ? row.content.slice(0, 200) + '…' : row.content;
   return (
     <div className="border border-border bg-card px-3 py-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="font-mono text-xs font-medium text-foreground">{row.name}</div>
-          <div className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-            {preview || <span className="italic">(empty)</span>}
+          <div className="mt-2 text-[12px] text-foreground">
+            {row.content ? (
+              <Markdown text={row.content} />
+            ) : (
+              <span className="italic text-muted-foreground">(empty)</span>
+            )}
           </div>
           <div className="mt-1 text-[10px] text-muted-foreground">
             {row.content.length.toLocaleString()} chars
           </div>
         </div>
-        <div className="flex shrink-0 flex-col gap-1">
-          <button
-            type="button"
-            onClick={onEdit}
-            disabled={disabled}
-            className="border border-border bg-card px-2 py-0.5 text-[10px] hover:bg-muted disabled:opacity-50"
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={disabled}
-            className="border border-destructive/60 bg-card px-2 py-0.5 text-[10px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Delete
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="flex shrink-0 flex-col gap-1">
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={disabled}
+              className="border border-border bg-card px-2 py-0.5 text-[10px] hover:bg-muted disabled:opacity-50"
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={disabled}
+              className="border border-destructive/60 bg-card px-2 py-0.5 text-[10px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              Delete
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
