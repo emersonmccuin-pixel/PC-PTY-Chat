@@ -5,6 +5,7 @@
 import pty from 'node-pty';
 import { EventEmitter } from 'node:events';
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -160,6 +161,14 @@ export class PtySession extends EventEmitter {
   private trustConfirmSent = false;
   private stopMarkerPath: string;
   private eventsPath: string;
+  /** Section 23 — PC-owned normalized event log written by the JSONL tailer.
+   *  Lives at `<sessionDataPath>/jsonl-events.jsonl`. Each line is the
+   *  canonical envelope shape `{type:'jsonl', event: JsonlEvent}` matching
+   *  what the live WS stream broadcasts. Replay (active session WS subscribe
+   *  + Sessions tab past-replay) sources from this file. Survives CC's 30-day
+   *  retention sweep (Section 18.8); CC's own session JSONL is treated as
+   *  ephemeral source-of-truth-on-disk. */
+  private jsonlEventsPath: string;
   private lastMarkerCount = 0;
   private lastEventCount = 0;
   private workspaceDir: string;
@@ -176,6 +185,7 @@ export class PtySession extends EventEmitter {
     const claudeExe = opts.claudeExe ?? process.env.CLAUDE_EXE ?? DEFAULT_CLAUDE;
     this.stopMarkerPath = resolve(opts.stopMarkerPath);
     this.eventsPath = resolve(opts.eventsPath);
+    this.jsonlEventsPath = resolve(dirname(this.eventsPath), 'jsonl-events.jsonl');
     this.workspaceDir = opts.workspaceDir;
     this.claudeProjectsDir =
       opts.claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
@@ -475,6 +485,10 @@ export class PtySession extends EventEmitter {
   private attachTailer(filePath: string, startLine: number): void {
     this.tailer = new JsonlTailer({ filePath, startLine });
     this.tailer.on('event', (ev: JsonlEvent) => {
+      // Section 23: persist before broadcasting so a crash mid-handler can't
+      // drop the event from the durable log. The WS broadcast is best-effort;
+      // the disk log is the contract.
+      this.persistJsonlEvent(ev);
       this.emit('jsonl-event', ev);
       this.scheduleCursorPersist(filePath);
     });
@@ -482,6 +496,22 @@ export class PtySession extends EventEmitter {
       this.emit('jsonl-error', err);
     });
     this.tailer.start();
+  }
+
+  /** Section 23 — append a normalized event to the PC-owned jsonl-events.jsonl.
+   *  Shape matches the WS `{type:'jsonl', event}` envelope so the replay path
+   *  can broadcast each line verbatim without normalization. Append-only,
+   *  line-terminated; a crash mid-line leaves a partial line that JSON.parse
+   *  rejects during replay → skip + advance. Standard JSONL hygiene. */
+  private persistJsonlEvent(ev: JsonlEvent): void {
+    try {
+      const line = JSON.stringify({ type: 'jsonl', event: ev }) + '\n';
+      appendFileSync(this.jsonlEventsPath, line);
+    } catch (err) {
+      // Best-effort. A failed disk write shouldn't cascade into a dropped live
+      // event; surface the error for visibility and continue.
+      this.emit('jsonl-persist-error', err);
+    }
   }
 
   /** Debounced — coalesce cursor persistence to ~1Hz to avoid hammering the
