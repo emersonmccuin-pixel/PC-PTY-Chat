@@ -18,6 +18,10 @@ interface DraftStage {
   isExisting: boolean;
   name: string;
   order: number;
+  /** Section 27 — terminal/intake flags. */
+  isDone: boolean;
+  isCancelled: boolean;
+  isNew: boolean;
 }
 
 let rowIdCounter = 0;
@@ -33,6 +37,9 @@ function rowFromStage(s: Stage): DraftStage {
     isExisting: true,
     name: s.name,
     order: s.order,
+    isDone: s.isDone === true,
+    isCancelled: s.isCancelled === true,
+    isNew: s.isNew === true,
   };
 }
 
@@ -68,11 +75,29 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
   useEffect(() => {
     const sorted = [...project.stages].sort((a, b) => a.order - b.order);
     setRows(sorted.map(rowFromStage));
-    setLoadedSig(JSON.stringify(sorted.map((s) => ({ id: s.id, name: s.name, order: s.order }))));
+    setLoadedSig(
+      JSON.stringify(
+        sorted.map((s) => ({
+          id: s.id,
+          name: s.name,
+          order: s.order,
+          isDone: s.isDone === true,
+          isCancelled: s.isCancelled === true,
+          isNew: s.isNew === true,
+        })),
+      ),
+    );
   }, [project]);
 
   const dirty = useMemo(() => {
-    const cleaned = rows.map((r) => ({ id: r.id.trim(), name: r.name.trim(), order: r.order }));
+    const cleaned = rows.map((r) => ({
+      id: r.id.trim(),
+      name: r.name.trim(),
+      order: r.order,
+      isDone: r.isDone,
+      isCancelled: r.isCancelled,
+      isNew: r.isNew,
+    }));
     return JSON.stringify(cleaned) !== loadedSig;
   }, [rows, loadedSig]);
 
@@ -118,7 +143,16 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
   function add() {
     setRows((prev) => [
       ...prev,
-      { rowId: newRowId(), id: '', isExisting: false, name: '', order: prev.length },
+      {
+        rowId: newRowId(),
+        id: '',
+        isExisting: false,
+        name: '',
+        order: prev.length,
+        isDone: false,
+        isCancelled: false,
+        isNew: false,
+      },
     ]);
   }
 
@@ -166,6 +200,9 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
       id: r.id.trim(),
       name: r.name.trim(),
       order: r.order,
+      ...(r.isDone ? { isDone: true } : {}),
+      ...(r.isCancelled ? { isCancelled: true } : {}),
+      ...(r.isNew ? { isNew: true } : {}),
     }));
     await commitSave(stages);
   }
@@ -176,6 +213,9 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
       id: r.id.trim(),
       name: r.name.trim(),
       order: r.order,
+      ...(r.isDone ? { isDone: true } : {}),
+      ...(r.isCancelled ? { isCancelled: true } : {}),
+      ...(r.isNew ? { isNew: true } : {}),
     }));
     if (!stages.some((s) => s.id === fallback.fallbackStageId)) {
       setErr('Pick a destination stage first.');
@@ -460,6 +500,35 @@ function StageRow({
           <span className="italic">slug-style; locked once saved</span>
         )}
       </div>
+      {/* Section 27 — terminal/intake flag checkboxes. At most one stage per
+          project per flag (server validates; UI surfaces inline). */}
+      <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground">
+        <span className="font-medium uppercase tracking-wide">Flags:</span>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={row.isNew}
+            onChange={(e) => onChange({ isNew: e.target.checked })}
+          />
+          <span>New (intake)</span>
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={row.isDone}
+            onChange={(e) => onChange({ isDone: e.target.checked })}
+          />
+          <span>Done</span>
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={row.isCancelled}
+            onChange={(e) => onChange({ isCancelled: e.target.checked })}
+          />
+          <span>Cancelled</span>
+        </label>
+      </div>
     </div>
   );
 }
@@ -534,6 +603,9 @@ function reorder(rows: DraftStage[]): DraftStage[] {
 function validateRows(rows: DraftStage[]): string | null {
   if (rows.length === 0) return 'At least one stage is required.';
   const ids = new Set<string>();
+  let doneCount = 0;
+  let cancelledCount = 0;
+  let newCount = 0;
   for (const r of rows) {
     const id = r.id.trim();
     const name = r.name.trim();
@@ -544,6 +616,12 @@ function validateRows(rows: DraftStage[]): string | null {
     }
     if (ids.has(id)) return `Duplicate stage id: ${id}.`;
     ids.add(id);
+    if (r.isDone) doneCount += 1;
+    if (r.isCancelled) cancelledCount += 1;
+    if (r.isNew) newCount += 1;
   }
+  if (doneCount > 1) return 'At most one stage can be marked Done.';
+  if (cancelledCount > 1) return 'At most one stage can be marked Cancelled.';
+  if (newCount > 1) return 'At most one stage can be marked New (intake).';
   return null;
 }
