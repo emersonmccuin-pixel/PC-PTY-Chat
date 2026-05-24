@@ -526,3 +526,28 @@ button:disabled {
   max-width: 100%;
   height: auto;
 }
+
+/* ──────────────────────────────────────────────────────────────────
+   Chat surface · LOCKED Glass design (2026-05-24, Section 29)
+   Each turn is a translucent card with a soft white-tinted gradient
+   and 1px white-translucent border. YOU carries a cream gradient.
+   ────────────────────────────────────────────────────────────────── */
+
+.chat-turn {
+  padding: 14px 20px;
+  margin: 0 -12px 8px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.01) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.chat-turn-user {
+  background: linear-gradient(135deg, rgba(245, 232, 200, 0.22) 0%, rgba(245, 232, 200, 0.06) 100%);
+  border-color: rgba(245, 232, 200, 0.30);
+}
+
+.chat-avatar {
+  border-radius: 50%;
+}
