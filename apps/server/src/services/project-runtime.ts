@@ -362,7 +362,14 @@ export class ProjectRuntime {
       throw new Error('session has no claude.exe conversation associated');
     }
     if (target.status === 'active') return target;
-    const jsonlPath = jsonlPathFor(this.project.folderPath, target.providerSessionId);
+    // Prefer the JSONL path the tailer actually stored at write time —
+    // that's the ground-truth location on disk. Compute via path-resolver
+    // as a fallback for sessions that pre-dated jsonl-path persistence.
+    // (Without this preference, sessions spawned with CLAUDE_CONFIG_DIR
+    // unset still get a recomputed path under whatever env the current
+    // server process has, which can miss legitimate transcripts.)
+    const jsonlPath =
+      target.jsonlPath ?? jsonlPathFor(this.project.folderPath, target.providerSessionId);
     if (!existsSync(jsonlPath)) {
       throw new Error(
         'no transcript on disk for this conversation (claude.exe never wrote it)',
