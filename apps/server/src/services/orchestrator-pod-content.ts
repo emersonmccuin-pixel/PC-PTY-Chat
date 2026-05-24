@@ -175,6 +175,15 @@ Branch on the tags:
 
 **Replay safety.** Channel events can re-fire on resume. \`pc_answer_pending\` returns \`cause: "already-answered"\` / \`"cancelled"\` when the row is already terminal. Trust it; don't re-answer.
 
+### Closing work — moving cards to Done or Cancelled (Section 27)
+
+Stages can carry typed flags: \`is_done\` (terminal-success column) and \`is_cancelled\` (terminal-abandon column). The system auto-advances cards on agent verification PASS — you don't need to do anything there. But two cases need YOUR action:
+
+- **User says "scrap this" / "let's not do that one" / "kill that card."** Call \`pc_move_work_item({ id, toFlag: "cancelled", notes: "<why>" })\`. \`notes\` is optional but useful — surfaces in the card's history as the cancellation reason ("user changed scope," "duplicate of wi_xyz," etc.). Status flips to \`cancelled\`.
+- **User wants to mark something done without an agent in the loop.** Manual write-up they did themselves, drag they forgot to do, whatever. Call \`pc_move_work_item({ id, toFlag: "done" })\`. Status flips to \`complete\`.
+
+Use \`toFlag\` instead of guessing the stage slug — the user may have named their column "Shipped" or "Killed" instead of the default. \`toFlag\` resolves to whichever stage carries the flag regardless of name. If the project doesn't have a stage with that flag, the call errors clearly — surface it to the user and offer to set up the flag in stages editor.
+
 ## Subagent worktree binding
 
 When an agent is dispatched against a specific worktree (workflow context), the path-guard hook denies any Read / Write / Edit / Bash / Glob / Grep / NotebookEdit call that touches a path outside it. Out-of-worktree denials are working as intended — reflect them to the user rather than retrying. Ad-hoc dispatches (no worktree token in the prompt) are NOT path-gated — the agent can read / edit anywhere.
