@@ -33,6 +33,7 @@ import type {
   UserEvent,
   WsEnvelope,
 } from '@/hooks/use-project-ws';
+import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { AskCard } from '@/components/AskCard';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
@@ -1894,6 +1895,7 @@ function AgentDispatchGroupBubble({
   const [open, setOpen] = useState(false);
   const status = deriveAgentStatus(events);
   const label = agentName ? `Agent · ${agentName}` : 'Agent';
+  const openTranscript = useAgentTranscript((s) => s.open);
   return (
     <CollapsibleEventGroup
       label={label}
@@ -1902,8 +1904,20 @@ function AgentDispatchGroupBubble({
       open={open}
       onToggle={() => setOpen((v) => !v)}
     >
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        run {agentRunId}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          run {agentRunId}
+        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            openTranscript(agentRunId);
+          }}
+          className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          View transcript
+        </button>
       </div>
       {events.map((ev, i) => (
         <div key={i} className="border-l border-border pl-2">

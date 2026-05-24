@@ -15,9 +15,9 @@ import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useProjectWorkflowRuns } from '@/hooks/use-project-workflow-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
+import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
-import { AgentTranscriptModal } from '@/components/AgentTranscriptModal';
 
 interface PendingApproval {
   workflowRunId: string;
@@ -46,11 +46,10 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     return () => clearInterval(id);
   }, []);
 
-  // 16b.8.3 — runId of the currently-open transcript modal (if any). The
-  // displayed AgentRunRecord is derived below from events + agentRuns so
-  // the modal keeps showing terminal status even after `useProjectAgentRuns`
-  // drops the row from its map.
-  const [openTranscriptRunId, setOpenTranscriptRunId] = useState<string | null>(null);
+  // 28.5 — transcript-modal state lifted to a Shell-level zustand store
+  // (mirrors the WorkflowDrawer pattern) so the chat-side
+  // AgentDispatchGroupBubble can open it from a different tab.
+  const openTranscript = useAgentTranscript((s) => s.open);
 
   const { runs } = useProjectWorkflowRuns(project, events);
   const activeRuns = useMemo(
@@ -62,20 +61,6 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
     [runs],
   );
   const { runs: agentRuns } = useProjectAgentRuns(project, events);
-
-  // Displayed run for the open transcript modal. Falls back to the latest
-  // matching `agent-run-changed` envelope when the run no longer appears in
-  // `agentRuns` (terminal-state rows are dropped from the hook's map).
-  const transcriptRun = useMemo<AgentRunRecord | null>(() => {
-    if (!openTranscriptRunId) return null;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i];
-      if (!env || env.type !== 'agent-run-changed') continue;
-      const record = (env as { record?: AgentRunRecord }).record;
-      if (record && record.runId === openTranscriptRunId) return record;
-    }
-    return agentRuns.find((r) => r.runId === openTranscriptRunId) ?? null;
-  }, [openTranscriptRunId, events, agentRuns]);
   const approvals = usePendingApprovals(project, events);
 
   const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
@@ -111,7 +96,7 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
             project={project}
             runs={agentRuns}
             nowMs={nowMs}
-            onOpenTranscript={(runId) => setOpenTranscriptRunId(runId)}
+            onOpenTranscript={openTranscript}
           />
           <RunningWorkflowsRegion
             project={project}
@@ -132,13 +117,6 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
             />
           </div>
         </div>
-      )}
-      {transcriptRun && (
-        <AgentTranscriptModal
-          run={transcriptRun}
-          events={events}
-          onClose={() => setOpenTranscriptRunId(null)}
-        />
       )}
     </div>
   );

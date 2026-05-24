@@ -8,15 +8,18 @@
 // form for percent-based layouts or you get pixel constraints that lock
 // the rails to ~20px wide. (Found 2026-05-17 after a UX bug report.)
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
-import type { Project } from '@/api/client';
+import type { AgentRunRecord, Project } from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
+import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
+import { useAgentTranscript } from '@/store/agent-transcript';
 import { ActivityPanel } from './ActivityPanel';
 import { AgentsList } from './AgentsList';
+import { AgentTranscriptModal } from './AgentTranscriptModal';
 import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
@@ -114,8 +117,48 @@ export function Shell({
       {activeProject && (
         <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
       )}
+      {activeProject && (
+        <AgentTranscriptModalMount
+          project={activeProject}
+          events={wsEvents}
+        />
+      )}
     </Group>
   );
+}
+
+// 28.5 — single mount above tab content so any surface (Activity Panel,
+// AgentDispatchGroupBubble in chat, future surfaces) can open the modal
+// via the useAgentTranscript store. Derives the displayed AgentRunRecord
+// from events + the project's agent-runs map.
+function AgentTranscriptModalMount({
+  project,
+  events,
+}: {
+  project: Project;
+  events: WsEnvelope[];
+}) {
+  const openRunId = useAgentTranscript((s) => s.runId);
+  const close = useAgentTranscript((s) => s.close);
+  const { runs: agentRuns } = useProjectAgentRuns(project, events);
+
+  // Same fallback pattern ActivityPanel used pre-28.5: prefer the latest
+  // matching agent-run-changed envelope (carries terminal status even
+  // after useProjectAgentRuns drops the row from its map); fall back to
+  // the live agentRuns list.
+  const transcriptRun = useMemo<AgentRunRecord | null>(() => {
+    if (!openRunId) return null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i];
+      if (!env || env.type !== 'agent-run-changed') continue;
+      const record = (env as { record?: AgentRunRecord }).record;
+      if (record && record.runId === openRunId) return record;
+    }
+    return agentRuns.find((r) => r.runId === openRunId) ?? null;
+  }, [openRunId, events, agentRuns]);
+
+  if (!transcriptRun) return null;
+  return <AgentTranscriptModal run={transcriptRun} events={events} onClose={close} />;
 }
 
 function Center({
