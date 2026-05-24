@@ -60,11 +60,12 @@ const SUPPRESSED_TOOLS = new Set([
 // having them buried in the collapsed L1 "Tool calls" group.
 const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 
-// System subtypes we deliberately hide from chat:
-//   - `stop_hook_summary`: CC's "ran N stop hooks" footer. Pure noise.
-//   - `turn_duration`: extracted onto the assistant tab as a "· 36s" suffix
-//     instead of a footer row.
-const SUPPRESSED_SYSTEM_SUBTYPES = new Set(['stop_hook_summary', 'turn_duration']);
+// Section 28 / 23 — show EVERY system event in chat. The earlier
+// suppression set (stop_hook_summary + turn_duration) violated the
+// "render the firehose, learn what's noise" intent. The turn_duration
+// `durationMs` value still rides the assistant bubble's "· Ns" suffix —
+// that's additive, not a hide.
+const SUPPRESSED_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set();
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
