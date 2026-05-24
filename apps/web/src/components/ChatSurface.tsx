@@ -837,22 +837,33 @@ export function ChatSurface({
           <div className="flex flex-col gap-3">
             {renderItems.map((item, idx) => {
               if (item.kind === 'tool-group') {
+                const firstTs = item.calls[0]?.startedAt;
                 return (
-                  <ChatTurnCard key={item.key} kind="pm">
+                  <ChatTurnCard
+                    key={item.key}
+                    kind="pm"
+                    ts={firstTs}
+                    sub={`${item.calls.length} tool ${item.calls.length === 1 ? 'call' : 'calls'}`}
+                  >
                     <ToolGroupBubble calls={item.calls} />
                   </ChatTurnCard>
                 );
               }
               if (item.kind === 'edit') {
                 return (
-                  <ChatTurnCard key={item.key} kind="pm">
+                  <ChatTurnCard
+                    key={item.key}
+                    kind="pm"
+                    ts={item.call.startedAt}
+                    sub={item.call.tool.toLowerCase()}
+                  >
                     <EditBubble call={item.call} />
                   </ChatTurnCard>
                 );
               }
               if (item.kind === 'workflow-run-group') {
                 return (
-                  <ChatTurnCard key={item.key} kind="pm">
+                  <ChatTurnCard key={item.key} kind="pm" sub="workflow run">
                     <WorkflowRunGroupBubble
                       workflowRunId={item.workflowRunId}
                       events={item.events}
@@ -862,7 +873,11 @@ export function ChatSurface({
               }
               if (item.kind === 'agent-dispatch-group') {
                 return (
-                  <ChatTurnCard key={item.key} kind="pm">
+                  <ChatTurnCard
+                    key={item.key}
+                    kind="pm"
+                    sub={item.agentName ? `agent · ${item.agentName}` : 'agent dispatch'}
+                  >
                     <AgentDispatchGroupBubble
                       agentRunId={item.agentRunId}
                       agentName={item.agentName}
@@ -901,10 +916,16 @@ export function ChatSurface({
                   toolName: string;
                   toolUseId: string;
                   toolInput: unknown;
+                  ts?: string;
                 };
                 const answered = answeredAsks[askEnv.toolUseId];
                 return (
-                  <ChatTurnCard key={item.key} kind="pm">
+                  <ChatTurnCard
+                    key={item.key}
+                    kind="pm"
+                    ts={askEnv.ts}
+                    sub={askEnv.toolName === 'ExitPlanMode' ? 'plan ready' : 'asking'}
+                  >
                     <AskCard
                       toolName={askEnv.toolName}
                       toolUseId={askEnv.toolUseId}
@@ -958,14 +979,38 @@ export function ChatSurface({
                 const ar = ev as ApprovalRequiredEvent;
                 bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
               }
+              let sub: string | undefined;
+              if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
+                sub = formatElapsed(assistantDurationMs);
+              } else if (ev.kind === 'approval-required') {
+                sub = 'approval required';
+              } else if (ev.kind === 'subagent-failure') {
+                sub = 'subagent failed';
+              } else if (ev.kind === 'todos') {
+                sub = 'todos';
+              } else if (ev.kind === 'task-start') {
+                const t = ev as TaskStartEvent;
+                sub = t.subagent ? `${t.subagent} · delegated` : 'delegated';
+              } else if (ev.kind === 'task-end') {
+                const t = ev as TaskEndEvent;
+                sub = t.subagent ? `${t.subagent} · returned` : 'returned';
+              } else if (ev.kind === 'system') {
+                const sys = ev as SystemEvent;
+                sub = sys.subtype.replace(/_/g, ' ');
+              }
               return (
-                <ChatTurnCard key={item.key} kind={turnKind} bubbleId={bubbleId}>
+                <ChatTurnCard
+                  key={item.key}
+                  kind={turnKind}
+                  ts={ev.ts}
+                  sub={sub}
+                  bubbleId={bubbleId}
+                >
                   <EventBubble
                     event={ev}
                     projectId={projectId}
                     resolvedApprovals={resolvedApprovals}
                     onApprovalResolved={markApprovalResolved}
-                    assistantDurationMs={assistantDurationMs}
                   />
                 </ChatTurnCard>
               );
@@ -1012,21 +1057,49 @@ export function ChatSurface({
 
 // ── Chat turn card (Glass surface, Section 29) ───────────────────────────
 
+function formatChatTime(ts?: string): string | undefined {
+  if (!ts) return undefined;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function ChatTurnCard({
   kind,
+  ts,
+  sub,
   children,
   bubbleId,
 }: {
   kind: 'user' | 'pm';
+  ts?: string;
+  sub?: string;
   children: React.ReactNode;
   bubbleId?: string;
 }) {
+  const name = kind === 'user' ? 'You' : 'Claude';
+  const avatarText = kind === 'user' ? 'YOU' : 'CC';
+  const time = formatChatTime(ts);
+  const subParts = [time, sub].filter((x): x is string => Boolean(x));
   return (
     <div
       className={`chat-turn${kind === 'user' ? ' chat-turn-user' : ''}`}
       data-bubble-id={bubbleId}
     >
-      {children}
+      <div className="chat-turn-head">
+        <div className={`chat-avatar${kind === 'user' ? ' chat-avatar-user' : ''}`}>
+          {avatarText}
+        </div>
+        <div className="chat-turn-meta">
+          <div className={`chat-turn-name${kind === 'user' ? ' chat-turn-name-user' : ''}`}>
+            {name}
+          </div>
+          {subParts.length > 0 && (
+            <div className="chat-turn-sub">{subParts.join(' · ')}</div>
+          )}
+        </div>
+      </div>
+      <div>{children}</div>
     </div>
   );
 }
@@ -1043,7 +1116,6 @@ interface EventBubbleProps {
     approved: boolean,
     response: string,
   ) => void;
-  assistantDurationMs?: number;
 }
 
 function EventBubble({
@@ -1051,15 +1123,12 @@ function EventBubble({
   projectId,
   resolvedApprovals,
   onApprovalResolved,
-  assistantDurationMs,
 }: EventBubbleProps) {
   switch (event.kind) {
     case 'user':
       return <UserBubble event={event as UserEvent} />;
     case 'assistant':
-      return (
-        <AssistantBubble event={event as AssistantEvent} durationMs={assistantDurationMs} />
-      );
+      return <AssistantBubble event={event as AssistantEvent} />;
     case 'tool-start':
     case 'tool-end':
       return null;
@@ -1339,24 +1408,6 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   );
 }
 
-// ── Role tab ──────────────────────────────────────────────────────────────
-
-function RoleTab({ role, suffix }: { role: 'user' | 'claude'; suffix?: string }) {
-  const text = role === 'user' ? 'You' : 'Claude';
-  const styles =
-    role === 'user'
-      ? 'border-primary/60 bg-primary/30 text-primary/90'
-      : 'border-border bg-card text-muted-foreground';
-  return (
-    <div
-      className={`relative z-10 -mb-px inline-block border border-b-0 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${styles}`}
-    >
-      {text}
-      {suffix && <span className="ml-1.5 font-mono normal-case opacity-70">· {suffix}</span>}
-    </div>
-  );
-}
-
 // ── User bubble ──────────────────────────────────────────────────────────
 
 function UserBubble({ event }: { event: UserEvent }) {
@@ -1379,14 +1430,11 @@ function UserBubble({ event }: { event: UserEvent }) {
             <CopyButton text={part.text} />
           </div>
         ) : (
-          <div key={idx} className="group">
-            <RoleTab role="user" />
-            <div className="relative text-sm text-foreground">
-              <div className="whitespace-pre-wrap break-words">
-                {part.text || '(empty prompt)'}
-              </div>
-              <CopyButton text={part.text} />
+          <div key={idx} className="group relative text-sm text-foreground">
+            <div className="whitespace-pre-wrap break-words">
+              {part.text || '(empty prompt)'}
             </div>
+            <CopyButton text={part.text} />
           </div>
         ),
       )}
@@ -1396,36 +1444,23 @@ function UserBubble({ event }: { event: UserEvent }) {
 
 // ── Assistant bubble ─────────────────────────────────────────────────────
 
-function AssistantBubble({
-  event,
-  durationMs,
-}: {
-  event: AssistantEvent;
-  durationMs?: number;
-}) {
+function AssistantBubble({ event }: { event: AssistantEvent }) {
   const text = event.text ?? '';
-  const durationSuffix = typeof durationMs === 'number' ? formatElapsed(durationMs) : undefined;
   if (!text) {
     return (
-      <div>
-        <RoleTab role="claude" suffix={durationSuffix} />
-        <div className="text-sm italic text-muted-foreground">
-          {event.transcriptPath
-            ? `(no assistant text — transcript empty or missing at ${event.transcriptPath})`
-            : '(no transcript path provided by Stop hook)'}
-        </div>
+      <div className="text-sm italic text-muted-foreground">
+        {event.transcriptPath
+          ? `(no assistant text — transcript empty or missing at ${event.transcriptPath})`
+          : '(no transcript path provided by Stop hook)'}
       </div>
     );
   }
   return (
-    <div className="group">
-      <RoleTab role="claude" suffix={durationSuffix} />
-      <div className="relative text-sm text-foreground">
-        <div className="markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
-        </div>
-        <CopyButton text={text} />
+    <div className="group relative text-sm text-foreground">
+      <div className="markdown-body">
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
       </div>
+      <CopyButton text={text} />
     </div>
   );
 }

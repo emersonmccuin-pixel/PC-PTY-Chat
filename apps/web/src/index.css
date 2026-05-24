@@ -531,6 +531,7 @@ button:disabled {
    Chat surface · LOCKED Glass design (2026-05-24, Section 29)
    Each turn is a translucent card with a soft white-tinted gradient
    and 1px white-translucent border. YOU carries a cream gradient.
+   Inside each card: 42px round avatar + name wordmark + sub-line.
    ────────────────────────────────────────────────────────────────── */
 
 .chat-turn {
@@ -548,6 +549,58 @@ button:disabled {
   border-color: rgba(245, 232, 200, 0.30);
 }
 
+.chat-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
 .chat-avatar {
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
+  border: 1px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.chat-avatar-user {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+  color: var(--accent);
+}
+
+.chat-turn-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-turn-name {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-weight: 800;
+  color: var(--primary);
+}
+
+.chat-turn-name-user {
+  color: var(--accent);
+}
+
+.chat-turn-sub {
+  font-size: 0.6rem;
+  color: var(--fg-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
