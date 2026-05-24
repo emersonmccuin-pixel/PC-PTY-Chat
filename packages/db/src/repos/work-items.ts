@@ -428,6 +428,56 @@ export function appendWorkItemHistory(
   return toDomain(updated);
 }
 
+/** Section 26.5 — list non-archived children of a parent work item. Used by
+ *  the tier-1 verification path to populate `child_work_items_done`. Stays
+ *  archive-aware (soft-deleted children don't count) to match the other
+ *  reads in this repo. */
+export function listChildWorkItems(parentId: ULID): WorkItem[] {
+  const rows = getDb()
+    .select()
+    .from(workItems)
+    .where(and(eq(workItems.parentId, parentId), isNull(workItems.deletedAt)))
+    .orderBy(asc(workItems.position), asc(workItems.createdAt))
+    .all() as WorkItemRow[];
+  return rows.map(toDomain);
+}
+
+/** Section 26.5 — atomic tier-1 verification write. Sets status +
+ *  statusReason + verification_status + verification_notes and appends a
+ *  history note in one update so the UI never observes an intermediate
+ *  state. Bumps version + updatedAt. Returns null if the id isn't found or
+ *  is soft-deleted. */
+export function applyAgentVerification(
+  id: ULID,
+  input: {
+    workItemStatus: WorkItemStatus;
+    statusReason: string | null;
+    verificationStatus: VerificationStatus;
+    verificationNotes: string | null;
+    historyNote: string;
+  },
+): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  const entry: WorkItemHistoryEntry = {
+    ts: new Date().toISOString(),
+    kind: 'update',
+    note: input.historyNote,
+  };
+  const updated: WorkItemRow = {
+    ...row,
+    status: input.workItemStatus,
+    statusReason: input.statusReason,
+    verificationStatus: input.verificationStatus,
+    verificationNotes: input.verificationNotes,
+    history: [...row.history, entry],
+    version: row.version + 1,
+    updatedAt: Date.now(),
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}
+
 /**
  * Apply a workflow-run outcome atomically: set status + statusReason and append
  * a history note in one update. The runtime calls this from the unlock hook so

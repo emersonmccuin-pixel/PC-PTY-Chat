@@ -8,7 +8,35 @@
 //
 // Kinds enumerated in `@pc/domain` as `AgentChannelEventKind`.
 
-import type { AgentChannelEventKind, AgentFailedPayload, PendingAskOption } from '@pc/domain';
+import type {
+  AgentChannelEventKind,
+  AgentFailedPayload,
+  PendingAskOption,
+  VerificationStatus,
+  VerificationTier,
+} from '@pc/domain';
+
+/** Section 26.5 — verification block carried on terminal envelopes when the
+ *  dispatched agent was operating against a contract work item. */
+export interface VerificationBlock {
+  workItemId: string;
+  status: VerificationStatus;
+  tier: VerificationTier;
+  /** Human-readable predicate-failure summary; null when the WI flipped to a
+   *  passing or pending state. Truncated to 400 chars to keep the envelope
+   *  human-readable. */
+  notes: string | null;
+}
+
+function appendVerificationTags(lines: string[], v: VerificationBlock): void {
+  lines.push(`[workItemId: ${v.workItemId}]`);
+  lines.push(`[verification: ${v.status}]`);
+  lines.push(`[verificationTier: ${v.tier}]`);
+  if (v.notes) {
+    const truncated = v.notes.length > 400 ? `${v.notes.slice(0, 400)}…` : v.notes;
+    lines.push(`[verificationNotes: ${truncated}]`);
+  }
+}
 
 export function buildAgentEventHeader(kind: AgentChannelEventKind, version = 1): string {
   return `[pc:agent-event kind=${kind} version=${version}]`;
@@ -152,6 +180,10 @@ export function buildAgentCompletedBody(args: {
   agentName: string;
   parentWorkItemId: string | null;
   result: string;
+  /** Section 26.5 — appended when the dispatch was a contract dispatch. The
+   *  tags let the orchestrator's pod prompt branch on verification outcome
+   *  without re-fetching the work item. */
+  verification?: VerificationBlock | null;
 }): string {
   const lines: string[] = [
     buildAgentEventHeader('agent-completed'),
@@ -160,14 +192,30 @@ export function buildAgentCompletedBody(args: {
     `[agentName: ${args.agentName}]`,
   ];
   if (args.parentWorkItemId) lines.push(`[parentWorkItemId: ${args.parentWorkItemId}]`);
+  if (args.verification) appendVerificationTags(lines, args.verification);
   lines.push('');
   lines.push('Result:');
   lines.push(args.result || '(no output)');
   lines.push('');
-  lines.push(
-    `The ${args.agentName} agent you dispatched earlier finished. Start a new turn surfacing this result to the user with enough context for them to remember what they asked.`,
-  );
+  if (args.verification) {
+    lines.push(describeVerificationForPrompt(args.agentName, args.verification));
+  } else {
+    lines.push(
+      `The ${args.agentName} agent you dispatched earlier finished. Start a new turn surfacing this result to the user with enough context for them to remember what they asked.`,
+    );
+  }
   return lines.join('\n');
+}
+
+function describeVerificationForPrompt(agentName: string, v: VerificationBlock): string {
+  switch (v.status) {
+    case 'passed':
+      return `The ${agentName} agent finished and the contract work item passed tier-1 verification (work item ${v.workItemId} → complete). Start a new turn surfacing the result to the user.`;
+    case 'failed':
+      return `The ${agentName} agent finished BUT tier-1 verification failed on work item ${v.workItemId}. Surface the failure to the user; review the predicate failures (verificationNotes tag) and decide whether to retry / fix / drop.`;
+    case 'pending':
+      return `The ${agentName} agent finished and work item ${v.workItemId} is awaiting ${v.tier} verification. Read the work item body, decide whether the contract was met, then call pc_approve_work_item or pc_reject_work_item.`;
+  }
 }
 
 /** Section 18.7 — compose the channel-event body for `agent-queued-started`.
@@ -215,6 +263,11 @@ export function buildAgentFailedBody(args: {
   parentWorkItemId: string | null;
   reason: string;
   cause: AgentFailedPayload['cause'];
+  /** Section 26.5 — appended when the dispatch was a contract dispatch.
+   *  Always carries `status: 'failed'` on the agent-failed path (the
+   *  verification helper flips the WI to failed without running predicates
+   *  when the agent died before reporting done). */
+  verification?: VerificationBlock | null;
 }): string {
   const lines: string[] = [
     buildAgentEventHeader('agent-failed'),
@@ -224,12 +277,19 @@ export function buildAgentFailedBody(args: {
     `[cause: ${args.cause ?? 'error'}]`,
   ];
   if (args.parentWorkItemId) lines.push(`[parentWorkItemId: ${args.parentWorkItemId}]`);
+  if (args.verification) appendVerificationTags(lines, args.verification);
   lines.push('');
   lines.push('Failure:');
   lines.push(args.reason || '(no reason recorded)');
   lines.push('');
-  lines.push(
-    `The ${args.agentName} agent you dispatched earlier failed. Surface this to the user with a one-line summary + a suggested next step (retry / drop / hand-write).`,
-  );
+  if (args.verification) {
+    lines.push(
+      `The ${args.agentName} agent failed AND its contract work item ${args.verification.workItemId} was flipped to failed. Surface this to the user with a one-line summary + a suggested next step (retry / drop / hand-write).`,
+    );
+  } else {
+    lines.push(
+      `The ${args.agentName} agent you dispatched earlier failed. Surface this to the user with a one-line summary + a suggested next step (retry / drop / hand-write).`,
+    );
+  }
   return lines.join('\n');
 }

@@ -36,6 +36,7 @@ import { resolve } from 'node:path';
 import {
   computePodRevision,
   getAgentByName,
+  getProjectById,
   getWorkItem,
   insertAgentRunRow,
   markAgentRunTerminal,
@@ -56,6 +57,7 @@ import {
   buildAgentCompletedBody,
   buildAgentFailedBody,
   buildAgentQueuedStartedBody,
+  type VerificationBlock,
 } from './agent-event-header.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import type { ChannelServer } from './channel-server.ts';
@@ -63,6 +65,11 @@ import type { ChannelServer } from './channel-server.ts';
 import { getActiveRunRegistry, type ActiveRunRegistry } from './agent-active-runs.ts';
 import { enqueueAndPush } from './agent-delivery.ts';
 import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
+import {
+  runVerificationOnTerminal,
+  type VerificationDeps,
+  type VerificationOutcome,
+} from './agent-verification.ts';
 
 /** Process-wide cap-and-queue registry shared by every dispatch. Lives in
  *  the runtime layer; we hold one singleton in this module so every
@@ -137,6 +144,13 @@ export interface DispatchAgentDeps {
   /** Override the per-run scratch dir. Defaults to `<PC_DATA_DIR>/projects/
    *  <projectId>/agent-runs-v2/<runId>`. */
   scratchDirFor?: (projectId: ULID, agentRunId: ULID) => string;
+  /** Section 26.5 — inject the verification runner for tests. Production
+   *  uses `runVerificationOnTerminal` with worktree-bound `PredicateExecutors`. */
+  verifyOnTerminal?: typeof runVerificationOnTerminal;
+  /** Section 26.5 — passthrough deps for the production verification runner
+   *  (mostly the `executorsFor` test seam). Tests usually inject
+   *  `verifyOnTerminal` directly instead. */
+  verificationDeps?: VerificationDeps;
   /** Test seam: AgentRun factory. Production = `new AgentRun(...)`. */
   agentRunFactory?: typeof defaultAgentRunFactory;
   /** Session 10 / Phase D — WS broadcast hook. Carries:
@@ -658,43 +672,102 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     });
   });
 
-  // Terminal handling: persist row + emit channel envelope to dispatcher +
-  // emit Activity Panel envelope.
+  // Terminal handling: persist row + run tier-1 verification (Section 26.5) +
+  // emit channel envelope to dispatcher + emit Activity Panel envelope.
+  //
+  // Verification is async — `bash_exit_zero` predicates run real child
+  // processes with a 30s cap. The async work is fire-and-forget from the
+  // listener's perspective; we use `void handleTerminal(...)` so the
+  // EventEmitter callback stays sync and uncaught rejections are surfaced
+  // through `.catch`.
   run.once(
     'terminal',
     (info: { status: 'completed' | 'failed' | 'cancelled'; cause?: string; result?: string }) => {
-      const completedAt = Date.now();
-      const failureCause: AgentRunFailureCause | null =
-        info.status === 'completed' ? null : (info.cause as AgentRunFailureCause) ?? null;
-      markAgentRunTerminal({
-        id: args.agentRunId,
-        status: info.status,
-        result: info.status === 'completed' ? info.result ?? '' : null,
-        failureCause,
-        failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
-        completedAt,
-      });
-      args.podPrep.cleanup();
-      emitTerminalEnvelope({
-        channelServer: args.deps.channelServer,
-        projectId: args.input.projectId,
-        dispatcherSessionId: args.input.dispatcherSessionId,
-        slug: args.input.slug,
-        runId: args.agentRunId,
-        ccSessionId: args.ccSessionId,
-        podName: args.podName,
-        parentWorkItemId: args.input.parentWorkItemId ?? null,
-        terminalStatus: info.status,
-        result: info.result ?? '',
-        failureCause,
-      });
-      broadcastStateChanged(info.status, {
-        result: info.result,
-        failureCause,
-        endedAt: completedAt,
+      void handleTerminal(info).catch((err) => {
+        // Tier-1 verification or the channel-event emit threw. Both are
+        // best-effort downstream of the terminal row write; log loudly so
+        // future logs surface the case but don't crash the process.
+        // eslint-disable-next-line no-console
+        console.error(
+          `[agent-run-factory] terminal handler failed for run ${args.agentRunId}:`,
+          err,
+        );
       });
     },
   );
+
+  async function handleTerminal(info: {
+    status: 'completed' | 'failed' | 'cancelled';
+    cause?: string;
+    result?: string;
+  }): Promise<void> {
+    const completedAt = Date.now();
+    const failureCause: AgentRunFailureCause | null =
+      info.status === 'completed' ? null : (info.cause as AgentRunFailureCause) ?? null;
+    markAgentRunTerminal({
+      id: args.agentRunId,
+      status: info.status,
+      result: info.status === 'completed' ? info.result ?? '' : null,
+      failureCause,
+      failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
+      completedAt,
+    });
+
+    // Pod-materialised files (.claude/agents/<pod>.md, .mcp.json) are
+    // disposable now that the agent has exited. Removing them before
+    // verification keeps the worktree free of run-scoped junk while the
+    // verification pass runs. The worktree itself + any files the agent
+    // wrote stay intact for `files_exist` / `bash_exit_zero` predicates.
+    args.podPrep.cleanup();
+
+    // Section 26.5 — run tier-1 verification when the dispatch was a
+    // contract dispatch. `runVerificationOnTerminal` returns null when no
+    // verification ran (non-contract, missing WI, cancelled) — the channel
+    // envelope then ships without a verification block.
+    const verifier = args.deps.verifyOnTerminal ?? runVerificationOnTerminal;
+    const project = getProjectById(args.input.projectId);
+    let outcome: VerificationOutcome | null = null;
+    if (args.workItemId && project) {
+      outcome = await verifier(
+        {
+          workItemId: args.workItemId,
+          terminalStatus: info.status,
+          failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
+          projectFolderPath: project.folderPath,
+          worktreeDir: args.input.worktreeDir,
+        },
+        args.deps.verificationDeps ?? {},
+      );
+    }
+    const verification: VerificationBlock | null = outcome
+      ? {
+          workItemId: outcome.workItemId,
+          status: outcome.verificationStatus,
+          tier: outcome.verificationTier,
+          notes: outcome.notes,
+        }
+      : null;
+
+    emitTerminalEnvelope({
+      channelServer: args.deps.channelServer,
+      projectId: args.input.projectId,
+      dispatcherSessionId: args.input.dispatcherSessionId,
+      slug: args.input.slug,
+      runId: args.agentRunId,
+      ccSessionId: args.ccSessionId,
+      podName: args.podName,
+      parentWorkItemId: args.input.parentWorkItemId ?? null,
+      terminalStatus: info.status,
+      result: info.result ?? '',
+      failureCause,
+      verification,
+    });
+    broadcastStateChanged(info.status, {
+      result: info.result,
+      failureCause,
+      endedAt: completedAt,
+    });
+  }
 
   run.start();
   return run;
@@ -714,6 +787,11 @@ interface EmitTerminalArgs {
   terminalStatus: 'completed' | 'failed' | 'cancelled';
   result: string;
   failureCause: AgentRunFailureCause | null;
+  /** Section 26.5 — contract-WI verification outcome (null when the dispatch
+   *  was not a contract dispatch). The builder appends `[workItemId: ...]`
+   *  / `[verification: ...]` / `[verificationTier: ...]` / optional
+   *  `[verificationNotes: ...]` tags on the channel envelope. */
+  verification: VerificationBlock | null;
 }
 
 function emitTerminalEnvelope(args: EmitTerminalArgs): void {
@@ -727,6 +805,7 @@ function emitTerminalEnvelope(args: EmitTerminalArgs): void {
           agentName: args.podName,
           parentWorkItemId: args.parentWorkItemId,
           result: args.result,
+          verification: args.verification,
         })
       : buildAgentFailedBody({
           runId: args.runId,
@@ -735,6 +814,7 @@ function emitTerminalEnvelope(args: EmitTerminalArgs): void {
           parentWorkItemId: args.parentWorkItemId,
           reason: describeFailure(args.failureCause) ?? args.terminalStatus,
           cause: agentFailureCauseToPayload(args.failureCause, args.terminalStatus),
+          verification: args.verification,
         });
   enqueueAndPush(args.channelServer, {
     projectId: args.projectId,

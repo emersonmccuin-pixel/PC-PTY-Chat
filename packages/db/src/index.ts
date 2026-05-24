@@ -21,12 +21,14 @@ export type {
 
 export {
   appendWorkItemHistory,
+  applyAgentVerification,
   applyRunOutcome,
   countWorkItemsInStage,
   createWorkItem,
   getWorkItem,
   getWorkItemIncludingArchived,
   listArchivedWorkItems,
+  listChildWorkItems,
   listWorkItems,
   moveWorkItemStage,
   patchWorkItem,
