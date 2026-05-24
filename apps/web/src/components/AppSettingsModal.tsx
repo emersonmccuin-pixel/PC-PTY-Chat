@@ -140,7 +140,8 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     draft.projectsFolder !== settings.projectsFolder ||
     draft.telemetryOptIn !== settings.telemetryOptIn ||
     draft.bugLogTargetProjectId !== settings.bugLogTargetProjectId ||
-    draft.fontScale !== settings.fontScale;
+    draft.fontScale !== settings.fontScale ||
+    draft.hideCancelledStage !== settings.hideCancelledStage;
 
   async function saveGeneral() {
     if (busy || !generalDirty) return;
@@ -152,6 +153,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         telemetryOptIn: draft.telemetryOptIn,
         bugLogTargetProjectId: draft.bugLogTargetProjectId,
         fontScale: draft.fontScale,
+        hideCancelledStage: draft.hideCancelledStage,
       };
       const r = await api.patchSettings(patch);
       initialFontScale.current = r.settings.fontScale;
@@ -367,6 +369,20 @@ function GeneralTab({
             onChange={(e) => onDraftChange({ telemetryOptIn: e.target.checked })}
           />
           <span>Enable telemetry</span>
+        </label>
+      </FieldRow>
+
+      <FieldRow
+        label="Hide cancelled stage"
+        help="When on, the cancelled column is hidden on every project's kanban board. Each project can override this in its own settings."
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={draft.hideCancelledStage}
+            onChange={(e) => onDraftChange({ hideCancelledStage: e.target.checked })}
+          />
+          <span>Hide cancelled by default</span>
         </label>
       </FieldRow>
 

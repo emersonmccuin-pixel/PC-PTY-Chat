@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import type { Project, Stage, ULID } from '@pc/domain';
+import type { Project, ProjectSettings, Stage, ULID } from '@pc/domain';
+import { withProjectSettingsDefaults } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { projects } from '../schema.ts';
@@ -38,6 +39,7 @@ function toDomain(row: ProjectRow): Project {
     stages: row.stages,
     folderPath: row.folderPath,
     gitRemote: row.gitRemote,
+    settings: withProjectSettingsDefaults(row.settings as Partial<ProjectSettings>),
   };
 }
 
@@ -113,6 +115,7 @@ export function createProject(input: CreateProjectInput): Project {
     stages: input.stages,
     folderPath: input.folderPath,
     gitRemote,
+    settings: withProjectSettingsDefaults(input.settings as Partial<ProjectSettings> | undefined),
   };
 }
 

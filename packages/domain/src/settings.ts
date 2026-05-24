@@ -79,6 +79,12 @@ export interface GlobalSettings {
   agentDispatch: AgentDispatchSettings;
   /** Section 18.8 — JSONL retention sweep settings. */
   jsonl: JsonlSettings;
+  /** Section 27 — when true, kanban + table views hide the project's
+   *  `is_cancelled` stage by default. Per-project `cancelledVisibility`
+   *  override on the project record wins (forced visible / forced hidden /
+   *  use-global). Cards in the cancelled stage are still reachable via
+   *  "Show archived" and direct links. */
+  hideCancelledStage: boolean;
 }
 
 export const FONT_SCALE_MIN = 0.85;
@@ -104,6 +110,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     jsonl: {
       retentionDays: 30,
     },
+    hideCancelledStage: false,
   };
 }
 
@@ -172,6 +179,7 @@ export function withSettingsDefaults(
         stored.agentDispatch?.maxConcurrent ?? defaults.agentDispatch.maxConcurrent,
       ),
     },
+    hideCancelledStage: stored.hideCancelledStage ?? defaults.hideCancelledStage,
     jsonl: {
       retentionDays: normalizeJsonlRetention(
         stored.jsonl?.retentionDays ?? defaults.jsonl.retentionDays,

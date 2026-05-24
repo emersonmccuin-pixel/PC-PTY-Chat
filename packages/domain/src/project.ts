@@ -36,6 +36,49 @@ export function postMoveStatusForStage(
   return 'pending';
 }
 
+/** Section 27 — per-project setting overlay. Stored in the `projects.settings`
+ *  JSON column; defaults fill in missing keys via `withProjectSettingsDefaults`. */
+export interface ProjectSettings {
+  /** Section 27 — per-project override on the global `hideCancelledStage`.
+   *  `'use-global'` (default) inherits the resolved global value;
+   *  `'force-visible'` always shows the cancelled column;
+   *  `'force-hidden'` always hides it. */
+  cancelledVisibility: 'use-global' | 'force-visible' | 'force-hidden';
+}
+
+export function defaultProjectSettings(): ProjectSettings {
+  return { cancelledVisibility: 'use-global' };
+}
+
+/** Backfill missing keys on a stored project-settings JSON blob. */
+export function withProjectSettingsDefaults(
+  stored: Partial<ProjectSettings> | undefined | null,
+): ProjectSettings {
+  const defaults = defaultProjectSettings();
+  if (!stored) return defaults;
+  const v = stored.cancelledVisibility;
+  return {
+    cancelledVisibility:
+      v === 'force-visible' || v === 'force-hidden' || v === 'use-global'
+        ? v
+        : defaults.cancelledVisibility,
+  };
+}
+
+/** Section 27 — resolve the visibility of a project's cancelled-stage from
+ *  the per-project override + the global flag. Returns true when the
+ *  cancelled column should be hidden from the default kanban / table view.
+ *  Cards in the cancelled stage are still reachable via direct links. */
+export function resolveCancelledHidden(
+  projectSettings: Partial<ProjectSettings> | undefined,
+  globalHide: boolean,
+): boolean {
+  const resolved = withProjectSettingsDefaults(projectSettings).cancelledVisibility;
+  if (resolved === 'force-visible') return false;
+  if (resolved === 'force-hidden') return true;
+  return globalHide;
+}
+
 export interface Project {
   id: ULID;
   /** URL-safe routing key. Derived from name + uniqued at create; locked thereafter
@@ -48,4 +91,7 @@ export interface Project {
   folderPath: string;
   /** Optional origin URL; null = local-only repo. Editable in project settings. */
   gitRemote: string | null;
+  /** Section 27 — typed per-project overlay. Persisted in the
+   *  `projects.settings` JSON column; defaults fill in missing keys. */
+  settings: ProjectSettings;
 }

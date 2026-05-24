@@ -558,6 +558,10 @@ app.patch('/api/settings', async (c) => {
             ? body.jsonl.retentionDays
             : current.jsonl.retentionDays,
       },
+      hideCancelledStage:
+        typeof body.hideCancelledStage === 'boolean'
+          ? body.hideCancelledStage
+          : current.hideCancelledStage,
     },
     getDataDir(),
     homedir(),

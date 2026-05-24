@@ -16,6 +16,14 @@ export interface Stage {
   id: string;
   name: string;
   order: number;
+  /** Section 27 — typed terminal/intake flags. */
+  isDone?: boolean;
+  isCancelled?: boolean;
+  isNew?: boolean;
+}
+
+export interface ProjectSettings {
+  cancelledVisibility: 'use-global' | 'force-visible' | 'force-hidden';
 }
 
 export interface Project {
@@ -25,6 +33,7 @@ export interface Project {
   stages: Stage[];
   folderPath: string;
   gitRemote: string | null;
+  settings: ProjectSettings;
 }
 
 export const WORK_ITEM_TYPES = ['task', 'bug', 'feature', 'spike'] as const;
@@ -398,6 +407,9 @@ export interface GlobalSettings {
   activityPanel: ActivityPanelSettings;
   bugLogTargetProjectId: ULID | null;
   fontScale: number;
+  /** Section 27 — when true, kanban + table views hide cancelled-stage
+   *  columns by default. Per-project `cancelledVisibility` overrides. */
+  hideCancelledStage: boolean;
 }
 
 export const FONT_SCALE_MIN = 0.85;

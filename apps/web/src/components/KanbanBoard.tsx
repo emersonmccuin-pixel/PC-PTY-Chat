@@ -25,10 +25,23 @@ import {
   api,
   WorkItemConflictError,
   type Project,
+  type ProjectSettings,
   type Stage,
   type WorkItem,
   type WorkItemStatus,
 } from '@/api/client';
+
+// Section 27 — local mirror of the server-side resolver in @pc/domain.
+// Keeps the web bundle independent of the workspace package.
+function resolveCancelledHidden(
+  settings: Partial<ProjectSettings> | undefined,
+  globalHide: boolean,
+): boolean {
+  const v = settings?.cancelledVisibility ?? 'use-global';
+  if (v === 'force-visible') return false;
+  if (v === 'force-hidden') return true;
+  return globalHide;
+}
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
@@ -69,6 +82,24 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [createModal, setCreateModal] = useState<CreateModalState | null>(null);
+  // Section 27 — read the global hideCancelledStage flag once on mount.
+  // The per-project setting on `project.settings` overrides; the kanban
+  // resolves both each render via `resolveCancelledHidden`.
+  const [globalHideCancelled, setGlobalHideCancelled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void api
+      .getSettings()
+      .then((s) => {
+        if (alive) setGlobalHideCancelled(s.hideCancelledStage === true);
+      })
+      .catch(() => {
+        /* default `false` is safe */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
   const setShowAgentContracts = useWorkItemsView((s) => s.setShowAgentContracts);
 
@@ -111,10 +142,15 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
 
-  const sortedStages = useMemo(
-    () => [...project.stages].sort((a, b) => a.order - b.order),
-    [project.stages],
-  );
+  // Section 27 — hide the cancelled-flagged stage when the resolved visibility
+  // says so. Cards already living there stay reachable via direct links + via
+  // the "Show archived" section in stages editor; this just keeps the column
+  // off the board.
+  const cancelledHidden = resolveCancelledHidden(project.settings, globalHideCancelled);
+  const sortedStages = useMemo(() => {
+    const sorted = [...project.stages].sort((a, b) => a.order - b.order);
+    return cancelledHidden ? sorted.filter((s) => !s.isCancelled) : sorted;
+  }, [project.stages, cancelledHidden]);
 
   // Pre-sort items by position within each stage. Stable across renders.
   // Uses `visibleItems` so the "See Agent Contracts" toggle (Section 26.7)

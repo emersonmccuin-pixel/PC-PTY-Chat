@@ -44,8 +44,13 @@ export type {
   ValidateFieldsOptions,
 } from './field-schema.ts';
 export { validateFields } from './field-schema.ts';
-export type { Project, Stage } from './project.ts';
-export { postMoveStatusForStage } from './project.ts';
+export type { Project, ProjectSettings, Stage } from './project.ts';
+export {
+  defaultProjectSettings,
+  postMoveStatusForStage,
+  resolveCancelledHidden,
+  withProjectSettingsDefaults,
+} from './project.ts';
 export type {
   ApprovalNode,
   AttachedToWorkItem,
