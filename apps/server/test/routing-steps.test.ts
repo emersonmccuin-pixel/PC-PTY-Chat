@@ -370,6 +370,86 @@ test('runCreateWorkItemStep: explicit stage substitutes from inputs', async () =
   assert.equal(createCalls[0]!.body, 'detail');
 });
 
+test('runCreateWorkItemStep: Section 27 — defaults to is_new stage when project has one', async () => {
+  const { svc, createCalls } = mkFakeWorkItemService();
+  const node: CreateWorkItemNode = {
+    id: 'spawn',
+    kind: 'create-work-item',
+    'create-work-item': { title: 'x' },
+  };
+  const run = mkRun();
+  await runCreateWorkItemStep(node, run, {
+    workItemService: svc,
+    getProject: () =>
+      mkProject({
+        stages: [
+          { id: 'todo', name: 'Todo', order: 0 },
+          { id: 'inbox', name: 'Inbox', order: 1, isNew: true },
+          { id: 'done', name: 'Done', order: 2 },
+        ],
+      }),
+    substituteTemplate: legacyTmpl(run),
+  });
+  // Lands on the is_new stage even though it isn't stages[0].
+  assert.equal(createCalls[0]!.stageId, 'inbox');
+});
+
+test('runCreateWorkItemStep: Section 27 — toFlag resolves to flagged stage', async () => {
+  const { svc, createCalls } = mkFakeWorkItemService();
+  const node: CreateWorkItemNode = {
+    id: 'spawn',
+    kind: 'create-work-item',
+    'create-work-item': { title: 'x', toFlag: 'done' },
+  };
+  const run = mkRun();
+  await runCreateWorkItemStep(node, run, {
+    workItemService: svc,
+    getProject: () =>
+      mkProject({
+        stages: [
+          { id: 'todo', name: 'Todo', order: 0, isNew: true },
+          { id: 'shipped', name: 'Shipped', order: 1, isDone: true },
+        ],
+      }),
+    substituteTemplate: legacyTmpl(run),
+  });
+  assert.equal(createCalls[0]!.stageId, 'shipped');
+});
+
+test('runCreateWorkItemStep: Section 27 — both stage and toFlag → fails', async () => {
+  const { svc } = mkFakeWorkItemService();
+  const node: CreateWorkItemNode = {
+    id: 'spawn',
+    kind: 'create-work-item',
+    'create-work-item': { title: 'x', stage: 'todo', toFlag: 'new' },
+  };
+  const run = mkRun();
+  const result = await runCreateWorkItemStep(node, run, {
+    workItemService: svc,
+    getProject: () => mkProject(),
+    substituteTemplate: legacyTmpl(run),
+  });
+  assert.equal(result.output.status, 'failed');
+  assert.match(result.output.error ?? '', /exactly one of stage \/ toFlag/);
+});
+
+test('runCreateWorkItemStep: Section 27 — toFlag with no matching stage → fails', async () => {
+  const { svc } = mkFakeWorkItemService();
+  const node: CreateWorkItemNode = {
+    id: 'spawn',
+    kind: 'create-work-item',
+    'create-work-item': { title: 'x', toFlag: 'done' },
+  };
+  const run = mkRun();
+  const result = await runCreateWorkItemStep(node, run, {
+    workItemService: svc,
+    getProject: () => mkProject(), // no is_done stage
+    substituteTemplate: legacyTmpl(run),
+  });
+  assert.equal(result.output.status, 'failed');
+  assert.match(result.output.error ?? '', /no stage in project carries is_done/);
+});
+
 test('runCreateWorkItemStep: service throw → step fails', async () => {
   const { svc } = mkFakeWorkItemService({ createSucceeds: false });
   const node: CreateWorkItemNode = {
@@ -433,6 +513,72 @@ test('runUpdateWorkItemStep: reads version + sends only changed keys', async () 
   // Unsupplied keys should be absent.
   assert.equal(patchCalls[0]!.input.body, undefined);
   assert.equal(patchCalls[0]!.input.stageId, undefined);
+});
+
+test('runUpdateWorkItemStep: Section 27 — toFlag resolves to flagged stage', async () => {
+  const existing = {
+    id: 'wi-1' as ULID,
+    projectId: 'p1' as ULID,
+    title: 't',
+    body: '',
+    stageId: 'todo',
+    parentId: null,
+    position: 0,
+    type: 'task',
+    fields: {},
+    status: 'pending',
+    statusReason: null,
+    version: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    deletedAt: null,
+    history: [],
+    isAgentTask: false,
+    ephemeral: false,
+    acceptanceCriteria: null,
+    expectedOutput: null,
+    verificationTier: null,
+    verificationStatus: null,
+    verificationNotes: null,
+    assignedAgentRunId: null,
+    worktreePath: null,
+  } as WorkItem;
+  const { svc, patchCalls } = mkFakeWorkItemService({ existing });
+  const node: UpdateWorkItemNode = {
+    id: 'patch',
+    kind: 'update-work-item',
+    'update-work-item': { workItemId: 'wi-1', toFlag: 'done' },
+  };
+  const run = mkRun();
+  const result = await runUpdateWorkItemStep(node, run, {
+    workItemService: svc,
+    substituteTemplate: legacyTmpl(run),
+    getProject: () =>
+      mkProject({
+        stages: [
+          { id: 'todo', name: 'Todo', order: 0 },
+          { id: 'done', name: 'Done', order: 1, isDone: true },
+        ],
+      }),
+  });
+  assert.equal(result.output.status, 'complete');
+  assert.equal(patchCalls[0]!.input.stageId, 'done');
+});
+
+test('runUpdateWorkItemStep: Section 27 — both stage and toFlag → fails', async () => {
+  const { svc } = mkFakeWorkItemService();
+  const node: UpdateWorkItemNode = {
+    id: 'patch',
+    kind: 'update-work-item',
+    'update-work-item': { workItemId: 'wi-1', stage: 'done', toFlag: 'done' },
+  };
+  const run = mkRun();
+  const result = await runUpdateWorkItemStep(node, run, {
+    workItemService: svc,
+    substituteTemplate: legacyTmpl(run),
+  });
+  assert.equal(result.output.status, 'failed');
+  assert.match(result.output.error ?? '', /exactly one of stage \/ toFlag/);
 });
 
 test('runUpdateWorkItemStep: unknown work item → step fails', async () => {

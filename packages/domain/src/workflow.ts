@@ -193,8 +193,15 @@ export interface CreateWorkItemNode extends BaseNode {
     title: string;
     /** Body. Supports substitution. */
     body?: string;
-    /** Stage id. Defaults to the first stage on the project. */
+    /** Stage id (slug). Defaults to the project's `is_new` stage (Section 27)
+     *  or — if no stage carries that flag — the first stage by order. Mutually
+     *  exclusive with `toFlag`. */
     stage?: string;
+    /** Section 27 — resolve the destination stage by flag instead of slug.
+     *  `'new'` (intake) is the typical use; `'done'` / `'cancelled'` are
+     *  available for symmetry with `pc_move_work_item`. Mutually exclusive
+     *  with `stage`. */
+    toFlag?: 'new' | 'done' | 'cancelled';
     /** Parent WI id (string). Supports substitution. */
     parentId?: string;
   };
@@ -212,8 +219,11 @@ export interface UpdateWorkItemNode extends BaseNode {
     title?: string;
     /** Optional body replacement. */
     body?: string;
-    /** Optional stage move. */
+    /** Optional stage move (slug). Mutually exclusive with `toFlag`. */
     stage?: string;
+    /** Section 27 — resolve the destination stage by flag. Mutually
+     *  exclusive with `stage`. */
+    toFlag?: 'new' | 'done' | 'cancelled';
     /** Optional partial fields patch. */
     fields?: Record<string, unknown>;
   };

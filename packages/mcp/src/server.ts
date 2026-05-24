@@ -1490,11 +1490,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
         const target = JSON.parse(targetRes.body) as {
           name?: string;
-          stages?: Array<{ id: string; order?: number }>;
+          stages?: Array<{ id: string; order?: number; isNew?: boolean }>;
         };
         const stages = (target.stages ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        const firstStage = stages[0]?.id;
-        if (!firstStage) {
+        // Section 27 — prefer the project's is_new stage if one exists.
+        // Falls back to stages[0] (today's behavior) when no stage carries the flag.
+        const intakeStage = stages.find((s) => s.isNew)?.id ?? stages[0]?.id;
+        if (!intakeStage) {
           return {
             content: [
               { type: 'text', text: `pc_log_bug: target project '${target.name ?? targetId}' has no stages defined.` },
@@ -1524,7 +1526,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
         const createRes = await postServer(`/api/projects/${targetId}/work-items/create`, {
           title,
-          stageId: firstStage,
+          stageId: intakeStage,
           body,
           type: 'bug',
         });
@@ -1542,7 +1544,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             {
               type: 'text',
-              text: `Bug filed in ${target.name ?? targetId} (id: ${newId}, stage: ${firstStage}). Body: ${prefix}`,
+              text: `Bug filed in ${target.name ?? targetId} (id: ${newId}, stage: ${intakeStage}). Body: ${prefix}`,
             },
           ],
         };

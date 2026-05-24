@@ -399,6 +399,7 @@ export class WorkflowRuntime {
     return runUpdateWorkItemStep(ctx.node as UpdateWorkItemNode, ctx.run, {
       workItemService: this.workItemSvc,
       substituteTemplate: ctx.substituteTemplate,
+      getProject: () => this.readProject(),
     });
   }
 

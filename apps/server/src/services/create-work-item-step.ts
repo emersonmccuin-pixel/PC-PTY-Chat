@@ -38,18 +38,32 @@ export async function runCreateWorkItemStep(
     return failedSync(`title resolved to empty (raw: "${cfg.title}")`, completedAt());
   }
 
+  if (cfg.stage && cfg.toFlag) {
+    return failedSync(`pass exactly one of stage / toFlag (not both)`, completedAt());
+  }
   let stageId: string;
   if (cfg.stage) {
     stageId = deps.substituteTemplate(cfg.stage).trim();
     if (!stageId) {
       return failedSync(`stage resolved to empty (raw: "${cfg.stage}")`, completedAt());
     }
+  } else if (cfg.toFlag) {
+    // Section 27 — resolve destination stage by flag.
+    const flagKey =
+      cfg.toFlag === 'done' ? 'isDone' : cfg.toFlag === 'cancelled' ? 'isCancelled' : 'isNew';
+    const match = deps.getProject().stages.find((s) => s[flagKey]);
+    if (!match) {
+      return failedSync(`no stage in project carries is_${cfg.toFlag}`, completedAt());
+    }
+    stageId = match.id;
   } else {
-    const firstStage = deps.getProject().stages[0]?.id;
-    if (!firstStage) {
+    // Default lands on is_new if a project has one (Section 27); else stages[0].
+    const project = deps.getProject();
+    const intake = project.stages.find((s) => s.isNew)?.id ?? project.stages[0]?.id;
+    if (!intake) {
       return failedSync(`project has no stages; cannot default stage`, completedAt());
     }
-    stageId = firstStage;
+    stageId = intake;
   }
 
   const body = cfg.body !== undefined ? deps.substituteTemplate(cfg.body) : undefined;

@@ -9,6 +9,7 @@
 
 import type {
   NodeOutput,
+  Project,
   UpdateWorkItemNode,
   ULID,
   WorkflowRun,
@@ -25,6 +26,10 @@ export interface UpdateWorkItemStepResult {
 export interface UpdateWorkItemStepDeps {
   workItemService: WorkItemService;
   substituteTemplate: SubstituteTemplate;
+  /** Section 27 — Required for `toFlag` resolution. Other paths still work
+   *  without it (the step short-circuits when `toFlag` is set but the
+   *  resolver isn't wired). */
+  getProject?: () => Project;
 }
 
 export async function runUpdateWorkItemStep(
@@ -34,6 +39,11 @@ export async function runUpdateWorkItemStep(
 ): Promise<UpdateWorkItemStepResult> {
   const completedAt = () => new Date().toISOString();
   const cfg = node['update-work-item'];
+  // Section 27 — config-validation runs before any state lookup so the error
+  // is deterministic regardless of WI existence.
+  if (cfg.stage !== undefined && cfg.toFlag !== undefined) {
+    return failedSync(`pass exactly one of stage / toFlag (not both)`, completedAt());
+  }
   const workItemId = deps.substituteTemplate(cfg.workItemId).trim();
   if (!workItemId) {
     return failedSync(
@@ -62,6 +72,20 @@ export async function runUpdateWorkItemStep(
       return failedSync(`stage resolved to empty (raw: "${cfg.stage}")`, completedAt());
     }
     patchInput.stageId = stageId;
+  } else if (cfg.toFlag !== undefined) {
+    if (!deps.getProject) {
+      return failedSync(
+        `toFlag requires getProject on step deps (runtime mis-wired)`,
+        completedAt(),
+      );
+    }
+    const flagKey =
+      cfg.toFlag === 'done' ? 'isDone' : cfg.toFlag === 'cancelled' ? 'isCancelled' : 'isNew';
+    const match = deps.getProject().stages.find((s) => s[flagKey]);
+    if (!match) {
+      return failedSync(`no stage in project carries is_${cfg.toFlag}`, completedAt());
+    }
+    patchInput.stageId = match.id;
   }
   if (cfg.fields !== undefined) {
     const substituted: Record<string, unknown> = {};
