@@ -83,7 +83,11 @@ switch (eventType) {
     }
     // Tool calls made *inside* a subagent's turn carry payload.agent_type.
     // Skip emission so the researcher works silently — BUILDOUT Slice 1 contract.
-    if (payload.agent_type) break;
+    // Post-16a (orchestrator-as-agent): CC sets agent_type='orchestrator' for
+    // the orchestrator's own tool calls too. Don't filter those — only
+    // genuine sub-agent calls (agent_type === <subagent-name>) should be
+    // suppressed from the orchestrator's events.jsonl.
+    if (payload.agent_type && payload.agent_type !== 'orchestrator') break;
     appendEvent({
       ts: now,
       kind: 'tool-start',
