@@ -18,7 +18,10 @@ import type { WorkItemStatus } from './work-item.ts';
 export interface EvaluationContext {
   body: string;
   fields: Record<string, unknown>;
-  attachments: ReadonlyArray<{ name: string }>;
+  /** Attachments on the work item. `content` is optional because some callers
+   *  (e.g. UI previews) may not carry the full payload; when omitted,
+   *  attachment content is simply absent from `body_contains` searches. */
+  attachments: ReadonlyArray<{ name: string; content?: string }>;
   childWorkItems: ReadonlyArray<{ status: WorkItemStatus }>;
 }
 
@@ -129,6 +132,14 @@ function evalBodyContains(
   pred: Extract<AcceptancePredicate, { kind: 'body_contains' }>,
   ctx: EvaluationContext,
 ): { pass: boolean; reason?: string } {
+  // Section 26 carry-over #2 (Option A) — `body_contains` searches both the
+  // work-item body AND attachment contents. Agents commonly persist
+  // non-trivial deliverables as attachments (researcher attaches
+  // `findings.md`); requiring the predicate to match only `body` forced
+  // duplicate writes. The pure substring/regex semantics are preserved; the
+  // search corpus is just wider. Attachments with no `content` (UI previews
+  // that didn't load the payload) are skipped.
+  const corpus = collectSearchCorpus(ctx);
   if (pred.regex) {
     let re: RegExp;
     try {
@@ -136,11 +147,28 @@ function evalBodyContains(
     } catch (err) {
       return { pass: false, reason: `invalid regex: ${(err as Error).message}` };
     }
-    if (re.test(ctx.body)) return { pass: true };
-    return { pass: false, reason: `body does not match /${pred.pattern}/` };
+    if (re.test(corpus)) return { pass: true };
+    return { pass: false, reason: `body or attachments do not match /${pred.pattern}/` };
   }
-  if (ctx.body.includes(pred.pattern)) return { pass: true };
-  return { pass: false, reason: `body does not contain "${pred.pattern}"` };
+  if (corpus.includes(pred.pattern)) return { pass: true };
+  return {
+    pass: false,
+    reason: `body or attachments do not contain "${pred.pattern}"`,
+  };
+}
+
+/** Concatenates the work-item body + every attachment's content into a single
+ *  string for `body_contains` searches. Attachments are separated by a marker
+ *  so a pattern doesn't accidentally match across a body/attachment seam.
+ *  Attachments with no `content` are skipped (treat as empty). */
+function collectSearchCorpus(ctx: EvaluationContext): string {
+  const parts: string[] = [ctx.body];
+  for (const a of ctx.attachments) {
+    if (typeof a.content === 'string' && a.content.length > 0) {
+      parts.push(`\n--- attachment: ${a.name} ---\n${a.content}`);
+    }
+  }
+  return parts.join('');
 }
 
 function evalAttachmentsPresent(

@@ -176,7 +176,10 @@ export async function runVerificationOnTerminal(
   const evalCtx: EvaluationContext = {
     body: wi.body,
     fields: wi.fields,
-    attachments: attachments.map((a) => ({ name: a.name })),
+    // Section 26 carry-over #2 — surface `content` so `body_contains` can
+    // search both body + attachments. Agents commonly persist non-trivial
+    // deliverables as attachments.
+    attachments: attachments.map((a) => ({ name: a.name, content: a.content })),
     childWorkItems: children.map((c) => ({ status: c.status })),
   };
 

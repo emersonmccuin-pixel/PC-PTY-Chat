@@ -176,6 +176,69 @@ test('body_contains: regex too short → fail', async () => {
   assert.equal(r.pass, false);
 });
 
+// Section 26 carry-over #2 (option A) — body_contains scans attachment
+// content too. Agents commonly persist non-trivial deliverables as
+// attachments; the predicate now succeeds whether the pattern lives in the
+// body OR in any attachment's content.
+test('body_contains: substring in attachment content → pass', async () => {
+  const r = await evaluatePredicate(
+    { kind: 'body_contains', pattern: 'Methodology' },
+    ctx({
+      body: 'just a brief — see findings.md',
+      attachments: [
+        {
+          name: 'findings.md',
+          content: '# Findings\n\n## Methodology\nWe ran tests.',
+        },
+      ],
+    }),
+    NEVER_CALL_EXECUTORS,
+  );
+  assert.equal(r.pass, true);
+});
+
+test('body_contains: substring missing from both body + attachments → fail', async () => {
+  const r = await evaluatePredicate(
+    { kind: 'body_contains', pattern: 'Conclusion' },
+    ctx({
+      body: 'just findings, no conclusion header',
+      attachments: [{ name: 'findings.md', content: 'methodology only here' }],
+    }),
+    NEVER_CALL_EXECUTORS,
+  );
+  assert.equal(r.pass, false);
+  assert.match(r.reason ?? '', /body or attachments/);
+});
+
+test('body_contains: attachments with no content do not satisfy the predicate', async () => {
+  const r = await evaluatePredicate(
+    { kind: 'body_contains', pattern: 'Summary' },
+    ctx({
+      body: 'short brief',
+      attachments: [{ name: 'report.md' }], // no content key
+    }),
+    NEVER_CALL_EXECUTORS,
+  );
+  assert.equal(r.pass, false);
+});
+
+test('body_contains: regex mode searches body + attachments', async () => {
+  const r = await evaluatePredicate(
+    { kind: 'body_contains', pattern: '^[\\s\\S]{200,}$', regex: true },
+    ctx({
+      body: 'short body',
+      attachments: [
+        {
+          name: 'findings.md',
+          content: 'x'.repeat(300),
+        },
+      ],
+    }),
+    NEVER_CALL_EXECUTORS,
+  );
+  assert.equal(r.pass, true);
+});
+
 // ── attachments_present ────────────────────────────────────────────────────
 
 test('attachments_present: every name present → pass', async () => {
