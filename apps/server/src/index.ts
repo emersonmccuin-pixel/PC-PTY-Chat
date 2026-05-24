@@ -54,6 +54,7 @@ import {
 import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
+import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
   dispatchContinueAgent,
@@ -893,60 +894,6 @@ app.get('/api/projects/:projectId/sessions', (c) => {
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   return c.json({ ok: true, sessions: listOrchestratorSessionsForProject(id) });
 });
-
-/** Section 23 — load a session's replay envelopes from the PC-owned
- *  normalized event log. Each returned item is an envelope-shape object
- *  matching what the live tailer broadcasts:
- *    { type: 'jsonl', event: <JsonlEvent> }       — new path (jsonl-events.jsonl)
- *    { type: 'event', event: <legacy hook event>} — legacy fallback (events.jsonl)
- *
- *  The caller wraps each with `projectId` before broadcasting. Sessions
- *  created before Section 23 shipped won't have jsonl-events.jsonl; we
- *  fall back to the hook-written events.jsonl so their chat history still
- *  replays in some shape. */
-function loadSessionReplayEnvelopes(
-  sessionDataPath: string,
-): Array<{ type: 'jsonl' | 'event'; event: unknown }> {
-  const jsonlEventsFile = resolve(sessionDataPath, 'jsonl-events.jsonl');
-  if (existsSync(jsonlEventsFile)) {
-    try {
-      const lines = readFileSync(jsonlEventsFile, 'utf-8').split('\n').filter(Boolean);
-      const out: Array<{ type: 'jsonl' | 'event'; event: unknown }> = [];
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line) as { type?: unknown; event?: unknown };
-          if (parsed && parsed.type === 'jsonl' && parsed.event && typeof parsed.event === 'object') {
-            out.push({ type: 'jsonl', event: parsed.event });
-          }
-        } catch {
-          /* malformed line — skip */
-        }
-      }
-      return out;
-    } catch {
-      /* best-effort read */
-    }
-  }
-  // Legacy fallback for pre-Section-23 sessions.
-  const legacyFile = resolve(sessionDataPath, 'events.jsonl');
-  if (existsSync(legacyFile)) {
-    try {
-      const lines = readFileSync(legacyFile, 'utf-8').split('\n').filter(Boolean);
-      const out: Array<{ type: 'jsonl' | 'event'; event: unknown }> = [];
-      for (const line of lines) {
-        try {
-          out.push({ type: 'event', event: JSON.parse(line) });
-        } catch {
-          /* skip malformed */
-        }
-      }
-      return out;
-    } catch {
-      /* best-effort read */
-    }
-  }
-  return [];
-}
 
 /** Replay a specific session's normalized event log. Used by the Sessions
  *  tab to render past chats in read-only mode. Returns envelope-shape
