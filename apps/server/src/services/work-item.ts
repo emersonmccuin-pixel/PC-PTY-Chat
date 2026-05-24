@@ -27,7 +27,7 @@ import type {
   WorkItem,
   WorkItemType,
 } from '@pc/domain';
-import { validateFields } from '@pc/domain';
+import { postMoveStatusForStage, validateFields } from '@pc/domain';
 import {
   createWorkItem as dbCreateWorkItem,
   getWorkItem as dbGetWorkItem,
@@ -242,8 +242,10 @@ export class WorkItemService {
 
   /** Version-checked stage move + optional explicit position. Does NOT fire
    *  workflows — composed paths (workflow-runtime.moveWorkItem) wrap this
-   *  with worktree-ensure + trigger logic on top. */
-  move(id: ULID, input: MoveWorkItemServiceInput): WorkItem {
+   *  with worktree-ensure + trigger logic on top.
+   *  Section 27 — `noteOnHistory` carries an optional free-form line onto
+   *  the move entry (cancellation reason etc.). */
+  move(id: ULID, input: MoveWorkItemServiceInput, noteOnHistory?: string): WorkItem {
     this.assertStage(input.stageId);
     // Use the version-checked patch path; the repo's moveWorkItemStage doesn't
     // do version checks (workflow path owns those externally), so we route
@@ -266,7 +268,11 @@ export class WorkItemService {
       if (!patched) throw new Error(`unknown work item: ${id}`);
       result = patched;
     } else {
-      const moved = moveWorkItemStage(id, input.stageId);
+      // Section 27 — compute the target status from the destination stage's
+      // flags. is_done → 'complete', is_cancelled → 'cancelled', else 'pending'.
+      const destStage = this.opts.getProject().stages.find((s) => s.id === input.stageId)!;
+      const targetStatus = postMoveStatusForStage(destStage);
+      const moved = moveWorkItemStage(id, input.stageId, targetStatus, noteOnHistory ?? null);
       if (!moved) throw new Error(`unknown work item: ${id}`);
       if (input.position !== undefined) {
         const patched = dbPatchWorkItem(id, {

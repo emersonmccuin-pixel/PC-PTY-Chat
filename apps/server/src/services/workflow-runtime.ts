@@ -77,6 +77,7 @@ import {
   type WorkflowRegistry,
 } from '@pc/workflows';
 import type { NodeEdges } from '@pc/domain';
+import { postMoveStatusForStage } from '@pc/domain';
 import {
   encodeCwdForClaude,
   spawnSubagent,
@@ -543,7 +544,12 @@ export class WorkflowRuntime {
       if (position !== undefined) input.position = position;
       return this.workItemSvc.move(id as ULID, input);
     }
-    const moved = moveWorkItemStage(id as ULID, toStage);
+    // Section 27 — legacy (non-version-checked) path resolves target status
+    // from the destination stage's flags the same way the service does.
+    const project = this.readProject();
+    const destStage = project.stages.find((s) => s.id === toStage);
+    const targetStatus = destStage ? postMoveStatusForStage(destStage) : 'pending';
+    const moved = moveWorkItemStage(id as ULID, toStage, targetStatus);
     if (!moved) throw new Error(`unknown work item: ${id}`);
     return moved;
   }

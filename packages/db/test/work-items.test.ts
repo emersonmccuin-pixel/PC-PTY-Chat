@@ -123,6 +123,50 @@ test('moveWorkItemStage assigns next-position in target stage + bumps version', 
   assert.equal(moved.position > b.position, true);
 });
 
+test('moveWorkItemStage defaults status to pending (today behavior preserved)', () => {
+  const p = createProject({
+    slug: 'move-status-default',
+    name: 'Move Status Default',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({ projectId: p.id as ULID, stageId: 'backlog', title: 'x' });
+  const moved = moveWorkItemStage(wi.id, 'doing');
+  assert.ok(moved);
+  assert.equal(moved.status, 'pending');
+});
+
+test('moveWorkItemStage honours explicit targetStatus (Section 27)', () => {
+  const p = createProject({
+    slug: 'move-status-explicit',
+    name: 'Move Status Explicit',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({ projectId: p.id as ULID, stageId: 'backlog', title: 'x' });
+  const done = moveWorkItemStage(wi.id, 'doing', 'complete');
+  assert.ok(done);
+  assert.equal(done.status, 'complete');
+  const cancelled = moveWorkItemStage(wi.id, 'backlog', 'cancelled');
+  assert.ok(cancelled);
+  assert.equal(cancelled.status, 'cancelled');
+});
+
+test('moveWorkItemStage notes land on the move history entry', () => {
+  const p = createProject({
+    slug: 'move-note',
+    name: 'Move Note',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({ projectId: p.id as ULID, stageId: 'backlog', title: 'x' });
+  const moved = moveWorkItemStage(wi.id, 'doing', 'cancelled', 'duplicate of #42');
+  assert.ok(moved);
+  const lastEntry = moved.history[moved.history.length - 1]!;
+  assert.equal(lastEntry.kind, 'move');
+  assert.equal(lastEntry.note, 'duplicate of #42');
+});
+
 test('createWorkItem honours explicit position', () => {
   const p = createProject({
     slug: 'explicit-pos',

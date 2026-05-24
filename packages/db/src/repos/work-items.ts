@@ -186,8 +186,18 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
 }
 
 /** Move a work item to a new stage, appending a 'move' history entry.
- *  Returns the updated WorkItem, or null if the id isn't found. */
-export function moveWorkItemStage(id: ULID, toStage: string): WorkItem | null {
+ *  Returns the updated WorkItem, or null if the id isn't found.
+ *  Section 27 — `targetStatus` lets the caller pin the post-move status
+ *  based on the destination stage's flags (is_done → 'complete',
+ *  is_cancelled → 'cancelled'). Defaults to 'pending' for non-terminal moves,
+ *  preserving on_enter workflow re-fire semantics. `noteOnHistory` carries
+ *  an optional free-form line (cancellation reason etc.) onto the move entry. */
+export function moveWorkItemStage(
+  id: ULID,
+  toStage: string,
+  targetStatus: WorkItemStatus = 'pending',
+  noteOnHistory: string | null = null,
+): WorkItem | null {
   const row = getRowById(id);
   if (!row) return null;
   const from = row.stageId;
@@ -196,12 +206,13 @@ export function moveWorkItemStage(id: ULID, toStage: string): WorkItem | null {
     kind: 'move',
     from,
     to: toStage,
+    ...(noteOnHistory ? { note: noteOnHistory } : {}),
   };
   const position = nextPosition(row.projectId, toStage, row.parentId);
   const updated: WorkItemRow = {
     ...row,
     stageId: toStage,
-    status: 'pending',
+    status: targetStatus,
     statusReason: null,
     history: [...row.history, entry],
     position,

@@ -23,6 +23,19 @@ export interface Stage {
   isNew?: boolean;
 }
 
+/** Section 27 — the post-move status for a card that just landed in this stage.
+ *  `is_done` → `complete`; `is_cancelled` → `cancelled`; otherwise `pending`
+ *  (today's behavior — preserves on_enter workflow re-fire semantics for
+ *  non-terminal moves). Validator guarantees at most one flag per stage so the
+ *  order of checks here is irrelevant. */
+export function postMoveStatusForStage(
+  stage: Pick<Stage, 'isDone' | 'isCancelled'>,
+): 'complete' | 'cancelled' | 'pending' {
+  if (stage.isDone) return 'complete';
+  if (stage.isCancelled) return 'cancelled';
+  return 'pending';
+}
+
 export interface Project {
   id: ULID;
   /** URL-safe routing key. Derived from name + uniqued at create; locked thereafter
