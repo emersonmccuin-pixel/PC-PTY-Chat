@@ -670,19 +670,25 @@ export const TOOLS = [
   {
     name: 'pc_invoke_agent',
     description:
-      "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. Always async — returns `{ ok, mode: 'async', sessionId, runId, agentName, startedAt, status }` immediately. The terminal `agent-completed` / `agent-failed` channel event lands on your next turn (handler protocol entries #4 + #5). Optional `parentWorkItemId` pins the child to a work-item — defaults to `PC_AGENT_PARENT_WORK_ITEM_ID` when called from inside another agent. The project route URL is derived from `PC_PROJECT_ID`.",
+      "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. Always async — returns `{ ok, mode: 'async', sessionId, runId, agentName, startedAt, status }` immediately. The terminal `agent-completed` / `agent-failed` channel event lands on your next turn (handler protocol entries #4 + #5). For any non-trivial dispatch, call `pc_create_agent_work_item` first and pass the returned id as `workItemId` — the agent then knows its task, expected output, and acceptance criteria via the work item rather than a sprawling input string (keep `input` to \"Begin.\" or a one-liner pointer). Optional `parentWorkItemId` pins the child to a parent work-item for lineage — defaults to `PC_AGENT_PARENT_WORK_ITEM_ID` when called from inside another agent. The project route URL is derived from `PC_PROJECT_ID`.",
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'pod name (kebab-case)' },
         input: {
           type: 'string',
-          description: "free-form input — becomes the child's first user message",
+          description:
+            "free-form input — becomes the child's first user message. When you also pass workItemId, keep this trivial (\"Begin.\" or shorter); the agent reads its task from the work item, not from here.",
+        },
+        workItemId: {
+          type: 'string',
+          description:
+            'work-item ULID this dispatch is assigned to. The agent fetches it via pc_get_work_item as its first action and reads body / acceptance_criteria / attachments from there. Create via pc_create_agent_work_item.',
         },
         parentWorkItemId: {
           type: 'string',
           description:
-            'optional work-item ULID to attach the child to; defaults to PC_AGENT_PARENT_WORK_ITEM_ID',
+            'optional parent work-item ULID for lineage (not the assignment — that is `workItemId`); defaults to PC_AGENT_PARENT_WORK_ITEM_ID',
         },
       },
       required: ['name', 'input'],
@@ -691,7 +697,7 @@ export const TOOLS = [
   {
     name: 'pc_continue_agent',
     description:
-      "Resume a recent terminal agent run (`completed` or `failed`) with a follow-up input by spawning via `--resume <ccSessionId>` — the prior conversation is preserved so phrase your input as a continuation, not a fresh ask. Cancelled runs cannot be continued; start a fresh dispatch. Single-active-continuation guard per parent (409 on concurrent). JSONL retention guard (410 on session-expired). Returns the same shape as `pc_invoke_agent`.",
+      "Resume a recent terminal agent run (`completed` or `failed`) with a follow-up input by spawning via `--resume <ccSessionId>` — the prior conversation is preserved so phrase your input as a continuation, not a fresh ask. Cancelled runs cannot be continued; start a fresh dispatch. Single-active-continuation guard per parent (409 on concurrent). JSONL retention guard (410 on session-expired). Optional `workItemId` re-anchors the resumed run to a (possibly different) work-item contract; omit to carry the parent run's assignment forward. Returns the same shape as `pc_invoke_agent`.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -700,6 +706,11 @@ export const TOOLS = [
           type: 'string',
           description:
             "free-form follow-up — becomes the next user message in the resumed conversation. Phrase as a continuation, not a fresh request.",
+        },
+        workItemId: {
+          type: 'string',
+          description:
+            'optional work-item ULID. Omitted = inherit the parent run\'s assignment. Supply when the follow-up swaps in a new contract (rare).',
         },
       },
       required: ['runId', 'input'],
@@ -2549,6 +2560,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
           ? args.parentWorkItemId.trim()
           : process.env.PC_AGENT_PARENT_WORK_ITEM_ID || undefined;
+      const workItemId =
+        typeof args.workItemId === 'string' && args.workItemId.trim()
+          ? args.workItemId.trim()
+          : undefined;
       const rawDepth = Number(process.env.PC_AGENT_INVOKE_DEPTH ?? '0');
       const parentInvokeDepth =
         Number.isFinite(rawDepth) && rawDepth > 0 ? Math.floor(rawDepth) : 0;
@@ -2558,6 +2573,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         dispatcherSessionId,
       };
       if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
+      if (workItemId) payload.workItemId = workItemId;
       try {
         const res = await postServer(
           `/api/projects/${PROJECT_ID}/agents/${encodeURIComponent(name)}/invoke`,
@@ -2612,10 +2628,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
+      const continueWorkItemId =
+        typeof args.workItemId === 'string' && args.workItemId.trim()
+          ? args.workItemId.trim()
+          : undefined;
       try {
+        const continuePayload: Record<string, unknown> = { input, dispatcherSessionId };
+        if (continueWorkItemId) continuePayload.workItemId = continueWorkItemId;
         const res = await postServer(
           `/api/projects/${PROJECT_ID}/agent-runs/${encodeURIComponent(runId)}/continue`,
-          { input, dispatcherSessionId },
+          continuePayload,
         );
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };

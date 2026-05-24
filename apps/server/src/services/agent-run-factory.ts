@@ -36,6 +36,7 @@ import { resolve } from 'node:path';
 import {
   computePodRevision,
   getAgentByName,
+  getWorkItem,
   insertAgentRunRow,
   markAgentRunTerminal,
   newId,
@@ -45,6 +46,7 @@ import type {
   AgentFailedPayload,
   AgentInboxEventKind,
   AgentRunFailureCause,
+  ExpectedOutput,
   ULID,
 } from '@pc/domain';
 import { AgentRun, AgentRunRegistry } from '@pc/runtime';
@@ -91,6 +93,13 @@ export interface DispatchFreshAgentInput {
   /** Optional work-item the dispatch is attached to. Forwarded to the agent
    *  via `PC_AGENT_PARENT_WORK_ITEM_ID`. */
   parentWorkItemId?: ULID | null;
+  /** Section 26.4 — work-item-as-contract. When supplied, the dispatch is
+   *  the agent's assigned contract: the materialiser appends a "## Your
+   *  assignment" section to the rendered .md with `pc_get_work_item({id})`
+   *  + the active `expected_output` JSON. Also sets `PC_AGENT_WORK_ITEM_ID`
+   *  on the spawn env. Caller (orchestrator) creates the work item via
+   *  `pc_create_agent_work_item`, then passes the returned ULID here. */
+  workItemId?: ULID | null;
   /** Caller's nesting depth + 1. The orchestrator dispatches at depth 1; an
    *  agent dispatched by that one runs at depth 2. */
   invokeDepth: number;
@@ -110,6 +119,12 @@ export interface DispatchContinueAgentInput {
   /** Caller's PC session-id. Used for ownership check against the parent
    *  run's `dispatcher_session_id` BEFORE we plan the continuation. */
   dispatcherSessionId: string;
+  /** Section 26.4 — work-item-as-contract carries through continuations too.
+   *  When supplied, the resumed dispatch re-emits the assignment header so
+   *  the continued agent sees the same (or a swapped-in) contract. NULL =
+   *  carry the parent run's `parent_work_item_id` as the assignment if it
+   *  had one. */
+  workItemId?: ULID | null;
   /** Project slug — embedded in delivery envelopes. */
   slug: string;
 }
@@ -208,6 +223,31 @@ export function dispatchFreshAgent(
     };
   }
 
+  // Section 26.4 — resolve the work-item-as-contract assignment if supplied.
+  // The materialiser writes a "## Your assignment" section into the rendered
+  // .md when this is non-null; the orchestrator created the work item before
+  // dispatching so we just look it up here. Hard-fail on unknown/archived ids
+  // — the orchestrator can't dispatch against a phantom contract.
+  let workItem: { workItemId: ULID; expectedOutput: ExpectedOutput } | null = null;
+  if (input.workItemId) {
+    const wi = getWorkItem(input.workItemId);
+    if (!wi) {
+      return {
+        ok: false,
+        cause: 'pod-materialisation-failed',
+        error: `workItemId "${input.workItemId}" not found or archived`,
+      };
+    }
+    if (!wi.expectedOutput) {
+      return {
+        ok: false,
+        cause: 'pod-materialisation-failed',
+        error: `workItem "${input.workItemId}" has no expected_output — was it created via pc_create_agent_work_item?`,
+      };
+    }
+    workItem = { workItemId: input.workItemId, expectedOutput: wi.expectedOutput };
+  }
+
   let podPrep: PodSpawnPrep | null = null;
   try {
     podPrep = preparePodSpawn({
@@ -215,6 +255,7 @@ export function dispatchFreshAgent(
       worktreeDir: input.worktreeDir,
       scratchDir,
       filterMcpToReferencedTools: true,
+      workItem: workItem ?? undefined,
     });
   } catch (err) {
     return {
@@ -239,6 +280,13 @@ export function dispatchFreshAgent(
     projectId: null,
   });
 
+  // When a contract WI is supplied, store it on the agent_runs row's
+  // `parent_work_item_id` slot — that field is the bidirectional link 26.5
+  // will use to find the WI on terminal eval. Falls back to the dispatcher-
+  // lineage `parentWorkItemId` for legacy callers that didn't pass a contract.
+  const parentWorkItemForRow: ULID | null =
+    (workItem?.workItemId as ULID | undefined) ?? input.parentWorkItemId ?? null;
+
   // Insert the row BEFORE constructing the AgentRun. If the wrapper throws
   // during construction (shouldn't, but defensively), we still have a row to
   // reconcile-orphan at the next boot.
@@ -250,7 +298,7 @@ export function dispatchFreshAgent(
     ccSessionId,
     status: 'queued',
     input: input.input,
-    parentWorkItemId: input.parentWorkItemId ?? null,
+    parentWorkItemId: parentWorkItemForRow,
     parentInvokeDepth: input.invokeDepth,
     continues: null,
     podRevisionAtDispatch,
@@ -258,7 +306,7 @@ export function dispatchFreshAgent(
   });
 
   const run = constructAndStart({
-    input,
+    input: { ...input, parentWorkItemId: parentWorkItemForRow },
     podName: input.agentName,
     agentRunId,
     ccSessionId,
@@ -267,6 +315,7 @@ export function dispatchFreshAgent(
     mode: 'fresh',
     initialInput: input.input,
     continuesParent: null,
+    workItemId: workItem?.workItemId ?? null,
     deps,
   });
 
@@ -330,6 +379,21 @@ export function dispatchContinueAgent(
     };
   }
 
+  // Section 26.4 — resolve the contract WI for the continuation. Caller's
+  // explicit `workItemId` wins; otherwise carry the parent run's contract
+  // forward so the resumed conversation stays anchored to the same WI.
+  const continueWorkItemId: ULID | null =
+    (input.workItemId as ULID | undefined) ?? plan.plan.parentWorkItemId ?? null;
+  let continueWorkItem: { workItemId: ULID; expectedOutput: ExpectedOutput } | null = null;
+  if (continueWorkItemId) {
+    const wi = getWorkItem(continueWorkItemId);
+    if (wi?.expectedOutput) {
+      continueWorkItem = { workItemId: continueWorkItemId, expectedOutput: wi.expectedOutput };
+    }
+    // Soft-fail on archived/unknown — continuations shouldn't break just because
+    // the original WI was archived. The resumed agent still has prior context.
+  }
+
   let podPrep: PodSpawnPrep | null = null;
   try {
     podPrep = preparePodSpawn({
@@ -337,6 +401,7 @@ export function dispatchContinueAgent(
       worktreeDir: input.worktreeDir,
       scratchDir,
       filterMcpToReferencedTools: true,
+      workItem: continueWorkItem ?? undefined,
     });
   } catch (err) {
     markAgentRunTerminal({
@@ -388,6 +453,7 @@ export function dispatchContinueAgent(
     mode: 'resume',
     initialInput: input.input,
     continuesParent: input.parentAgentRunId,
+    workItemId: continueWorkItemId,
     deps,
   });
 
@@ -413,6 +479,11 @@ interface ConstructAndStartArgs {
   mode: 'fresh' | 'resume';
   initialInput: string;
   continuesParent: ULID | null;
+  /** Section 26.4 — the agent's contract WI, if any. Surfaced in the spawn
+   *  env via `PC_AGENT_WORK_ITEM_ID` so MCP tools called by the agent (e.g.
+   *  `pc_attach_to_work_item`, eventual body/status updaters) can resolve
+   *  the assignment without re-parsing the materialised .md. */
+  workItemId: ULID | null;
   deps: DispatchAgentDeps;
 }
 
@@ -438,6 +509,13 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   };
   if (args.input.parentWorkItemId) {
     baseEnv.PC_AGENT_PARENT_WORK_ITEM_ID = args.input.parentWorkItemId;
+  }
+  if (args.workItemId) {
+    // Section 26.4 — assignment env var. The materialised .md already names
+    // the work item, but MCP tools running inside the agent (attachments,
+    // body updates, etc.) read this env var to know which contract they're
+    // operating against without re-parsing the prompt.
+    baseEnv.PC_AGENT_WORK_ITEM_ID = args.workItemId;
   }
 
   const run = factory({

@@ -2578,6 +2578,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   const body = await c.req.json<{
     input?: string;
     parentWorkItemId?: ULID;
+    workItemId?: ULID;
     parentInvokeDepth?: number;
     dispatcherSessionId?: string;
   }>();
@@ -2586,6 +2587,10 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
   const parentWorkItemId =
     typeof body.parentWorkItemId === 'string' ? (body.parentWorkItemId as ULID) : null;
+  const workItemId =
+    typeof body.workItemId === 'string' && body.workItemId.trim()
+      ? (body.workItemId.trim() as ULID)
+      : null;
   const dispatcherSessionId =
     typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
   if (!dispatcherSessionId) {
@@ -2611,6 +2616,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
       input,
       dispatcherSessionId,
       parentWorkItemId,
+      workItemId,
       invokeDepth: depthCheck.childDepth,
       slug: project.slug,
     },
@@ -2664,12 +2670,17 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   const body = await c.req.json<{
     input?: string;
     dispatcherSessionId?: string;
+    workItemId?: ULID;
   }>();
 
   const input = typeof body.input === 'string' ? body.input : '';
   if (!input.trim()) return c.json({ ok: false, error: 'input required' }, 400);
   const dispatcherSessionId =
     typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  const continueWorkItemId =
+    typeof body.workItemId === 'string' && body.workItemId.trim()
+      ? (body.workItemId.trim() as ULID)
+      : null;
   if (!dispatcherSessionId) {
     return c.json(
       { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
@@ -2716,6 +2727,7 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
       parentAgentRunId,
       input,
       dispatcherSessionId,
+      workItemId: continueWorkItemId,
       slug: project.slug,
     },
     {

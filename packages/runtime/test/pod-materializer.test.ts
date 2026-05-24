@@ -159,6 +159,73 @@ test('renderAgentMd trims trailing whitespace on the prompt body', () => {
   assert.ok(!md.endsWith('\n\n'));
 });
 
+// --- Section 26.4: work-item assignment header ------------------------------
+
+test('renderAgentMd omits the assignment section when no work-item context is supplied', () => {
+  const md = renderAgentMd(makeAgent(), ['Read']);
+  assert.ok(!md.includes('## Your assignment'));
+  assert.ok(!md.includes('pc_get_work_item'));
+});
+
+test('renderAgentMd renders the assignment section when work-item context is supplied', () => {
+  const md = renderAgentMd(makeAgent(), ['Read'], [], {
+    workItemId: '01HXWI00000000000000000001',
+    expectedOutput: { kind: 'text', sections: ['summary'] },
+  });
+  assert.ok(md.includes('## Your assignment'), 'has section heading');
+  assert.ok(
+    md.includes('pc_get_work_item({ id: "01HXWI00000000000000000001" })'),
+    'has fetch instruction',
+  );
+  assert.ok(md.includes('### Expected output'), 'has expected_output subheading');
+  // expected_output JSON appears as a pretty-printed block.
+  assert.ok(md.includes('"kind": "text"'));
+  assert.ok(md.includes('"sections"'));
+  assert.ok(md.includes('"summary"'));
+});
+
+test('renderAgentMd renders assignment AFTER body but BEFORE knowledge footer', () => {
+  const knowledge = [makeKnowledge('style-guide', 'Use the Oxford comma.')];
+  const md = renderAgentMd(
+    makeAgent({ tools: ['mcp__pc-rig__pc_knowledge_read'] }),
+    ['mcp__pc-rig__pc_knowledge_read'],
+    knowledge,
+    {
+      workItemId: '01HXWI00000000000000000002',
+      expectedOutput: { kind: 'text' },
+    },
+  );
+  const bodyIdx = md.indexOf('You are a researcher.');
+  const assignmentIdx = md.indexOf('## Your assignment');
+  const knowledgeIdx = md.indexOf('## Knowledge available');
+  assert.ok(bodyIdx >= 0 && assignmentIdx > bodyIdx, 'assignment after body');
+  assert.ok(knowledgeIdx > assignmentIdx, 'knowledge footer after assignment');
+});
+
+test('materializePod writes the assignment section into the .md when workItem is supplied', () => {
+  const dirs = freshDirs();
+  try {
+    const out = materializePod({
+      bundle: makeBundle({ knowledge: [] }),
+      worktreeDir: dirs.worktree,
+      scratchDir: dirs.scratch,
+      workItem: {
+        workItemId: '01HXWI00000000000000000003',
+        expectedOutput: {
+          kind: 'structured',
+          fields: { verdict: 'string', issues: 'object' },
+        },
+      },
+    });
+    const content = readFileSync(out.agentMdPath, 'utf8');
+    assert.ok(content.includes('## Your assignment'));
+    assert.ok(content.includes('01HXWI00000000000000000003'));
+    assert.ok(content.includes('"verdict": "string"'));
+  } finally {
+    dirs.cleanup();
+  }
+});
+
 // --- expandToolWildcards ----------------------------------------------------
 
 test('expandToolWildcards passes non-wildcard entries through unchanged', () => {

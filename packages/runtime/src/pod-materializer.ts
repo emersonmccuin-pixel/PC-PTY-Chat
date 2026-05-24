@@ -25,6 +25,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type {
+  ExpectedOutput,
   PodAgentRow,
   PodKnowledgeRow,
   PodMcpServerConfig,
@@ -32,6 +33,16 @@ import type {
   PodSecretRow,
   PodSpawnBundle,
 } from '@pc/domain';
+
+/** Work-item context the orchestrator forwards via `pc_invoke_agent.workItemId`.
+ *  When supplied, the materialiser appends a "## Your assignment" section to
+ *  the rendered agent .md so the agent's first instruction is to fetch the
+ *  work item. The user-message input stays clean — no magic tokens in the
+ *  conversation (Section 26.4 lock: workItemId travels via the harness). */
+export interface PodWorkItemContext {
+  workItemId: string;
+  expectedOutput: ExpectedOutput;
+}
 
 export interface MaterializePodOptions {
   bundle: PodSpawnBundle;
@@ -56,6 +67,11 @@ export interface MaterializePodOptions {
    *  the orchestrator depends on `webhook` being in mcp.json so CC spawns
    *  its dev-channel-registered stdio child. Defaults to false. */
   filterMcpToReferencedTools?: boolean;
+  /** Optional work-item assignment. When supplied, the rendered agent .md
+   *  carries a "## Your assignment" section telling the agent to fetch
+   *  `workItemId` via `pc_get_work_item` as its first action, plus the
+   *  `expected_output` JSON below. Section 26.4 contract. */
+  workItem?: PodWorkItemContext;
 }
 
 export interface MaterializedPod {
@@ -78,7 +94,7 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   mkdirSync(dirname(agentMdPath), { recursive: true });
   writeFileSync(
     agentMdPath,
-    renderAgentMd(bundle.agent, expandedTools, bundle.knowledge),
+    renderAgentMd(bundle.agent, expandedTools, bundle.knowledge, opts.workItem),
     'utf8',
   );
 
@@ -124,6 +140,7 @@ export function renderAgentMd(
   agent: PodAgentRow,
   tools: readonly string[],
   knowledge: readonly PodKnowledgeRow[] = [],
+  workItem?: PodWorkItemContext,
 ): string {
   const fm: string[] = ['---', `name: ${agent.name}`];
   if (agent.description.trim() !== '') fm.push(`description: ${agent.description}`);
@@ -133,9 +150,43 @@ export function renderAgentMd(
   if (agent.maxTurns !== null) fm.push(`maxTurns: ${agent.maxTurns}`);
   fm.push('---');
   const body = agent.prompt.trim();
+  const assignment = workItem ? renderAssignment(workItem) : '';
   const canReadKnowledge = tools.includes(KNOWLEDGE_READ_TOOL);
   const footer = canReadKnowledge ? renderKnowledgeFooter(agent.id, knowledge) : '';
-  return `${fm.join('\n')}\n\n${body}${footer}\n`;
+  return `${fm.join('\n')}\n\n${body}${assignment}${footer}\n`;
+}
+
+/** "## Your assignment" section appended to the agent body when the dispatch
+ *  carries a work-item id. Tells the agent its first tool call must fetch the
+ *  work item, plus surfaces the expected_output JSON so the model can plan
+ *  the shape of its output. Workflow / contract details (acceptance_criteria,
+ *  attachments) live on the work item itself — the agent reads them via
+ *  `pc_get_work_item`. Section 26.4. */
+export function renderAssignment(workItem: PodWorkItemContext): string {
+  const expected = JSON.stringify(workItem.expectedOutput, null, 2);
+  return [
+    '',
+    '',
+    '## Your assignment',
+    '',
+    `You are assigned to work item \`${workItem.workItemId}\`. Your FIRST tool call must be:`,
+    '',
+    '```',
+    `pc_get_work_item({ id: "${workItem.workItemId}" })`,
+    '```',
+    '',
+    "Read its `body` (your task), `acceptance_criteria` (what \"done\" means), `attachments`, and `parent`. The orchestrator already wrote the task into the body — the dispatch input is intentionally trivial.",
+    '',
+    '### Expected output',
+    '',
+    'Shape the orchestrator wants:',
+    '',
+    '```json',
+    expected,
+    '```',
+    '',
+    'When you complete the work, persist the deliverable on the work item (body / fields / attachments) so the acceptance-criteria evaluator can verify it.',
+  ].join('\n');
 }
 
 /** Knowledge access footer appended to the rendered .md when the pod has

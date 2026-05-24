@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getPodForSpawn } from '@pc/db';
 import type { PodMcpServerConfig } from '@pc/domain';
-import { materializePod, type MaterializedPod } from '@pc/runtime';
+import { materializePod, type MaterializedPod, type PodWorkItemContext } from '@pc/runtime';
 import { PC_RIG_TOOL_NAMES } from './pod-tool-catalog.ts';
 
 export interface PreparePodSpawnInput {
@@ -43,6 +43,12 @@ export interface PreparePodSpawnInput {
    *  needs webhook in mcp.json so CC spawns its dev-channel stdio child.
    *  Defaults to false. */
   filterMcpToReferencedTools?: boolean;
+  /** Section 26.4 — when the dispatch carries a work-item assignment, the
+   *  materialised agent .md gains a "## Your assignment" section telling the
+   *  agent to fetch the work item as its first action + surfacing the
+   *  expected_output JSON. Null / undefined → no section emitted, matching
+   *  today's behaviour. */
+  workItem?: PodWorkItemContext;
 }
 
 export interface PodSpawnPrep {
@@ -73,6 +79,7 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
     baselineMcpServers: baseline,
     mcpToolCatalog: { 'pc-rig': PC_RIG_TOOL_NAMES },
     filterMcpToReferencedTools: input.filterMcpToReferencedTools ?? false,
+    workItem: input.workItem,
   });
 
   return {

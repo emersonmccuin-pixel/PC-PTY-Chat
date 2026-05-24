@@ -38,7 +38,11 @@ export {
   renderAgentMd,
   renderMcpConfig,
 } from './pod-materializer.ts';
-export type { MaterializePodOptions, MaterializedPod } from './pod-materializer.ts';
+export type {
+  MaterializePodOptions,
+  MaterializedPod,
+  PodWorkItemContext,
+} from './pod-materializer.ts';
 
 // ── Agent-system primitives (Section 25) ──────────────────────────────────
 
