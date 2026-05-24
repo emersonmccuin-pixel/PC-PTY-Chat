@@ -106,7 +106,25 @@ interface WorkflowRunGroupItem {
   events: WorkflowEventEntry[];
 }
 
-type RenderItem = ToolGroupItem | EnvItem | EditItem | WorkflowRunGroupItem;
+interface AgentEventEntry {
+  kind: string;
+  body: string;
+}
+
+interface AgentDispatchGroupItem {
+  kind: 'agent-dispatch-group';
+  key: string;
+  agentRunId: string;
+  agentName: string | null;
+  events: AgentEventEntry[];
+}
+
+type RenderItem =
+  | ToolGroupItem
+  | EnvItem
+  | EditItem
+  | WorkflowRunGroupItem
+  | AgentDispatchGroupItem;
 
 interface StableEnvelope {
   origIdx: number;
@@ -413,6 +431,34 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
             body: part.text,
           });
           hoistedAny = true;
+        } else if (part.kind === 'agent-event' && part.agentRunId) {
+          flush();
+          const id = part.agentRunId;
+          let group: AgentDispatchGroupItem | null = null;
+          for (let j = items.length - 1; j >= 0; j--) {
+            const it = items[j]!;
+            if (it.kind === 'agent-dispatch-group' && it.agentRunId === id) {
+              group = it;
+              break;
+            }
+          }
+          if (!group) {
+            group = {
+              kind: 'agent-dispatch-group',
+              key: `adg-${id}`,
+              agentRunId: id,
+              agentName: part.agentName ?? null,
+              events: [],
+            };
+            items.push(group);
+          } else if (!group.agentName && part.agentName) {
+            group.agentName = part.agentName;
+          }
+          group.events.push({
+            kind: part.agentEventKind ?? 'unknown',
+            body: part.text,
+          });
+          hoistedAny = true;
         } else {
           hasVisible = true;
         }
@@ -431,16 +477,22 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
 // ── Channel-block parser ─────────────────────────────────────────────────
 
 interface UserPart {
-  kind: 'text' | 'channel' | 'workflow-event';
+  kind: 'text' | 'channel' | 'workflow-event' | 'agent-event';
   text: string;
   source?: string;
   workflowEventKind?: string;
   workflowRunId?: string;
+  agentEventKind?: string;
+  agentRunId?: string;
+  agentName?: string;
 }
 
 const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
 const WORKFLOW_EVENT_HEADER_RE = /^\[pc:workflow-event\s+kind=([\w-]+)/;
 const WORKFLOW_RUN_ID_RE = /\[workflowRunId:\s*([A-Za-z0-9_-]+)\]/;
+const AGENT_EVENT_HEADER_RE = /^\[pc:agent-event\s+kind=([\w-]+)/;
+const AGENT_RUN_ID_RE = /\[runId:\s*([A-Za-z0-9_-]+)\]/;
+const AGENT_NAME_RE = /\[agentName:\s*([\w-]+)\]/;
 
 function parseUserText(text: string): UserPart[] {
   if (!text) return [{ kind: 'text', text: '' }];
@@ -466,6 +518,20 @@ function parseUserText(text: string): UserPart[] {
         workflowEventKind: wfMatch[1],
       };
       if (runMatch?.[1]) part.workflowRunId = runMatch[1];
+      parts.push(part);
+      continue;
+    }
+    const agMatch = body.match(AGENT_EVENT_HEADER_RE);
+    if (agMatch) {
+      const runMatch = body.match(AGENT_RUN_ID_RE);
+      const nameMatch = body.match(AGENT_NAME_RE);
+      const part: UserPart = {
+        kind: 'agent-event',
+        text: body,
+        agentEventKind: agMatch[1],
+      };
+      if (runMatch?.[1]) part.agentRunId = runMatch[1];
+      if (nameMatch?.[1]) part.agentName = nameMatch[1];
       parts.push(part);
       continue;
     }
@@ -766,6 +832,16 @@ export function ChatSurface({
                   <WorkflowRunGroupBubble
                     key={item.key}
                     workflowRunId={item.workflowRunId}
+                    events={item.events}
+                  />
+                );
+              }
+              if (item.kind === 'agent-dispatch-group') {
+                return (
+                  <AgentDispatchGroupBubble
+                    key={item.key}
+                    agentRunId={item.agentRunId}
+                    agentName={item.agentName}
                     events={item.events}
                   />
                 );
@@ -1193,7 +1269,7 @@ function RoleTab({ role, suffix }: { role: 'user' | 'claude'; suffix?: string })
 function UserBubble({ event }: { event: UserEvent }) {
   const parts = useMemo(() => {
     const all = parseUserText(event.text ?? '');
-    return all.filter((p) => p.kind !== 'workflow-event');
+    return all.filter((p) => p.kind !== 'workflow-event' && p.kind !== 'agent-event');
   }, [event.text]);
   if (parts.length === 0) return null;
   return (
@@ -1757,6 +1833,77 @@ function WorkflowRunGroupBubble({
     >
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
         run {workflowRunId}
+      </div>
+      {events.map((ev, i) => (
+        <div key={i} className="border-l border-border pl-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            {ev.kind}
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            {ev.body}
+          </pre>
+        </div>
+      ))}
+    </CollapsibleEventGroup>
+  );
+}
+
+// ── Agent-dispatch group bubble (Section 28.4) ───────────────────────────
+
+const AGENT_CAUSE_RE = /\[cause:\s*([\w-]+)\]/;
+const AGENT_VERIFICATION_RE = /\[verification:\s*(\w+)\]/;
+
+function deriveAgentStatus(events: AgentEventEntry[]):
+  | { text: string; tone?: EventGroupStatusTone }
+  | undefined {
+  if (events.length === 0) return undefined;
+  const last = events[events.length - 1]!;
+  switch (last.kind) {
+    case 'agent-completed': {
+      const v = last.body.match(AGENT_VERIFICATION_RE)?.[1];
+      if (v === 'failed') return { text: 'completed · verify failed', tone: 'error' };
+      if (v === 'pending') return { text: 'completed · review pending', tone: 'warning' };
+      return { text: 'completed', tone: 'success' };
+    }
+    case 'agent-failed': {
+      const cause = last.body.match(AGENT_CAUSE_RE)?.[1];
+      return { text: cause ? `failed (${cause})` : 'failed', tone: 'error' };
+    }
+    case 'agent-asks-orchestrator':
+      return { text: 'awaiting orchestrator', tone: 'warning' };
+    case 'agent-asks-user':
+      return { text: 'awaiting user', tone: 'warning' };
+    case 'agent-approval-request':
+      return { text: 'awaiting approval', tone: 'warning' };
+    case 'agent-queued-started':
+      return { text: 'running', tone: 'warning' };
+    default:
+      return { text: 'running', tone: 'warning' };
+  }
+}
+
+function AgentDispatchGroupBubble({
+  agentRunId,
+  agentName,
+  events,
+}: {
+  agentRunId: string;
+  agentName: string | null;
+  events: AgentEventEntry[];
+}) {
+  const [open, setOpen] = useState(false);
+  const status = deriveAgentStatus(events);
+  const label = agentName ? `Agent · ${agentName}` : 'Agent';
+  return (
+    <CollapsibleEventGroup
+      label={label}
+      count={`${events.length} ${events.length === 1 ? 'event' : 'events'}`}
+      status={status}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        run {agentRunId}
       </div>
       {events.map((ev, i) => (
         <div key={i} className="border-l border-border pl-2">
