@@ -54,7 +54,7 @@ export function AskCard({ toolName, toolInput, answered, onReply }: AskCardProps
     isMulti && questions.every((_, i) => picks[i] !== undefined);
 
   return (
-    <div className="self-start max-w-[85%] border border-accent/60 bg-card px-3 py-2 text-sm">
+    <div className="text-sm">
       <div className="mb-2 text-[10px] uppercase tracking-wider text-accent">
         {isPlan
           ? 'Plan ready — review:'

@@ -1121,7 +1121,7 @@ const FAILURE_CAUSE_LABEL: Record<SubagentFailureEvent['cause'], string> = {
 function FailureBubble({ event }: { event: SubagentFailureEvent }) {
   const [viewerOpen, setViewerOpen] = useState(false);
   return (
-    <div className="self-start max-w-[85%] border border-destructive/60 bg-destructive/5 px-3 py-2 text-sm">
+    <div className="text-sm">
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-destructive px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
           subagent failed
@@ -1171,7 +1171,7 @@ function SystemBubble({ event }: { event: SystemEvent }) {
 function SystemErrorBubble({ event }: { event: SystemEvent }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="self-start max-w-[85%] border border-destructive/60 bg-destructive/5 px-3 py-2 text-xs">
+    <div className="text-xs">
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-destructive px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
           {event.subtype.replace(/_/g, ' ')}
@@ -1369,10 +1369,7 @@ function UserBubble({ event }: { event: UserEvent }) {
     <>
       {parts.map((part, idx) =>
         part.kind === 'channel' ? (
-          <div
-            key={idx}
-            className="group relative self-start max-w-[85%] border border-warning/60 bg-warning/5 px-3 py-2 text-sm"
-          >
+          <div key={idx} className="group relative text-sm">
             <div className="mb-1 text-[10px] uppercase tracking-wider text-warning">
               channel · {part.source}
             </div>
@@ -1384,7 +1381,7 @@ function UserBubble({ event }: { event: UserEvent }) {
         ) : (
           <div key={idx} className="group">
             <RoleTab role="user" />
-            <div className="relative border border-primary/60 bg-primary/30 px-3 py-2 text-sm text-foreground">
+            <div className="relative text-sm text-foreground">
               <div className="whitespace-pre-wrap break-words">
                 {part.text || '(empty prompt)'}
               </div>
@@ -1412,7 +1409,7 @@ function AssistantBubble({
     return (
       <div>
         <RoleTab role="claude" suffix={durationSuffix} />
-        <div className="border border-border bg-card px-3 py-2 text-sm italic text-muted-foreground">
+        <div className="text-sm italic text-muted-foreground">
           {event.transcriptPath
             ? `(no assistant text — transcript empty or missing at ${event.transcriptPath})`
             : '(no transcript path provided by Stop hook)'}
@@ -1423,7 +1420,7 @@ function AssistantBubble({
   return (
     <div className="group">
       <RoleTab role="claude" suffix={durationSuffix} />
-      <div className="relative border border-border bg-card px-3 py-2 text-sm text-foreground">
+      <div className="relative text-sm text-foreground">
         <div className="markdown-body">
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
         </div>
@@ -1762,7 +1759,7 @@ function CollapsibleEventGroup({
   };
   const tone = status?.tone ?? 'info';
   return (
-    <div className="self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm">
+    <div className="text-sm">
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -2031,7 +2028,7 @@ function TodosBubble({ event }: { event: TodosEvent }) {
   const todos = event.todos ?? [];
   const done = todos.filter((t) => t.status === 'completed').length;
   return (
-    <div className="self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm">
+    <div className="text-sm">
       <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
         Working on ({done}/{todos.length})
       </div>
@@ -2063,7 +2060,7 @@ function TodosBubble({ event }: { event: TodosEvent }) {
 
 function TaskStartBubble({ event }: { event: TaskStartEvent }) {
   return (
-    <div className="self-start max-w-[85%] border-l-2 border-accent bg-card px-3 py-2 text-sm">
+    <div className="border-l-2 border-accent pl-3 text-sm">
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-accent px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-accent-foreground">
           {event.subagent || 'subagent'}
@@ -2082,7 +2079,7 @@ function TaskStartBubble({ event }: { event: TaskStartEvent }) {
 function TaskEndBubble({ event }: { event: TaskEndEvent }) {
   const text = event.result ?? '';
   return (
-    <div className="group relative self-start max-w-[85%] border-l-2 border-success bg-card px-3 py-2 text-sm">
+    <div className="group relative border-l-2 border-success pl-3 text-sm">
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-success px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
           {event.subagent || 'subagent'}
@@ -2137,10 +2134,7 @@ function ApprovalBubble({ event, projectId, resolved, onResolved }: ApprovalBubb
   }
 
   return (
-    <div
-      data-bubble-id={`approval-${event.workflowRunId}-${event.nodeId}`}
-      className="self-start max-w-[85%] border border-warning/60 bg-card px-3 py-2 text-sm"
-    >
+    <div className="text-sm">
       <div className="mb-1 flex items-center gap-2">
         <span className="bg-warning px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
           approval required
