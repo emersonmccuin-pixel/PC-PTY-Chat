@@ -197,7 +197,17 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
         } satisfies SystemEvent,
       };
     case 'jsonl-queue-enqueue':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'queue-enqueue', timestamp: ev.timestamp },
+      };
     case 'jsonl-queue-dequeue':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'queue-dequeue', timestamp: ev.timestamp },
+      };
     case 'jsonl-sidechain':
       return null;
     default:
@@ -1009,12 +1019,24 @@ function EventBubble({
       if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) return null;
       return <SystemBubble event={sys} />;
     }
+    case 'queue-enqueue':
+      return <QueueIndicator text="queued" />;
+    case 'queue-dequeue':
+      return <QueueIndicator text="dequeued" />;
     case 'session-end':
     case 'subagent-stop':
       return null;
     default:
       return null;
   }
+}
+
+function QueueIndicator({ text }: { text: string }) {
+  return (
+    <div className="self-center px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+      · {text} ·
+    </div>
+  );
 }
 
 // ── Subagent failure bubble ───────────────────────────────────────────────

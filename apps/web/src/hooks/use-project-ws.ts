@@ -167,6 +167,16 @@ export interface SystemEvent extends ChatEventBase {
   raw: unknown;
 }
 
+/** Section 28.6 — CC's queue protocol surfaces in JSONL. A user prompt
+ *  submitted while CC is busy lands as `jsonl-queue-enqueue`; when the
+ *  slot is consumed (dequeue OR remove on CC ≥2.1) it lands as
+ *  `jsonl-queue-dequeue`. Section 0 originally discarded these; 28.6
+ *  surfaces them as inline single-line indicators per the buildout doc. */
+export interface QueueEvent extends ChatEventBase {
+  kind: 'queue-enqueue' | 'queue-dequeue';
+  timestamp: string | null;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -182,6 +192,7 @@ export type ChatEvent =
   | SubagentFailureEvent
   | StopFailureEvent
   | SystemEvent
+  | QueueEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────
