@@ -16,10 +16,14 @@
 // a refetch.
 
 import type {
+  AcceptanceCriteria,
+  ExpectedOutput,
   FieldSchema,
   Project,
   ULID,
   ValidateFieldsErrors,
+  VerificationStatus,
+  VerificationTier,
   WorkItem,
   WorkItemType,
 } from '@pc/domain';
@@ -62,6 +66,17 @@ export interface CreateWorkItemServiceInput {
   position?: number;
   type?: WorkItemType;
   fields?: Record<string, unknown>;
+  // ── Section 26 — work-item-as-contract fields (optional; pc_create_agent_work_item
+  //   populates these for dispatched-agent contracts). ──
+  isAgentTask?: boolean;
+  ephemeral?: boolean;
+  acceptanceCriteria?: AcceptanceCriteria | null;
+  expectedOutput?: ExpectedOutput | null;
+  verificationTier?: VerificationTier | null;
+  verificationStatus?: VerificationStatus | null;
+  verificationNotes?: string | null;
+  assignedAgentRunId?: ULID | null;
+  worktreePath?: string | null;
 }
 
 export interface PatchWorkItemServiceInput {
@@ -168,6 +183,25 @@ export class WorkItemService {
       ...(input.position !== undefined ? { position: input.position } : {}),
       ...(input.type !== undefined ? { type: input.type } : {}),
       fields: validated.value,
+      ...(input.isAgentTask !== undefined ? { isAgentTask: input.isAgentTask } : {}),
+      ...(input.ephemeral !== undefined ? { ephemeral: input.ephemeral } : {}),
+      ...(input.acceptanceCriteria !== undefined
+        ? { acceptanceCriteria: input.acceptanceCriteria }
+        : {}),
+      ...(input.expectedOutput !== undefined ? { expectedOutput: input.expectedOutput } : {}),
+      ...(input.verificationTier !== undefined
+        ? { verificationTier: input.verificationTier }
+        : {}),
+      ...(input.verificationStatus !== undefined
+        ? { verificationStatus: input.verificationStatus }
+        : {}),
+      ...(input.verificationNotes !== undefined
+        ? { verificationNotes: input.verificationNotes }
+        : {}),
+      ...(input.assignedAgentRunId !== undefined
+        ? { assignedAgentRunId: input.assignedAgentRunId }
+        : {}),
+      ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
     });
     this.opts.broadcast({ type: 'work-items-changed', change: 'created', workItem });
     return workItem;

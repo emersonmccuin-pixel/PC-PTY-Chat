@@ -95,6 +95,65 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_create_agent_work_item',
+    description:
+      "Create a dispatch contract for a subagent. Use this — NOT pc_create_work_item — whenever you're about to delegate to a specialist pod via pc_invoke_agent. The work item IS the contract: title + task (body) + pod + expected output shape (drives auto-verification of \"done\"). The new work item is_agent_task=true (hidden from the kanban by default; surfaces inline in chat). Returns the new WorkItem; pass its id to pc_invoke_agent so the worker fetches its assignment on boot. `expected_output` defaults to the pod's standard shape when omitted; override for non-standard tasks. `verification_tier` defaults to 'auto' (structured predicates). Set `ephemeral: true` for throwaway lookups (auto-archives 24h after done).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'short scannable title for the dispatch' },
+        task: {
+          type: 'string',
+          description:
+            "free-form task description — this becomes the work item's body and the agent reads it on boot via pc_get_work_item",
+        },
+        pod: {
+          type: 'string',
+          description:
+            'pod name to dispatch (researcher / writer / code-writer / reviewer / planner / extractor / agent-designer or a custom pod). Drives default expected_output.',
+        },
+        expected_output: {
+          type: 'object',
+          description:
+            "structured spec for what the agent's output should look like. kind ∈ {text, files, structured, side-effect, mixed}. Falls back to the pod's default if omitted. AC is derived from this; the agent's prompt also surfaces it so the agent knows what's being checked.",
+          additionalProperties: true,
+        },
+        verification_tier: {
+          type: 'string',
+          enum: ['auto', 'orchestrator-review', 'human-review'],
+          description:
+            "who verifies 'done'. 'auto' (default) runs structured predicates. 'orchestrator-review' wakes you on agent-done to approve / reject. 'human-review' queues in the Human Review inbox.",
+        },
+        parent_work_item_id: {
+          type: 'string',
+          description:
+            "optional parent work item id (ULID). Use to link to an in-flight workflow root or to thread agent dispatches under a parent task.",
+        },
+        stage_id: {
+          type: 'string',
+          description:
+            "stage to land the work item in. Defaults to the project's first stage when omitted. Agent work items are hidden from the kanban by default regardless of stage.",
+        },
+        worktree: {
+          type: 'string',
+          description: 'optional absolute path to a worktree the agent should write into.',
+        },
+        ephemeral: {
+          type: 'boolean',
+          description:
+            "true marks the work item for auto-archive 24h after reaching 'done'. Use for throwaway lookups ('what's Node LTS?'). Defaults to false.",
+        },
+        raw_acceptance_criteria: {
+          type: 'array',
+          description:
+            "Escape hatch: override the derived AC predicate list. Rare-use; prefer expected_output. Each entry needs a 'kind' from: files_exist, fields_populated, field_matches, bash_exit_zero, attachments_present, body_contains, child_work_items_done.",
+          items: { type: 'object', additionalProperties: true },
+        },
+      },
+      required: ['title', 'task', 'pod'],
+    },
+  },
+  {
     name: 'pc_log_bug',
     description:
       "File a bug in the user's PC-PTY-Chat dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
@@ -1176,6 +1235,62 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_create_work_item failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_agent_work_item': {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const task = typeof args.task === 'string' ? args.task : '';
+      const pod = typeof args.pod === 'string' ? args.pod.trim() : '';
+      if (!title || !task || !pod) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_create_agent_work_item: title, task, and pod required',
+            },
+          ],
+          isError: true,
+        };
+      }
+      const payload: Record<string, unknown> = { title, task, pod };
+      if (args.expected_output !== undefined) payload.expected_output = args.expected_output;
+      if (typeof args.verification_tier === 'string')
+        payload.verification_tier = args.verification_tier;
+      if (typeof args.parent_work_item_id === 'string')
+        payload.parent_work_item_id = args.parent_work_item_id;
+      if (typeof args.stage_id === 'string') payload.stage_id = args.stage_id;
+      if (typeof args.worktree === 'string') payload.worktree = args.worktree;
+      if (typeof args.ephemeral === 'boolean') payload.ephemeral = args.ephemeral;
+      if (args.raw_acceptance_criteria !== undefined)
+        payload.raw_acceptance_criteria = args.raw_acceptance_criteria;
+      try {
+        const res = await postServer(
+          projectPath('work-items/create-agent-contract'),
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `pc_create_agent_work_item failed (${res.status}): ${res.body}`,
+            },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `pc_create_agent_work_item failed: ${(err as Error).message}`,
+            },
+          ],
           isError: true,
         };
       }

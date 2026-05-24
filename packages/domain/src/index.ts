@@ -23,6 +23,10 @@ export {
   isVerificationTier,
 } from './work-item-contract.ts';
 export { deriveAcceptanceCriteria } from './ac-derivation.ts';
+export {
+  POD_DEFAULT_EXPECTED_OUTPUT,
+  getPodDefaultExpectedOutput,
+} from './pod-defaults.ts';
 export type {
   EvaluationContext,
   EvaluationResult,

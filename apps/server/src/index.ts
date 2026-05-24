@@ -76,6 +76,11 @@ import {
   WorkItemVersionConflictError,
 } from './services/work-item.ts';
 import {
+  AgentWorkItemInputError,
+  createAgentWorkItem,
+  type CreateAgentWorkItemInput,
+} from './services/agent-work-item.ts';
+import {
   type MemoryScope,
   readMemoryFile,
   writeMemoryFile,
@@ -1330,6 +1335,73 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
     });
     return c.json({ ok: true, workItem });
   } catch (err) {
+    if (err instanceof FieldValidationError) {
+      return c.json({ ok: false, error: err.message, errors: err.errors }, 400);
+    }
+    if (err instanceof UnknownStageError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
+    const msg = (err as Error).message;
+    const is400 = /^unknown stage:|^title required$/.test(msg);
+    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+/** Section 26.3 — dispatch contract for agent work items. Same persistence as
+ *  /work-items/create, plus is_agent_task=true, derived AC, and the contract
+ *  fields. Bound to `pc_create_agent_work_item`. */
+app.post('/api/projects/:projectId/work-items/create-agent-contract', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{
+    title?: string;
+    task?: string;
+    pod?: string;
+    expected_output?: unknown;
+    verification_tier?: unknown;
+    parent_work_item_id?: string | null;
+    stage_id?: string;
+    worktree?: string | null;
+    ephemeral?: boolean;
+    raw_acceptance_criteria?: unknown;
+  }>();
+  const input: CreateAgentWorkItemInput = {
+    title: typeof body.title === 'string' ? body.title : '',
+    task: typeof body.task === 'string' ? body.task : '',
+    pod: typeof body.pod === 'string' ? body.pod : '',
+    ...(body.expected_output !== undefined
+      ? { expectedOutput: body.expected_output as CreateAgentWorkItemInput['expectedOutput'] }
+      : {}),
+    ...(typeof body.verification_tier === 'string'
+      ? {
+          verificationTier:
+            body.verification_tier as CreateAgentWorkItemInput['verificationTier'],
+        }
+      : {}),
+    ...(body.parent_work_item_id !== undefined
+      ? { parentWorkItemId: body.parent_work_item_id as ULID | null }
+      : {}),
+    ...(typeof body.stage_id === 'string' ? { stageId: body.stage_id } : {}),
+    ...(body.worktree !== undefined ? { worktree: body.worktree } : {}),
+    ...(typeof body.ephemeral === 'boolean' ? { ephemeral: body.ephemeral } : {}),
+    ...(body.raw_acceptance_criteria !== undefined
+      ? {
+          rawAcceptanceCriteria:
+            body.raw_acceptance_criteria as CreateAgentWorkItemInput['rawAcceptanceCriteria'],
+        }
+      : {}),
+  };
+  try {
+    const workItem = createAgentWorkItem(input, {
+      workItemService: runtime.workItemService(),
+      getProject: () => runtime.project,
+    });
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    if (err instanceof AgentWorkItemInputError) {
+      return c.json({ ok: false, error: err.message }, 400);
+    }
     if (err instanceof FieldValidationError) {
       return c.json({ ok: false, error: err.message, errors: err.errors }, 400);
     }

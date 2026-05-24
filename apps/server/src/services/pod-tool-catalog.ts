@@ -14,6 +14,7 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_list_worktrees',
   'mcp__pc-rig__pc_destroy_worktree',
   'mcp__pc-rig__pc_create_work_item',
+  'mcp__pc-rig__pc_create_agent_work_item',
   'mcp__pc-rig__pc_log_bug',
   'mcp__pc-rig__pc_move_work_item',
   'mcp__pc-rig__pc_update_work_item',

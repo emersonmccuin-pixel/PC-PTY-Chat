@@ -121,6 +121,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
   {
+    slug: 'mcp__pc-rig__pc_create_agent_work_item',
+    label: 'Create agent work item',
+    description:
+      'Dispatch contract for an agent — title + task + pod + expected output shape; AC is derived.',
+    source: 'pc-rig',
+  },
+  {
     slug: 'mcp__pc-rig__pc_log_bug',
     label: 'Log a bug',
     description: "File a bug to the user's PC dogfood tracker.",
