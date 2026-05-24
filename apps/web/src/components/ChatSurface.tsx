@@ -386,8 +386,6 @@ interface UserPart {
 }
 
 const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
-const WORKFLOW_EVENT_RE = /^\[pc:workflow-event\s+kind=/;
-const AGENT_EVENT_RE = /^\[pc:agent-event\s+kind=/;
 
 function parseUserText(text: string): UserPart[] {
   if (!text) return [{ kind: 'text', text: '' }];
@@ -404,7 +402,6 @@ function parseUserText(text: string): UserPart[] {
     const attrs = m[1] ?? '';
     const body = (m[2] ?? '').trim();
     last = idx + m[0].length;
-    if (WORKFLOW_EVENT_RE.test(body) || AGENT_EVENT_RE.test(body)) continue;
     const sourceMatch = attrs.match(/source\s*=\s*"([^"]+)"/);
     parts.push({ kind: 'channel', text: body, source: sourceMatch?.[1] ?? 'channel' });
   }
