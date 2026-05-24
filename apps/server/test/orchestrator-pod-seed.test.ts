@@ -18,6 +18,7 @@ process.env.PC_DATA_DIR = tmpDataDir;
 
 const { closeDb, runMigrations, getAgentByName, listAgentAudit, updateAgent } = await import('@pc/db');
 import type { ULID } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import { ORCHESTRATOR_POD_CONTENT } from '../src/services/orchestrator-pod-content.ts';
 import { seedOrchestratorPodIfMissing } from '../src/services/orchestrator-pod-seed.ts';
 
@@ -44,7 +45,8 @@ test('first call on empty DB inserts the orchestrator row with content from ORCH
   assert.equal(row!.scope, 'global');
   assert.equal(row!.projectId, null);
   assert.equal(row!.prompt, ORCHESTRATOR_POD_CONTENT.prompt);
-  assert.deepEqual(row!.tools, ORCHESTRATOR_POD_CONTENT.tools);
+  // Section 26: createAgent always merges in the required work-item tools.
+  assert.deepEqual(row!.tools, mergeRequiredAgentTools(ORCHESTRATOR_POD_CONTENT.tools ?? []));
   assert.equal(row!.model, ORCHESTRATOR_POD_CONTENT.model);
   assert.equal(row!.maxTurns, ORCHESTRATOR_POD_CONTENT.maxTurns);
   assert.equal(row!.outputDestination, ORCHESTRATOR_POD_CONTENT.outputDestination);
@@ -99,7 +101,8 @@ test('auto-reseeds when live row drifts AND has only system-authored audit rows'
 
   const restored = getAgentByName({ name: 'orchestrator', scope: 'global' });
   assert.equal(restored!.prompt, ORCHESTRATOR_POD_CONTENT.prompt);
-  assert.deepEqual(restored!.tools, ORCHESTRATOR_POD_CONTENT.tools);
+  // Section 26: tools persist as the merged list (REQUIRED_AGENT_TOOLS added).
+  assert.deepEqual(restored!.tools, mergeRequiredAgentTools(ORCHESTRATOR_POD_CONTENT.tools ?? []));
 
   // Audit log should have a reseed entry per changed field.
   const audit = listAgentAudit({ agentId: live!.id });

@@ -20,6 +20,7 @@ import {
   type UpdateAgentInput,
 } from '@pc/db';
 import type { PodAgentRow, PodAuditRow } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 
 export type SeedPodAction = 'inserted' | 'unchanged' | 'reseeded' | 'skipped-user-edited';
 
@@ -88,7 +89,14 @@ const SEED_OWNED_FIELDS = [
 
 function collectDriftedFields(live: PodAgentRow, content: CreateAgentInput): string[] {
   const drift: string[] = [];
-  const seed = content as unknown as Record<string, unknown>;
+  // Section 26 — for the tools field, compare against the *merged* seed (the
+  // repo layer auto-merges REQUIRED_AGENT_TOOLS at create/update time, so the
+  // live row's tools always include them; the raw seed list usually doesn't).
+  // Without this, every boot would false-positive a `tools` drift on every pod.
+  const seed = {
+    ...content,
+    tools: mergeRequiredAgentTools(content.tools ?? []),
+  } as unknown as Record<string, unknown>;
   const liveAny = live as unknown as Record<string, unknown>;
   for (const f of SEED_OWNED_FIELDS) {
     if (JSON.stringify(seed[f]) !== JSON.stringify(liveAny[f])) drift.push(f);

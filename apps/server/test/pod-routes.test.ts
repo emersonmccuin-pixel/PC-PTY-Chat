@@ -19,6 +19,7 @@ process.env.PC_DATA_DIR = tmpDataDir;
 const { closeDb, listAgentAudit, runMigrations, softDeleteAgent } = await import('@pc/db');
 const { Hono } = await import('hono');
 const { registerPodRoutes } = await import('../src/routes/pod-routes.ts');
+const { mergeRequiredAgentTools } = await import('@pc/domain');
 
 interface BroadcastedEnvelope {
   type: string;
@@ -108,7 +109,8 @@ test('POST /api/agents/pods creates a global pod + broadcasts + fires onPodChang
   assert.equal(pod.scope, 'global');
   assert.equal(pod.projectId, null);
   assert.equal(pod.model, 'opus');
-  assert.deepEqual(pod.tools, ['Read', 'Glob']);
+  // Section 26: createAgent always merges in the required work-item tools.
+  assert.deepEqual(pod.tools, mergeRequiredAgentTools(['Read', 'Glob']));
 
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0]?.type, 'pod-changed');
@@ -266,7 +268,8 @@ test('POST /api/agents/pods/:id/clone-to-project clones global to project-scope 
   assert.equal(pod.scope, 'project');
   assert.equal(pod.projectId, targetProjectId);
   assert.equal(pod.prompt, 'source prompt');
-  assert.deepEqual(pod.tools, ['Read', 'Glob']);
+  // Section 26: createAgent (under clone) merges the required work-item tools.
+  assert.deepEqual(pod.tools, mergeRequiredAgentTools(['Read', 'Glob']));
   assert.equal(pod.description, 'source desc');
   assert.notEqual(pod.id, sourceId);
   assert.deepEqual(data.copied, { knowledge: 1, mcpServers: 1 });

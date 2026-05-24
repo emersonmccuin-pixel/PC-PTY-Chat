@@ -33,6 +33,7 @@ const {
   listAgentAudit,
 } = await import('../src/index.ts');
 import type { ULID } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import type { AuditInput } from '../src/index.ts';
 
 const U: AuditInput = { actor: 'user' };
@@ -66,7 +67,8 @@ test('createAgent emits a single `created` audit row with new_value snapshot', (
   const snap = JSON.parse(r.newValue!);
   assert.equal(snap.name, 'audit-create');
   assert.equal(snap.prompt, 'hello');
-  assert.deepEqual(snap.tools, ['Read']);
+  // Section 26: createAgent always merges in the required work-item tools.
+  assert.deepEqual(snap.tools, mergeRequiredAgentTools(['Read']));
 });
 
 test('softDeleteAgent emits a `deleted` row with prior_value snapshot', () => {

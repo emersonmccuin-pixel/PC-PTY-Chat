@@ -50,6 +50,7 @@ const {
   getPodForSpawn,
 } = await import('../src/index.ts');
 import type { ULID } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import type { AuditInput } from '../src/index.ts';
 
 const U: AuditInput = { actor: 'user' };
@@ -83,7 +84,8 @@ test('createAgent (global) round-trips defaults + scalar fields', () => {
   assert.equal(a.name, 'researcher');
   assert.equal(a.scope, 'global');
   assert.equal(a.projectId, null);
-  assert.deepEqual(a.tools, ['Read', 'Grep']);
+  // Section 26: createAgent always merges in the required work-item tools.
+  assert.deepEqual(a.tools, mergeRequiredAgentTools(['Read', 'Grep']));
   assert.equal(a.model, 'sonnet');
   assert.equal(a.deletedAt, null);
 
@@ -137,7 +139,9 @@ test('updateAgent patches scalars + bumps updatedAt', async () => {
   assert.ok(next);
   assert.equal(next.prompt, 'v2');
   assert.equal(next.model, 'opus');
-  assert.deepEqual(next.tools, ['Read']);
+  // Section 26: updateAgent re-merges the required work-item tools even if
+  // the patch tried to remove them.
+  assert.deepEqual(next.tools, mergeRequiredAgentTools(['Read']));
   assert.ok(next.updatedAt >= a.updatedAt);
 });
 

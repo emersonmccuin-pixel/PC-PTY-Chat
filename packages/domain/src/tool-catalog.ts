@@ -376,6 +376,37 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 const BY_SLUG = new Map(TOOL_CATALOG.map((e) => [e.slug, e]));
 
+/** Work-item tools every agent ALWAYS has. The contract loop (Section 26)
+ *  needs these on every dispatched agent — `pc_get_work_item` to fetch the
+ *  assignment, `pc_update_work_item` to persist body deliverables that satisfy
+ *  body-based predicates, `pc_attach_to_work_item` to land long reports.
+ *
+ *  Enforcement is layered:
+ *    1. `createAgent` + `updateAgent` repos union-merge these into the row's
+ *       `tools` so the DB reflects truth.
+ *    2. `materializePod` re-unions at spawn time as the load-bearing safety
+ *       net — even a hand-edited row that dropped them gets them back in the
+ *       rendered `.claude/agents/<name>.md`.
+ *    3. Stock pod seeds list them explicitly for diff visibility.
+ *  Any one layer is sufficient; together they make removal accidental-only. */
+export const REQUIRED_AGENT_TOOLS: readonly string[] = [
+  'mcp__pc-rig__pc_get_work_item',
+  'mcp__pc-rig__pc_update_work_item',
+  'mcp__pc-rig__pc_attach_to_work_item',
+] as const;
+
+/** Union the required WI tools into an arbitrary tools list. Preserves order
+ *  for non-required entries (callers may rely on UI display order); appends
+ *  any missing required tools at the tail. Idempotent. */
+export function mergeRequiredAgentTools(tools: readonly string[]): string[] {
+  const seen = new Set(tools);
+  const out: string[] = [...tools];
+  for (const required of REQUIRED_AGENT_TOOLS) {
+    if (!seen.has(required)) out.push(required);
+  }
+  return out;
+}
+
 /** Friendly label for a slug, or the slug itself if not cataloged. */
 export function friendlyName(slug: string): string {
   return BY_SLUG.get(slug)?.label ?? slug;

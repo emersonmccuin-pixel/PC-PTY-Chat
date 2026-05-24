@@ -38,6 +38,7 @@ import type {
   PodSpawnBundle,
   ULID,
 } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { agentAudit, agentKnowledge, agentMcpServers, agentSecrets, agents } from '../schema.ts';
@@ -111,7 +112,10 @@ export function createAgent(input: CreateAgentInput, audit: AuditInput): PodAgen
     scope: input.scope,
     projectId: input.scope === 'project' ? input.projectId ?? null : null,
     prompt: input.prompt ?? '',
-    tools: input.tools ?? [],
+    // Section 26 — every agent always has the work-item contract tools, no
+    // matter what the caller passed. Idempotent merge dedupes if the caller
+    // already listed them.
+    tools: mergeRequiredAgentTools(input.tools ?? []),
     model: input.model ?? null,
     effort: input.effort ?? null,
     maxTurns: input.maxTurns ?? null,
@@ -249,12 +253,21 @@ export function updateAgent(
   const existing = getAgentById(id);
   if (!existing) return null;
 
+  // Section 26 — every agent always has the work-item contract tools, no
+  // matter what the caller passed. If `tools` is being updated, merge the
+  // required tools back in so they survive removal attempts (UI checkbox,
+  // hand-edited row, etc.).
+  const effectivePatch: UpdateAgentInput =
+    patch.tools !== undefined
+      ? { ...patch, tools: mergeRequiredAgentTools(patch.tools) }
+      : patch;
+
   // Identify the fields that ACTUALLY change (patch provides + value differs
   // from existing). We don't emit audit rows for no-op updates.
   type Change = { auditField: PodAuditField; column: string; prior: string; next: string };
   const changes: Change[] = [];
   for (const [patchKey, auditField, column] of UPDATE_AGENT_FIELD_MAP) {
-    const nextRaw = patch[patchKey];
+    const nextRaw = effectivePatch[patchKey];
     if (nextRaw === undefined) continue;
     const priorRaw = existing[patchKey as keyof PodAgentRow];
     if (JSON.stringify(nextRaw) === JSON.stringify(priorRaw)) continue;
@@ -270,7 +283,7 @@ export function updateAgent(
   const now = Date.now();
   const set: Record<string, unknown> = { updatedAt: now };
   for (const [patchKey, , column] of UPDATE_AGENT_FIELD_MAP) {
-    if (patch[patchKey] !== undefined) set[column] = patch[patchKey];
+    if (effectivePatch[patchKey] !== undefined) set[column] = effectivePatch[patchKey];
   }
   // Multi-field edits group under a shared change_set_id. Solo edits use the
   // caller-supplied id (null = ungrouped).

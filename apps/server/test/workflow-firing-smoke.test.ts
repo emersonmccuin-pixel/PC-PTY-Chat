@@ -55,6 +55,7 @@ const { WorkItemService } = await import('../src/services/work-item.ts');
 const { ChannelServer } = await import('../src/services/channel-server.ts');
 const { WorkflowRegistry } = await import('@pc/workflows');
 import type { Project, Stage, ULID } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import type { WorktreeService } from '../src/services/worktree.ts';
 
 const stages: Stage[] = [
@@ -1339,10 +1340,15 @@ test('17a.6 / D39 e2e smoke: pod row → materialised .md + mcp.json + secret en
     assert.equal(snap.agentName, POD_SMOKE_AGENT_NAME);
     // 6a. Materialised .md content shape — frontmatter + prompt body.
     assert.match(snap.mdContent, new RegExp(`\\nname: ${POD_SMOKE_AGENT_NAME}\\n`));
-    assert.match(
-      snap.mdContent,
-      /\ntools: Read, Grep, mcp__pc-rig__pc_log, mcp__webhook__post, mcp__jira__issue\n/,
-    );
+    // Section 26: the materializer merges in the required work-item tools.
+    const expectedTools = mergeRequiredAgentTools([
+      'Read',
+      'Grep',
+      'mcp__pc-rig__pc_log',
+      'mcp__webhook__post',
+      'mcp__jira__issue',
+    ]).join(', ');
+    assert.match(snap.mdContent, new RegExp(`\\ntools: ${expectedTools}\\n`));
     assert.match(snap.mdContent, /\nmodel: sonnet\n/);
     assert.match(snap.mdContent, /\n\nYou investigate things\./);
     // 6b. mcp.json merges baseline + pod row.

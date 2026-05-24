@@ -32,6 +32,7 @@ const {
   createMcpServer,
 } = await import('@pc/db');
 import type { AuditInput } from '@pc/db';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import { preparePodSpawn } from '../src/services/pod-spawn.ts';
 
 const U: AuditInput = { actor: 'user' };
@@ -146,7 +147,9 @@ test('preparePodSpawn materialises the pod + merges baseline .mcp.json', () => {
     assert.ok(existsSync(mdPath));
     const md = readFileSync(mdPath, 'utf8');
     assert.match(md, /\nname: pod-spawn-baseline\n/);
-    assert.match(md, /\ntools: Read, Grep\n/);
+    // Section 26: the materializer merges in the required work-item tools.
+    const expectedTools = mergeRequiredAgentTools(['Read', 'Grep']).join(', ');
+    assert.match(md, new RegExp(`\\ntools: ${expectedTools}\\n`));
     assert.match(md, /\nmodel: sonnet\n/);
     assert.match(md, /\n\ndo stuff/);
 

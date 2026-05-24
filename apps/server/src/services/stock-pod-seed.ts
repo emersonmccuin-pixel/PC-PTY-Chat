@@ -15,7 +15,7 @@
 // flat-file `templates/.project-companion/agents/` directory.
 
 import { type CreateAgentInput } from '@pc/db';
-import { STOCK_POD_NAMES } from '@pc/domain';
+import { mergeRequiredAgentTools, STOCK_POD_NAMES } from '@pc/domain';
 import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
 
 const RESEARCHER_PROMPT = `You are a researcher + scribe. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree (when one is given). Keep summaries terse — bullets over paragraphs.
@@ -416,7 +416,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   name: 'researcher',
   scope: 'global',
   prompt: RESEARCHER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -428,9 +428,10 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_ask_orchestrator',
+    'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
     'mcp__pc-rig__pc_knowledge_read',
-  ],
+  ]),
   model: 'opus',
   effort: null,
   maxTurns: null,
@@ -443,7 +444,7 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
   name: 'writer',
   scope: 'global',
   prompt: WRITER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -454,9 +455,7 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
-    'mcp__pc-rig__pc_get_work_item',
-    'mcp__pc-rig__pc_attach_to_work_item',
-  ],
+  ]),
   model: 'sonnet',
   effort: 'medium',
   maxTurns: 20,
@@ -469,7 +468,7 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
   name: 'reviewer',
   scope: 'global',
   prompt: REVIEWER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -479,9 +478,7 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
-    'mcp__pc-rig__pc_get_work_item',
-    'mcp__pc-rig__pc_attach_to_work_item',
-  ],
+  ]),
   model: 'sonnet',
   effort: 'high',
   maxTurns: 20,
@@ -494,7 +491,7 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
   name: 'planner',
   scope: 'global',
   prompt: PLANNER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -503,9 +500,7 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
-    'mcp__pc-rig__pc_get_work_item',
-    'mcp__pc-rig__pc_attach_to_work_item',
-  ],
+  ]),
   model: 'opus',
   effort: 'high',
   maxTurns: 15,
@@ -518,7 +513,7 @@ const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
   name: 'agent-designer',
   scope: 'global',
   prompt: AGENT_DESIGNER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -529,7 +524,7 @@ const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_create_knowledge',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
-  ],
+  ]),
   model: 'sonnet',
   effort: 'medium',
   maxTurns: 30,
@@ -542,7 +537,7 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
   name: 'code-writer',
   scope: 'global',
   prompt: CODE_WRITER_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -555,9 +550,7 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
-    'mcp__pc-rig__pc_get_work_item',
-    'mcp__pc-rig__pc_attach_to_work_item',
-  ],
+  ]),
   model: 'sonnet',
   effort: 'high',
   maxTurns: 30,
@@ -570,7 +563,7 @@ const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
   name: 'extractor',
   scope: 'global',
   prompt: EXTRACTOR_PROMPT.trim(),
-  tools: [
+  tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
     'Grep',
@@ -579,9 +572,7 @@ const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
-    'mcp__pc-rig__pc_get_work_item',
-    'mcp__pc-rig__pc_attach_to_work_item',
-  ],
+  ]),
   model: 'sonnet',
   effort: 'medium',
   maxTurns: 15,

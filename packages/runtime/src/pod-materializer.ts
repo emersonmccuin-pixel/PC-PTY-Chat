@@ -33,6 +33,7 @@ import type {
   PodSecretRow,
   PodSpawnBundle,
 } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 
 /** Work-item context the orchestrator forwards via `pc_invoke_agent.workItemId`.
  *  When supplied, the materialiser appends a "## Your assignment" section to
@@ -88,7 +89,16 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   const baselineMcp = opts.baselineMcpServers ?? {};
   const catalog = opts.mcpToolCatalog ?? {};
 
-  const expandedTools = expandToolWildcards(bundle.agent.tools, catalog);
+  // Section 26 load-bearing safety net — guarantee the work-item contract
+  // tools are present in the spawned agent's frontmatter no matter what.
+  // The repo layer already merges these at create/update time, but a
+  // hand-edited row, a row from before this guard shipped, or a future code
+  // path that bypasses `createAgent` would otherwise yield an agent that
+  // can't fetch / update its assignment. Idempotent — duplicates from the
+  // wildcard expansion below are deduped by `mergeRequiredAgentTools`.
+  const expandedTools = mergeRequiredAgentTools(
+    expandToolWildcards(bundle.agent.tools, catalog),
+  );
 
   const agentMdPath = resolve(worktreeDir, '.claude', 'agents', `${bundle.agent.name}.md`);
   mkdirSync(dirname(agentMdPath), { recursive: true });

@@ -28,6 +28,7 @@ import type {
   PodSpawnBundle,
   ULID,
 } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -330,10 +331,12 @@ test('materializePod writes .md + mcp.json + returns env map', () => {
     assert.ok(existsSync(result.agentMdPath));
     assert.ok(existsSync(result.mcpConfigPath));
 
-    // Frontmatter body is what renderAgentMd would emit.
+    // Frontmatter body is what renderAgentMd would emit. Section 26: the
+    // materializer always merges in the required work-item tools.
     const md = readFileSync(result.agentMdPath, 'utf8');
     assert.match(md, /\nname: researcher\n/);
-    assert.match(md, /\ntools: Read, Glob, Grep\n/);
+    const expectedTools = mergeRequiredAgentTools(['Read', 'Glob', 'Grep']).join(', ');
+    assert.match(md, new RegExp(`\\ntools: ${expectedTools}\\n`));
     assert.match(md, /\n\nYou are a researcher\./);
 
     // mcp.json merges baseline + pod.
@@ -410,11 +413,14 @@ test('materializePod expands mcp__pc-rig__* against the supplied catalog', () =>
         'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'],
       },
     });
+    // Section 26: required work-item tools merge in after wildcard expansion.
     const md = readFileSync(result.agentMdPath, 'utf8');
-    assert.match(
-      md,
-      /\ntools: Read, mcp__pc-rig__pc_log, mcp__pc-rig__pc_knowledge_read\n/,
-    );
+    const expectedTools = mergeRequiredAgentTools([
+      'Read',
+      'mcp__pc-rig__pc_log',
+      'mcp__pc-rig__pc_knowledge_read',
+    ]).join(', ');
+    assert.match(md, new RegExp(`\\ntools: ${expectedTools}\\n`));
   } finally {
     dirs.cleanup();
   }
