@@ -76,6 +76,10 @@ export interface WorkItem {
   updatedAt: number;
   deletedAt: number | null;
   history: WorkItemHistoryEntry[];
+  // Section 26 — work-item-as-contract. Server emits these for every row;
+  // web only consumes `isAgentTask` today (26.7 visibility toggle). Other
+  // fields land here when their UI consumer arrives.
+  isAgentTask: boolean;
 }
 
 export type FieldSchemaType = 'text' | 'number' | 'boolean' | 'enum' | 'date';

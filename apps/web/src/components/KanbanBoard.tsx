@@ -32,6 +32,7 @@ import {
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
+import { useWorkItemsView } from '@/store/work-items-view';
 
 interface KanbanBoardProps {
   project: Project;
@@ -68,6 +69,21 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [createModal, setCreateModal] = useState<CreateModalState | null>(null);
+  const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
+  const setShowAgentContracts = useWorkItemsView((s) => s.setShowAgentContracts);
+
+  // Section 26.7. Agent-contract work items render only when the toggle is on.
+  // Hidden rows still flow through child-count + parent lookups so non-agent
+  // children of an agent contract remain visible (rare today; reserved for
+  // Section 19's workflow-root-as-work-item).
+  const hiddenAgentCount = useMemo(
+    () => items.filter((i) => i.isAgentTask).length,
+    [items],
+  );
+  const visibleItems = useMemo(
+    () => (showAgentContracts ? items : items.filter((i) => !i.isAgentTask)),
+    [items, showAgentContracts],
+  );
 
   const refetch = useCallback(() => {
     api
@@ -101,16 +117,18 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   );
 
   // Pre-sort items by position within each stage. Stable across renders.
+  // Uses `visibleItems` so the "See Agent Contracts" toggle (Section 26.7)
+  // hides agent-task rows from each column when off.
   const itemsByStage = useMemo(() => {
     const map = new Map<string, WorkItem[]>();
     for (const stage of sortedStages) map.set(stage.id, []);
-    for (const item of items) {
+    for (const item of visibleItems) {
       const bucket = map.get(item.stageId);
       if (bucket) bucket.push(item);
     }
     for (const bucket of map.values()) bucket.sort((a, b) => a.position - b.position);
     return map;
-  }, [items, sortedStages]);
+  }, [visibleItems, sortedStages]);
 
   const childCountByParent = useMemo(() => {
     const counts = new Map<string, number>();
@@ -184,18 +202,27 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <KanbanScrollContainer>
-        {sortedStages.map((stage) => (
-          <Column
-            key={stage.id}
-            stage={stage}
-            items={itemsByStage.get(stage.id) ?? []}
-            childCounts={childCountByParent}
-            onItemClick={(id) => setOpenItemId(id)}
-            onAddCard={() => setCreateModal({ stageId: stage.id })}
-          />
-        ))}
-      </KanbanScrollContainer>
+      <div className="flex h-full flex-col">
+        <KanbanToolbar
+          showAgentContracts={showAgentContracts}
+          onToggleAgentContracts={() => setShowAgentContracts(!showAgentContracts)}
+          hiddenAgentCount={hiddenAgentCount}
+        />
+        <div className="min-h-0 flex-1">
+          <KanbanScrollContainer>
+            {sortedStages.map((stage) => (
+              <Column
+                key={stage.id}
+                stage={stage}
+                items={itemsByStage.get(stage.id) ?? []}
+                childCounts={childCountByParent}
+                onItemClick={(id) => setOpenItemId(id)}
+                onAddCard={() => setCreateModal({ stageId: stage.id })}
+              />
+            ))}
+          </KanbanScrollContainer>
+        </div>
+      </div>
 
       <DragOverlay>
         {draggedItem ? (
@@ -241,6 +268,36 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
         </div>
       )}
     </DndContext>
+  );
+}
+
+/** Section 26.7 toolbar. Hosts the "See Agent Contracts" toggle today; future
+ *  Section 14 work (filters + table/kanban view switch) layers in here. */
+function KanbanToolbar({
+  showAgentContracts,
+  onToggleAgentContracts,
+  hiddenAgentCount,
+}: {
+  showAgentContracts: boolean;
+  onToggleAgentContracts: () => void;
+  hiddenAgentCount: number;
+}) {
+  const hiddenLabel =
+    !showAgentContracts && hiddenAgentCount > 0
+      ? ` (${hiddenAgentCount} hidden)`
+      : '';
+  return (
+    <div className="flex items-center justify-end gap-3 border-b border-border bg-background px-4 py-2 text-sm">
+      <label className="flex cursor-pointer items-center gap-2 text-muted-foreground hover:text-foreground">
+        <input
+          type="checkbox"
+          checked={showAgentContracts}
+          onChange={onToggleAgentContracts}
+          className="h-3.5 w-3.5 cursor-pointer accent-primary"
+        />
+        <span>See Agent Contracts{hiddenLabel}</span>
+      </label>
+    </div>
   );
 }
 
