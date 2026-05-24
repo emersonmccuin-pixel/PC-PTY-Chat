@@ -19,8 +19,7 @@ import {
   getOrchestratorSession,
   reactivateOrchestratorSession,
 } from '@pc/db';
-import { encodeCwdForClaude, PtySession } from '@pc/runtime';
-import { homedir } from 'node:os';
+import { jsonlPathFor, PtySession } from '@pc/runtime';
 import { WorkflowRegistry } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
@@ -244,14 +243,11 @@ export class ProjectRuntime {
     // Deterministic JSONL path. With --session-id passed at spawn (gate on
     // by default since 15.3), claude.exe writes to this exact filename. No
     // directory scan, no mtime race, no bleed-through risk from a sibling
-    // claude.exe in the same cwd.
-    const jsonlPath = resolve(
-      homedir(),
-      '.claude',
-      'projects',
-      encodeCwdForClaude(this.project.folderPath),
-      `${session.providerSessionId}.jsonl`,
-    );
+    // claude.exe in the same cwd. Uses path-resolver to honor
+    // CLAUDE_CONFIG_DIR (was a latent bug pre-Section-23: hardcoded homedir
+    // here, CC writes elsewhere when env var is set, hooks hid the
+    // mismatch by feeding the chat panel directly).
+    const jsonlPath = jsonlPathFor(this.project.folderPath, session.providerSessionId);
     // Section 16a.3 — materialise the orchestrator pod into the project's
     // workspace. Replaces the pre-16a `--append-system-prompt-file` lever
     // (which layered PC's PM identity on top of CC's coding-assistant
@@ -366,13 +362,7 @@ export class ProjectRuntime {
       throw new Error('session has no claude.exe conversation associated');
     }
     if (target.status === 'active') return target;
-    const jsonlPath = resolve(
-      homedir(),
-      '.claude',
-      'projects',
-      encodeCwdForClaude(this.project.folderPath),
-      `${target.providerSessionId}.jsonl`,
-    );
+    const jsonlPath = jsonlPathFor(this.project.folderPath, target.providerSessionId);
     if (!existsSync(jsonlPath)) {
       throw new Error(
         'no transcript on disk for this conversation (claude.exe never wrote it)',
@@ -628,12 +618,9 @@ export class ProjectRuntime {
       // --resume on a phantom UUID makes claude.exe exit with "No
       // conversation found with session ID..." — pass --session-id to mint
       // at the recorded UUID instead.
-      const expectedJsonl = active.jsonlPath ?? resolve(
-        homedir(),
-        '.claude',
-        'projects',
-        encodeCwdForClaude(this.project.folderPath),
-        `${active.providerSessionId}.jsonl`,
+      const expectedJsonl = active.jsonlPath ?? jsonlPathFor(
+        this.project.folderPath,
+        active.providerSessionId,
       );
       return {
         row: active,
