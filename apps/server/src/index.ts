@@ -81,6 +81,11 @@ import {
   type CreateAgentWorkItemInput,
 } from './services/agent-work-item.ts';
 import {
+  approveAgentWorkItem,
+  rejectAgentWorkItem,
+  VerificationReviewError,
+} from './services/agent-verification-review.ts';
+import {
   type MemoryScope,
   readMemoryFile,
   writeMemoryFile,
@@ -1411,6 +1416,107 @@ app.post('/api/projects/:projectId/work-items/create-agent-contract', async (c) 
     const msg = (err as Error).message;
     const is400 = /^unknown stage:|^title required$/.test(msg);
     return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
+  }
+});
+
+/** Section 26.6 — Approve a tier-2/3 verification hold. Flips
+ *  `awaiting-verification` → `complete` + `verification_status: 'passed'`.
+ *  Optional `notes` lands in `verificationNotes` + the history entry. */
+app.post('/api/projects/:projectId/work-items/:wiId/approve', async (c) => {
+  const id = c.req.param('projectId');
+  const wiId = c.req.param('wiId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ notes?: string | null; actor?: 'orchestrator' | 'user' }>().catch(
+    () => ({}) as { notes?: string | null; actor?: 'orchestrator' | 'user' },
+  );
+  try {
+    const workItem = approveAgentWorkItem({
+      workItemId: wiId,
+      notes: typeof body.notes === 'string' ? body.notes : null,
+      ...(body.actor === 'orchestrator' || body.actor === 'user' ? { actor: body.actor } : {}),
+    });
+    if (workItem.projectId !== id) {
+      return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+    }
+    return c.json({ ok: true, workItem });
+  } catch (err) {
+    if (err instanceof VerificationReviewError) {
+      const statusFor: Record<string, number> = {
+        'wi-not-found': 404,
+        'not-agent-task': 400,
+        'not-awaiting-verification': 409,
+      };
+      return c.json(
+        { ok: false, error: err.message, cause: err.cause },
+        (statusFor[err.cause] ?? 400) as 400,
+      );
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+/** Section 26.6 — Reject a tier-2/3 verification hold. Flips the WI back to
+ *  `in-progress` + `verification_status: 'failed'` with feedback persisted in
+ *  `verificationNotes`, then spawns a continuation of the producer run
+ *  (Section 21's primitive) carrying the feedback as the resumed user
+ *  message. The continuation dispatch's outcome rides in the response so the
+ *  orchestrator sees the new runId. */
+app.post('/api/projects/:projectId/work-items/:wiId/reject', async (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const wiId = c.req.param('wiId') as ULID;
+  const project = getProjectById(projectId);
+  if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+  const body = await c.req.json<{
+    feedback?: string;
+    actor?: 'orchestrator' | 'user';
+    dispatcherSessionId?: string;
+  }>();
+  const dispatcherSessionId =
+    typeof body.dispatcherSessionId === 'string' ? body.dispatcherSessionId.trim() : '';
+  if (!dispatcherSessionId) {
+    return c.json(
+      { ok: false, error: 'dispatcherSessionId required (orchestrator must forward PC_SESSION_ID)' },
+      400,
+    );
+  }
+  try {
+    const result = rejectAgentWorkItem(
+      {
+        workItemId: wiId,
+        feedback: typeof body.feedback === 'string' ? body.feedback : '',
+        ...(body.actor === 'orchestrator' || body.actor === 'user' ? { actor: body.actor } : {}),
+        dispatcherSessionId,
+        project,
+      },
+      {
+        channelServer,
+        broadcast: (env) => broadcastTo(projectId, env),
+      },
+    );
+    if (result.workItem.projectId !== projectId) {
+      return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+    }
+    return c.json({
+      ok: true,
+      workItem: result.workItem,
+      continuation: result.continuation,
+    });
+  } catch (err) {
+    if (err instanceof VerificationReviewError) {
+      const statusFor: Record<string, number> = {
+        'wi-not-found': 404,
+        'not-agent-task': 400,
+        'not-awaiting-verification': 409,
+        'feedback-required': 400,
+        'no-assigned-run': 409,
+      };
+      return c.json(
+        { ok: false, error: err.message, cause: err.cause },
+        (statusFor[err.cause] ?? 400) as 400,
+      );
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
   }
 });
 

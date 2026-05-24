@@ -40,6 +40,9 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_ask_user',
   'mcp__pc-rig__pc_request_approval',
   'mcp__pc-rig__pc_answer_pending',
+  // 26.6 additions — tier-2/3 verification verbs
+  'mcp__pc-rig__pc_approve_work_item',
+  'mcp__pc-rig__pc_reject_work_item',
   // 17b additions — pod CRUD MCP tools
   'mcp__pc-rig__pc_get_agent',
   'mcp__pc-rig__pc_update_agent_prompt',

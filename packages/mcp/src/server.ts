@@ -154,6 +154,39 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_approve_work_item',
+    description:
+      "Approve a tier-2/3 agent work item that's parked in `awaiting-verification`. Flips the work item to `complete` + `verification_status: 'passed'`. Use after reading the agent's report (body / attachments / fields via pc_get_work_item) when the work meets the bar. Optional `notes` get persisted on the work item as `verificationNotes` + an audit-logged history entry. The producer agent run is already terminal — no further dispatch is triggered. Fails 404 if the id is unknown, 400 if it's not an agent contract, 409 if it isn't currently awaiting verification.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'work item id (ULID)' },
+        notes: {
+          type: 'string',
+          description: 'optional reviewer note — persists on the work item + history',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'pc_reject_work_item',
+    description:
+      "Reject a tier-2/3 agent work item that's parked in `awaiting-verification` and wake the producer agent with feedback. Flips the work item to `in-progress` + `verification_status: 'failed'` with the feedback in `verificationNotes`, then spawns a continuation of the producer's agent run (via the Section 21 `pc_continue_agent` primitive) so the same agent gets the feedback in its conversation and tries again. Returns `{ ok, workItem, continuation: { ok, runId, sessionId, agentName, status, continues } }` so you can track the new run. `feedback` is required + non-empty. Fails 404 if the id is unknown, 400 if it's not an agent contract or feedback is missing, 409 if it isn't currently awaiting verification or has no assigned agent run.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'work item id (ULID)' },
+        feedback: {
+          type: 'string',
+          description:
+            "free-form rejection feedback — what's wrong, what the agent should do differently. Becomes the agent's next user message on resume.",
+        },
+      },
+      required: ['id', 'feedback'],
+    },
+  },
+  {
     name: 'pc_log_bug',
     description:
       "File a bug in the user's PC-PTY-Chat dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
@@ -1301,6 +1334,100 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               type: 'text',
               text: `pc_create_agent_work_item failed: ${(err as Error).message}`,
             },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_approve_work_item': {
+      const id = typeof args.id === 'string' ? args.id.trim() : '';
+      if (!id) {
+        return {
+          content: [{ type: 'text', text: 'pc_approve_work_item: id required' }],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_approve_work_item: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const payload: Record<string, unknown> = {};
+      if (typeof args.notes === 'string') payload.notes = args.notes;
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/work-items/${encodeURIComponent(id)}/approve`,
+          payload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_approve_work_item failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_approve_work_item failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_reject_work_item': {
+      const id = typeof args.id === 'string' ? args.id.trim() : '';
+      const feedback = typeof args.feedback === 'string' ? args.feedback : '';
+      if (!id || !feedback.trim()) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_reject_work_item: id and non-empty feedback required' },
+          ],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_reject_work_item: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const dispatcherSessionId =
+        process.env.PC_SESSION_ID || process.env.PC_DISPATCHER_SESSION_ID || '';
+      if (!dispatcherSessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_reject_work_item: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(
+          `/api/projects/${PROJECT_ID}/work-items/${encodeURIComponent(id)}/reject`,
+          { feedback, dispatcherSessionId },
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_reject_work_item failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_reject_work_item failed: ${(err as Error).message}` },
           ],
           isError: true,
         };

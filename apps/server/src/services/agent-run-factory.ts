@@ -41,6 +41,7 @@ import {
   insertAgentRunRow,
   markAgentRunTerminal,
   newId,
+  setAssignedAgentRunId,
   updateAgentRunStatus,
 } from '@pc/db';
 import type {
@@ -319,6 +320,13 @@ export function dispatchFreshAgent(
     queuedAt: now,
   });
 
+  // Section 26.6 — point the contract WI at the run that's about to produce
+  // its report. Reject (`pc_reject_work_item`) reads this to know which run
+  // to wake with feedback. Best-effort: skip silently if the WI vanished.
+  if (workItem?.workItemId) {
+    setAssignedAgentRunId(workItem.workItemId, agentRunId);
+  }
+
   const run = constructAndStart({
     input: { ...input, parentWorkItemId: parentWorkItemForRow },
     podName: input.agentName,
@@ -446,6 +454,13 @@ export function dispatchContinueAgent(
       cause: 'unknown-agent',
       error: `pod "${plan.plan.podName}" no longer in registry`,
     };
+  }
+
+  // Section 26.6 — re-point the contract WI at the continuation run so a
+  // subsequent reject wakes the latest producer, not the parent. Skips
+  // silently if the WI was archived/unknown above.
+  if (continueWorkItemId) {
+    setAssignedAgentRunId(continueWorkItemId, plan.plan.agentRunId);
   }
 
   const run = constructAndStart({

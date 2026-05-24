@@ -478,6 +478,27 @@ export function applyAgentVerification(
   return toDomain(updated);
 }
 
+/** Section 26.6 — point-write of `assignedAgentRunId`. Called from the
+ *  agent-run dispatch path right after the AgentRun row is inserted so the
+ *  contract WI always points at the latest producer run. Continuations
+ *  overwrite; reject (`pc_reject_work_item`) reads this field to know which
+ *  run to wake with feedback. No version bump — this is dispatch-time
+ *  bookkeeping, not a user-visible mutation. */
+export function setAssignedAgentRunId(
+  id: ULID,
+  agentRunId: ULID | null,
+): WorkItem | null {
+  const row = getRowById(id);
+  if (!row) return null;
+  const updated: WorkItemRow = {
+    ...row,
+    assignedAgentRunId: agentRunId,
+    updatedAt: Date.now(),
+  };
+  getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
+  return toDomain(updated);
+}
+
 /**
  * Apply a workflow-run outcome atomically: set status + statusReason and append
  * a history note in one update. The runtime calls this from the unlock hook so

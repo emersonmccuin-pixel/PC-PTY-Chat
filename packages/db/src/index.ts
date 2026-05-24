@@ -34,6 +34,7 @@ export {
   patchWorkItem,
   reassignStage,
   restoreWorkItem,
+  setAssignedAgentRunId,
   softDeleteWorkItem,
   updateWorkItemFields,
   updateWorkItemStatus,

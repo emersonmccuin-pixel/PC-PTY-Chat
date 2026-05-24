@@ -134,6 +134,20 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
   {
+    slug: 'mcp__pc-rig__pc_approve_work_item',
+    label: 'Approve agent work item',
+    description:
+      'Approve a tier-2/3 agent contract sitting in awaiting-verification — flips to complete.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_reject_work_item',
+    label: 'Reject agent work item',
+    description:
+      'Reject a tier-2/3 agent contract with feedback — wakes the agent via continuation to retry.',
+    source: 'pc-rig',
+  },
+  {
     slug: 'mcp__pc-rig__pc_move_work_item',
     label: 'Move work item to a stage',
     description: 'Advance / move a card to a different stage.',

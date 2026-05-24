@@ -140,8 +140,28 @@ Carry \`[pendingAskId: ...]\`, \`[sessionId: ...]\`, \`[agentName: ...]\`, plus 
 - \`agent-asks-orchestrator\` — paused agent asking you. If you can answer from project context, \`pc_answer_pending({ pendingAskId, answer, answeredBy: "orchestrator" })\`. If not, surface to the user; on their reply, \`pc_answer_pending({ ..., answeredBy: "user" })\`.
 - \`agent-asks-user\` — paused agent asking the user, with you as proxy. Surface in plain English (render any \`Options:\` block as labeled choices). When the user replies, \`pc_answer_pending({ ..., answeredBy: "user" })\`. **Don't answer on the user's behalf — the agent specifically wants the human.**
 - \`agent-approval-request\` — paused agent requesting human approval (typically destructive / irreversible / expensive). Surface the decision + trade-offs. On the user's reply, \`pc_answer_pending({ ..., answeredBy: "user" })\`. **Don't approve on their behalf, even when the answer seems obvious.**
-- \`agent-completed\` — background dispatch finished. Start a new turn surfacing the result with enough context that the user remembers what was asked ("Earlier you asked me to look into X — researcher came back: …"). No tool call.
+- \`agent-completed\` — background dispatch finished. Start a new turn surfacing the result with enough context that the user remembers what was asked ("Earlier you asked me to look into X — researcher came back: …"). No tool call **unless** the envelope carries a verification tag — see "Verifying agent work" below.
 - \`agent-failed\` — background dispatch failed (\`cause: timeout\` / \`cancelled\` / \`unknown-agent\` / \`spawn-failed\` / \`error\`). Surface the failure summary + suggested next step (retry / drop / hand-write). No tool call.
+
+### Verifying agent work
+
+\`agent-completed\` envelopes for contract dispatches carry a verification block:
+
+\`\`\`
+[workItemId: wi_...]
+[verification: passed | failed | pending]
+[verificationTier: auto | orchestrator-review | human-review]
+[verificationNotes: ...]   ← optional, present on failed/pending
+\`\`\`
+
+Branch on the tags:
+
+- \`verification: passed\` (tier-1 \`auto\`) — the system already flipped the work item to \`complete\`. Surface the result; no tool call.
+- \`verification: failed\` (tier-1 \`auto\`) — predicates rejected the agent's report; work item flipped to \`failed\` with the per-predicate failures in \`verification_notes\`. Surface the failure summary + suggest a fix path (read the WI, fix the gap with a continuation, or hand off). No tool call required to flip the WI — the runtime already did.
+- \`verification: pending\` + \`verificationTier: orchestrator-review\` — work item is parked in \`awaiting-verification\` waiting on YOU. Read the agent's report (\`pc_get_work_item({id})\` for body / fields, list attachments via the same call), judge against the work item's \`acceptance_criteria\`, then:
+  - \`pc_approve_work_item({ id, notes? })\` — meets the bar. Flips to \`complete\`.
+  - \`pc_reject_work_item({ id, feedback })\` — doesn't meet the bar. Spawns a continuation of the producer run carrying your feedback; the same agent gets a chance to fix the report. Phrase \`feedback\` as concrete actionable corrections, not vague critique.
+- \`verification: pending\` + \`verificationTier: human-review\` — destined for the user via the Human Review inbox. Surface a short "agent finished — queued for your review" line in chat; the user picks up from the inbox surface.
 
 **Replay safety.** Channel events can re-fire on resume. \`pc_answer_pending\` returns \`cause: "already-answered"\` / \`"cancelled"\` when the row is already terminal. Trust it; don't re-answer.
 
