@@ -130,3 +130,42 @@ test('skips reseed when live row has a user-authored audit row, even on drift', 
   const after = getAgentByName({ name: 'orchestrator', scope: 'global' });
   assert.equal(after!.prompt, '<<user-customised orchestrator prompt>>');
 });
+
+// Section 26 carry-over #3 — "Reset to default" is recorded with actor='user'
+// (the user clicked the button) but the EFFECT is a reset back to canonical.
+// It must NOT count as a user customization for drift-detection purposes.
+test('ui-reset-to-default audit row does NOT block future reseeds', () => {
+  const live = getAgentByName({ name: 'orchestrator', scope: 'global' });
+  assert.ok(live);
+
+  // First: real user customization → row is user-edited.
+  updateAgent(
+    live!.id as ULID,
+    { prompt: '<<temporary user edit>>' },
+    { actor: 'user', reason: 'experimenting' },
+  );
+  assert.equal(seedOrchestratorPodIfMissing().action, 'skipped-user-edited');
+
+  // Then: user clicks Reset to default — fires updateAgent with actor='user'
+  // + reason='ui-reset-to-default'. This restores canonical content AND should
+  // remove the "user-edited" lock on future seed reseeds (the ui-reset row is
+  // the only non-system audit and is now treated as system-authored).
+  updateAgent(
+    live!.id as ULID,
+    { prompt: ORCHESTRATOR_POD_CONTENT.prompt },
+    { actor: 'user', reason: 'ui-reset-to-default' },
+  );
+
+  // Now simulate a future seed change: bump the live prompt to look stale.
+  updateAgent(
+    live!.id as ULID,
+    { prompt: '<<stale prior-version content>>' },
+    { actor: 'orchestrator', reason: 'system-seed:older-version' },
+  );
+
+  const result = seedOrchestratorPodIfMissing();
+  assert.equal(result.action, 'reseeded', 'reset-to-default should not block future reseeds');
+  assert.ok(result.reseededFields.includes('prompt'));
+  const after = getAgentByName({ name: 'orchestrator', scope: 'global' });
+  assert.equal(after!.prompt, ORCHESTRATOR_POD_CONTENT.prompt);
+});

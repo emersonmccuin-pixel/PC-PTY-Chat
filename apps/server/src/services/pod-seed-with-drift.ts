@@ -41,6 +41,13 @@ export interface SeedPodOptions {
 
 const SYSTEM_SEED_REASON_PREFIXES = ['system-seed:', 'system-reseed:'];
 
+/** Reasons that count as system-authored regardless of `actor`. A
+ *  "Reset to default" click is recorded with `actor='user'` (the user clicked
+ *  the button) but the EFFECT is a reset back to canonical seed content — it
+ *  is NOT a user customization. Without this carve-out the row's audit log
+ *  permanently blocks future drift-reseeds. */
+const SYSTEM_DRIVEN_USER_REASONS = ['ui-reset-to-default'];
+
 /** Insert `content` if no row by that name+scope exists; otherwise update any
  *  drifted fields (unless the row has user-authored audit rows, in which case
  *  the live row is left alone and the drift is reported). */
@@ -105,12 +112,28 @@ function collectDriftedFields(live: PodAgentRow, content: CreateAgentInput): str
 }
 
 function hasUserAuthoredEdit(agentId: PodAgentRow['id']): boolean {
+  // Walk newest-first. The drift-reseed lock applies only when an ACTIVE user
+  // customization is still in effect — a user edit that has since been
+  // followed by a "Reset to default" (or any other system-driven row) is no
+  // longer in effect, so future seed reseeds should resume. Returns true at
+  // the first user-authored row encountered; returns false the moment a
+  // system-driven row breaks the chain.
   const rows = listAgentAudit({ agentId, limit: 1000 });
-  return rows.some((r: PodAuditRow) => !isSystemAuthored(r));
+  for (const r of rows) {
+    if (isSystemAuthored(r)) return false;
+    if (r.actor === 'user') return true;
+  }
+  return false;
 }
 
 function isSystemAuthored(row: PodAuditRow): boolean {
-  if (row.actor !== 'orchestrator') return false;
   const reason = row.reason ?? '';
+  // System-driven actions recorded with actor=user (e.g. Reset to default —
+  // the user clicked the button, but the EFFECT is a reset back to canonical,
+  // not a customization). Don't block future reseeds.
+  if (SYSTEM_DRIVEN_USER_REASONS.some((r) => reason === r || reason.startsWith(`${r}:`))) {
+    return true;
+  }
+  if (row.actor !== 'orchestrator') return false;
   return SYSTEM_SEED_REASON_PREFIXES.some((p) => reason.startsWith(p));
 }
