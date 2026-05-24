@@ -837,28 +837,38 @@ export function ChatSurface({
           <div className="flex flex-col gap-3">
             {renderItems.map((item, idx) => {
               if (item.kind === 'tool-group') {
-                return <ToolGroupBubble key={item.key} calls={item.calls} />;
+                return (
+                  <ChatTurnCard key={item.key} kind="pm">
+                    <ToolGroupBubble calls={item.calls} />
+                  </ChatTurnCard>
+                );
               }
               if (item.kind === 'edit') {
-                return <EditBubble key={item.key} call={item.call} />;
+                return (
+                  <ChatTurnCard key={item.key} kind="pm">
+                    <EditBubble call={item.call} />
+                  </ChatTurnCard>
+                );
               }
               if (item.kind === 'workflow-run-group') {
                 return (
-                  <WorkflowRunGroupBubble
-                    key={item.key}
-                    workflowRunId={item.workflowRunId}
-                    events={item.events}
-                  />
+                  <ChatTurnCard key={item.key} kind="pm">
+                    <WorkflowRunGroupBubble
+                      workflowRunId={item.workflowRunId}
+                      events={item.events}
+                    />
+                  </ChatTurnCard>
                 );
               }
               if (item.kind === 'agent-dispatch-group') {
                 return (
-                  <AgentDispatchGroupBubble
-                    key={item.key}
-                    agentRunId={item.agentRunId}
-                    agentName={item.agentName}
-                    events={item.events}
-                  />
+                  <ChatTurnCard key={item.key} kind="pm">
+                    <AgentDispatchGroupBubble
+                      agentRunId={item.agentRunId}
+                      agentName={item.agentName}
+                      events={item.events}
+                    />
+                  </ChatTurnCard>
                 );
               }
               const env = item.env;
@@ -894,35 +904,70 @@ export function ChatSurface({
                 };
                 const answered = answeredAsks[askEnv.toolUseId];
                 return (
-                  <AskCard
-                    key={item.key}
-                    toolName={askEnv.toolName}
-                    toolUseId={askEnv.toolUseId}
-                    toolInput={askEnv.toolInput}
-                    answered={answered}
-                    onReply={(answer) => {
-                      if (!onAskReply) return;
-                      if (onAskReply(askEnv.toolUseId, answer)) {
-                        setAnsweredAsks((prev) => ({
-                          ...prev,
-                          [askEnv.toolUseId]: answer,
-                        }));
-                      }
-                    }}
-                  />
+                  <ChatTurnCard key={item.key} kind="pm">
+                    <AskCard
+                      toolName={askEnv.toolName}
+                      toolUseId={askEnv.toolUseId}
+                      toolInput={askEnv.toolInput}
+                      answered={answered}
+                      onReply={(answer) => {
+                        if (!onAskReply) return;
+                        if (onAskReply(askEnv.toolUseId, answer)) {
+                          setAnsweredAsks((prev) => ({
+                            ...prev,
+                            [askEnv.toolUseId]: answer,
+                          }));
+                        }
+                      }}
+                    />
+                  </ChatTurnCard>
                 );
               }
               const ev = (env as WsEnvelope & { event: ChatEvent }).event;
               if (!ev || typeof ev !== 'object') return null;
+              // Queue indicators stay as centered markers (not turn cards).
+              if (ev.kind === 'queue-enqueue' || ev.kind === 'queue-dequeue') {
+                return (
+                  <EventBubble
+                    key={item.key}
+                    event={ev}
+                    projectId={projectId}
+                    resolvedApprovals={resolvedApprovals}
+                    onApprovalResolved={markApprovalResolved}
+                  />
+                );
+              }
+              // System non-error footers stay as inline hint text (not turn cards).
+              if (ev.kind === 'system') {
+                const sys = ev as SystemEvent;
+                if (sys.level !== 'error' && !SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
+                  return (
+                    <EventBubble
+                      key={item.key}
+                      event={ev}
+                      projectId={projectId}
+                      resolvedApprovals={resolvedApprovals}
+                      onApprovalResolved={markApprovalResolved}
+                    />
+                  );
+                }
+              }
+              const turnKind: 'user' | 'pm' = ev.kind === 'user' ? 'user' : 'pm';
+              let bubbleId: string | undefined;
+              if (ev.kind === 'approval-required') {
+                const ar = ev as ApprovalRequiredEvent;
+                bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
+              }
               return (
-                <EventBubble
-                  key={item.key}
-                  event={ev}
-                  projectId={projectId}
-                  resolvedApprovals={resolvedApprovals}
-                  onApprovalResolved={markApprovalResolved}
-                  assistantDurationMs={assistantDurationMs}
-                />
+                <ChatTurnCard key={item.key} kind={turnKind} bubbleId={bubbleId}>
+                  <EventBubble
+                    event={ev}
+                    projectId={projectId}
+                    resolvedApprovals={resolvedApprovals}
+                    onApprovalResolved={markApprovalResolved}
+                    assistantDurationMs={assistantDurationMs}
+                  />
+                </ChatTurnCard>
               );
             })}
             {chatEnvelopes.length === 0 && emptyState && (
@@ -964,6 +1009,27 @@ export function ChatSurface({
 // keeping ChatSurface composable, we expose an internal hook the wrapper sets
 // via context — but for now, since Orchestrator is the ONLY surface emitting
 // asks, we route ask-reply through a callback prop. Add to ChatSurfaceProps.
+
+// ── Chat turn card (Glass surface, Section 29) ───────────────────────────
+
+function ChatTurnCard({
+  kind,
+  children,
+  bubbleId,
+}: {
+  kind: 'user' | 'pm';
+  children: React.ReactNode;
+  bubbleId?: string;
+}) {
+  return (
+    <div
+      className={`chat-turn${kind === 'user' ? ' chat-turn-user' : ''}`}
+      data-bubble-id={bubbleId}
+    >
+      {children}
+    </div>
+  );
+}
 
 // ── Bubble dispatch ──────────────────────────────────────────────────────
 
