@@ -22,6 +22,14 @@ export {
   VERIFICATION_TIERS,
   isVerificationTier,
 } from './work-item-contract.ts';
+export { deriveAcceptanceCriteria } from './ac-derivation.ts';
+export type {
+  EvaluationContext,
+  EvaluationResult,
+  PredicateExecutors,
+  PredicateFailure,
+} from './ac-evaluator.ts';
+export { evaluateAcceptance, evaluatePredicate } from './ac-evaluator.ts';
 export type { Attachment, AttachmentSource } from './attachment.ts';
 export type {
   FieldSchema,
