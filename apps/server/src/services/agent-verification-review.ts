@@ -24,6 +24,7 @@
 import { applyAgentVerification, getWorkItem } from '@pc/db';
 import type { Project, ULID, WorkItem } from '@pc/domain';
 
+import { autoAdvanceToDoneStage } from './auto-advance-done.ts';
 import type { ChannelServer } from './channel-server.ts';
 import {
   dispatchContinueAgent,
@@ -55,9 +56,13 @@ export interface ApproveAgentWorkItemInput {
   /** Who approved — drives the history note's audit attribution. v1 stays
    *  orchestrator-only; Section 7 will pass `'user'` for inbox approvals. */
   actor?: 'orchestrator' | 'user';
+  /** Section 27.7 — project record. When provided + project has an `is_done`
+   *  stage, the approved WI auto-advances there after the flip. */
+  project?: Project | null;
 }
 
-/** Approve a tier-2/3 verification hold. Returns the updated WorkItem. */
+/** Approve a tier-2/3 verification hold. Returns the updated WorkItem (already
+ *  advanced to the is_done stage if 27.7's auto-advance fired). */
 export function approveAgentWorkItem(input: ApproveAgentWorkItemInput): WorkItem {
   const wi = loadVerificationCandidate(input.workItemId);
   const actor = input.actor ?? 'orchestrator';
@@ -74,6 +79,10 @@ export function approveAgentWorkItem(input: ApproveAgentWorkItemInput): WorkItem
   });
   if (!updated) {
     throw new VerificationReviewError('wi-not-found', `work item ${wi.id} disappeared mid-write`);
+  }
+  if (input.project) {
+    const advanced = autoAdvanceToDoneStage(wi.id, input.project);
+    if (advanced) return advanced;
   }
   return updated;
 }

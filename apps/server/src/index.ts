@@ -1490,10 +1490,12 @@ app.post('/api/projects/:projectId/work-items/:wiId/approve', async (c) => {
     () => ({}) as { notes?: string | null; actor?: 'orchestrator' | 'user' },
   );
   try {
+    const project = getProjectById(id as ULID);
     const workItem = approveAgentWorkItem({
       workItemId: wiId,
       notes: typeof body.notes === 'string' ? body.notes : null,
       ...(body.actor === 'orchestrator' || body.actor === 'user' ? { actor: body.actor } : {}),
+      ...(project ? { project } : {}),
     });
     if (workItem.projectId !== id) {
       return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);

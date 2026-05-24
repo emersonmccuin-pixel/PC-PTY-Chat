@@ -750,6 +750,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
           failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
           projectFolderPath: project.folderPath,
           worktreeDir: args.input.worktreeDir,
+          project,
         },
         args.deps.verificationDeps ?? {},
       );

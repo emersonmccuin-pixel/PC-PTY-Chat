@@ -36,12 +36,15 @@ import {
 import type {
   EvaluationContext,
   PredicateExecutors,
+  Project,
   ULID,
   VerificationStatus,
   VerificationTier,
   WorkItemStatus,
 } from '@pc/domain';
 import { evaluateAcceptance } from '@pc/domain';
+
+import { autoAdvanceToDoneStage } from './auto-advance-done.ts';
 
 /** Default cap on a single `bash_exit_zero` predicate. Keeps the terminal
  *  handler from blocking on a runaway verifier script. Override per test. */
@@ -61,6 +64,11 @@ export interface RunVerificationInput {
   /** Agent's worktree absolute path. Default `cwd` for `bash_exit_zero` +
    *  the resolution root for `files_exist` relative paths. */
   worktreeDir: string;
+  /** Section 27.7 — full project record. When provided + verification PASS
+   *  resolves + the project has an `is_done` stage, the WI auto-advances
+   *  there after the status flip. `null` skips auto-advance (test paths
+   *  that don't care about stage motion). */
+  project?: Project | null;
 }
 
 export interface VerificationOutcome {
@@ -161,6 +169,7 @@ export async function runVerificationOnTerminal(
       verificationNotes: null,
       historyNote: 'verification passed (no predicates)',
     });
+    if (input.project) autoAdvanceToDoneStage(input.workItemId, input.project);
     return {
       workItemId: input.workItemId,
       workItemStatus: 'complete',
@@ -195,6 +204,7 @@ export async function runVerificationOnTerminal(
       verificationNotes: null,
       historyNote: `verification passed (tier-1, ${criteria.length} ${predicateWord})`,
     });
+    if (input.project) autoAdvanceToDoneStage(input.workItemId, input.project);
     return {
       workItemId: input.workItemId,
       workItemStatus: 'complete',
