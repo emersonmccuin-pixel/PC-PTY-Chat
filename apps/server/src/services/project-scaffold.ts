@@ -14,8 +14,9 @@
 // `agents` DB table (pod-resident); the scaffold no longer writes a per-
 // project file. See `apps/server/src/services/orchestrator-pod-content.ts`.
 //
-// Agent copies (`.claude/agents/`) come from the per-user library via
-// AgentLibrary, not from templates — they're handled by ProjectCreate, not here.
+// Agents are DB-resident pod rows (Section 17e, 2026-05-21). The scaffold
+// writes no `.claude/agents/` files — pods materialize at spawn time via
+// the pod-spawn pipeline.
 //
 // Template format: `{{TOKEN}}` placeholders, alnum + underscore. Unknown tokens
 // pass through so a malformed template is visible on inspection rather than
