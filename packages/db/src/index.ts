@@ -29,6 +29,7 @@ export {
   getWorkItemIncludingArchived,
   listArchivedWorkItems,
   listChildWorkItems,
+  listEphemeralCompletedOlderThan,
   listWorkItems,
   moveWorkItemStage,
   patchWorkItem,

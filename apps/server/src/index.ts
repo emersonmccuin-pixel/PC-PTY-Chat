@@ -67,6 +67,7 @@ import {
 import { getActiveRunRegistry } from './services/agent-active-runs.ts';
 import { notifyWorkflowSubagentHandshake } from './services/workflow-subagent-handshake.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
+import { sweepEphemeralWorkItems } from './services/ephemeral-work-item-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
 import { listCustomCommands } from './services/custom-commands.ts';
@@ -288,6 +289,23 @@ channelServer.start();
     .catch((err) => {
       console.warn(`[pc] jsonl-sweep failed: ${(err as Error).message}`);
     });
+}
+
+// Section 26.8 — ephemeral work-item sweep at boot. Soft-deletes ephemeral
+// agent contracts (`pc_create_agent_work_item` with `ephemeral: true`) that
+// have been `complete` and idle for 24h+. No interval timer — long-running
+// servers catch the next batch on restart.
+{
+  try {
+    const result = sweepEphemeralWorkItems();
+    if (result.archived > 0) {
+      console.log(
+        `[pc] ephemeral-work-item-sweep: scanned ${result.scanned}, archived ${result.archived}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[pc] ephemeral-work-item-sweep failed: ${(err as Error).message}`);
+  }
 }
 
 // Boot-time orphan sweep on agent_runs. Dispatch + broadcast wiring lives in

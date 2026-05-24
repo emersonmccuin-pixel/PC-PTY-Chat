@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, isNotNull, max } from 'drizzle-orm';
+import { and, asc, eq, isNull, isNotNull, lt, max } from 'drizzle-orm';
 import type {
   AcceptanceCriteria,
   ExpectedOutput,
@@ -426,6 +426,29 @@ export function appendWorkItemHistory(
   };
   getDb().update(workItems).set(updated).where(eq(workItems.id, id)).run();
   return toDomain(updated);
+}
+
+/** Section 26.8 — cross-project sweep candidate query. Returns non-archived
+ *  ephemeral agent contracts whose status is `complete` and whose
+ *  `updatedAt` is strictly less than the cutoff. Used by the boot-time
+ *  ephemeral-work-item sweep to auto-archive throwaway dispatches 24h
+ *  after they finish. Soft-deleted rows excluded by design — once
+ *  archived the sweep stays out of their way. */
+export function listEphemeralCompletedOlderThan(cutoffMs: number): WorkItem[] {
+  const rows = getDb()
+    .select()
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.ephemeral, true),
+        eq(workItems.status, 'complete'),
+        isNull(workItems.deletedAt),
+        lt(workItems.updatedAt, cutoffMs),
+      ),
+    )
+    .orderBy(asc(workItems.updatedAt))
+    .all() as WorkItemRow[];
+  return rows.map(toDomain);
 }
 
 /** Section 26.5 — list non-archived children of a parent work item. Used by
