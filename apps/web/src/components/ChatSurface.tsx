@@ -1489,6 +1489,56 @@ function ToolSubgroup({
   );
 }
 
+type EventGroupStatusTone = 'info' | 'warning' | 'success' | 'error';
+
+function CollapsibleEventGroup({
+  label,
+  count,
+  status,
+  controls,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string;
+  count?: number | string;
+  status?: { text: string; tone?: EventGroupStatusTone };
+  controls?: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const toneCls: Record<EventGroupStatusTone, string> = {
+    info: 'text-muted-foreground',
+    warning: 'text-warning',
+    success: 'text-success',
+    error: 'text-destructive',
+  };
+  const tone = status?.tone ?? 'info';
+  return (
+    <div className="self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex flex-1 items-baseline gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
+        >
+          <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
+          <span className="font-medium uppercase tracking-wider text-foreground">{label}</span>
+          {count !== undefined && (
+            <span className="text-muted-foreground/70">({count})</span>
+          )}
+          {status && (
+            <span className={`text-[10px] italic ${toneCls[tone]}`}>· {status.text}</span>
+          )}
+        </button>
+        {open && controls}
+      </div>
+      {open && <div className="mt-2 flex flex-col gap-2">{children}</div>}
+    </div>
+  );
+}
+
 function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
   const [open, setOpen] = useState(false);
   const [rowsOpen, setRowsOpen] = useState<Record<string, boolean>>({});
@@ -1559,46 +1609,34 @@ function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
   }
 
   return (
-    <div className="self-start max-w-[85%] border border-border bg-card px-3 py-2 text-sm">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="flex flex-1 items-baseline gap-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
-        >
-          <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
-          <span className="font-medium uppercase tracking-wider text-foreground">Tool calls</span>
-          <span className="text-muted-foreground/70">({total})</span>
-          {running > 0 && (
-            <span className="text-[10px] italic text-warning">· {running} running</span>
-          )}
-        </button>
-        {open && (
-          <ExpandCollapseChips
-            onExpandAll={expandAll}
-            onCollapseAll={collapseAll}
-            scope="call"
-          />
-        )}
-      </div>
-      {open && (
-        <div className="mt-2 flex flex-col gap-2">
-          {byTool.map(([tool, list]) => (
-            <ToolSubgroup
-              key={tool}
-              tool={tool}
-              calls={list}
-              open={isSubgroupOpen(tool)}
-              onToggle={() => toggleSubgroup(tool)}
-              onExpandAll={() => expandSubgroup(tool)}
-              onCollapseAll={() => collapseSubgroup(tool)}
-              isRowOpen={isRowOpen}
-              toggleRow={toggleRow}
-            />
-          ))}
-        </div>
-      )}
-    </div>
+    <CollapsibleEventGroup
+      label="Tool calls"
+      count={total}
+      status={running > 0 ? { text: `${running} running`, tone: 'warning' } : undefined}
+      controls={
+        <ExpandCollapseChips
+          onExpandAll={expandAll}
+          onCollapseAll={collapseAll}
+          scope="call"
+        />
+      }
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {byTool.map(([tool, list]) => (
+        <ToolSubgroup
+          key={tool}
+          tool={tool}
+          calls={list}
+          open={isSubgroupOpen(tool)}
+          onToggle={() => toggleSubgroup(tool)}
+          onExpandAll={() => expandSubgroup(tool)}
+          onCollapseAll={() => collapseSubgroup(tool)}
+          isRowOpen={isRowOpen}
+          toggleRow={toggleRow}
+        />
+      ))}
+    </CollapsibleEventGroup>
   );
 }
 
