@@ -131,9 +131,31 @@ export function createAgentWorkItem(
   });
 }
 
+/** Allowed keys per `ExpectedOutput.kind`. `kind` itself is always allowed.
+ *  Section 26 carry-over #1 lock — closes the orchestrator's smuggling
+ *  channel where non-schema fields like `description` / `shape` slipped past
+ *  validation and AC derivation silently returned an empty predicate list. */
+const ALLOWED_EXPECTED_OUTPUT_KEYS: Record<string, ReadonlySet<string>> = {
+  text: new Set(['kind', 'sections', 'min_chars']),
+  files: new Set(['kind', 'paths', 'min_size_bytes']),
+  structured: new Set(['kind', 'fields']),
+  'side-effect': new Set(['kind', 'describe', 'verify_via_bash']),
+  mixed: new Set(['kind', 'text', 'files', 'structured', 'side_effect']),
+};
+
+/** Allowed nested keys for `mixed.<sub>` constituents. Mirrors the standalone
+ *  kind shapes minus the `kind` discriminator. */
+const ALLOWED_MIXED_NESTED_KEYS: Record<string, ReadonlySet<string>> = {
+  text: new Set(['sections', 'min_chars']),
+  files: new Set(['paths', 'min_size_bytes']),
+  structured: new Set(['fields']),
+  side_effect: new Set(['describe', 'verify_via_bash']),
+};
+
 /** Throws AgentWorkItemInputError if the shape doesn't look like an
- *  ExpectedOutput. Cheap structural check; doesn't validate every nested field
- *  type exhaustively. */
+ *  ExpectedOutput. Includes a strict unknown-field reject so callers can't
+ *  smuggle task content via non-schema fields and silently dodge AC derivation
+ *  (Section 26 carry-over #1). */
 function assertExpectedOutputShape(value: unknown): asserts value is ExpectedOutput {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new AgentWorkItemInputError('expected_output must be an object');
@@ -145,6 +167,15 @@ function assertExpectedOutputShape(value: unknown): asserts value is ExpectedOut
     );
   }
   const v = value as Record<string, unknown>;
+  const allowed = ALLOWED_EXPECTED_OUTPUT_KEYS[kind];
+  const unknownKeys = Object.keys(v).filter((k) => !allowed.has(k));
+  if (unknownKeys.length > 0) {
+    throw new AgentWorkItemInputError(
+      `expected_output (${kind}): unknown field${unknownKeys.length === 1 ? '' : 's'} ${unknownKeys
+        .map((k) => `"${k}"`)
+        .join(', ')}. Allowed: ${[...allowed].join(', ')}.`,
+    );
+  }
   switch (kind) {
     case 'files':
       if (!Array.isArray(v.paths)) {
@@ -172,9 +203,33 @@ function assertExpectedOutputShape(value: unknown): asserts value is ExpectedOut
           'expected_output (mixed): must include at least one of text/files/structured/side_effect',
         );
       }
+      // Validate each nested constituent rejects unknown fields too.
+      for (const sub of ['text', 'files', 'structured', 'side_effect'] as const) {
+        const nested = v[sub];
+        if (nested === undefined) continue;
+        if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
+          throw new AgentWorkItemInputError(
+            `expected_output (mixed.${sub}): must be an object`,
+          );
+        }
+        const allowedNested = ALLOWED_MIXED_NESTED_KEYS[sub];
+        const unknownNested = Object.keys(nested as Record<string, unknown>).filter(
+          (k) => !allowedNested.has(k),
+        );
+        if (unknownNested.length > 0) {
+          throw new AgentWorkItemInputError(
+            `expected_output (mixed.${sub}): unknown field${
+              unknownNested.length === 1 ? '' : 's'
+            } ${unknownNested.map((k) => `"${k}"`).join(', ')}. Allowed: ${[
+              ...allowedNested,
+            ].join(', ')}.`,
+          );
+        }
+      }
       break;
     case 'text':
-      // No required nested fields; sections + min_chars are optional.
+      // No required nested fields; sections + min_chars are optional. The
+      // unknown-key reject above already closes the smuggling channel.
       break;
   }
 }

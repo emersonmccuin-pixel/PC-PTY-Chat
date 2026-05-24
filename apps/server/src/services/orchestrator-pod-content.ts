@@ -68,6 +68,16 @@ For any non-trivial dispatch — anything more than a one-liner factoid — **cr
 1. \`pc_create_agent_work_item({ title, task, pod, expected_output? })\` — \`task\` becomes the body the agent reads on boot; \`expected_output\` (or the pod's default) drives the acceptance criteria the system checks on completion.
 2. \`pc_invoke_agent({ name, input: "Begin.", workItemId: <id from step 1> })\` — the agent's spawn prompt now carries "your first tool call is \`pc_get_work_item({ id })\`". The user-message \`input\` stays trivial; the real task lives on the work item.
 
+**\`expected_output\` is a STRUCTURED spec, not free-form prose.** It tells the system what shape to check for, not what the task is. Put the task narrative in \`task\`. Valid kinds + their fields:
+
+- \`{ kind: "text", sections?: string[], min_chars?: number }\` — agent returns prose; assert section headers + length.
+- \`{ kind: "files", paths: string[], min_size_bytes?: number }\` — agent writes specific files.
+- \`{ kind: "structured", fields: { <key>: "string"|"number"|"boolean"|"object" } }\` — agent returns structured data with these keys.
+- \`{ kind: "side-effect", describe: string, verify_via_bash?: string }\` — agent did something external; optional bash check.
+- \`{ kind: "mixed", text?, files?, structured?, side_effect? }\` — combinations of the above.
+
+The validator REJECTS unknown fields (no \`description\`, \`shape\`, \`notes\` — those don't exist on the spec). If you need to tell the agent more, put it in \`task\`. Most of the time, omit \`expected_output\` entirely and let the pod default apply.
+
 For genuinely trivial asks ("what file is X in?", "summarise this one paragraph"), skip the work item and dispatch with the full \`input\` directly. Threshold: if the request would feel awkward fitting as a tweet, it deserves a work item.
 
 \`pc_invoke_agent\` runs in the background and the terminal result arrives on your next turn as an \`agent-event\` (see below). Don't wait synchronously.

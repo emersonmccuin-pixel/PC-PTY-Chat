@@ -318,6 +318,93 @@ test('createAgentWorkItem — rejects malformed raw_acceptance_criteria entries'
   );
 });
 
+// Section 26 carry-over #1 — `expected_output` validator rejects unknown
+// nested fields. Pre-fix the orchestrator could smuggle task content via
+// non-schema fields like `description` / `shape`; derivation library saw no
+// `sections` / `min_chars` and returned empty AC → tier-1 verification passed
+// vacuously. These tests prove the smuggling channel is now closed.
+test('createAgentWorkItem — rejects unknown field on text expected_output', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — exercising the unknown-field reject
+          expectedOutput: { kind: 'text', description: '3-4 bullets on X' },
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError &&
+      /unknown field "description"/.test((err as Error).message),
+  );
+});
+
+test('createAgentWorkItem — rejects unknown field on files expected_output', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — exercising the unknown-field reject
+          expectedOutput: { kind: 'files', paths: ['a.md'], shape: 'should be a doc' },
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError &&
+      /unknown field "shape"/.test((err as Error).message),
+  );
+});
+
+test('createAgentWorkItem — rejects unknown nested field on mixed.text', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          expectedOutput: {
+            kind: 'mixed',
+            // @ts-expect-error — exercising the nested unknown-field reject
+            text: { description: 'smuggled task content' },
+          },
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError &&
+      /mixed\.text.*unknown field "description"/.test((err as Error).message),
+  );
+});
+
+test('createAgentWorkItem — accepts canonical text expected_output without smuggled fields', () => {
+  const { svc, calls } = mkFakeService();
+  createAgentWorkItem(
+    {
+      title: 't',
+      task: 't',
+      pod: 'researcher',
+      expectedOutput: { kind: 'text', sections: ['summary'], min_chars: 100 },
+    },
+    { workItemService: svc, getProject: () => mkProject() },
+  );
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.input.expectedOutput, {
+    kind: 'text',
+    sections: ['summary'],
+    min_chars: 100,
+  });
+});
+
 test('createAgentWorkItem — rejects unknown verification_tier', () => {
   const { svc } = mkFakeService();
   assert.throws(
