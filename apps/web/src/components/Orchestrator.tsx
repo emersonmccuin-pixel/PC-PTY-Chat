@@ -137,10 +137,30 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
 
   // session-end event from CC's SessionEnd hook. The PTY is gone; disable the
   // composer + surface a footer notice. Cleared when a fresh session is active.
+  //
+  // Section 23 (chat-from-JSONL): hook events for user/assistant turns died
+  // in 23.4, so the previous "if we see user/assistant after session-end,
+  // we're back alive" reset stopped firing. Walk the JSONL envelopes too —
+  // jsonl-user / jsonl-turn-end / jsonl-tool-call are the canonical "this
+  // session is producing content" signals. Also stop at session-changed:
+  // any session-end from a prior CC process is structurally stale once a
+  // new session has been minted.
   const sessionEnded = useMemo(() => {
     if (viewingSessionId) return false;
     for (let i = events.length - 1; i >= 0; i--) {
       const env = events[i]!;
+      if (env.type === 'session-changed') return false;
+      if (env.type === 'jsonl') {
+        const jev = (env as WsEnvelope & { event: JsonlEvent }).event;
+        if (
+          jev?.kind === 'jsonl-user' ||
+          jev?.kind === 'jsonl-turn-end' ||
+          jev?.kind === 'jsonl-tool-call'
+        ) {
+          return false;
+        }
+        continue;
+      }
       if (env.type !== 'event') continue;
       const ev = (env as WsEnvelope & { event: ChatEvent }).event;
       if (ev?.kind === 'session-end') return true;
