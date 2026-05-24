@@ -1054,8 +1054,11 @@ export const api = {
       `/api/projects/${projectId}/sessions`,
     ).then((r) => r.sessions),
 
+  /** Section 23 — server returns envelope-shape objects so the client can
+   *  demux on `type`. New path: `{type:'jsonl', event}`. Legacy fallback:
+   *  `{type:'event', event}` (pre-23 hook-written events.jsonl). */
   getSessionEvents: (projectId: ULID, sessionId: ULID) =>
-    getJson<{ ok: true; events: unknown[] }>(
+    getJson<{ ok: true; events: Array<{ type: 'jsonl' | 'event'; event: unknown }> }>(
       `/api/projects/${projectId}/sessions/${sessionId}/events`,
     ).then((r) => r.events),
 

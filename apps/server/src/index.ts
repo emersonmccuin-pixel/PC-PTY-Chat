@@ -894,25 +894,70 @@ app.get('/api/projects/:projectId/sessions', (c) => {
   return c.json({ ok: true, sessions: listOrchestratorSessionsForProject(id) });
 });
 
-/** Replay a specific session's events.jsonl. Used by the Sessions tab to
- *  render past chats in read-only mode. */
+/** Section 23 — load a session's replay envelopes from the PC-owned
+ *  normalized event log. Each returned item is an envelope-shape object
+ *  matching what the live tailer broadcasts:
+ *    { type: 'jsonl', event: <JsonlEvent> }       — new path (jsonl-events.jsonl)
+ *    { type: 'event', event: <legacy hook event>} — legacy fallback (events.jsonl)
+ *
+ *  The caller wraps each with `projectId` before broadcasting. Sessions
+ *  created before Section 23 shipped won't have jsonl-events.jsonl; we
+ *  fall back to the hook-written events.jsonl so their chat history still
+ *  replays in some shape. */
+function loadSessionReplayEnvelopes(
+  sessionDataPath: string,
+): Array<{ type: 'jsonl' | 'event'; event: unknown }> {
+  const jsonlEventsFile = resolve(sessionDataPath, 'jsonl-events.jsonl');
+  if (existsSync(jsonlEventsFile)) {
+    try {
+      const lines = readFileSync(jsonlEventsFile, 'utf-8').split('\n').filter(Boolean);
+      const out: Array<{ type: 'jsonl' | 'event'; event: unknown }> = [];
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line) as { type?: unknown; event?: unknown };
+          if (parsed && parsed.type === 'jsonl' && parsed.event && typeof parsed.event === 'object') {
+            out.push({ type: 'jsonl', event: parsed.event });
+          }
+        } catch {
+          /* malformed line — skip */
+        }
+      }
+      return out;
+    } catch {
+      /* best-effort read */
+    }
+  }
+  // Legacy fallback for pre-Section-23 sessions.
+  const legacyFile = resolve(sessionDataPath, 'events.jsonl');
+  if (existsSync(legacyFile)) {
+    try {
+      const lines = readFileSync(legacyFile, 'utf-8').split('\n').filter(Boolean);
+      const out: Array<{ type: 'jsonl' | 'event'; event: unknown }> = [];
+      for (const line of lines) {
+        try {
+          out.push({ type: 'event', event: JSON.parse(line) });
+        } catch {
+          /* skip malformed */
+        }
+      }
+      return out;
+    } catch {
+      /* best-effort read */
+    }
+  }
+  return [];
+}
+
+/** Replay a specific session's normalized event log. Used by the Sessions
+ *  tab to render past chats in read-only mode. Returns envelope-shape
+ *  objects so the client can demux on `type` (jsonl vs legacy hook event). */
 app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
   const id = c.req.param('projectId') as ULID;
   const sessionId = c.req.param('sessionId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const eventsFile = resolve(runtime.sessionDataPath(sessionId), 'events.jsonl');
-  if (!existsSync(eventsFile)) return c.json({ ok: true, events: [] });
-  try {
-    const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
-    const events: unknown[] = [];
-    for (const line of lines) {
-      try { events.push(JSON.parse(line)); } catch { /* skip malformed */ }
-    }
-    return c.json({ ok: true, events });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
+  const events = loadSessionReplayEnvelopes(runtime.sessionDataPath(sessionId));
+  return c.json({ ok: true, events });
 });
 
 /** Start a fresh session: end the active row, wipe per-project chat files,
@@ -953,23 +998,17 @@ app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
   return c.json({ ok: true, session });
 });
 
-/** Replay the active session's events.jsonl to all WS subscribers. Mirrors
- *  the per-socket replay in the WS-connect handler so a same-page resume
- *  shows the prior chat history without needing a browser refresh. */
+/** Replay the active session's normalized event log to all WS subscribers.
+ *  Mirrors the per-socket replay in the WS-connect handler so a same-page
+ *  resume shows the prior chat history without needing a browser refresh.
+ *  Sources from jsonl-events.jsonl (Section 23), falling back to the
+ *  legacy events.jsonl for pre-23 sessions. */
 function replayActiveSessionEvents(projectId: ULID, runtime: ProjectRuntime): void {
   const active = getActiveOrchestratorSession(projectId);
   if (!active) return;
-  const eventsFile = resolve(runtime.sessionDataPath(active.id), 'events.jsonl');
-  if (!existsSync(eventsFile)) return;
-  try {
-    const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
-    for (const line of lines) {
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
-      broadcastTo(projectId, { type: 'event', event });
-    }
-  } catch {
-    /* best-effort replay */
+  const envelopes = loadSessionReplayEnvelopes(runtime.sessionDataPath(active.id));
+  for (const env of envelopes) {
+    broadcastTo(projectId, env);
   }
 }
 
@@ -3200,23 +3239,16 @@ wss.on('connection', (ws, req) => {
   // for fan-out paths. Keeps the envelope contract uniform.
   ws.send(JSON.stringify({ projectId, type: 'state', state: session.getState() }));
 
-  // Replay the active session's events.jsonl so a reloaded tab doesn't lose
-  // its chat panel. Past sessions render via GET /api/projects/:id/sessions/
-  // :sessionId/events, not the WS replay.
+  // Section 23 — replay the active session's normalized event log so a
+  // reloaded tab doesn't lose its chat panel. Sources from PC-owned
+  // jsonl-events.jsonl (canonical post-23) with a fallback to the legacy
+  // events.jsonl for pre-23 sessions. Past sessions render via
+  // GET /api/projects/:id/sessions/:sessionId/events, not the WS replay.
   const activeSession = getActiveOrchestratorSession(projectId);
   if (activeSession) {
-    const eventsFile = resolve(runtime.sessionDataPath(activeSession.id), 'events.jsonl');
-    if (existsSync(eventsFile)) {
-      try {
-        const lines = readFileSync(eventsFile, 'utf-8').split('\n').filter(Boolean);
-        for (const line of lines) {
-          let event: unknown;
-          try { event = JSON.parse(line); } catch { continue; }
-          ws.send(JSON.stringify({ projectId, type: 'event', event }));
-        }
-      } catch {
-        /* best-effort replay */
-      }
+    const envelopes = loadSessionReplayEnvelopes(runtime.sessionDataPath(activeSession.id));
+    for (const env of envelopes) {
+      ws.send(JSON.stringify({ projectId, ...env }));
     }
   }
 

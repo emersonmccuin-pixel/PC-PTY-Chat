@@ -52,10 +52,14 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
       .getSessionEvents(project.id, viewingSessionId)
       .then((raw) => {
         if (cancelled) return;
-        const wrapped: WsEnvelope[] = raw.map((event) => ({
+        // Section 23 — server returns envelope-shape items
+        // ({type:'jsonl'|'event', event:...}); wrap with projectId only,
+        // preserving the type so the chat panel demuxes correctly between
+        // live tailer events (jsonl) and legacy pre-23 hook events.
+        const wrapped: WsEnvelope[] = raw.map((env) => ({
           projectId: project.id,
-          type: 'event',
-          event: event as Record<string, unknown>,
+          type: env.type,
+          event: env.event as Record<string, unknown>,
         }));
         setPastEvents(wrapped);
       })

@@ -15,7 +15,7 @@
 
 if (!process.env.PC_SESSION_ID) process.exit(0);
 
-const { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } = require('node:fs');
+const { appendFileSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
 
 const PROJECT_DATA_DIR = '{{PROJECT_DATA_DIR}}';
@@ -63,85 +63,43 @@ const now = new Date().toISOString();
 debug({ ts: now, eventType, payload });
 
 switch (eventType) {
-  case 'UserPromptSubmit': {
-    const text = typeof payload.prompt === 'string' ? payload.prompt : '';
-    appendEvent({ ts: now, kind: 'user', text });
+  case 'UserPromptSubmit':
+    // Section 23.4 — user prompts now flow through JSONL exclusively. CC
+    // writes a `type:'user'` row for every prompt; the tailer emits
+    // jsonl-user; the chat panel renders from there. Hook keeps the
+    // debug-line write above (for hook-debug.jsonl audit) but no longer
+    // emits chat content.
     break;
-  }
-  case 'PreToolUse': {
-    // Agent (a.k.a. Task in SDK) = orchestrator delegating to a subagent.
-    // Render through a dedicated bubble instead of the generic tool-start.
-    if (payload.tool_name === 'Agent' || payload.tool_name === 'Task') {
-      appendEvent({
-        ts: now,
-        kind: 'task-start',
-        subagent: payload.tool_input?.subagent_type ?? 'unknown',
-        description: payload.tool_input?.description ?? '',
-        prompt: payload.tool_input?.prompt ?? '',
-      });
-      break;
-    }
-    // Tool calls made *inside* a subagent's turn carry payload.agent_type.
-    // Skip emission so the researcher works silently — BUILDOUT Slice 1 contract.
-    // Post-16a (orchestrator-as-agent): CC sets agent_type='orchestrator' for
-    // the orchestrator's own tool calls too. Don't filter those — only
-    // genuine sub-agent calls (agent_type === <subagent-name>) should be
-    // suppressed from the orchestrator's events.jsonl.
-    if (payload.agent_type && payload.agent_type !== 'orchestrator') break;
-    appendEvent({
-      ts: now,
-      kind: 'tool-start',
-      tool: payload.tool_name ?? 'unknown',
-      input: payload.tool_input ?? null,
-    });
+  case 'PreToolUse':
+    // Section 23.4 — tool-call starts now flow through JSONL exclusively.
+    // CC writes a `tool_use` content block on the assistant message; the
+    // tailer emits jsonl-tool-call; the chat panel renders from there.
+    // Including the Agent/Task dispatch: the JSONL row carries name +
+    // input (subagent_type / description / prompt) — the chat panel can
+    // synthesize the dedicated task-start bubble from that data.
     break;
-  }
   case 'PostToolUse': {
-    // TodoWrite (legacy bulk): capture the full todos list directly.
+    // Section 23.4 — generic tool-end + Agent/Task task-end now flow
+    // through JSONL exclusively (jsonl-tool-result). Todos still live in
+    // a hook-accumulated snapshot until Section 23.5 migrates them
+    // client-side.
     if (payload.tool_name === 'TodoWrite' && Array.isArray(payload.tool_input?.todos)) {
       appendEvent({ ts: now, kind: 'todos', todos: payload.tool_input.todos });
       break;
     }
-    // TaskCreate / TaskUpdate (newer per-task tools): accumulate state in
-    // tasks.json, then emit the full current snapshot so the UI panel can
-    // re-render. Other Task* tools are read-only and don't change state.
     if (payload.tool_name === 'TaskCreate' || payload.tool_name === 'TaskUpdate') {
       const todos = applyTaskChange(payload.tool_name, payload.tool_input, payload.tool_response);
       if (todos) appendEvent({ ts: now, kind: 'todos', todos });
       break;
     }
-    // Agent (a.k.a. Task) subagent return — normalize tool_response to readable text.
-    if (payload.tool_name === 'Agent' || payload.tool_name === 'Task') {
-      appendEvent({
-        ts: now,
-        kind: 'task-end',
-        subagent: payload.tool_input?.subagent_type ?? 'unknown',
-        result: truncate(extractTaskResultText(payload.tool_response), 4000),
-      });
-      break;
-    }
-    // Suppress tool-end for calls made inside a subagent (see PreToolUse note).
-    if (payload.agent_type) break;
-    appendEvent({
-      ts: now,
-      kind: 'tool-end',
-      tool: payload.tool_name ?? 'unknown',
-      result: truncate(payload.tool_response, 1000),
-    });
     break;
   }
   case 'Stop': {
-    // Stop hook payload contains `last_assistant_message` directly — use it.
-    // Fall back to transcript-JSONL extraction only if the field is missing.
-    let text = typeof payload.last_assistant_message === 'string'
-      ? payload.last_assistant_message
-      : '';
-    const transcriptPath = payload.transcript_path;
-    if (!text && transcriptPath && existsSync(transcriptPath)) {
-      text = extractLastAssistantText(transcriptPath);
-    }
-    appendEvent({ ts: now, kind: 'assistant', text, transcriptPath: transcriptPath ?? null });
-    // Keep the legacy turn-end marker for the existing watcher path.
+    // Section 23.4 — the assistant turn-end now flows through JSONL
+    // exclusively (jsonl-turn-end on the assistant row whose stop_reason
+    // is end_turn or one of the documented Stop-skip cases). Hook only
+    // keeps the legacy stop-marker append for the workflow runtime's
+    // turn-end watcher (separate consumer from chat content).
     try {
       mkdirSync(dirname(STOP_MARKER), { recursive: true });
       appendFileSync(STOP_MARKER, now + '\n');
@@ -198,49 +156,6 @@ switch (eventType) {
 }
 
 process.exit(0);
-
-function extractLastAssistantText(path) {
-  try {
-    const lines = readFileSync(path, 'utf-8').split('\n').filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      let obj;
-      try { obj = JSON.parse(lines[i]); } catch { continue; }
-      if (obj.type !== 'assistant') continue;
-      const content = obj?.message?.content;
-      if (!Array.isArray(content)) continue;
-      const text = content
-        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text)
-        .join('\n');
-      if (text) return text;
-    }
-  } catch {
-    /* fall through */
-  }
-  return '';
-}
-
-function truncate(value, max) {
-  if (value == null) return null;
-  const s = typeof value === 'string' ? value : JSON.stringify(value);
-  return s.length > max ? s.slice(0, max) + '…[truncated]' : s;
-}
-
-// Task tool_response shape varies: usually `content: [{type:'text', text}]`
-// (the subagent's final message), sometimes plain string, sometimes raw object.
-function extractTaskResultText(response) {
-  if (response == null) return '';
-  if (typeof response === 'string') return response;
-  const content = response.content;
-  if (Array.isArray(content)) {
-    const text = content
-      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n');
-    if (text) return text;
-  }
-  return JSON.stringify(response);
-}
 
 function loadTaskState() {
   try {
