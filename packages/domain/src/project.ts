@@ -11,6 +11,16 @@ export interface Stage {
   name: string;
   /** Position in the kanban (low → high, left → right). */
   order: number;
+  /** Section 27 — terminal-success stage. At most one per project. Cards landing
+   *  here auto-flip status to `complete`; agent verification auto-advances. */
+  isDone?: boolean;
+  /** Section 27 — terminal-abandon stage. At most one per project. Cards landing
+   *  here auto-flip status to `cancelled`. Visible on the kanban by default; can
+   *  be hidden via global setting + per-project override. */
+  isCancelled?: boolean;
+  /** Section 27 — intake stage. At most one per project. `pc_log_bug` +
+   *  `create-work-item` step land new cards here when no explicit stage is supplied. */
+  isNew?: boolean;
 }
 
 export interface Project {

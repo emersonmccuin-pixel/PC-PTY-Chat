@@ -16,6 +16,7 @@ export type WorkItemStatus =
   | 'blocked'
   | 'complete'
   | 'failed'
+  | 'cancelled'
   | 'archived';
 
 /** Built-in, fixed-set work-item types. Extendable later — not per-project

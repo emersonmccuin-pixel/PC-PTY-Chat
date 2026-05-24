@@ -1770,10 +1770,13 @@ app.patch('/api/projects/:projectId/stages', async (c) => {
   if (!Array.isArray(body.stages)) {
     return c.json({ ok: false, error: 'stages array required' }, 400);
   }
-  const incoming = body.stages.map((s, idx) => ({
+  const incoming: Stage[] = body.stages.map((s, idx) => ({
     id: String(s.id ?? '').trim(),
     name: String(s.name ?? '').trim(),
     order: typeof s.order === 'number' ? s.order : idx,
+    ...(s.isDone === true ? { isDone: true } : {}),
+    ...(s.isCancelled === true ? { isCancelled: true } : {}),
+    ...(s.isNew === true ? { isNew: true } : {}),
   }));
   if (incoming.some((s) => !s.id || !s.name)) {
     return c.json({ ok: false, error: 'each stage requires id + name' }, 400);
@@ -1781,6 +1784,16 @@ app.patch('/api/projects/:projectId/stages', async (c) => {
   const ids = new Set(incoming.map((s) => s.id));
   if (ids.size !== incoming.length) {
     return c.json({ ok: false, error: 'duplicate stage id' }, 400);
+  }
+  // Section 27 — at most one stage per flag per project.
+  if (incoming.filter((s) => s.isDone).length > 1) {
+    return c.json({ ok: false, error: 'at most one stage can be marked is_done' }, 400);
+  }
+  if (incoming.filter((s) => s.isCancelled).length > 1) {
+    return c.json({ ok: false, error: 'at most one stage can be marked is_cancelled' }, 400);
+  }
+  if (incoming.filter((s) => s.isNew).length > 1) {
+    return c.json({ ok: false, error: 'at most one stage can be marked is_new' }, 400);
   }
 
   const project = getProjectById(id);
