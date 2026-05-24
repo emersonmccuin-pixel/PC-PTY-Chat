@@ -205,14 +205,27 @@ export const TOOLS = [
   {
     name: 'pc_move_work_item',
     description:
-      'Move a work item to a different stage. If a workflow has `triggers.on_enter: { stage_id: <toStage> }`, that workflow fires automatically against the bound wi-<id> worktree.',
+      "Move a work item to a different stage. Pass EITHER `toStage` (an explicit stage slug) OR `toFlag` (one of 'done' | 'cancelled' | 'new' — the system resolves to whichever stage carries that flag, surviving renames). When the destination has an `on_enter` workflow trigger, that workflow fires automatically against the bound wi-<id> worktree. Landing in an is_done stage flips status to `complete`; is_cancelled → `cancelled`. Use the optional `notes` to capture a reason (e.g. when cancelling) — lands on the card's move history.",
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'work item id (ULID)' },
-        toStage: { type: 'string', description: 'destination stage id' },
+        toStage: {
+          type: 'string',
+          description: 'destination stage id (use exactly one of toStage / toFlag)',
+        },
+        toFlag: {
+          type: 'string',
+          enum: ['done', 'cancelled', 'new'],
+          description:
+            "resolve the destination stage by flag instead of slug. 'done' = terminal-success stage; 'cancelled' = terminal-abandon stage; 'new' = intake stage. Errors if no stage in the project carries that flag.",
+        },
+        notes: {
+          type: 'string',
+          description: "optional free-form line saved to the card's move-history entry (cancellation reason, context).",
+        },
       },
-      required: ['id', 'toStage'],
+      required: ['id'],
     },
   },
   {
@@ -1544,11 +1557,29 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'pc_move_work_item': {
       const id = typeof args.id === 'string' ? args.id : '';
       const toStage = typeof args.toStage === 'string' ? args.toStage : '';
-      if (!id || !toStage) {
-        return { content: [{ type: 'text', text: 'pc_move_work_item: id and toStage required' }], isError: true };
+      const toFlag = typeof args.toFlag === 'string' ? args.toFlag : '';
+      const notes = typeof args.notes === 'string' ? args.notes : '';
+      if (!id) {
+        return { content: [{ type: 'text', text: 'pc_move_work_item: id required' }], isError: true };
+      }
+      if (!toStage && !toFlag) {
+        return {
+          content: [{ type: 'text', text: 'pc_move_work_item: pass either toStage (slug) or toFlag (done/cancelled/new)' }],
+          isError: true,
+        };
+      }
+      if (toStage && toFlag) {
+        return {
+          content: [{ type: 'text', text: 'pc_move_work_item: pass exactly one of toStage / toFlag (not both)' }],
+          isError: true,
+        };
       }
       try {
-        const res = await postServer(projectPath('work-items/move'), { id, toStage });
+        const body: Record<string, string> = { id };
+        if (toStage) body.toStage = toStage;
+        if (toFlag) body.toFlag = toFlag;
+        if (notes) body.notes = notes;
+        const res = await postServer(projectPath('work-items/move'), body);
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }

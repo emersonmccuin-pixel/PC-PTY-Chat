@@ -429,9 +429,10 @@ export class WorkflowRuntime {
    * matches, fire it. Thin wrapper around `moveAndFire` preserved for the
    * chat/MCP path which doesn't have a `version` to check (callers route
    * through `WorkflowRuntime.moveWorkItem(id, toStage)` historically).
+   * Section 27 — `notes` lands on the move-history entry (cancellation reason etc.).
    */
-  async moveWorkItem(id: string, toStage: string): Promise<WorkItem> {
-    return this.moveAndFire({ id, toStage });
+  async moveWorkItem(id: string, toStage: string, notes?: string | null): Promise<WorkItem> {
+    return this.moveAndFire({ id, toStage, ...(notes ? { notes } : {}) });
   }
 
   /**
@@ -458,8 +459,10 @@ export class WorkflowRuntime {
     toStage: string;
     expectedVersion?: number;
     position?: number;
+    /** Section 27 — free-form line carried onto the move-history entry. */
+    notes?: string | null;
   }): Promise<WorkItem> {
-    const { id, toStage, expectedVersion, position } = args;
+    const { id, toStage, expectedVersion, position, notes } = args;
     const project = this.readProject();
     const stage = project.stages.find((s) => s.id === toStage);
     if (!stage) throw new Error(`unknown stage: ${toStage}`);
@@ -493,7 +496,7 @@ export class WorkflowRuntime {
     }
 
     // Commit the move — version-checked when `expectedVersion` is supplied.
-    const moved = this.commitMove(id, toStage, expectedVersion, position);
+    const moved = this.commitMove(id, toStage, expectedVersion, position, notes ?? null);
 
     if (match.kind === 'none' || disabled) return moved;
 
@@ -532,24 +535,26 @@ export class WorkflowRuntime {
   /** Commits the stage move. Routes through `WorkItemService.move()` (which
    *  does version-check + broadcast) when `expectedVersion` is provided.
    *  Falls back to the raw repo path used by the legacy chat/MCP move route
-   *  when no expectedVersion is supplied. */
+   *  when no expectedVersion is supplied.
+   *  Section 27 — `notes` lands on the move-history entry through either path. */
   private commitMove(
     id: string,
     toStage: string,
     expectedVersion: number | undefined,
     position: number | undefined,
+    notes: string | null,
   ): WorkItem {
     if (expectedVersion !== undefined && this.workItemSvc) {
       const input: MoveWorkItemServiceInput = { expectedVersion, stageId: toStage };
       if (position !== undefined) input.position = position;
-      return this.workItemSvc.move(id as ULID, input);
+      return this.workItemSvc.move(id as ULID, input, notes ?? undefined);
     }
     // Section 27 — legacy (non-version-checked) path resolves target status
     // from the destination stage's flags the same way the service does.
     const project = this.readProject();
     const destStage = project.stages.find((s) => s.id === toStage);
     const targetStatus = destStage ? postMoveStatusForStage(destStage) : 'pending';
-    const moved = moveWorkItemStage(id as ULID, toStage, targetStatus);
+    const moved = moveWorkItemStage(id as ULID, toStage, targetStatus, notes);
     if (!moved) throw new Error(`unknown work item: ${id}`);
     return moved;
   }

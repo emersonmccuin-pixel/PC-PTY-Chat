@@ -1286,17 +1286,54 @@ app.get('/api/projects/:projectId/work-items', (c) => {
 
 /** Legacy move endpoint. Delegates to workflowRuntime.moveWorkItem (workflow-
  *  firing path). The new `/work-items/:wiId/move` is the version-checked UI
- *  path; this one stays for MCP backwards-compat + workflow re-fire flows. */
+ *  path; this one stays for MCP backwards-compat + workflow re-fire flows.
+ *
+ *  Section 27 — accepts `toFlag: 'done' | 'cancelled' | 'new'` as an
+ *  alternative to `toStage`. Exactly-one-of. Resolves to the project's stage
+ *  carrying that flag; 400 if no such stage. Optional `notes?` lands on the
+ *  card's move history entry. */
 app.post('/api/projects/:projectId/work-items/move', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ id?: string; toStage?: string }>();
+  const body = await c.req.json<{
+    id?: string;
+    toStage?: string;
+    toFlag?: 'done' | 'cancelled' | 'new';
+    notes?: string;
+  }>();
   const wiId = typeof body.id === 'string' ? body.id.trim() : '';
   const toStage = typeof body.toStage === 'string' ? body.toStage.trim() : '';
-  if (!wiId || !toStage) return c.json({ ok: false, error: 'id and toStage required' }, 400);
+  const toFlag = typeof body.toFlag === 'string' ? body.toFlag.trim() : '';
+  const notes = typeof body.notes === 'string' ? body.notes.trim() : '';
+  if (!wiId) return c.json({ ok: false, error: 'id required' }, 400);
+  if (!toStage && !toFlag) {
+    return c.json({ ok: false, error: 'toStage or toFlag required' }, 400);
+  }
+  if (toStage && toFlag) {
+    return c.json({ ok: false, error: 'pass exactly one of toStage / toFlag' }, 400);
+  }
+  let resolvedStage = toStage;
+  if (toFlag) {
+    if (toFlag !== 'done' && toFlag !== 'cancelled' && toFlag !== 'new') {
+      return c.json({ ok: false, error: `unknown toFlag: ${toFlag}` }, 400);
+    }
+    const project = getProjectById(id as ULID);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+    const flagKey = toFlag === 'done' ? 'isDone' : toFlag === 'cancelled' ? 'isCancelled' : 'isNew';
+    const match = project.stages.find((s) => s[flagKey]);
+    if (!match) {
+      return c.json(
+        { ok: false, error: `no stage in project carries is_${toFlag}` },
+        400,
+      );
+    }
+    resolvedStage = match.id;
+  }
   try {
-    const workItem = await runtime.workflowRuntime().moveWorkItem(wiId, toStage);
+    const workItem = await runtime
+      .workflowRuntime()
+      .moveWorkItem(wiId, resolvedStage, notes || null);
     broadcastTo(id as ULID, { type: 'work-items-changed', change: 'moved', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {

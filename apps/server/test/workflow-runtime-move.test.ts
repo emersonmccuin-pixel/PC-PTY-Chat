@@ -248,6 +248,15 @@ test('moveWorkItem: thin wrapper preserves the no-version chat/MCP path', async 
   assert.equal(result.status, 'pending');
 });
 
+test('moveWorkItem: Section 27 — notes land on the move history entry', async () => {
+  const f = mkFixture({ workflowOnReview: false });
+  const result = await f.runtime.moveWorkItem(f.workItemId, 'review', 'duplicate of #42');
+  assert.equal(result.stageId, 'review');
+  const last = result.history[result.history.length - 1]!;
+  assert.equal(last.kind, 'move');
+  assert.equal(last.note, 'duplicate of #42');
+});
+
 // ── Work Contract Layer 1 — natural-context auto-fill into run.inputs ─────
 
 test('moveAndFire: workflow declares workItemId + stageId in inputs → run.inputs populated', async () => {
