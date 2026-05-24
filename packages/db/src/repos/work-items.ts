@@ -1,6 +1,10 @@
 import { and, asc, eq, isNull, isNotNull, max } from 'drizzle-orm';
 import type {
+  AcceptanceCriteria,
+  ExpectedOutput,
   ULID,
+  VerificationStatus,
+  VerificationTier,
   WorkItem,
   WorkItemHistoryEntry,
   WorkItemStatus,
@@ -37,6 +41,16 @@ interface WorkItemRow {
   history: WorkItemHistoryEntry[];
   position: number;
   version: number;
+  // ── Section 26 — work-item-as-contract ──
+  isAgentTask: boolean;
+  ephemeral: boolean;
+  acceptanceCriteria: AcceptanceCriteria | null;
+  expectedOutput: ExpectedOutput | null;
+  verificationTier: VerificationTier | null;
+  verificationStatus: VerificationStatus | null;
+  verificationNotes: string | null;
+  assignedAgentRunId: ULID | null;
+  worktreePath: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -60,6 +74,15 @@ function toDomain(row: WorkItemRow): WorkItem {
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
     history: row.history,
+    isAgentTask: row.isAgentTask,
+    ephemeral: row.ephemeral,
+    acceptanceCriteria: row.acceptanceCriteria,
+    expectedOutput: row.expectedOutput,
+    verificationTier: row.verificationTier,
+    verificationStatus: row.verificationStatus,
+    verificationNotes: row.verificationNotes,
+    assignedAgentRunId: row.assignedAgentRunId,
+    worktreePath: row.worktreePath,
   };
 }
 
@@ -73,6 +96,17 @@ export interface CreateWorkItemInput {
   type?: WorkItemType;
   fields?: Record<string, unknown>;
   initialHistory?: WorkItemHistoryEntry[];
+  // ── Section 26 — work-item-as-contract (optional; pc_create_agent_work_item
+  //   populates these. Direct callers leave them undefined for plain work items.) ──
+  isAgentTask?: boolean;
+  ephemeral?: boolean;
+  acceptanceCriteria?: AcceptanceCriteria | null;
+  expectedOutput?: ExpectedOutput | null;
+  verificationTier?: VerificationTier | null;
+  verificationStatus?: VerificationStatus | null;
+  verificationNotes?: string | null;
+  assignedAgentRunId?: ULID | null;
+  worktreePath?: string | null;
 }
 
 export function listWorkItems(projectId: ULID): WorkItem[] {
@@ -134,6 +168,15 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     history: input.initialHistory ?? [],
     position,
     version: 1,
+    isAgentTask: input.isAgentTask ?? false,
+    ephemeral: input.ephemeral ?? false,
+    acceptanceCriteria: input.acceptanceCriteria ?? null,
+    expectedOutput: input.expectedOutput ?? null,
+    verificationTier: input.verificationTier ?? null,
+    verificationStatus: input.verificationStatus ?? null,
+    verificationNotes: input.verificationNotes ?? null,
+    assignedAgentRunId: input.assignedAgentRunId ?? null,
+    worktreePath: input.worktreePath ?? null,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,

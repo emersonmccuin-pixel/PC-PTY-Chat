@@ -44,6 +44,21 @@ import type {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+/** Section 26 — null/false defaults for the work-item-as-contract fields,
+ *  spread into fixture literals so non-agent WorkItem fixtures match the
+ *  domain shape. */
+const EMPTY_CONTRACT = {
+  isAgentTask: false,
+  ephemeral: false,
+  acceptanceCriteria: null,
+  expectedOutput: null,
+  verificationTier: null,
+  verificationStatus: null,
+  verificationNotes: null,
+  assignedAgentRunId: null,
+  worktreePath: null,
+} as const;
+
 /** Test-only: adapt the legacy regex substituter to the post-4h.9
  *  SubstituteTemplate signature. The runtime path uses typed-edge wires
  *  (`{{ name }}` + `wire:`) at dispatch time; tests retain the legacy
@@ -143,6 +158,7 @@ function mkFakeWorkItemService(opts: {
         updatedAt: Date.now(),
         deletedAt: null,
         history: [],
+        ...EMPTY_CONTRACT,
       } as WorkItem;
     },
     patch(id: ULID, input: PatchWorkItemServiceInput): WorkItem {
@@ -165,6 +181,7 @@ function mkFakeWorkItemService(opts: {
         updatedAt: Date.now(),
         deletedAt: null,
         history: [],
+        ...EMPTY_CONTRACT,
       } as WorkItem;
       return {
         ...base,
@@ -390,6 +407,7 @@ test('runUpdateWorkItemStep: reads version + sends only changed keys', async () 
     updatedAt: Date.now(),
     deletedAt: null,
     history: [],
+    ...EMPTY_CONTRACT,
   } as WorkItem;
   const { svc, patchCalls } = mkFakeWorkItemService({ existing });
   const node: UpdateWorkItemNode = {

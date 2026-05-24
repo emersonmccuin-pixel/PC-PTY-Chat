@@ -1,9 +1,11 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
+  AcceptanceCriteria,
   AgentEffort,
   AgentModel,
   AgentOutputDestination,
+  ExpectedOutput,
   FieldSchemaType,
   GlobalSettings,
   NodeOutput,
@@ -17,6 +19,8 @@ import type {
   SessionStatus,
   Stage,
   ULID,
+  VerificationStatus,
+  VerificationTier,
   WorkItemHistoryEntry,
   WorkItemStatus,
   WorkItemType,
@@ -95,6 +99,28 @@ export const workItems = sqliteTable(
     position: integer('position').notNull().default(0),
     /** Optimistic-concurrency counter. */
     version: integer('version').notNull().default(1),
+    // ── Section 26 — work-item-as-contract ──
+    /** True when the row was created by `pc_create_agent_work_item`. Hidden
+     *  from the default kanban + table view; surfaced via the
+     *  "See Agent Contracts" toggle. Stored as 0/1 in sqlite. */
+    isAgentTask: integer('is_agent_task', { mode: 'boolean' }).notNull().default(false),
+    /** Throwaway flag — sweeper auto-archives 24h after `complete`. */
+    ephemeral: integer('ephemeral', { mode: 'boolean' }).notNull().default(false),
+    /** Derived predicate set (the AC predicate language). */
+    acceptanceCriteria: text('acceptance_criteria', { mode: 'json' }).$type<AcceptanceCriteria>(),
+    /** Orchestrator's input spec; AC is derived from this. Both persisted so
+     *  rules can be re-applied if the derivation library changes. */
+    expectedOutput: text('expected_output', { mode: 'json' }).$type<ExpectedOutput>(),
+    /** Who verifies "done" (`auto` | `orchestrator-review` | `human-review`). */
+    verificationTier: text('verification_tier').$type<VerificationTier>(),
+    /** Runtime state of the verification pass. */
+    verificationStatus: text('verification_status').$type<VerificationStatus>(),
+    /** Reviewer feedback (tier 2/3) or failed-predicate description (tier 1). */
+    verificationNotes: text('verification_notes'),
+    /** Pointer to the AgentRun currently working this contract. */
+    assignedAgentRunId: text('assigned_agent_run_id').$type<ULID>(),
+    /** Worktree path for code-writer / file-producing agents. */
+    worktreePath: text('worktree_path'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
@@ -102,6 +128,8 @@ export const workItems = sqliteTable(
   (t) => [
     index('work_items_project_idx').on(t.projectId),
     index('work_items_stage_idx').on(t.projectId, t.stageId),
+    /** Section 26 — fast filter for the "agent contracts" surface. */
+    index('work_items_agent_task_idx').on(t.projectId, t.isAgentTask),
   ],
 );
 

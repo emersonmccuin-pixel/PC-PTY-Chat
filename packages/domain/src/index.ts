@@ -6,6 +6,22 @@ export type {
   WorkItemType,
 } from './work-item.ts';
 export { WORK_ITEM_TYPES, isWorkItemType } from './work-item.ts';
+export type {
+  AcceptanceCriteria,
+  AcceptancePredicate,
+  AcceptancePredicateKind,
+  ExpectedOutput,
+  ExpectedOutputKind,
+  VerificationStatus,
+  VerificationTier,
+} from './work-item-contract.ts';
+export {
+  ACCEPTANCE_PREDICATE_KINDS,
+  EXPECTED_OUTPUT_KINDS,
+  VERIFICATION_STATUSES,
+  VERIFICATION_TIERS,
+  isVerificationTier,
+} from './work-item-contract.ts';
 export type { Attachment, AttachmentSource } from './attachment.ts';
 export type {
   FieldSchema,

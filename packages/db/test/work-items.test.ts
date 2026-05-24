@@ -346,3 +346,133 @@ test('appendWorkItemHistory: NOOP returns null for unknown id', () => {
   });
   assert.equal(result, null);
 });
+
+// Section 26 — work-item-as-contract field round-trips. Plain work items
+// default the contract fields to null/false; agent work items round-trip the
+// full contract through createWorkItem → getWorkItem.
+
+test('createWorkItem: plain work item defaults contract fields to null/false', () => {
+  const p = createProject({
+    slug: 'contract-default',
+    name: 'Contract Default',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({
+    projectId: p.id as ULID,
+    stageId: 'backlog',
+    title: 'plain task',
+  });
+  assert.equal(wi.isAgentTask, false);
+  assert.equal(wi.ephemeral, false);
+  assert.equal(wi.acceptanceCriteria, null);
+  assert.equal(wi.expectedOutput, null);
+  assert.equal(wi.verificationTier, null);
+  assert.equal(wi.verificationStatus, null);
+  assert.equal(wi.verificationNotes, null);
+  assert.equal(wi.assignedAgentRunId, null);
+  assert.equal(wi.worktreePath, null);
+});
+
+test('createWorkItem: agent work item round-trips contract fields', () => {
+  const p = createProject({
+    slug: 'contract-agent',
+    name: 'Contract Agent',
+    stages,
+    folderPath: tmpDir,
+  });
+  const projectId = p.id as ULID;
+  const wi = createWorkItem({
+    projectId,
+    stageId: 'backlog',
+    title: 'researcher dispatch',
+    body: 'Find three CSV parsing libs for Node.',
+    isAgentTask: true,
+    ephemeral: true,
+    expectedOutput: { kind: 'text', sections: ['summary'] },
+    acceptanceCriteria: [
+      { kind: 'fields_populated', keys: ['summary'] },
+      { kind: 'body_contains', pattern: 'csv' },
+    ],
+    verificationTier: 'auto',
+    verificationStatus: null,
+    assignedAgentRunId: '01JBOGUS-RUN-ID' as ULID,
+    worktreePath: '/tmp/worktree-x',
+  });
+
+  // Read back via getWorkItem to confirm the values survived the JSON
+  // round-trip + camelCase mapping.
+  const reread = getWorkItem(wi.id);
+  assert.ok(reread);
+  assert.equal(reread.isAgentTask, true);
+  assert.equal(reread.ephemeral, true);
+  assert.equal(reread.verificationTier, 'auto');
+  assert.equal(reread.verificationStatus, null);
+  assert.equal(reread.assignedAgentRunId, '01JBOGUS-RUN-ID');
+  assert.equal(reread.worktreePath, '/tmp/worktree-x');
+  assert.deepEqual(reread.expectedOutput, { kind: 'text', sections: ['summary'] });
+  assert.ok(reread.acceptanceCriteria);
+  assert.equal(reread.acceptanceCriteria.length, 2);
+  assert.equal(reread.acceptanceCriteria[0]?.kind, 'fields_populated');
+  assert.equal(reread.acceptanceCriteria[1]?.kind, 'body_contains');
+});
+
+test('createWorkItem: mixed expected_output round-trips through JSON column', () => {
+  const p = createProject({
+    slug: 'contract-mixed',
+    name: 'Contract Mixed',
+    stages,
+    folderPath: tmpDir,
+  });
+  const wi = createWorkItem({
+    projectId: p.id as ULID,
+    stageId: 'backlog',
+    title: 'code-writer dispatch',
+    isAgentTask: true,
+    expectedOutput: {
+      kind: 'mixed',
+      files: { paths: ['src/foo.ts'], min_size_bytes: 10 },
+      text: { sections: ['summary'] },
+    },
+    acceptanceCriteria: [
+      { kind: 'files_exist', paths: ['src/foo.ts'], min_size_bytes: 10 },
+      { kind: 'fields_populated', keys: ['summary'] },
+    ],
+    verificationTier: 'auto',
+  });
+  const reread = getWorkItem(wi.id);
+  assert.ok(reread);
+  assert.equal(reread.expectedOutput?.kind, 'mixed');
+  assert.ok(reread.expectedOutput && reread.expectedOutput.kind === 'mixed');
+  assert.deepEqual(reread.expectedOutput.files, {
+    paths: ['src/foo.ts'],
+    min_size_bytes: 10,
+  });
+  assert.equal(reread.acceptanceCriteria?.[0]?.kind, 'files_exist');
+});
+
+test('listWorkItems: surfaces contract fields on every row', () => {
+  const p = createProject({
+    slug: 'contract-list',
+    name: 'Contract List',
+    stages,
+    folderPath: tmpDir,
+  });
+  const projectId = p.id as ULID;
+  createWorkItem({ projectId, stageId: 'backlog', title: 'plain' });
+  createWorkItem({
+    projectId,
+    stageId: 'backlog',
+    title: 'agent',
+    isAgentTask: true,
+    verificationTier: 'orchestrator-review',
+  });
+  const list = listWorkItems(projectId);
+  const plain = list.find((wi) => wi.title === 'plain');
+  const agent = list.find((wi) => wi.title === 'agent');
+  assert.ok(plain && agent);
+  assert.equal(plain.isAgentTask, false);
+  assert.equal(plain.verificationTier, null);
+  assert.equal(agent.isAgentTask, true);
+  assert.equal(agent.verificationTier, 'orchestrator-review');
+});
