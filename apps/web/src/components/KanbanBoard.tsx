@@ -466,7 +466,16 @@ function Column({
       }
     >
       <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-foreground">
-        <span>{stage.name}</span>
+        <span className="flex items-center gap-1.5">
+          <span>{stage.name}</span>
+          {/* Section 27 — small flag badge so the user can see which column
+              carries which role without opening project settings. */}
+          {stage.isNew && <StageFlagBadge label="New" tone="primary" glyph="✱" />}
+          {stage.isDone && <StageFlagBadge label="Done" tone="success" glyph="✓" />}
+          {stage.isCancelled && (
+            <StageFlagBadge label="Cancelled" tone="muted" glyph="✗" />
+          )}
+        </span>
         <span className="text-xs font-normal text-muted-foreground">{items.length}</span>
       </div>
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
@@ -488,6 +497,33 @@ function Column({
         + Add card
       </button>
     </div>
+  );
+}
+
+// Section 27 — small badge rendered next to flag-bearing column titles.
+function StageFlagBadge({
+  label,
+  tone,
+  glyph,
+}: {
+  label: string;
+  tone: 'primary' | 'success' | 'muted';
+  glyph: string;
+}) {
+  const toneClass =
+    tone === 'success'
+      ? 'border-success/40 bg-success/15 text-success'
+      : tone === 'primary'
+        ? 'border-primary/40 bg-primary/15 text-primary'
+        : 'border-border bg-muted text-muted-foreground';
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 border px-1 py-px text-[9px] font-medium normal-case tracking-wide ${toneClass}`}
+      title={`This stage is the project's "${label}" stage.`}
+    >
+      <span aria-hidden>{glyph}</span>
+      <span>{label}</span>
+    </span>
   );
 }
 
