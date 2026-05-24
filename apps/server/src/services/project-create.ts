@@ -52,10 +52,13 @@ export interface CreateProjectFlowInput {
   gitRemote?: string | null;
 }
 
+// Section 27 — default stages carry the three flag slots. User can rename /
+// delete / unflag any of them post-create.
 const DEFAULT_STAGES: Stage[] = [
-  { id: 'draft', name: 'Draft', order: 0 },
+  { id: 'draft', name: 'Draft', order: 0, isNew: true },
   { id: 'review', name: 'Review', order: 1 },
-  { id: 'done', name: 'Done', order: 2 },
+  { id: 'done', name: 'Done', order: 2, isDone: true },
+  { id: 'cancelled', name: 'Cancelled', order: 3, isCancelled: true },
 ];
 
 /** Paths the scaffold writes; used to stage only PC's own files in

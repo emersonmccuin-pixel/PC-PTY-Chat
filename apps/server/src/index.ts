@@ -69,6 +69,7 @@ import { getActiveRunRegistry } from './services/agent-active-runs.ts';
 import { notifyWorkflowSubagentHandshake } from './services/workflow-subagent-handshake.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { sweepEphemeralWorkItems } from './services/ephemeral-work-item-sweep.ts';
+import { backfillStageFlags } from './services/stage-flags-backfill.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
 import { listCustomCommands } from './services/custom-commands.ts';
@@ -290,6 +291,23 @@ channelServer.start();
     .catch((err) => {
       console.warn(`[pc] jsonl-sweep failed: ${(err as Error).message}`);
     });
+}
+
+// Section 27.3 — one-time stage-flag backfill. Idempotent: skips projects
+// whose stages already carry any flag. Tags is_new on stages[0] of untouched
+// projects, plus is_done on a single "Done"-named stage if exactly one
+// matches (case-insensitive).
+{
+  try {
+    const result = backfillStageFlags();
+    if (result.updated > 0) {
+      console.log(
+        `[pc] stage-flags-backfill: scanned ${result.scanned}, updated ${result.updated}, skipped ${result.skipped}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[pc] stage-flags-backfill failed: ${(err as Error).message}`);
+  }
 }
 
 // Section 26.8 — ephemeral work-item sweep at boot. Soft-deletes ephemeral
