@@ -94,7 +94,19 @@ interface EditItem {
   call: ToolCall;
 }
 
-type RenderItem = ToolGroupItem | EnvItem | EditItem;
+interface WorkflowEventEntry {
+  kind: string;
+  body: string;
+}
+
+interface WorkflowRunGroupItem {
+  kind: 'workflow-run-group';
+  key: string;
+  workflowRunId: string;
+  events: WorkflowEventEntry[];
+}
+
+type RenderItem = ToolGroupItem | EnvItem | EditItem | WorkflowRunGroupItem;
 
 interface StableEnvelope {
   origIdx: number;
@@ -370,6 +382,45 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
       }
       continue;
     }
+    if (ev.kind === 'user') {
+      const userText = (ev as UserEvent).text ?? '';
+      const parts = parseUserText(userText);
+      let hoistedAny = false;
+      let hasVisible = false;
+      for (const part of parts) {
+        if (part.kind === 'workflow-event' && part.workflowRunId) {
+          flush();
+          const id = part.workflowRunId;
+          let group: WorkflowRunGroupItem | null = null;
+          for (let j = items.length - 1; j >= 0; j--) {
+            const it = items[j]!;
+            if (it.kind === 'workflow-run-group' && it.workflowRunId === id) {
+              group = it;
+              break;
+            }
+          }
+          if (!group) {
+            group = {
+              kind: 'workflow-run-group',
+              key: `wfg-${id}`,
+              workflowRunId: id,
+              events: [],
+            };
+            items.push(group);
+          }
+          group.events.push({
+            kind: part.workflowEventKind ?? 'unknown',
+            body: part.text,
+          });
+          hoistedAny = true;
+        } else {
+          hasVisible = true;
+        }
+      }
+      if (hoistedAny && !hasVisible) {
+        continue;
+      }
+    }
     flush();
     items.push({ kind: 'env', key: `env-${stableId}`, env });
   }
@@ -380,12 +431,16 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
 // ── Channel-block parser ─────────────────────────────────────────────────
 
 interface UserPart {
-  kind: 'text' | 'channel';
+  kind: 'text' | 'channel' | 'workflow-event';
   text: string;
   source?: string;
+  workflowEventKind?: string;
+  workflowRunId?: string;
 }
 
 const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
+const WORKFLOW_EVENT_HEADER_RE = /^\[pc:workflow-event\s+kind=([\w-]+)/;
+const WORKFLOW_RUN_ID_RE = /\[workflowRunId:\s*([A-Za-z0-9_-]+)\]/;
 
 function parseUserText(text: string): UserPart[] {
   if (!text) return [{ kind: 'text', text: '' }];
@@ -402,6 +457,18 @@ function parseUserText(text: string): UserPart[] {
     const attrs = m[1] ?? '';
     const body = (m[2] ?? '').trim();
     last = idx + m[0].length;
+    const wfMatch = body.match(WORKFLOW_EVENT_HEADER_RE);
+    if (wfMatch) {
+      const runMatch = body.match(WORKFLOW_RUN_ID_RE);
+      const part: UserPart = {
+        kind: 'workflow-event',
+        text: body,
+        workflowEventKind: wfMatch[1],
+      };
+      if (runMatch?.[1]) part.workflowRunId = runMatch[1];
+      parts.push(part);
+      continue;
+    }
     const sourceMatch = attrs.match(/source\s*=\s*"([^"]+)"/);
     parts.push({ kind: 'channel', text: body, source: sourceMatch?.[1] ?? 'channel' });
   }
@@ -693,6 +760,15 @@ export function ChatSurface({
               }
               if (item.kind === 'edit') {
                 return <EditBubble key={item.key} call={item.call} />;
+              }
+              if (item.kind === 'workflow-run-group') {
+                return (
+                  <WorkflowRunGroupBubble
+                    key={item.key}
+                    workflowRunId={item.workflowRunId}
+                    events={item.events}
+                  />
+                );
               }
               const env = item.env;
               let assistantDurationMs: number | undefined;
@@ -1115,7 +1191,11 @@ function RoleTab({ role, suffix }: { role: 'user' | 'claude'; suffix?: string })
 // ── User bubble ──────────────────────────────────────────────────────────
 
 function UserBubble({ event }: { event: UserEvent }) {
-  const parts = useMemo(() => parseUserText(event.text ?? ''), [event.text]);
+  const parts = useMemo(() => {
+    const all = parseUserText(event.text ?? '');
+    return all.filter((p) => p.kind !== 'workflow-event');
+  }, [event.text]);
+  if (parts.length === 0) return null;
   return (
     <>
       {parts.map((part, idx) =>
@@ -1632,6 +1712,61 @@ function ToolGroupBubble({ calls }: { calls: ToolCall[] }) {
           isRowOpen={isRowOpen}
           toggleRow={toggleRow}
         />
+      ))}
+    </CollapsibleEventGroup>
+  );
+}
+
+// ── Workflow-run group bubble (Section 28.3) ─────────────────────────────
+
+const WORKFLOW_TERMINATED_STATUS_RE = /status="(\w+)"/;
+
+function deriveWorkflowStatus(events: WorkflowEventEntry[]):
+  | { text: string; tone?: EventGroupStatusTone }
+  | undefined {
+  if (events.length === 0) return undefined;
+  const last = events[events.length - 1]!;
+  if (last.kind === 'terminated') {
+    const m = last.body.match(WORKFLOW_TERMINATED_STATUS_RE);
+    const s = m?.[1];
+    if (s === 'complete') return { text: 'completed', tone: 'success' };
+    if (s === 'failed') return { text: 'failed', tone: 'error' };
+    if (s === 'cancelled') return { text: 'cancelled' };
+    return { text: 'ended' };
+  }
+  if (last.kind === 'orchestrator-review') return { text: 'awaiting review', tone: 'warning' };
+  return { text: 'running', tone: 'warning' };
+}
+
+function WorkflowRunGroupBubble({
+  workflowRunId,
+  events,
+}: {
+  workflowRunId: string;
+  events: WorkflowEventEntry[];
+}) {
+  const [open, setOpen] = useState(false);
+  const status = deriveWorkflowStatus(events);
+  return (
+    <CollapsibleEventGroup
+      label="Workflow run"
+      count={`${events.length} ${events.length === 1 ? 'event' : 'events'}`}
+      status={status}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        run {workflowRunId}
+      </div>
+      {events.map((ev, i) => (
+        <div key={i} className="border-l border-border pl-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            {ev.kind}
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            {ev.body}
+          </pre>
+        </div>
       ))}
     </CollapsibleEventGroup>
   );
