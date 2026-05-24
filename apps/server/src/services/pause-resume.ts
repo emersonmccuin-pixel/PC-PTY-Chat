@@ -2,14 +2,14 @@
 //
 // Three primitives the v2 MCP tool surface (Session 9) calls into:
 //
-//   recordExplicitPauseV2   — pc_ask_orchestrator / pc_ask_user /
+//   recordExplicitPause   — pc_ask_orchestrator / pc_ask_user /
 //                              pc_request_approval tool fires. Writes
 //                              pending_asks_v2 + flips AgentRun → paused +
 //                              persists `paused` to agent_runs_v2 + delivers
 //                              the agent-asks-* event through v2 hybrid
 //                              transport.
 //
-//   answerPendingAskV2      — pc_answer_pending tool fires (orchestrator
+//   answerPendingAsk      — pc_answer_pending tool fires (orchestrator
 //                              answer) OR HTTP user-answer route fires.
 //                              Atomic open→answered flip on the row,
 //                              persists `spawning` + podRevisionAtResume to
@@ -18,7 +18,7 @@
 //                              LowLevelSpawn). Same agent_run_id; the run
 //                              record continues across the pause boundary.
 //
-//   continueAgentV2         — pc_continue_agent tool fires. Mints a fresh
+//   continueAgent         — pc_continue_agent tool fires. Mints a fresh
 //                              agent_run_id linked via `continues`. JSONL
 //                              retention guard (404 with clear "session
 //                              expired" message if CC's on-disk JSONL has
@@ -38,45 +38,43 @@ import { existsSync } from 'node:fs';
 
 import {
   computePodRevision,
-  createPendingAskV2,
-  findActiveContinuationV2,
-  getAgentRunRowV2,
-  getPendingAskV2,
+  createPendingAsk,
+  findActiveContinuation,
+  getAgentRunRow,
+  getPendingAsk,
   getProjectById,
-  insertAgentRunRowV2,
-  markAgentRunTerminalV2,
-  markPendingAskAnsweredV2,
-  markPendingAskCancelledV2,
+  insertAgentRunRow,
+  markAgentRunTerminal,
+  markPendingAskAnswered,
+  markPendingAskCancelled,
   newId,
-  updateAgentRunStatusV2,
+  updateAgentRunStatus,
 } from '@pc/db';
-import { v2 as runtimeV2 } from '@pc/runtime';
+import { jsonlPathFor } from '@pc/runtime';
 import type {
-  AgentInboxEventKindV2,
-  PendingAskKindV2,
+  AgentInboxEventKind,
+  PendingAskKind,
   PendingAskOption,
   ULID,
 } from '@pc/domain';
 
-import { buildAgentEventHeader } from '../agent-event-header.ts';
-import { enqueueAndPushV2 } from './delivery.ts';
-import { getActiveRunRegistry, type ActiveRunRegistry } from './active-runs.ts';
-import type { ChannelServer } from '../channel-server.ts';
-
-const { jsonlPathFor } = runtimeV2;
+import { buildAgentEventHeader } from './agent-event-header.ts';
+import { enqueueAndPush } from './agent-delivery.ts';
+import { getActiveRunRegistry, type ActiveRunRegistry } from './agent-active-runs.ts';
+import type { ChannelServer } from './channel-server.ts';
 
 // ──────────────────────────── EXPLICIT PAUSE ──────────────────────────────
 
-export interface RecordExplicitPauseV2Input {
+export interface RecordExplicitPauseInput {
   agentRunId: ULID;
-  kind: PendingAskKindV2;
+  kind: PendingAskKind;
   promptBody: string;
   context?: string | null;
   options?: PendingAskOption[] | null;
   now?: number;
 }
 
-export type RecordExplicitPauseV2Result =
+export type RecordExplicitPauseResult =
   | {
       ok: true;
       pendingAskId: ULID;
@@ -85,7 +83,7 @@ export type RecordExplicitPauseV2Result =
     }
   | { ok: false; error: string; cause: 'unknown-run' | 'wrong-state' };
 
-export interface PauseResumeDepsV2 {
+export interface PauseResumeDeps {
   channelServer: ChannelServer;
   /** Slug for the channel POST body. Production = `'pc-orchestrator'`. */
   slug: string;
@@ -104,10 +102,10 @@ export interface PauseResumeDepsV2 {
 /** Pause a running AgentRun in response to a pc_ask_* tool call. Mints a
  *  pending_asks_v2 row, flips the run paused, delivers the agent-asks-*
  *  event to the dispatcher's session through the hybrid transport. */
-export function recordExplicitPauseV2(
-  input: RecordExplicitPauseV2Input,
-  deps: PauseResumeDepsV2,
-): RecordExplicitPauseV2Result {
+export function recordExplicitPause(
+  input: RecordExplicitPauseInput,
+  deps: PauseResumeDeps,
+): RecordExplicitPauseResult {
   const reg = deps.registry ?? getActiveRunRegistry();
   const now = (deps.now ?? Date.now)();
 
@@ -130,7 +128,7 @@ export function recordExplicitPauseV2(
   }
 
   const pendingAskId = newId();
-  createPendingAskV2({
+  createPendingAsk({
     id: pendingAskId,
     agentRunId: input.agentRunId,
     ccSessionId: entry.ccSessionId,
@@ -145,10 +143,10 @@ export function recordExplicitPauseV2(
 
   // Mark the run paused (in-memory state machine + persisted row).
   entry.run._markPaused(pendingAskId);
-  updateAgentRunStatusV2({ id: input.agentRunId, status: 'paused' });
+  updateAgentRunStatus({ id: input.agentRunId, status: 'paused' });
 
   // Deliver the agent-asks-* event to the dispatcher session.
-  const kindMap: Record<PendingAskKindV2, AgentInboxEventKindV2> = {
+  const kindMap: Record<PendingAskKind, AgentInboxEventKind> = {
     orchestrator: 'agent-asks-orchestrator',
     user: 'agent-asks-user',
     approval: 'agent-approval-request',
@@ -166,7 +164,7 @@ export function recordExplicitPauseV2(
     options: input.options ?? null,
   });
 
-  const pushResult = enqueueAndPushV2(deps.channelServer, {
+  const pushResult = enqueueAndPush(deps.channelServer, {
     projectId: entry.projectId,
     pcSessionId: entry.dispatcherSessionId,
     kind: eventKind,
@@ -186,14 +184,14 @@ export function recordExplicitPauseV2(
 
 // ──────────────────────────── ANSWER + RESUME ─────────────────────────────
 
-export interface AnswerPendingAskV2Input {
+export interface AnswerPendingAskInput {
   pendingAskId: ULID;
   answer: string;
   answeredBy: 'orchestrator' | 'user';
   now?: number;
 }
 
-export type AnswerPendingAskV2Result =
+export type AnswerPendingAskResult =
   | {
       ok: true;
       agentRunId: ULID;
@@ -219,14 +217,14 @@ export type AnswerPendingAskV2Result =
  *  AgentRun by typing the answer back through a fresh LowLevelSpawn in
  *  resume mode. Same agent_run_id; the run record continues across the
  *  pause boundary. */
-export function answerPendingAskV2(
-  input: AnswerPendingAskV2Input,
-  deps: PauseResumeDepsV2,
-): AnswerPendingAskV2Result {
+export function answerPendingAsk(
+  input: AnswerPendingAskInput,
+  deps: PauseResumeDeps,
+): AnswerPendingAskResult {
   const reg = deps.registry ?? getActiveRunRegistry();
   const now = (deps.now ?? Date.now)();
 
-  const ask = getPendingAskV2(input.pendingAskId);
+  const ask = getPendingAsk(input.pendingAskId);
   if (!ask) {
     return {
       ok: false,
@@ -250,7 +248,7 @@ export function answerPendingAskV2(
   }
 
   // Atomic flip — JSONL-replay-safe.
-  const flipped = markPendingAskAnsweredV2({
+  const flipped = markPendingAskAnswered({
     id: ask.id,
     answer: input.answer,
     answeredBy: input.answeredBy,
@@ -289,7 +287,7 @@ export function answerPendingAskV2(
 
   // Persist the spawning transition + drift field BEFORE driving the run,
   // so a crash mid-resume leaves the row in a recoverable state.
-  updateAgentRunStatusV2({
+  updateAgentRunStatus({
     id: ask.agentRunId,
     status: 'spawning',
     spawnedAt: now,
@@ -324,26 +322,26 @@ export function answerPendingAskV2(
 
 // ──────────────────────────── CANCEL PAUSE ────────────────────────────────
 
-export interface CancelPendingAskV2Input {
+export interface CancelPendingAskInput {
   pendingAskId: ULID;
   now?: number;
 }
 
-export type CancelPendingAskV2Result =
+export type CancelPendingAskResult =
   | { ok: true; agentRunId: ULID }
   | { ok: false; error: string; cause: 'unknown-pending-ask' | 'already-terminal' };
 
 /** Cancel a paused agent — flip the pending-ask row to cancelled and
  *  cancel the underlying AgentRun. The orchestration is idempotent: a
  *  second cancel returns `already-terminal`. */
-export function cancelPendingAskV2(
-  input: CancelPendingAskV2Input,
-  deps: Pick<PauseResumeDepsV2, 'registry' | 'now'>,
-): CancelPendingAskV2Result {
+export function cancelPendingAsk(
+  input: CancelPendingAskInput,
+  deps: Pick<PauseResumeDeps, 'registry' | 'now'>,
+): CancelPendingAskResult {
   const reg = deps.registry ?? getActiveRunRegistry();
   const now = (deps.now ?? Date.now)();
 
-  const ask = getPendingAskV2(input.pendingAskId);
+  const ask = getPendingAsk(input.pendingAskId);
   if (!ask) {
     return {
       ok: false,
@@ -359,7 +357,7 @@ export function cancelPendingAskV2(
     };
   }
 
-  markPendingAskCancelledV2(ask.id, now);
+  markPendingAskCancelled(ask.id, now);
 
   const entry = reg.get(ask.agentRunId);
   if (entry) entry.run.cancel();
@@ -369,7 +367,7 @@ export function cancelPendingAskV2(
 
 // ──────────────────────────── CONTINUATION ────────────────────────────────
 
-export interface ContinueAgentV2Input {
+export interface ContinueAgentInput {
   parentAgentRunId: ULID;
   input: string;
   /** Optional pre-minted run id. Production callers let the orchestration
@@ -378,7 +376,7 @@ export interface ContinueAgentV2Input {
   now?: number;
 }
 
-export interface ContinueAgentV2Plan {
+export interface ContinueAgentPlan {
   /** Newly minted agent_run_id (already inserted with `status: queued`). */
   agentRunId: ULID;
   /** Same CC provider session-id as the parent — the resumed spawn uses
@@ -396,8 +394,8 @@ export interface ContinueAgentV2Plan {
   input: string;
 }
 
-export type ContinueAgentV2Result =
-  | { ok: true; plan: ContinueAgentV2Plan }
+export type ContinueAgentResult =
+  | { ok: true; plan: ContinueAgentPlan }
   | {
       ok: false;
       error: string;
@@ -409,7 +407,7 @@ export type ContinueAgentV2Result =
         | 'project-missing';
     };
 
-export interface ContinueDepsV2 {
+export interface ContinueDeps {
   /** Test seam — defaults to fs.existsSync over the resolved JSONL path. */
   jsonlExists?: (path: string) => boolean;
   now?: () => number;
@@ -428,14 +426,14 @@ export interface ContinueDepsV2 {
  *  for constructing the AgentRun with this plan + registering it.
  *  Splitting "plan" from "construct" keeps this module testable without
  *  node-pty in scope. */
-export function continueAgentV2(
-  input: ContinueAgentV2Input,
-  deps: ContinueDepsV2 = {},
-): ContinueAgentV2Result {
+export function continueAgent(
+  input: ContinueAgentInput,
+  deps: ContinueDeps = {},
+): ContinueAgentResult {
   const now = (deps.now ?? Date.now)();
   const jsonlExists = deps.jsonlExists ?? existsSync;
 
-  const parent = getAgentRunRowV2(input.parentAgentRunId);
+  const parent = getAgentRunRow(input.parentAgentRunId);
   if (!parent) {
     return {
       ok: false,
@@ -452,7 +450,7 @@ export function continueAgentV2(
   }
 
   // Single-active-continuation guard.
-  const inflight = findActiveContinuationV2(parent.id);
+  const inflight = findActiveContinuation(parent.id);
   if (inflight) {
     return {
       ok: false,
@@ -486,7 +484,7 @@ export function continueAgentV2(
   });
 
   const newRunId = (input.newAgentRunId ?? newId()) as ULID;
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: newRunId,
     projectId: parent.projectId,
     podName: parent.podName,
@@ -535,7 +533,7 @@ function lookupPodScope(_podName: string, _projectId: ULID): ULID | null {
 }
 
 interface PauseEventBodyArgs {
-  eventKind: AgentInboxEventKindV2;
+  eventKind: AgentInboxEventKind;
   pendingAskId: ULID;
   sessionId: string;
   podName: string;
@@ -598,13 +596,13 @@ function buildPauseEventBody(args: PauseEventBodyArgs): string {
 
 // ──────────────────────────── TERMINAL HELPERS ────────────────────────────
 
-export interface PersistAgentRunTerminalV2Input {
+export interface PersistAgentRunTerminalInput {
   agentRunId: ULID;
   status: 'completed' | 'failed' | 'cancelled';
   result: string | null;
   failureCause: ConstructorParameters<typeof Object>[0] extends never
     ? never
-    : import('@pc/domain').AgentRunFailureCauseV2 | null;
+    : import('@pc/domain').AgentRunFailureCause | null;
   failureReason: string | null;
   completedAt: number;
 }
@@ -612,10 +610,10 @@ export interface PersistAgentRunTerminalV2Input {
 /** Persist a terminal transition on agent_runs_v2. The active-runs
  *  registry auto-unregisters on the AgentRun's `terminal` event, so this
  *  is just the persistence half — emit-side is the caller's job. */
-export function persistAgentRunTerminalV2(
-  input: PersistAgentRunTerminalV2Input,
+export function persistAgentRunTerminal(
+  input: PersistAgentRunTerminalInput,
 ): void {
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: input.agentRunId,
     status: input.status,
     result: input.result,

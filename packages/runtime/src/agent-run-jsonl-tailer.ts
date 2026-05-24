@@ -37,7 +37,7 @@
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, unwatchFile, watchFile } from 'node:fs';
 
-export type JsonlEventV2Kind =
+export type AgentRunJsonlEventKind =
   | 'jsonl-user'
   | 'jsonl-queue-enqueue'
   | 'jsonl-queue-dequeue'
@@ -51,7 +51,7 @@ export type JsonlEventV2Kind =
 
 /** Every v2 event carries the raw JSONL `row` it was derived from so
  *  consumers can peek at fields the canonical event doesn't expose. */
-export type JsonlEventV2 =
+export type AgentRunJsonlEvent =
   | { kind: 'jsonl-user'; text: string; row: unknown }
   | { kind: 'jsonl-queue-enqueue'; timestamp: string | null; row: unknown }
   | { kind: 'jsonl-queue-dequeue'; timestamp: string | null; row: unknown }
@@ -100,7 +100,7 @@ export type JsonlEventV2 =
       row: unknown;
     };
 
-export interface JsonlTailerV2Options {
+export interface JsonlTailerOptionsForAgentRun {
   filePath: string;
   /** Skip this many leading lines on first read. Used to resume past a
    *  persisted cursor after server restart. Defaults to 0 (process all). */
@@ -136,11 +136,11 @@ function freshLoopState(): LoopState {
 
 /**
  * One tailer = one JSONL file. Emits:
- *   'event' (JsonlEventV2) — one per canonical event derived from a line
+ *   'event' (AgentRunJsonlEvent) — one per canonical event derived from a line
  *   'error' (Error)        — file read / parse infra failures (per-line
  *                            parse errors are swallowed + cursor advances)
  */
-export class JsonlTailerV2 extends EventEmitter {
+export class AgentRunJsonlTailer extends EventEmitter {
   private filePath: string;
   private cursor: number;
   private pollIntervalMs: number;
@@ -148,7 +148,7 @@ export class JsonlTailerV2 extends EventEmitter {
   private loop: LoopState = freshLoopState();
   private startedOnce = false;
 
-  constructor(opts: JsonlTailerV2Options) {
+  constructor(opts: JsonlTailerOptionsForAgentRun) {
     super();
     this.filePath = opts.filePath;
     this.cursor = opts.startLine ?? 0;
@@ -157,7 +157,7 @@ export class JsonlTailerV2 extends EventEmitter {
 
   /** Begin tailing. The initial drain (any pre-existing lines past the
    *  cursor) is deferred to a setImmediate tick so the caller has a
-   *  chance to attach listeners between `new JsonlTailerV2(...)` and
+   *  chance to attach listeners between `new AgentRunJsonlTailer(...)` and
    *  the first event. Subsequent polls fire on file mtime changes via
    *  watchFile. Idempotent — calling twice does nothing. */
   start(): void {
@@ -217,7 +217,7 @@ export class JsonlTailerV2 extends EventEmitter {
     this.cursor = completeLines.length;
   }
 
-  private emitEvent(ev: JsonlEventV2): void {
+  private emitEvent(ev: AgentRunJsonlEvent): void {
     this.emit('event', ev);
   }
 

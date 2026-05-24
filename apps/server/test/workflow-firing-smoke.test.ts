@@ -1446,13 +1446,13 @@ test('17a.6 / D39 e2e smoke: no pod row for agent name → spawn proceeds withou
 });
 
 // Section 25 Session 10 — D39 v2 smoke. Composes the workflow-runtime with
-// `spawnSubagentV2` + a fake LowLevelSpawn so the v2 path is exercised end-
+// `spawnSubagent` + a fake LowLevelSpawn so the v2 path is exercised end-
 // to-end: ready-gate signal → send(initialInput) → pc_complete_node tool
 // call → turn-end → workflow node settles complete. Validates the parallel-
 // build invariant that workflow firing through v2 produces the same node
 // output the v1 path produced.
-test('e2e smoke (Session 10): workflow → spawnSubagentV2 (fake LowLevelSpawn) → node settles complete', async () => {
-  const { spawnSubagentV2 } = await import('@pc/runtime');
+test('e2e smoke (Session 10): workflow → spawnSubagent (fake LowLevelSpawn) → node settles complete', async () => {
+  const { spawnSubagent } = await import('@pc/runtime');
   const { EventEmitter } = await import('node:events');
   type EE = InstanceType<typeof EventEmitter>;
 
@@ -1502,9 +1502,9 @@ test('e2e smoke (Session 10): workflow → spawnSubagentV2 (fake LowLevelSpawn) 
     return e;
   };
 
-  const spawnerWiredToV2 = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
+  const spawnerWired = (req: SubagentSpawnRequest): SubagentSpawnHandle => {
     fakeSpawns.push({ agentName: req.agentName, mode: 'fresh' });
-    return spawnSubagentV2(req, {
+    return spawnSubagent(req, {
       createLowLevelSpawn: fakeFactory,
       registerHandshakeListener: (ccSessionId) => {
         registeredCcSession = ccSessionId;
@@ -1515,7 +1515,7 @@ test('e2e smoke (Session 10): workflow → spawnSubagentV2 (fake LowLevelSpawn) 
 
   const f = await mkFixture(
     [{ name: 'smoke-subagent', yaml: SUBAGENT_WORKFLOW_YAML }],
-    { subagentSpawner: spawnerWiredToV2 },
+    { subagentSpawner: spawnerWired },
   );
   try {
     // SUBAGENT_WORKFLOW_YAML declares `id: smoke-subagent`; registry looks

@@ -26,26 +26,24 @@ const {
   runMigrations,
   createProject,
   createAgent,
-  createPendingAskV2,
-  getAgentRunRowV2,
-  getPendingAskV2,
-  insertAgentRunRowV2,
-  markAgentRunTerminalV2,
+  createPendingAsk,
+  getAgentRunRow,
+  getPendingAsk,
+  insertAgentRunRow,
+  markAgentRunTerminal,
   newId,
 } = await import('@pc/db');
-const { ChannelServer } = await import('../../src/services/channel-server.ts');
-const { ActiveRunRegistry } = await import('../../src/services/v2/active-runs.ts');
+const { ChannelServer } = await import('../src/services/channel-server.ts');
+const { ActiveRunRegistry } = await import('../src/services/agent-active-runs.ts');
 const {
-  answerPendingAskV2,
-  cancelPendingAskV2,
-  continueAgentV2,
-  recordExplicitPauseV2,
-} = await import('../../src/services/v2/pause-resume.ts');
-import { v2 as runtimeV2 } from '@pc/runtime';
+  answerPendingAsk,
+  cancelPendingAsk,
+  continueAgent,
+  recordExplicitPause,
+} = await import('../src/services/pause-resume.ts');
+import { projectDirFor } from '@pc/runtime';
 
 import type { Stage, ULID } from '@pc/domain';
-
-const { projectDirFor } = runtimeV2;
 
 const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
 
@@ -202,7 +200,7 @@ function seedAgentRunRow(
   ccSessionId: string,
   status: 'queued' | 'spawning' | 'running' | 'paused' = 'running',
 ): void {
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: runId,
     projectId,
     podName: 'researcher',
@@ -234,9 +232,9 @@ async function registerFakeChild(sessionId: string, buf: unknown[]): Promise<Web
   return ws;
 }
 
-// ──────────────────────────── recordExplicitPauseV2 ───────────────────────
+// ──────────────────────────── recordExplicitPause ───────────────────────
 
-test('recordExplicitPauseV2 — happy path writes ask row + marks paused + delivers event', () => {
+test('recordExplicitPause — happy path writes ask row + marks paused + delivers event', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
@@ -252,7 +250,7 @@ test('recordExplicitPauseV2 — happy path writes ask row + marks paused + deliv
   });
 
   const before = captured.events.length;
-  const result = recordExplicitPauseV2(
+  const result = recordExplicitPause(
     {
       agentRunId: runId,
       kind: 'orchestrator',
@@ -268,7 +266,7 @@ test('recordExplicitPauseV2 — happy path writes ask row + marks paused + deliv
   assert.equal(typeof result.eventDelivered, 'boolean');
 
   // Row written + status open + body present.
-  const ask = getPendingAskV2(result.pendingAskId)!;
+  const ask = getPendingAsk(result.pendingAskId)!;
   assert.equal(ask.status, 'open');
   assert.equal(ask.kind, 'orchestrator');
   assert.equal(ask.promptBody, 'What is your favorite color?');
@@ -276,7 +274,7 @@ test('recordExplicitPauseV2 — happy path writes ask row + marks paused + deliv
 
   // Run flipped paused (in-memory + persisted).
   assert.equal(run.getState(), 'paused');
-  assert.equal(getAgentRunRowV2(runId)!.status, 'paused');
+  assert.equal(getAgentRunRow(runId)!.status, 'paused');
 
   // Event was attempted (no registrant; channelDelivered=false; row stays
   // pending). Inbox row exists.
@@ -286,9 +284,9 @@ test('recordExplicitPauseV2 — happy path writes ask row + marks paused + deliv
   void before;
 });
 
-test('recordExplicitPauseV2 — unknown agent run id returns 404-shaped error', () => {
+test('recordExplicitPause — unknown agent run id returns 404-shaped error', () => {
   const reg = new ActiveRunRegistry();
-  const result = recordExplicitPauseV2(
+  const result = recordExplicitPause(
     {
       agentRunId: newId() as ULID,
       kind: 'orchestrator',
@@ -301,7 +299,7 @@ test('recordExplicitPauseV2 — unknown agent run id returns 404-shaped error', 
   assert.equal(result.cause, 'unknown-run');
 });
 
-test('recordExplicitPauseV2 — pausing a non-running run rejects', () => {
+test('recordExplicitPause — pausing a non-running run rejects', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
@@ -316,7 +314,7 @@ test('recordExplicitPauseV2 — pausing a non-running run rejects', () => {
     podRevisionAtDispatch: null,
   });
 
-  const result = recordExplicitPauseV2(
+  const result = recordExplicitPause(
     {
       agentRunId: runId,
       kind: 'orchestrator',
@@ -329,7 +327,7 @@ test('recordExplicitPauseV2 — pausing a non-running run rejects', () => {
   assert.equal(result.cause, 'wrong-state');
 });
 
-test('recordExplicitPauseV2 — pushes event over a live registrant', async () => {
+test('recordExplicitPause — pushes event over a live registrant', async () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
@@ -349,7 +347,7 @@ test('recordExplicitPauseV2 — pushes event over a live registrant', async () =
   const ws = await registerFakeChild(dispatcherSession, inbox);
 
   const before = captured.events.length;
-  const result = recordExplicitPauseV2(
+  const result = recordExplicitPause(
     {
       agentRunId: runId,
       kind: 'user',
@@ -384,15 +382,15 @@ test('recordExplicitPauseV2 — pushes event over a live registrant', async () =
   assert.ok(captured.events.length > before);
 });
 
-// ──────────────────────────── answerPendingAskV2 ──────────────────────────
+// ──────────────────────────── answerPendingAsk ──────────────────────────
 
-test('answerPendingAskV2 — happy path: flips row + drives resume', () => {
+test('answerPendingAsk — happy path: flips row + drives resume', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
   const askId = newId() as ULID;
   seedAgentRunRow(runId, ccSession, 'paused');
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: ccSession,
@@ -411,7 +409,7 @@ test('answerPendingAskV2 — happy path: flips row + drives resume', () => {
     podRevisionAtDispatch: 'agent:1700000000000.k:0',
   });
 
-  const result = answerPendingAskV2(
+  const result = answerPendingAsk(
     { pendingAskId: askId, answer: 'blue', answeredBy: 'orchestrator' },
     { channelServer: server, slug, registry: reg },
   );
@@ -427,15 +425,15 @@ test('answerPendingAskV2 — happy path: flips row + drives resume', () => {
   assert.deepEqual(run.resumeAnswers, ['blue']);
 
   // Row flipped + persisted.
-  const askPost = getPendingAskV2(askId)!;
+  const askPost = getPendingAsk(askId)!;
   assert.equal(askPost.status, 'answered');
   assert.equal(askPost.answerBody, 'blue');
   assert.equal(askPost.answeredBy, 'orchestrator');
-  assert.equal(getAgentRunRowV2(runId)!.status, 'spawning');
+  assert.equal(getAgentRunRow(runId)!.status, 'spawning');
 });
 
-test('answerPendingAskV2 — unknown pending-ask id returns 404 cause', () => {
-  const result = answerPendingAskV2(
+test('answerPendingAsk — unknown pending-ask id returns 404 cause', () => {
+  const result = answerPendingAsk(
     { pendingAskId: newId() as ULID, answer: 'x', answeredBy: 'orchestrator' },
     { channelServer: server, slug, registry: new ActiveRunRegistry() },
   );
@@ -444,13 +442,13 @@ test('answerPendingAskV2 — unknown pending-ask id returns 404 cause', () => {
   assert.equal(result.cause, 'unknown-pending-ask');
 });
 
-test('answerPendingAskV2 — already-answered row rejects', () => {
+test('answerPendingAsk — already-answered row rejects', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
   const askId = newId() as ULID;
   seedAgentRunRow(runId, ccSession, 'paused');
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: ccSession,
@@ -469,13 +467,13 @@ test('answerPendingAskV2 — already-answered row rejects', () => {
     podRevisionAtDispatch: null,
   });
 
-  const first = answerPendingAskV2(
+  const first = answerPendingAsk(
     { pendingAskId: askId, answer: 'a', answeredBy: 'orchestrator' },
     { channelServer: server, slug, registry: reg },
   );
   assert.ok(first.ok);
 
-  const second = answerPendingAskV2(
+  const second = answerPendingAsk(
     { pendingAskId: askId, answer: 'b', answeredBy: 'orchestrator' },
     { channelServer: server, slug, registry: reg },
   );
@@ -484,13 +482,13 @@ test('answerPendingAskV2 — already-answered row rejects', () => {
   assert.equal(second.cause, 'already-answered');
 });
 
-test('answerPendingAskV2 — flag drift when pod row revision changes', () => {
+test('answerPendingAsk — flag drift when pod row revision changes', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
   const askId = newId() as ULID;
   seedAgentRunRow(runId, ccSession, 'paused');
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: ccSession,
@@ -510,7 +508,7 @@ test('answerPendingAskV2 — flag drift when pod row revision changes', () => {
     podRevisionAtDispatch: 'agent:1234567890.k:0',
   });
 
-  const result = answerPendingAskV2(
+  const result = answerPendingAsk(
     { pendingAskId: askId, answer: 'x', answeredBy: 'orchestrator' },
     { channelServer: server, slug, registry: reg },
   );
@@ -519,15 +517,15 @@ test('answerPendingAskV2 — flag drift when pod row revision changes', () => {
   assert.equal(result.podRevisionDrifted, true);
 });
 
-// ──────────────────────────── cancelPendingAskV2 ──────────────────────────
+// ──────────────────────────── cancelPendingAsk ──────────────────────────
 
-test('cancelPendingAskV2 — flips row to cancelled and cancels the run', () => {
+test('cancelPendingAsk — flips row to cancelled and cancels the run', () => {
   const reg = new ActiveRunRegistry();
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
   const askId = newId() as ULID;
   seedAgentRunRow(runId, ccSession, 'paused');
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: ccSession,
@@ -546,17 +544,17 @@ test('cancelPendingAskV2 — flips row to cancelled and cancels the run', () => 
     podRevisionAtDispatch: null,
   });
 
-  const result = cancelPendingAskV2({ pendingAskId: askId }, { registry: reg });
+  const result = cancelPendingAsk({ pendingAskId: askId }, { registry: reg });
   assert.ok(result.ok);
   assert.equal(run.cancelCount, 1);
-  assert.equal(getPendingAskV2(askId)!.status, 'cancelled');
+  assert.equal(getPendingAsk(askId)!.status, 'cancelled');
 
   // Second cancel is a no-op.
-  const second = cancelPendingAskV2({ pendingAskId: askId }, { registry: reg });
+  const second = cancelPendingAsk({ pendingAskId: askId }, { registry: reg });
   assert.equal(second.ok, false);
 });
 
-// ──────────────────────────── continueAgentV2 ─────────────────────────────
+// ──────────────────────────── continueAgent ─────────────────────────────
 
 function ensureCcJsonl(ccSessionId: string): string {
   // Mirror what CC would write on disk after a session reaches terminal.
@@ -574,7 +572,7 @@ function seedTerminalParent(): { runId: ULID; ccSession: string; jsonlPath: stri
   const runId = newId() as ULID;
   const ccSession = `cc-${runId}`;
   seedAgentRunRow(runId, ccSession, 'running');
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: runId,
     status: 'completed',
     result: 'parent done',
@@ -586,9 +584,9 @@ function seedTerminalParent(): { runId: ULID; ccSession: string; jsonlPath: stri
   return { runId, ccSession, jsonlPath };
 }
 
-test('continueAgentV2 — happy path mints new row linked to parent', () => {
+test('continueAgent — happy path mints new row linked to parent', () => {
   const { runId: parentId, ccSession } = seedTerminalParent();
-  const result = continueAgentV2({
+  const result = continueAgent({
     parentAgentRunId: parentId,
     input: 'follow up — say DONE',
   });
@@ -599,44 +597,44 @@ test('continueAgentV2 — happy path mints new row linked to parent', () => {
   assert.ok(result.plan.podRevisionAtDispatch);
 
   // Row exists, status=queued, continues link points at parent.
-  const newRow = getAgentRunRowV2(result.plan.agentRunId)!;
+  const newRow = getAgentRunRow(result.plan.agentRunId)!;
   assert.equal(newRow.status, 'queued');
   assert.equal(newRow.continues, parentId);
   assert.equal(newRow.input, 'follow up — say DONE');
 });
 
-test('continueAgentV2 — concurrent continuation rejects with 409 cause', () => {
+test('continueAgent — concurrent continuation rejects with 409 cause', () => {
   const { runId: parentId } = seedTerminalParent();
-  const first = continueAgentV2({ parentAgentRunId: parentId, input: 'a' });
+  const first = continueAgent({ parentAgentRunId: parentId, input: 'a' });
   assert.ok(first.ok);
   // Second attempt while the first continuation is still 'queued' → reject.
-  const second = continueAgentV2({ parentAgentRunId: parentId, input: 'b' });
+  const second = continueAgent({ parentAgentRunId: parentId, input: 'b' });
   assert.equal(second.ok, false);
   if (second.ok) return;
   assert.equal(second.cause, 'concurrent-continuation');
 });
 
-test('continueAgentV2 — parent not in terminal state rejects with not-continuable', () => {
+test('continueAgent — parent not in terminal state rejects with not-continuable', () => {
   const runId = newId() as ULID;
   seedAgentRunRow(runId, `cc-${runId}`, 'running');
-  const result = continueAgentV2({ parentAgentRunId: runId, input: 'x' });
+  const result = continueAgent({ parentAgentRunId: runId, input: 'x' });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.cause, 'not-continuable');
 });
 
-test('continueAgentV2 — swept JSONL → session-expired', () => {
+test('continueAgent — swept JSONL → session-expired', () => {
   const { runId: parentId, jsonlPath } = seedTerminalParent();
   // Drop the JSONL so the retention guard fires.
   rmSync(jsonlPath, { force: true });
-  const result = continueAgentV2({ parentAgentRunId: parentId, input: 'x' });
+  const result = continueAgent({ parentAgentRunId: parentId, input: 'x' });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.cause, 'session-expired');
 });
 
-test('continueAgentV2 — unknown parent run → run-not-found', () => {
-  const result = continueAgentV2({
+test('continueAgent — unknown parent run → run-not-found', () => {
+  const result = continueAgent({
     parentAgentRunId: newId() as ULID,
     input: 'x',
   });

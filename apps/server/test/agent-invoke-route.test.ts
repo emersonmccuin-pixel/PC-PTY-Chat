@@ -23,11 +23,11 @@ const {
   createAgent,
   newId,
 } = await import('@pc/db');
-const { ChannelServer } = await import('../../src/services/channel-server.ts');
+const { ChannelServer } = await import('../src/services/channel-server.ts');
 const {
-  dispatchFreshAgentV2,
-  dispatchContinueAgentV2,
-} = await import('../../src/services/v2/agent-run-factory.ts');
+  dispatchFreshAgent,
+  dispatchContinueAgent,
+} = await import('../src/services/agent-run-factory.ts');
 
 import type { Stage, ULID } from '@pc/domain';
 
@@ -76,8 +76,8 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('dispatchFreshAgentV2 — unknown agent name returns cause=unknown-agent before any side effects', () => {
-  const result = dispatchFreshAgentV2(
+test('dispatchFreshAgent — unknown agent name returns cause=unknown-agent before any side effects', () => {
+  const result = dispatchFreshAgent(
     {
       projectId,
       worktreeDir: projectFolder,
@@ -96,9 +96,9 @@ test('dispatchFreshAgentV2 — unknown agent name returns cause=unknown-agent be
   assert.match(result.error, /no agent named "does-not-exist"/);
 });
 
-test('dispatchContinueAgentV2 — unknown parent run id returns cause=run-not-found', () => {
+test('dispatchContinueAgent — unknown parent run id returns cause=run-not-found', () => {
   const fakeRunId = newId() as ULID;
-  const result = dispatchContinueAgentV2(
+  const result = dispatchContinueAgent(
     {
       projectId,
       worktreeDir: projectFolder,

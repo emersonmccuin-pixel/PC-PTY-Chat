@@ -11,9 +11,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { homedir } from 'node:os';
 
 import type {
-  AgentRunStatusV2,
+  AgentRunStatus,
   GlobalSettings,
-  PendingAskKindV2,
+  PendingAskKind,
   PendingAskOption,
   ULID,
   Workflow,
@@ -30,9 +30,9 @@ import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
   dismissFailedRun,
-  getAgentRunRowV2,
-  listActiveAgentRunsForProjectV2,
-  listAgentRunsForSessionV2,
+  getAgentRunRow,
+  listActiveAgentRunsForProject,
+  listAgentRunsForSession,
   getGlobalSettings,
   getProjectById,
   listFailedRunDismissalsForProject,
@@ -40,7 +40,7 @@ import {
   listProjects,
   newId,
   reassignStage,
-  reconcileOrphanedRunningRunsV2,
+  reconcileOrphanedRunningRuns,
   reorderProjects,
   runMigrations,
   setGlobalSettings,
@@ -54,18 +54,18 @@ import {
 import type { Stage } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
-import { drainPendingForSessionV2 } from './services/v2/delivery.ts';
+import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
-  dispatchContinueAgentV2,
-  dispatchFreshAgentV2,
-} from './services/v2/agent-run-factory.ts';
+  dispatchContinueAgent,
+  dispatchFreshAgent,
+} from './services/agent-run-factory.ts';
 import {
-  answerPendingAskV2,
-  cancelPendingAskV2,
-  recordExplicitPauseV2,
-} from './services/v2/pause-resume.ts';
-import { getActiveRunRegistry } from './services/v2/active-runs.ts';
-import { notifyWorkflowSubagentHandshake } from './services/v2/workflow-subagent-handshake.ts';
+  answerPendingAsk,
+  cancelPendingAsk,
+  recordExplicitPause,
+} from './services/pause-resume.ts';
+import { getActiveRunRegistry } from './services/agent-active-runs.ts';
+import { notifyWorkflowSubagentHandshake } from './services/workflow-subagent-handshake.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { AttachmentNotInProjectError } from './services/attachment.ts';
 import { ChannelServer } from './services/channel-server.ts';
@@ -250,7 +250,7 @@ const channelServer = new ChannelServer({
   // respawn), drain any pending inbox rows for the (projectId, sessionId)
   // pair so the orchestrator catches up autonomously.
   onRegister: ({ projectId, sessionId, slug }) => {
-    const result = drainPendingForSessionV2(channelServer, projectId, sessionId, slug);
+    const result = drainPendingForSession(channelServer, projectId, sessionId, slug);
     if (result.attempted > 0) {
       console.log(
         `[channel] auto-flush ${projectId} / ${sessionId}: drained ${result.drained}/${result.attempted}`,
@@ -280,15 +280,14 @@ channelServer.start();
     });
 }
 
-// Phase D — boot-time orphan sweep on agent_runs. v1's AgentRunManager init
-// block + instruction_deposits scaffold are gone; the v2 `agent-run-factory`
-// owns dispatch + broadcast wiring per-spawn (`broadcast` dep is injected at
-// route time). Orphan sweep stays as a boot-time idempotent UPDATE on the
-// v2 table — any non-terminal row outlives a prior server lifetime and gets
-// flipped to `failed` so the Activity Panel doesn't show stale running cards.
+// Boot-time orphan sweep on agent_runs. Dispatch + broadcast wiring lives in
+// `agent-run-factory` per-spawn (the `broadcast` dep is injected at route
+// time). Orphan sweep stays as a boot-time idempotent UPDATE — any
+// non-terminal row outlives a prior server lifetime and gets flipped to
+// `failed` so the Activity Panel doesn't show stale running cards.
 {
   try {
-    const reconciled = reconcileOrphanedRunningRunsV2(Date.now());
+    const reconciled = reconcileOrphanedRunningRuns(Date.now());
     if (reconciled > 0) {
       console.log(
         `[agent-runs] reconciled ${reconciled} orphaned running row(s) from prior server lifetime`,
@@ -2426,7 +2425,7 @@ app.get('/api/projects/:projectId/agent-runs', (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
   if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
-  const rows = listActiveAgentRunsForProjectV2(projectId);
+  const rows = listActiveAgentRunsForProject(projectId);
   const shimmed = rows.map((r) => ({
     runId: r.id,
     sessionId: r.ccSessionId,
@@ -2493,11 +2492,9 @@ app.post('/api/internal/mcp-handshake', async (c) => {
 // flows through the v2 `AgentRun` wrapper + Session 7 delivery + Session 8
 // pause/resume orchestration.
 
-/** `pc_invoke_agent_v2` HTTP surface. Mirrors v1's `pc_invoke_agent` route
- *  shape — same input contract, same response shape — but every spawn goes
- *  through the v2 `AgentRun` wrapper. Terminal `agent-completed` / `agent-
- *  failed` envelopes flow via `enqueueAndPushV2` (durable inbox + best-
- *  effort channel push). */
+/** `pc_invoke_agent` HTTP surface. Every spawn goes through the `AgentRun`
+ *  wrapper. Terminal `agent-completed` / `agent-failed` envelopes flow via
+ *  `enqueueAndPush` (durable inbox + best-effort channel push). */
 app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
@@ -2534,7 +2531,7 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
     return c.json({ ok: false, error: depthCheck.error, cause: depthCheck.cause }, 400);
   }
 
-  const result = dispatchFreshAgentV2(
+  const result = dispatchFreshAgent(
     {
       projectId,
       worktreeDir: project.folderPath,
@@ -2582,11 +2579,10 @@ app.post('/api/projects/:projectId/agents/:name/invoke', async (c) => {
   });
 });
 
-/** `pc_continue_agent_v2` HTTP surface. Mirrors v1's `pc_continue_agent` —
- *  same ownership check + JSONL-retention guard + single-active-continuation
- *  guard — but every spawn goes through the v2 `AgentRun` wrapper. Reuses
- *  Session 8's `continueAgentV2` plan + the agent-run factory's
- *  `dispatchContinueAgentV2` orchestration. */
+/** `pc_continue_agent` HTTP surface. Ownership check + JSONL-retention guard
+ *  + single-active-continuation guard, then spawn through the `AgentRun`
+ *  wrapper. Reuses `continueAgent` planning + `dispatchContinueAgent`
+ *  orchestration in the agent-run factory. */
 app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
@@ -2613,7 +2609,7 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   // continue plan reads the parent row + the dispatcherSessionId field. We
   // re-check here so the 403 happens BEFORE pod materialisation, matching
   // v1's surface. (The plan would still reject internally if we skipped this.)
-  const parentRow = getAgentRunRowV2(parentAgentRunId);
+  const parentRow = getAgentRunRow(parentAgentRunId);
   if (!parentRow) {
     return c.json(
       { ok: false, error: `unknown run: ${parentAgentRunId}`, cause: 'run-not-found' },
@@ -2641,7 +2637,7 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
     );
   }
 
-  const result = dispatchContinueAgentV2(
+  const result = dispatchContinueAgent(
     {
       projectId,
       worktreeDir: project.folderPath,
@@ -2697,8 +2693,7 @@ app.post('/api/projects/:projectId/agent-runs/:runId/continue', async (c) => {
   });
 });
 
-/** `pc_list_my_runs_v2` HTTP surface. Reads from the v2 agent_runs_v2 table.
- *  Same response shape as v1's `by-dispatcher` route. */
+/** `pc_list_my_runs` HTTP surface. Reads from the `agent_runs` table. */
 app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
@@ -2710,7 +2705,7 @@ app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
   }
   const podName = (c.req.query('agentName') ?? '').trim() || undefined;
   const statusRaw = (c.req.query('status') ?? '').trim();
-  const VALID_V2_STATUSES: AgentRunStatusV2[] = [
+  const VALID_AGENT_RUN_STATUSES: AgentRunStatus[] = [
     'queued',
     'spawning',
     'running',
@@ -2720,13 +2715,13 @@ app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
     'cancelled',
   ];
   const status =
-    statusRaw && (VALID_V2_STATUSES as string[]).includes(statusRaw)
-      ? (statusRaw as AgentRunStatusV2)
+    statusRaw && (VALID_AGENT_RUN_STATUSES as string[]).includes(statusRaw)
+      ? (statusRaw as AgentRunStatus)
       : undefined;
   const limitRaw = Number(c.req.query('limit') ?? 20);
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
 
-  const rows = listAgentRunsForSessionV2(projectId, dispatcherSessionId, {
+  const rows = listAgentRunsForSession(projectId, dispatcherSessionId, {
     podName,
     status,
     limit,
@@ -2747,12 +2742,10 @@ app.get('/api/projects/:projectId/agent-runs/by-dispatcher', (c) => {
   return c.json({ ok: true, runs: summarised });
 });
 
-/** v2 `pc_ask_orchestrator_v2` / `pc_ask_user_v2` / `pc_request_approval_v2`
- *  HTTP surface. Routes through Session 8's `recordExplicitPauseV2` which
- *  flips the AgentRun in-memory state to paused + persists pending_asks_v2 +
- *  delivers via v2 hybrid transport. Replaces v1's three-kind pending-asks
- *  route with a single endpoint that uses the bare v2 kind taxonomy
- *  (`orchestrator | user | approval` per design §1 glossary). */
+/** Single pending-ask creation endpoint for `pc_ask_orchestrator` /
+ *  `pc_ask_user` / `pc_request_approval`. Routes through `recordExplicitPause`
+ *  which flips the AgentRun in-memory state to paused + persists the
+ *  `pending_asks` row + delivers via the hybrid transport. */
 app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
   const projectId = c.req.param('projectId') as ULID;
   const project = getProjectById(projectId);
@@ -2760,7 +2753,7 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
 
   const body = await c.req.json<{
     agentRunId?: string;
-    kind?: PendingAskKindV2;
+    kind?: PendingAskKind;
     promptBody?: string;
     context?: string;
     options?: PendingAskOption[];
@@ -2790,7 +2783,7 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
     }
   }
 
-  const result = recordExplicitPauseV2(
+  const result = recordExplicitPause(
     {
       agentRunId,
       kind,
@@ -2820,10 +2813,9 @@ app.post('/api/projects/:projectId/agent-pending-asks', async (c) => {
   });
 });
 
-/** v2 `pc_answer_pending_v2` HTTP surface. Reuses Session 8's
- *  `answerPendingAskV2` which atomically flips the row to answered, persists
- *  the spawning transition + pod-revision-at-resume, and drives the
- *  AgentRun's `_resumeWithAnswer`. */
+/** `pc_answer_pending` HTTP surface. `answerPendingAsk` atomically flips the
+ *  row to answered, persists the spawning transition + pod-revision-at-resume,
+ *  and drives the AgentRun's `_resumeWithAnswer`. */
 app.post(
   '/api/projects/:projectId/agent-pending-asks/:askId/answer',
   async (c) => {
@@ -2844,7 +2836,7 @@ app.post(
       return c.json({ ok: false, error: 'answeredBy must be orchestrator | user' }, 400);
     }
 
-    const result = answerPendingAskV2(
+    const result = answerPendingAsk(
       { pendingAskId, answer, answeredBy },
       { channelServer, slug: project.slug },
     );
@@ -2886,7 +2878,7 @@ app.post(
     if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
 
     const pendingAskId = c.req.param('askId') as ULID;
-    const result = cancelPendingAskV2({ pendingAskId }, {});
+    const result = cancelPendingAsk({ pendingAskId }, {});
     if (!result.ok) {
       const statusFor: Record<string, number> = {
         'unknown-pending-ask': 404,

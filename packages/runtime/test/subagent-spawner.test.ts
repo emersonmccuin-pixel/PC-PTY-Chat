@@ -1,4 +1,4 @@
-// Section 25 Session 10 — unit tests for spawnSubagentV2.
+// Section 25 Session 10 — unit tests for spawnSubagent.
 //
 // Mirrors v1's coverage (subagent-spawner.test.ts) on the new LowLevelSpawn-
 // backed implementation: happy path, pc_complete_node / pc_node_failed,
@@ -14,12 +14,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { spawnSubagentV2 } from '../src/subagent-spawner-v2.ts';
-import type { SubagentSpawnRequest } from '../src/subagent-spawner-v2.ts';
-import type { SpawnLike } from '../src/v2/agent-run.ts';
-import type { SpawnState } from '../src/v2/low-level-spawn.ts';
-import type { ReadyTimestamps } from '../src/v2/ready-gate.ts';
-import type { SendResult } from '../src/v2/send-protocol.ts';
+import { spawnSubagent } from '../src/subagent-spawner.ts';
+import type { SubagentSpawnRequest } from '../src/subagent-spawner.ts';
+import type { SpawnLike } from '../src/agent-run.ts';
+import type { SpawnState } from '../src/low-level-spawn.ts';
+import type { ReadyTimestamps } from '../src/ready-gate.ts';
+import type { SendResult } from '../src/send-protocol.ts';
 import type { JsonlEvent } from '../src/jsonl-tailer.ts';
 
 interface MockSpawn extends SpawnLike {
@@ -151,7 +151,7 @@ test('createLowLevelSpawn receives LowLevelSpawnInput shaped correctly', () => {
   const mock = makeMockSpawn();
   const timers = makeControllableTimers();
 
-  spawnSubagentV2(
+  spawnSubagent(
     {
       ...baseRequest(dataDir),
       agentName: 'researcher',
@@ -183,7 +183,7 @@ test('jsonlPath() returns LowLevelSpawn.getJsonlPath() value synchronously', () 
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
   mock.setJsonlPath('/fake/abc-123.jsonl');
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
   assert.equal(handle.jsonlPath(), '/fake/abc-123.jsonl');
@@ -197,7 +197,7 @@ test('happy path: ready → send → turn-end → success', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
   mock.setJsonlPath('/fake/session.jsonl');
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -229,7 +229,7 @@ test('happy path: ready → send → turn-end → success', async () => {
 test('pc_complete_node before turn-end → success with payload', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -259,7 +259,7 @@ test('pc_complete_node before turn-end → success with payload', async () => {
 test('pc_node_failed wins over text turn-end', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -290,7 +290,7 @@ test('pc_node_failed wins over text turn-end', async () => {
 test('empty-turn fails when no text + no pc_complete_node payload', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -311,7 +311,7 @@ test('empty-turn fails when no text + no pc_complete_node payload', async () => 
 test('kill() before terminal → failure with cause=killed', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -329,7 +329,7 @@ test('idle timer fires → failure with cause=idle-timeout', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
   const timers = makeControllableTimers();
-  const handle = spawnSubagentV2(
+  const handle = spawnSubagent(
     { ...baseRequest(dataDir), idleTimeoutMs: 1000 },
     {
       createLowLevelSpawn: () => mock,
@@ -356,7 +356,7 @@ test('wall-clock timer fires → failure with cause=wall-clock-timeout', async (
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
   const timers = makeControllableTimers();
-  const handle = spawnSubagentV2(
+  const handle = spawnSubagent(
     { ...baseRequest(dataDir), wallClockTimeoutMs: 50_000 },
     {
       createLowLevelSpawn: () => mock,
@@ -380,7 +380,7 @@ test('wall-clock timer fires → failure with cause=wall-clock-timeout', async (
 test('unexpected exit before turn-end → failure with cause=spawn-error', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 
@@ -399,7 +399,7 @@ test('unexpected exit before turn-end → failure with cause=spawn-error', async
 
 test('createLowLevelSpawn throws → failure with cause=spawn-error', async () => {
   const dataDir = freshDataDir();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => {
       throw new Error('pty failed to spawn');
     },
@@ -423,7 +423,7 @@ test('registerHandshakeListener is wired with ccSessionId + invokes notifyMcpHan
   let registeredNotify: (() => void) | null = null;
   let unregisterCalled = false;
 
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
     registerHandshakeListener: (ccSessionId, notify) => {
       registeredCcSession = ccSessionId;
@@ -450,7 +450,7 @@ test('registerHandshakeListener is wired with ccSessionId + invokes notifyMcpHan
 test('SubagentSpawnHandle surface matches v1 (done, kill, transcriptPath, jsonlPath)', async () => {
   const dataDir = freshDataDir();
   const mock = makeMockSpawn();
-  const handle = spawnSubagentV2(baseRequest(dataDir), {
+  const handle = spawnSubagent(baseRequest(dataDir), {
     createLowLevelSpawn: () => mock,
   });
 

@@ -1,9 +1,9 @@
-// Section 25 Session 8 — in-memory registry of active v2 AgentRuns.
+// Section 25 — in-memory registry of active AgentRuns.
 //
-// Pause / resume / continuation primitives need a way to look up a live
-// AgentRun by various identifiers — agent_run_id (the primary key), the
-// pending_ask_id of an outstanding pause, or the CC provider session-id
-// when the JSONL pause-detector fires.
+// Pause / resume / continuation primitives look up live AgentRuns by various
+// identifiers — agent_run_id (the primary key), pending_ask_id of an
+// outstanding pause, or the CC provider session-id when the JSONL
+// pause-detector fires.
 //
 // The registry is a thin process-wide Map. It does NOT own AgentRun
 // lifecycle — callers `register(run)` after `run.start()` and the registry
@@ -13,14 +13,9 @@
 // Each entry carries dispatcher metadata so the pause/resume layer can
 // build the channel-event body (which references projectId / dispatcher
 // session / parent work item) without re-querying the DB.
-//
-// Section 9's MCP tool wiring is the primary caller. Section 10 wires the
-// workflow runtime + activity panel adapters.
 
 import type { ULID } from '@pc/domain';
-import type { v2 as runtimeV2 } from '@pc/runtime';
-
-type AgentRun = runtimeV2.AgentRun;
+import type { AgentRun } from '@pc/runtime';
 
 export interface ActiveRunEntry {
   run: AgentRun;

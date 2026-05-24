@@ -133,32 +133,32 @@ export {
   listFailedRunDismissalsForRuns,
 } from './repos/failed-run-dismissals.ts';
 
-// Section 25 — agent inbox / delivery repo (bare names post-Phase-D).
+// Section 25 — agent inbox / delivery repo.
 export {
-  enqueueInboxRowV2,
-  getAuditForInboxV2,
-  getInboxRowV2,
-  listPendingForSessionV2,
-  markInboxDeliveredV2,
-} from './repos/agent-inbox-v2.ts';
+  enqueueInboxRow,
+  getAuditForInbox,
+  getInboxRow,
+  listPendingForSession,
+  markInboxDelivered,
+} from './repos/agent-inbox.ts';
 export type {
-  EnqueueInboxRowV2Input,
-  MarkInboxDeliveredV2Input,
-} from './repos/agent-inbox-v2.ts';
+  EnqueueInboxRowInput,
+  MarkInboxDeliveredInput,
+} from './repos/agent-inbox.ts';
 
 // Section 25 — pending asks repo.
 export {
-  createPendingAskV2,
-  getPendingAskV2,
-  listOpenPendingAsksV2ForProject,
-  listOpenPendingAsksV2ForSession,
-  markPendingAskAnsweredV2,
-  markPendingAskCancelledV2,
-} from './repos/pending-asks-v2.ts';
+  createPendingAsk,
+  getPendingAsk,
+  listOpenPendingAsksForProject,
+  listOpenPendingAsksForSession,
+  markPendingAskAnswered,
+  markPendingAskCancelled,
+} from './repos/pending-asks.ts';
 export type {
-  AnswerPendingAskV2Input,
-  CreatePendingAskV2Input,
-} from './repos/pending-asks-v2.ts';
+  AnswerPendingAskInput,
+  CreatePendingAskInput,
+} from './repos/pending-asks.ts';
 
 // Section 25 — pod-revision helper for drift detection.
 export {
@@ -169,21 +169,21 @@ export type { ComputePodRevisionInput } from './repos/pod-revision.ts';
 
 // Section 25 — agent runs repo.
 export {
-  findActiveContinuationV2,
-  getAgentRunRowV2,
-  insertAgentRunRowV2,
-  listActiveAgentRunsForProjectV2,
-  listAgentRunsForSessionV2,
-  markAgentRunTerminalV2,
-  reconcileOrphanedRunningRunsV2,
-  updateAgentRunStatusV2,
-} from './repos/agent-runs-v2.ts';
+  findActiveContinuation,
+  getAgentRunRow,
+  insertAgentRunRow,
+  listActiveAgentRunsForProject,
+  listAgentRunsForSession,
+  markAgentRunTerminal,
+  reconcileOrphanedRunningRuns,
+  updateAgentRunStatus,
+} from './repos/agent-runs.ts';
 export type {
-  InsertAgentRunRowV2Input,
-  ListAgentRunsForSessionV2Options,
-  MarkAgentRunTerminalV2Input,
-  UpdateAgentRunStatusV2Input,
-} from './repos/agent-runs-v2.ts';
+  InsertAgentRunRowInput,
+  ListAgentRunsForSessionOptions,
+  MarkAgentRunTerminalInput,
+  UpdateAgentRunStatusInput,
+} from './repos/agent-runs.ts';
 
 export {
   createOrchestratorSession,

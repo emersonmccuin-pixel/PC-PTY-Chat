@@ -1,5 +1,5 @@
-// Section 25 Session 8 — agent_runs_v2 repo round-trip. Pins the contract
-// AgentRun's persistence plumbing + the orchestration layer call into.
+// Section 25 — agent_runs repo round-trip. Pins the contract AgentRun's
+// persistence plumbing + the orchestration layer call into.
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,20 +7,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const tmpDir = mkdtempSync(join(tmpdir(), 'pc-db-agent-runs-v2-'));
+const tmpDir = mkdtempSync(join(tmpdir(), 'pc-db-agent-runs-'));
 process.env.PC_DATA_DIR = tmpDir;
 
 const {
   closeDb,
   runMigrations,
   createProject,
-  findActiveContinuationV2,
-  getAgentRunRowV2,
-  insertAgentRunRowV2,
-  listAgentRunsForSessionV2,
-  markAgentRunTerminalV2,
-  reconcileOrphanedRunningRunsV2,
-  updateAgentRunStatusV2,
+  findActiveContinuation,
+  getAgentRunRow,
+  insertAgentRunRow,
+  listAgentRunsForSession,
+  markAgentRunTerminal,
+  reconcileOrphanedRunningRuns,
+  updateAgentRunStatus,
   newId,
 } = await import('../src/index.ts');
 import type { Stage, ULID } from '@pc/domain';
@@ -36,7 +36,7 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('insertAgentRunRowV2 writes a queued row with required defaults', () => {
+test('insertAgentRunRow writes a queued row with required defaults', () => {
   const p = createProject({
     slug: 'ar-v2-insert',
     name: 'AR V2 Insert',
@@ -45,7 +45,7 @@ test('insertAgentRunRowV2 writes a queued row with required defaults', () => {
   });
 
   const id = newId();
-  const row = insertAgentRunRowV2({
+  const row = insertAgentRunRow({
     id,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -66,12 +66,12 @@ test('insertAgentRunRowV2 writes a queued row with required defaults', () => {
   assert.equal(row.failureCause, null);
   assert.equal(row.result, null);
 
-  const fetched = getAgentRunRowV2(id);
+  const fetched = getAgentRunRow(id);
   assert.ok(fetched);
   assert.equal(fetched!.podName, 'researcher');
 });
 
-test('updateAgentRunStatusV2 walks queued → spawning → running and records timestamps', () => {
+test('updateAgentRunStatus walks queued → spawning → running and records timestamps', () => {
   const p = createProject({
     slug: 'ar-v2-status',
     name: 'Status',
@@ -79,7 +79,7 @@ test('updateAgentRunStatusV2 walks queued → spawning → running and records t
     folderPath: tmpDir,
   });
   const id = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id,
     projectId: p.id as ULID,
     podName: 'planner',
@@ -90,32 +90,32 @@ test('updateAgentRunStatusV2 walks queued → spawning → running and records t
     queuedAt: 1_700_000_000_000,
   });
 
-  updateAgentRunStatusV2({ id, status: 'spawning', spawnedAt: 1_700_000_001_000 });
-  let row = getAgentRunRowV2(id)!;
+  updateAgentRunStatus({ id, status: 'spawning', spawnedAt: 1_700_000_001_000 });
+  let row = getAgentRunRow(id)!;
   assert.equal(row.status, 'spawning');
   assert.equal(row.spawnedAt, 1_700_000_001_000);
 
-  updateAgentRunStatusV2({ id, status: 'running', readyAt: 1_700_000_002_500 });
-  row = getAgentRunRowV2(id)!;
+  updateAgentRunStatus({ id, status: 'running', readyAt: 1_700_000_002_500 });
+  row = getAgentRunRow(id)!;
   assert.equal(row.status, 'running');
   assert.equal(row.readyAt, 1_700_000_002_500);
 
   // Paused → spawning records podRevisionAtResume.
-  updateAgentRunStatusV2({ id, status: 'paused' });
-  updateAgentRunStatusV2({
+  updateAgentRunStatus({ id, status: 'paused' });
+  updateAgentRunStatus({
     id,
     status: 'spawning',
     spawnedAt: 1_700_000_005_000,
     podRevisionAtResume: '1700000004999',
   });
-  row = getAgentRunRowV2(id)!;
+  row = getAgentRunRow(id)!;
   assert.equal(row.status, 'spawning');
   assert.equal(row.podRevisionAtResume, '1700000004999');
   // Original spawnedAt overwritten on resume per design (re-arms the timer).
   assert.equal(row.spawnedAt, 1_700_000_005_000);
 });
 
-test('markAgentRunTerminalV2 captures result + failure detail', () => {
+test('markAgentRunTerminal captures result + failure detail', () => {
   const p = createProject({
     slug: 'ar-v2-terminal',
     name: 'Terminal',
@@ -124,7 +124,7 @@ test('markAgentRunTerminalV2 captures result + failure detail', () => {
   });
 
   const okId = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: okId,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -134,7 +134,7 @@ test('markAgentRunTerminalV2 captures result + failure detail', () => {
     input: 'q',
     queuedAt: 1_700_000_000_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: okId,
     status: 'completed',
     result: 'final answer',
@@ -142,13 +142,13 @@ test('markAgentRunTerminalV2 captures result + failure detail', () => {
     failureReason: null,
     completedAt: 1_700_000_010_000,
   });
-  const ok = getAgentRunRowV2(okId)!;
+  const ok = getAgentRunRow(okId)!;
   assert.equal(ok.status, 'completed');
   assert.equal(ok.result, 'final answer');
   assert.equal(ok.completedAt, 1_700_000_010_000);
 
   const failId = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: failId,
     projectId: p.id as ULID,
     podName: 'writer',
@@ -158,7 +158,7 @@ test('markAgentRunTerminalV2 captures result + failure detail', () => {
     input: 'q',
     queuedAt: 1_700_000_000_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: failId,
     status: 'failed',
     result: null,
@@ -166,13 +166,13 @@ test('markAgentRunTerminalV2 captures result + failure detail', () => {
     failureReason: 'no activity for 5min',
     completedAt: 1_700_000_011_000,
   });
-  const fail = getAgentRunRowV2(failId)!;
+  const fail = getAgentRunRow(failId)!;
   assert.equal(fail.status, 'failed');
   assert.equal(fail.failureCause, 'idle-timeout');
   assert.equal(fail.failureReason, 'no activity for 5min');
 });
 
-test('findActiveContinuationV2 returns a non-terminal continuation; ignores terminal ones', () => {
+test('findActiveContinuation returns a non-terminal continuation; ignores terminal ones', () => {
   const p = createProject({
     slug: 'ar-v2-cont',
     name: 'Cont',
@@ -181,7 +181,7 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
   });
 
   const parentId = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: parentId,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -191,7 +191,7 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
     input: 'r1',
     queuedAt: 1_700_000_000_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: parentId,
     status: 'completed',
     result: 'r1-final',
@@ -201,11 +201,11 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
   });
 
   // No continuation yet.
-  assert.equal(findActiveContinuationV2(parentId), null);
+  assert.equal(findActiveContinuation(parentId), null);
 
   // Failed continuation does NOT block a fresh one.
   const failedContId = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: failedContId,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -216,7 +216,7 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
     continues: parentId,
     queuedAt: 1_700_000_006_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: failedContId,
     status: 'failed',
     result: null,
@@ -224,11 +224,11 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
     failureReason: 'never reached ready',
     completedAt: 1_700_000_007_000,
   });
-  assert.equal(findActiveContinuationV2(parentId), null);
+  assert.equal(findActiveContinuation(parentId), null);
 
   // Live (running) continuation blocks.
   const liveId = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: liveId,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -239,12 +239,12 @@ test('findActiveContinuationV2 returns a non-terminal continuation; ignores term
     continues: parentId,
     queuedAt: 1_700_000_010_000,
   });
-  const blocking = findActiveContinuationV2(parentId);
+  const blocking = findActiveContinuation(parentId);
   assert.ok(blocking);
   assert.equal(blocking!.id, liveId);
 });
 
-test('listAgentRunsForSessionV2 filters by project + session, newest first, with podName + status filters', () => {
+test('listAgentRunsForSession filters by project + session, newest first, with podName + status filters', () => {
   const p = createProject({
     slug: 'ar-v2-list',
     name: 'List',
@@ -261,7 +261,7 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
   const a = newId();
   const b = newId();
   const c = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: a,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -271,7 +271,7 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
     input: 'a',
     queuedAt: 1_700_000_000_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: b,
     projectId: p.id as ULID,
     podName: 'planner',
@@ -281,7 +281,7 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
     input: 'b',
     queuedAt: 1_700_000_001_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: c,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -292,7 +292,7 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
     queuedAt: 1_700_000_002_000,
   });
   // Foreign session — must not leak.
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: newId(),
     projectId: otherP.id as ULID,
     podName: 'researcher',
@@ -304,14 +304,14 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
   });
 
   // All for the session, newest first.
-  const all = listAgentRunsForSessionV2(p.id as ULID, 'sess-list', { limit: 10 });
+  const all = listAgentRunsForSession(p.id as ULID, 'sess-list', { limit: 10 });
   assert.deepEqual(
     all.map((r) => r.id),
     [c, b, a],
   );
 
   // By podName.
-  const onlyResearcher = listAgentRunsForSessionV2(p.id as ULID, 'sess-list', {
+  const onlyResearcher = listAgentRunsForSession(p.id as ULID, 'sess-list', {
     podName: 'researcher',
     limit: 10,
   });
@@ -321,7 +321,7 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
   );
 
   // By status.
-  const onlyRunning = listAgentRunsForSessionV2(p.id as ULID, 'sess-list', {
+  const onlyRunning = listAgentRunsForSession(p.id as ULID, 'sess-list', {
     status: 'running',
     limit: 10,
   });
@@ -331,12 +331,12 @@ test('listAgentRunsForSessionV2 filters by project + session, newest first, with
   );
 
   // Limit cap honored.
-  const oneOnly = listAgentRunsForSessionV2(p.id as ULID, 'sess-list', { limit: 1 });
+  const oneOnly = listAgentRunsForSession(p.id as ULID, 'sess-list', { limit: 1 });
   assert.equal(oneOnly.length, 1);
   assert.equal(oneOnly[0].id, c);
 });
 
-test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-restart', () => {
+test('reconcileOrphanedRunningRuns flips non-terminal rows to failed/server-restart', () => {
   const p = createProject({
     slug: 'ar-v2-rec',
     name: 'Reconcile',
@@ -350,7 +350,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
   const completed = newId();
   const alreadyFailed = newId();
 
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: queued,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -360,7 +360,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 'q',
     queuedAt: 1_700_000_000_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: spawning,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -370,7 +370,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 's',
     queuedAt: 1_700_000_000_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: running,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -380,7 +380,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 'r',
     queuedAt: 1_700_000_000_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: paused,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -390,7 +390,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 'p',
     queuedAt: 1_700_000_000_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: completed,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -400,7 +400,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 'c',
     queuedAt: 1_700_000_000_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: completed,
     status: 'completed',
     result: 'done',
@@ -408,7 +408,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     failureReason: null,
     completedAt: 1_700_000_001_000,
   });
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: alreadyFailed,
     projectId: p.id as ULID,
     podName: 'researcher',
@@ -418,7 +418,7 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     input: 'f',
     queuedAt: 1_700_000_000_000,
   });
-  markAgentRunTerminalV2({
+  markAgentRunTerminal({
     id: alreadyFailed,
     status: 'failed',
     result: null,
@@ -427,20 +427,20 @@ test('reconcileOrphanedRunningRunsV2 flips non-terminal rows to failed/server-re
     completedAt: 1_700_000_001_000,
   });
 
-  const affected = reconcileOrphanedRunningRunsV2(1_700_000_900_000);
+  const affected = reconcileOrphanedRunningRuns(1_700_000_900_000);
   // Shared DB across the test file may contain non-terminal rows from
   // earlier tests; assert "at least these four flipped" rather than an
   // exact count.
   assert.ok(affected >= 4, `expected ≥4 flipped, got ${affected}`);
 
   for (const id of [queued, spawning, running, paused]) {
-    const row = getAgentRunRowV2(id)!;
+    const row = getAgentRunRow(id)!;
     assert.equal(row.status, 'failed');
     assert.equal(row.failureCause, 'server-restart');
     assert.equal(row.failureReason, 'server restarted before this run completed');
     assert.equal(row.completedAt, 1_700_000_900_000);
   }
   // Terminal rows untouched.
-  assert.equal(getAgentRunRowV2(completed)!.status, 'completed');
-  assert.equal(getAgentRunRowV2(alreadyFailed)!.failureCause, 'spawn-stuck');
+  assert.equal(getAgentRunRow(completed)!.status, 'completed');
+  assert.equal(getAgentRunRow(alreadyFailed)!.failureCause, 'spawn-stuck');
 });

@@ -10,12 +10,12 @@ import { EventEmitter } from 'node:events';
 import {
   InteractiveSession,
   type InteractiveSessionInput,
-} from '../../src/v2/interactive-session.ts';
-import type { SpawnLike } from '../../src/v2/agent-run.ts';
-import type { ReadyTimestamps } from '../../src/v2/ready-gate.ts';
-import type { SpawnState } from '../../src/v2/low-level-spawn.ts';
-import type { SendResult } from '../../src/v2/send-protocol.ts';
-import type { JsonlEvent } from '../../src/jsonl-tailer.ts';
+} from '../src/interactive-session.ts';
+import type { SpawnLike } from '../src/agent-run.ts';
+import type { ReadyTimestamps } from '../src/ready-gate.ts';
+import type { SpawnState } from '../src/low-level-spawn.ts';
+import type { SendResult } from '../src/send-protocol.ts';
+import type { JsonlEvent } from '../src/jsonl-tailer.ts';
 
 const tick = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 

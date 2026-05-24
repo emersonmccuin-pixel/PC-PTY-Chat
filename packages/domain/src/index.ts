@@ -178,19 +178,8 @@ export type {
   AgentChannelEventKind,
   AgentChannelEventPayload,
   AgentCompletedPayload,
-  AgentDeliveryAuditRow,
-  AgentDeliveryDriver,
   AgentFailedPayload,
-  AgentInboxEventKind,
-  AgentInboxRow,
-  AgentInboxStatus,
-  InstructionDepositRow,
-  InstructionDepositStatus,
   PcAnswerPendingInput,
-  PcCheckInInput,
-  PcCheckInResult,
-  PcCheckInResultDelivered,
-  PcCheckInResultEmpty,
   PcAnswerPendingResult,
   PcAnswerPendingResultError,
   PcAnswerPendingResultOk,
@@ -205,40 +194,28 @@ export type {
   PcInvokeAgentResultSync,
   PcRequestApprovalInput,
   PcRequestApprovalResult,
-  PendingAsk,
-  PendingAskKind,
   PendingAskOption,
-  PendingAskStatus,
 } from './agent-comms.ts';
+export { AGENT_CHANNEL_EVENT_KINDS } from './agent-comms.ts';
+export type {
+  AgentDeliveryAuditRow,
+  AgentInboxDriver,
+  AgentInboxEventKind,
+  AgentInboxRow,
+  AgentInboxStatus,
+  AgentRunFailureCause,
+  AgentRunRow,
+  AgentRunStatus,
+  PendingAskKind,
+  PendingAskRow,
+  PendingAskStatus,
+} from './agent-system.ts';
 export {
-  AGENT_CHANNEL_EVENT_KINDS,
-  AGENT_DELIVERY_DRIVERS,
+  AGENT_INBOX_DRIVERS,
   AGENT_INBOX_EVENT_KINDS,
   AGENT_INBOX_STATUSES,
+  AGENT_RUN_FAILURE_CAUSES,
+  AGENT_RUN_STATUSES,
   PENDING_ASK_KINDS,
   PENDING_ASK_STATUSES,
-} from './agent-comms.ts';
-export type { AgentRunFailureCause, AgentRunPersistedStatus, AgentRunRow } from './agent-run.ts';
-export { AGENT_RUN_FAILURE_CAUSES, AGENT_RUN_PERSISTED_STATUSES } from './agent-run.ts';
-export type {
-  AgentDeliveryAuditRowV2,
-  AgentInboxDriverV2,
-  AgentInboxEventKindV2,
-  AgentInboxRowV2,
-  AgentInboxStatusV2,
-  AgentRunFailureCauseV2,
-  AgentRunRowV2,
-  AgentRunStatusV2,
-  PendingAskKindV2,
-  PendingAskRowV2,
-  PendingAskStatusV2,
-} from './agent-v2.ts';
-export {
-  AGENT_INBOX_DRIVERS_V2,
-  AGENT_INBOX_EVENT_KINDS_V2,
-  AGENT_INBOX_STATUSES_V2,
-  AGENT_RUN_FAILURE_CAUSES_V2,
-  AGENT_RUN_STATUSES_V2,
-  PENDING_ASK_KINDS_V2,
-  PENDING_ASK_STATUSES_V2,
-} from './agent-v2.ts';
+} from './agent-system.ts';

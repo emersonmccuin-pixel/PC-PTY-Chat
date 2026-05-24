@@ -19,7 +19,7 @@ import pty from 'node-pty';
 import { EventEmitter } from 'node:events';
 import { existsSync, createWriteStream, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { dirname } from 'node:path';
-import { JsonlTailer, type JsonlEvent } from '../jsonl-tailer.ts';
+import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 import { scrubIdeEnv } from './env-scrub.ts';
 import { stripAnsiPreserveSpacing, collapseAnsiToWhitespace } from './ansi.ts';
 import { jsonlPathFor } from './path-resolver.ts';

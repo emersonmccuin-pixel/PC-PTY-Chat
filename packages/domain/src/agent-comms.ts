@@ -1,10 +1,11 @@
 // Section 16b — Agent comms primitives (contract layer).
 //
 // Five MCP tools (`pc_invoke_agent`, `pc_ask_orchestrator`, `pc_ask_user`,
-// `pc_request_approval`, `pc_answer_pending`) + five channel-event kinds
+// `pc_request_approval`, `pc_answer_pending`) + six channel-event kinds
 // (`agent-asks-orchestrator`, `agent-asks-user`, `agent-approval-request`,
-// `agent-completed`, `agent-failed`). Pause-state persisted in
-// `pending_asks` (table lands in 16b.2).
+// `agent-completed`, `agent-failed`, `agent-queued-started`). Persisted
+// pause-state shapes live in `agent-system.ts` (the `agent_runs` /
+// `pending_asks` / `agent_inbox` / `agent_delivery_audit` rows).
 //
 // Pause semantics (locked in Planning 2026-05-20):
 // - `pc_invoke_agent` is NOT a pause kind. With `wait: true` the caller blocks
@@ -18,77 +19,6 @@
 // - `pc_answer_pending` is the orchestrator's tool to resume a paused agent.
 
 import type { ULID } from './ulid.ts';
-
-// ─── Pending-ask state (rows in `pending_asks`, 16b.2) ────────────────────
-
-/** Which of the three pause primitives produced this row. `pc_invoke_agent`
- *  does NOT mint a pending-ask — sync waits block in-turn; async waits track
- *  via the spawned run-id, not via a pending-ask. */
-export type PendingAskKind = 'ask-orchestrator' | 'ask-user' | 'approval';
-
-export const PENDING_ASK_KINDS: readonly PendingAskKind[] = [
-  'ask-orchestrator',
-  'ask-user',
-  'approval',
-];
-
-/** Lifecycle of a pending-ask. `waiting` is the only state that admits an
- *  answer; `answered` + `cancelled` are terminal. Status check on the
- *  orchestrator side prevents double-answering when JSONL replay re-fires an
- *  already-handled event. */
-export type PendingAskStatus = 'waiting' | 'answered' | 'cancelled';
-
-export const PENDING_ASK_STATUSES: readonly PendingAskStatus[] = [
-  'waiting',
-  'answered',
-  'cancelled',
-];
-
-/** A paused agent waiting on a single question. One CC session can mint
- *  many pending-asks over its lifetime. Audit + answer routing key off
- *  `pendingAskId`, not `sessionId`. */
-export interface PendingAsk {
-  /** PC-minted ULID. The handle the orchestrator passes to
-   *  `pc_answer_pending` to resume the agent. */
-  id: ULID;
-  /** CC session-id of the paused agent. Used by the resume primitive
-   *  (`--agent <name> --resume <sessionId>`). One session, many pending-asks
-   *  over time. */
-  sessionId: string;
-  /** Pod-row name of the paused agent (orchestrator includes this when
-   *  formatting the question for the user). */
-  agentName: string;
-  /** Project this pause belongs to. Required for cross-project bell badges
-   *  + project-scoped lists. */
-  projectId: ULID;
-  /** Optional: the parent agent run that owns this pause. Populated when the
-   *  pause originates inside a tracked agent-run row (16b.2). NULL for
-   *  orchestrator-direct pauses. */
-  runId: ULID | null;
-  /** Optional: the work-item the paused agent is operating on (taken from
-   *  the spawning context). Drives Activity Panel filtering + bell scoping. */
-  parentWorkItemId: ULID | null;
-  kind: PendingAskKind;
-  /** The question / decision text the agent surfaced. */
-  question: string;
-  /** Free-form context payload — recent transcript snippet, files inspected,
-   *  candidate options. Orchestrator decides how much to surface. */
-  context: string | null;
-  /** Multi-choice options for `approval` (and optionally `ask-user`).
-   *  Null for free-form text answers. */
-  options: PendingAskOption[] | null;
-  status: PendingAskStatus;
-  /** The answer once the orchestrator resolves the pause. NULL while
-   *  `status === 'waiting'`. */
-  answer: string | null;
-  /** Who answered. `'orchestrator'` for answers the orchestrator produced
-   *  from its own context; `'user'` for answers it forwarded via
-   *  `pc_ask_user` / `pc_request_approval`. NULL while waiting. */
-  answeredBy: 'orchestrator' | 'user' | null;
-  createdAt: number;
-  answeredAt: number | null;
-  cancelledAt: number | null;
-}
 
 /** One choice in an `options` list. `value` is what `pc_answer_pending`
  *  passes back as the answer; `label` is the user-facing string. */
@@ -171,7 +101,7 @@ export interface AgentApprovalRequestPayload extends AgentEventCommon {
  *  enough context to remind the user what was originally asked. */
 export interface AgentCompletedPayload extends AgentEventCommon {
   kind: 'agent-completed';
-  /** The originating `pc_invoke_agent` call's run-id (per 16b.2). */
+  /** The originating `pc_invoke_agent` call's run-id. */
   runId: ULID;
   /** Whatever the child returned (free-form text or JSON-encoded string). */
   result: string;
@@ -205,160 +135,6 @@ export type AgentChannelEventPayload =
   | AgentApprovalRequestPayload
   | AgentCompletedPayload
   | AgentFailedPayload;
-
-// ─── Section 24 — Instruction deposits (agent ready-ping protocol) ───────
-//
-// Inverse direction of `pending_asks`: the orchestrator deposits a follow-up
-// instruction for a resuming agent on a server-side shelf, the agent's first
-// action on boot is `pc_check_in` which atomically consumes the row and
-// returns the instruction. Delivery via tool-call return — never via PTY
-// typing. Closes the original 21.8 bug class (PC sends to claude.exe before
-// claude.exe's input pipe is ready on `--resume`).
-//
-// Lifecycle: `waiting` is the only state that admits consumption; `consumed`
-// (agent pinged + read) and `cancelled` (orphan cleanup / parent run died)
-// are terminal. Single waiting row per run guaranteed by the partial unique
-// index — concurrent-continuation guard on `agent_runs` (Section 21.5)
-// blocks the route layer before a second row could land.
-
-/** Lifecycle of an instruction deposit. */
-export type InstructionDepositStatus = 'waiting' | 'consumed' | 'cancelled';
-
-export const INSTRUCTION_DEPOSIT_STATUSES: readonly InstructionDepositStatus[] = [
-  'waiting',
-  'consumed',
-  'cancelled',
-];
-
-/** A queued instruction waiting for its target agent to ping. Matches the
- *  `instruction_deposits` table shape. */
-export interface InstructionDepositRow {
-  /** PC-minted ULID. Also the wakeup key in the in-memory EventEmitter. */
-  id: ULID;
-  /** AgentRun row id (matches `PC_AGENT_RUN_ID` in the agent's env). */
-  runId: ULID;
-  projectId: ULID;
-  /** PC session-id of the orchestrator that deposited the instruction. */
-  dispatcherSessionId: string;
-  /** The orchestrator's follow-up message. Returned verbatim to the agent. */
-  instruction: string;
-  status: InstructionDepositStatus;
-  depositedAt: number;
-  consumedAt: number | null;
-  cancelledAt: number | null;
-}
-
-// pc_check_in ─────────────────────────────────────────────────────────────
-
-/** `pc_check_in` — empty-args readiness ping. Server identifies the run via
- *  `PC_AGENT_RUN_ID` env (set at spawn). Long-polls up to 60s for a queued
- *  instruction. Returns the instruction on resolve, or a null envelope on
- *  timeout — the system-prompt fragment instructs the agent to end the turn
- *  cleanly when `input` is null. */
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface PcCheckInInput {}
-
-export type PcCheckInResult = PcCheckInResultDelivered | PcCheckInResultEmpty;
-
-export interface PcCheckInResultDelivered {
-  input: string;
-  source: 'orchestrator';
-  depositedAt: number;
-}
-
-export interface PcCheckInResultEmpty {
-  input: null;
-  source: null;
-  depositedAt: null;
-}
-
-// ─── Section 18 — Inbox + delivery audit (hybrid transport) ───────────────
-//
-// The inbox is the durability layer of the hybrid: every agent → orchestrator
-// event lands as an `agent_inbox` row before any best-effort channel push.
-// The `agent_delivery_audit` table records per-event delivery telemetry —
-// how the event eventually reached the orchestrator (autonomous channel push
-// vs caught on the next user prompt by the UserPromptSubmit hook drain).
-//
-// `AgentInboxEventKind` is a superset of `AgentChannelEventKind`: drops
-// `agent-asks-user` (architecture-review merge into `agent-asks-orchestrator`)
-// and adds two dispatch-contract events (`agent-acked` for ack-pattern
-// fire-after-confirm, `agent-queued-started` for over-cap dispatches that
-// fire later when the queue drains).
-
-/** Event-kind tag stored in `agent_inbox.event_kind`. Superset of the wire
- *  `AgentChannelEventKind` — adds dispatch-contract events that are
- *  inbox-only (never originate from a child agent). */
-export type AgentInboxEventKind =
-  | 'agent-acked'
-  | 'agent-completed'
-  | 'agent-failed'
-  | 'agent-asks-orchestrator'
-  | 'agent-approval-request'
-  | 'agent-queued-started';
-
-export const AGENT_INBOX_EVENT_KINDS: readonly AgentInboxEventKind[] = [
-  'agent-acked',
-  'agent-completed',
-  'agent-failed',
-  'agent-asks-orchestrator',
-  'agent-approval-request',
-  'agent-queued-started',
-];
-
-/** Lifecycle of an inbox row. `pending` admits draining (channel push or hook
- *  prepend); `delivered` is terminal. Status check prevents double-delivery
- *  when both transports race. */
-export type AgentInboxStatus = 'pending' | 'delivered';
-
-export const AGENT_INBOX_STATUSES: readonly AgentInboxStatus[] = [
-  'pending',
-  'delivered',
-];
-
-/** How an inbox row eventually reached the orchestrator. `'autonomous'` =
- *  channel push delivered while the orchestrator was idle (woke it up).
- *  `'user-prompt'` = channel didn't deliver in time; UserPromptSubmit hook
- *  drained the row as preamble on the next prompt. `'unknown'` covers
- *  recorded-but-not-yet-routed rows (e.g. immediately after enqueue). */
-export type AgentDeliveryDriver = 'autonomous' | 'user-prompt' | 'unknown';
-
-export const AGENT_DELIVERY_DRIVERS: readonly AgentDeliveryDriver[] = [
-  'autonomous',
-  'user-prompt',
-  'unknown',
-];
-
-/** One inbox row. Matches the `agent_inbox` table shape. */
-export interface AgentInboxRow {
-  id: ULID;
-  projectId: ULID;
-  /** CC sessionId of the orchestrator that should receive this event. */
-  recipientSessionId: string;
-  eventKind: AgentInboxEventKind;
-  /** Pre-rendered `<channel>...</channel>` body, ready to splice into a
-   *  prompt or push via channel. Authored at enqueue time so the drain
-   *  paths don't have to re-render. */
-  payloadBody: string;
-  status: AgentInboxStatus;
-  createdAt: number;
-  /** null until status flips to `'delivered'`. */
-  deliveredAt: number | null;
-}
-
-/** One audit row. Matches the `agent_delivery_audit` table shape. Records
- *  the validation-pass's success metric: how often does the channel push
- *  autonomously wake the orchestrator vs the user-prompt fallback. */
-export interface AgentDeliveryAuditRow {
-  id: ULID;
-  inboxId: ULID;
-  channelPushAttemptedAt: number | null;
-  /** 0/1 when attempted; null when not attempted (skipped or transport
-   *  unavailable). */
-  channelPushSucceeded: boolean | null;
-  hookDrainedAt: number | null;
-  driver: AgentDeliveryDriver;
-}
 
 // ─── MCP tool input / output shapes ───────────────────────────────────────
 
@@ -471,7 +247,7 @@ export interface PcRequestApprovalResult {
 /** `pc_answer_pending` — orchestrator's tool to resume a paused agent.
  *  Re-spawns the agent with `--resume <sessionId>` and writes `answer` as
  *  the next user message. Idempotent against double-fire: status check on
- *  the row (`waiting` only) guards JSONL-replay re-delivery. */
+ *  the row (`open` only) guards JSONL-replay re-delivery. */
 export interface PcAnswerPendingInput {
   pendingAskId: ULID;
   answer: string;

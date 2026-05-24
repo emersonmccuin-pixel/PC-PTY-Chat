@@ -1,28 +1,23 @@
-// Section 25 — agent system v2 tables (Session 11 / Phase D — bare names).
+// Section 25 — agent system tables (post-Phase-E bare names).
 //
-// Phase D renamed v1 tables → `*_v1_archive` and promoted these to bare names.
-// File continues to declare them here (rather than fold into schema.ts) so the
-// section-25 history stays grep-able; Phase E may merge if there's a reason.
+// Kept in a separate file from `schema.ts` so the agent-system concern stays
+// grep-able. Tables are bare-named — the legacy v1 set was renamed to
+// `*_v1_archive` by migration 0015 (Phase D, Session 11).
 //
 // Conventions match schema.ts: ULID PKs as `text`, timestamps as `integer`
 // epoch ms, JSON blobs via `text({ mode: 'json' })`, foreign keys declared via
 // `.references(...)`.
-//
-// NOTE: v1's bare-named table-variable identifiers (`agentRuns`, `pendingAsks`,
-// `agentInbox`, `agentDeliveryAudit`) were deleted from schema.ts in Phase D —
-// the bare-named tables declared here are the only source. Domain types still
-// carry the *V2 suffix; that's a Phase E rename target.
 
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
-  AgentInboxDriverV2,
-  AgentInboxEventKindV2,
-  AgentInboxStatusV2,
-  AgentRunFailureCauseV2,
-  AgentRunStatusV2,
-  PendingAskKindV2,
+  AgentInboxDriver,
+  AgentInboxEventKind,
+  AgentInboxStatus,
+  AgentRunFailureCause,
+  AgentRunStatus,
+  PendingAskKind,
   PendingAskOption,
-  PendingAskStatusV2,
+  PendingAskStatus,
   ULID,
 } from '@pc/domain';
 
@@ -37,7 +32,7 @@ import { projects } from './schema.ts';
  * dispatch creates a new row whose `cc_session_id` matches the parent's.
  * Walking `continues` backwards reconstructs the chain.
  *
- * `pod_revision_at_dispatch` + `pod_revision_at_resume` enable §6.4 drift
+ * `pod_revision_at_dispatch` + `pod_revision_at_resume` enable drift
  * detection. If they differ, the orchestrator can surface "the pod changed
  * between dispatch and resume" to the user.
  */
@@ -58,7 +53,7 @@ export const agentRuns = sqliteTable(
     podRevisionAtDispatch: text('pod_revision_at_dispatch'),
     /** Updated-at hash at resume time. NULL until resumed. */
     podRevisionAtResume: text('pod_revision_at_resume'),
-    status: text('status').notNull().$type<AgentRunStatusV2>(),
+    status: text('status').notNull().$type<AgentRunStatus>(),
     /** Self-FK to parent run id for continuations. NULL for original
      *  dispatches. */
     continues: text('continues').$type<ULID | null>(),
@@ -68,7 +63,7 @@ export const agentRuns = sqliteTable(
     input: text('input'),
     /** Final assistant text. NULL until terminal-completed. */
     result: text('result'),
-    failureCause: text('failure_cause').$type<AgentRunFailureCauseV2 | null>(),
+    failureCause: text('failure_cause').$type<AgentRunFailureCause | null>(),
     failureReason: text('failure_reason'),
     queuedAt: integer('queued_at').notNull(),
     spawnedAt: integer('spawned_at'),
@@ -107,11 +102,11 @@ export const pendingAsks = sqliteTable(
       .$type<ULID>()
       .references(() => projects.id),
     parentWorkItemId: text('parent_work_item_id').$type<ULID | null>(),
-    kind: text('kind').notNull().$type<PendingAskKindV2>(),
+    kind: text('kind').notNull().$type<PendingAskKind>(),
     promptBody: text('prompt_body').notNull(),
     context: text('context'),
     options: text('options', { mode: 'json' }).$type<PendingAskOption[] | null>(),
-    status: text('status').notNull().default('open').$type<PendingAskStatusV2>(),
+    status: text('status').notNull().default('open').$type<PendingAskStatus>(),
     answerBody: text('answer_body'),
     answeredBy: text('answered_by').$type<'orchestrator' | 'user' | null>(),
     createdAt: integer('created_at').notNull(),
@@ -126,9 +121,8 @@ export const pendingAsks = sqliteTable(
 );
 
 /**
- * Durability layer of the hybrid delivery transport (design §5). Every
- * outbound agent → recipient event lands here as a row before any
- * best-effort channel push.
+ * Durability layer of the hybrid delivery transport. Every outbound agent →
+ * recipient event lands here as a row before any best-effort channel push.
  */
 export const agentInbox = sqliteTable(
   'agent_inbox',
@@ -140,10 +134,10 @@ export const agentInbox = sqliteTable(
       .references(() => projects.id),
     /** PC session-id of the recipient surface. */
     pcSessionId: text('pc_session_id').notNull(),
-    kind: text('kind').notNull().$type<AgentInboxEventKindV2>(),
+    kind: text('kind').notNull().$type<AgentInboxEventKind>(),
     body: text('body').notNull(),
-    status: text('status').notNull().default('pending').$type<AgentInboxStatusV2>(),
-    driver: text('driver').$type<AgentInboxDriverV2 | null>(),
+    status: text('status').notNull().default('pending').$type<AgentInboxStatus>(),
+    driver: text('driver').$type<AgentInboxDriver | null>(),
     createdAt: integer('created_at').notNull(),
     deliveredAt: integer('delivered_at'),
   },
@@ -169,7 +163,7 @@ export const agentDeliveryAudit = sqliteTable(
       .notNull()
       .$type<ULID>()
       .references(() => agentInbox.id),
-    driver: text('driver').notNull().$type<AgentInboxDriverV2>(),
+    driver: text('driver').notNull().$type<AgentInboxDriver>(),
     deliveredAt: integer('delivered_at').notNull(),
     /** Wall-clock ms between inbox creation and delivery flip. */
     latencyMs: integer('latency_ms').notNull(),

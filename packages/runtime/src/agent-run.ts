@@ -16,7 +16,7 @@
 // HTTP/MCP layers wire it to PC's surfaces.
 
 import { EventEmitter } from 'node:events';
-import type { JsonlEvent } from '../jsonl-tailer.ts';
+import type { JsonlEvent } from './jsonl-tailer.ts';
 import {
   AgentRunRegistry,
   type AdmissionTicket,
@@ -559,7 +559,7 @@ function stringify(err: unknown): string {
 
 /** Extract the assistant's text from a JSONL event. Handles both the v1
  *  JsonlTailer event shape (`{ kind: 'jsonl-turn-end', text, stopReason }`)
- *  AND the v2 JsonlTailerV2 / fake-event shape that carries a raw `row`
+ *  AND the v2 AgentRunJsonlTailer / fake-event shape that carries a raw `row`
  *  field. Returns null when neither shape applies. */
 function extractAssistantText(ev: JsonlEvent): string | null {
   // v1/v2 typed shape — `jsonl-turn-end` carries the assistant text directly
@@ -597,7 +597,7 @@ function extractAssistantText(ev: JsonlEvent): string | null {
  *  both event shapes: the v1 JsonlTailer's `kind: 'jsonl-turn-end'` (the
  *  production tailer Session 5's LowLevelSpawn wires through) AND the
  *  raw-row shape used by Session 6's unit tests + Session 7's
- *  JsonlTailerV2 (which carries `row` alongside `kind`). */
+ *  AgentRunJsonlTailer (which carries `row` alongside `kind`). */
 function isTurnEnd(ev: JsonlEvent): boolean {
   // v1/v2 typed shape — the tailer itself decided this line ends the turn.
   // The tailer filters out `tool_use` stop reasons before emitting, so this

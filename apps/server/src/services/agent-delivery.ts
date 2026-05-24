@@ -1,13 +1,10 @@
-// Section 25 Session 7 — v2 hybrid delivery primitive.
+// Section 25 — hybrid delivery primitive.
 //
-// Sits alongside v1's `agent-inbox-emit.ts` during the parallel build. Same
-// contract (durable inbox write first + best-effort channel push +
-// auto-flush on bridge registration) but slimmed:
-//
-// - Audit row is written ONLY on successful delivery (one row per flip,
-//   not one row per enqueue). v1's "stub audit at enqueue" pattern added
-//   noise without diagnostic value — the inbox-row `status` field already
-//   tells us whether anything ever delivered.
+// Durable inbox write first + best-effort channel push + auto-flush on bridge
+// registration. Audit row is written ONLY on successful delivery (one row per
+// flip, not one row per enqueue) — the inbox-row `status` field already tells
+// us whether anything ever delivered, so a stub-at-enqueue audit row is noise
+// without diagnostic value.
 //
 // - Driver values are `'channel' | 'user-prompt'` (no `'autonomous'`,
 //   no `'unknown'`). Matches design §5.4's identifier set.
@@ -16,7 +13,7 @@
 //   glossary in design §1.
 //
 // This file is NOT wired into channel-server yet — Session 9's cutover
-// swaps the v1 onRegister callback over to `drainPendingForSessionV2`.
+// swaps the v1 onRegister callback over to `drainPendingForSession`.
 // During Sessions 7–8 it's reachable for tests + future MCP tool work
 // (Session 8 pause/resume) but the production transport path still
 // flows through v1.
@@ -25,33 +22,33 @@
 // as v1 (hybrid | inbox-only | channel-only). Identical semantics.
 
 import {
-  enqueueInboxRowV2,
-  listPendingForSessionV2,
-  markInboxDeliveredV2,
+  enqueueInboxRow,
+  listPendingForSession,
+  markInboxDelivered,
 } from '@pc/db';
-import type { AgentInboxEventKindV2, AgentInboxRowV2, ULID } from '@pc/domain';
+import type { AgentInboxEventKind, AgentInboxRow, ULID } from '@pc/domain';
 
-import type { ChannelServer } from '../channel-server.ts';
+import type { ChannelServer } from './channel-server.ts';
 
-export type DeliveryTransportModeV2 = 'hybrid' | 'inbox-only' | 'channel-only';
+export type DeliveryTransportMode = 'hybrid' | 'inbox-only' | 'channel-only';
 
-export function readTransportModeV2(): DeliveryTransportModeV2 {
+export function readTransportMode(): DeliveryTransportMode {
   const raw = (process.env.PC_DELIVERY_TRANSPORT ?? '').trim().toLowerCase();
   if (raw === 'inbox-only' || raw === 'channel-only') return raw;
   return 'hybrid';
 }
 
-export interface EnqueueAndPushV2Input {
+export interface EnqueueAndPushInput {
   projectId: ULID;
   pcSessionId: string;
-  kind: AgentInboxEventKindV2;
+  kind: AgentInboxEventKind;
   slug: string;
   source: string;
   body: string;
   sender?: string;
 }
 
-export interface EnqueueAndPushV2Result {
+export interface EnqueueAndPushResult {
   /** ULID of the inbox row, or null when transport='channel-only' bypassed
    *  the inbox entirely. */
   inboxId: ULID | null;
@@ -71,11 +68,11 @@ export interface EnqueueAndPushV2Result {
  *   - 'channel-only'  : skip inbox writes (pre-Section 18 behavior; emergency
  *                       revert path — durability is sacrificed)
  */
-export function enqueueAndPushV2(
+export function enqueueAndPush(
   channelServer: ChannelServer,
-  input: EnqueueAndPushV2Input,
-): EnqueueAndPushV2Result {
-  const transport = readTransportModeV2();
+  input: EnqueueAndPushInput,
+): EnqueueAndPushResult {
+  const transport = readTransportMode();
 
   if (transport === 'channel-only') {
     const delivered = channelServer.emitToSession({
@@ -89,7 +86,7 @@ export function enqueueAndPushV2(
     return { inboxId: null, channelDelivered: delivered };
   }
 
-  const row = enqueueInboxRowV2({
+  const row = enqueueInboxRow({
     projectId: input.projectId,
     pcSessionId: input.pcSessionId,
     kind: input.kind,
@@ -111,7 +108,7 @@ export function enqueueAndPushV2(
     sender: input.sender,
   });
   if (delivered) {
-    markInboxDeliveredV2({
+    markInboxDelivered({
       inboxId: row.id,
       deliveredAt: Date.now(),
       driver: 'channel',
@@ -120,7 +117,7 @@ export function enqueueAndPushV2(
   return { inboxId: row.id, channelDelivered: delivered };
 }
 
-export interface DrainResultV2 {
+export interface DrainResult {
   /** Number of pending inbox rows whose `pending → delivered` flip succeeded
    *  under this drain. */
   drained: number;
@@ -138,19 +135,19 @@ export interface DrainResultV2 {
  *  Same "drain ALL pending rows" semantics as v1: a fresh bridge generally
  *  means the prior CC for this session-id is gone, so anything still
  *  pending is by definition undelivered. */
-export function drainPendingForSessionV2(
+export function drainPendingForSession(
   channelServer: ChannelServer,
   projectId: ULID,
   pcSessionId: string,
   slug: string,
-): DrainResultV2 {
-  const transport = readTransportModeV2();
+): DrainResult {
+  const transport = readTransportMode();
   if (transport === 'channel-only') {
     // No inbox writes in channel-only mode — nothing to drain.
     return { drained: 0, attempted: 0 };
   }
 
-  const pending: AgentInboxRowV2[] = listPendingForSessionV2(pcSessionId);
+  const pending: AgentInboxRow[] = listPendingForSession(pcSessionId);
   let drained = 0;
   let attempted = 0;
   for (const row of pending) {
@@ -168,7 +165,7 @@ export function drainPendingForSessionV2(
       sender: 'pc',
     });
     if (delivered) {
-      const flipped = markInboxDeliveredV2({
+      const flipped = markInboxDelivered({
         inboxId: row.id,
         deliveredAt: Date.now(),
         driver: 'channel',

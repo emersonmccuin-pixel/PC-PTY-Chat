@@ -1,4 +1,4 @@
-// Section 25 Session 7 — JsonlTailerV2 contract.
+// Section 25 Session 7 — AgentRunJsonlTailer contract.
 //
 // Pins the §7 signal set: turn-end OR rule, pause-detected event, interleaved-
 // thinking fix, CC 2.1 queue protocol, setImmediate-deferred first emit.
@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { JsonlTailerV2, type JsonlEventV2 } from '../../src/v2/tailer.ts';
+import { AgentRunJsonlTailer, type AgentRunJsonlEvent } from '../src/agent-run-jsonl-tailer.ts';
 
 function freshFile(lines: object[] = []): string {
   const dir = mkdtempSync(join(tmpdir(), 'pc-tailer-v2-'));
@@ -29,10 +29,10 @@ const tick = (ms = 5) => new Promise<void>((r) => setTimeout(r, ms));
 async function collect(
   filePath: string,
   opts: { startLine?: number } = {},
-): Promise<JsonlEventV2[]> {
-  const events: JsonlEventV2[] = [];
-  const tailer = new JsonlTailerV2({ filePath, ...opts, pollIntervalMs: 50 });
-  tailer.on('event', (e: JsonlEventV2) => events.push(e));
+): Promise<AgentRunJsonlEvent[]> {
+  const events: AgentRunJsonlEvent[] = [];
+  const tailer = new AgentRunJsonlTailer({ filePath, ...opts, pollIntervalMs: 50 });
+  tailer.on('event', (e: AgentRunJsonlEvent) => events.push(e));
   tailer.start();
   await tick();
   tailer.stop();
@@ -43,11 +43,11 @@ async function collect(
 
 test('start() defers initial emit via setImmediate so late listeners catch up', async () => {
   const f = freshFile([{ type: 'user', message: { role: 'user', content: 'hello' } }]);
-  const tailer = new JsonlTailerV2({ filePath: f, pollIntervalMs: 50 });
+  const tailer = new AgentRunJsonlTailer({ filePath: f, pollIntervalMs: 50 });
   tailer.start();
   // Listener attached AFTER start(), but still BEFORE the setImmediate tick.
-  const events: JsonlEventV2[] = [];
-  tailer.on('event', (e: JsonlEventV2) => events.push(e));
+  const events: AgentRunJsonlEvent[] = [];
+  tailer.on('event', (e: AgentRunJsonlEvent) => events.push(e));
   await tick();
   tailer.stop();
   assert.equal(events.length, 1);

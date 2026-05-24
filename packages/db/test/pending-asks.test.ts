@@ -14,13 +14,13 @@ const {
   closeDb,
   runMigrations,
   createProject,
-  createPendingAskV2,
-  getPendingAskV2,
-  insertAgentRunRowV2,
-  listOpenPendingAsksV2ForProject,
-  listOpenPendingAsksV2ForSession,
-  markPendingAskAnsweredV2,
-  markPendingAskCancelledV2,
+  createPendingAsk,
+  getPendingAsk,
+  insertAgentRunRow,
+  listOpenPendingAsksForProject,
+  listOpenPendingAsksForSession,
+  markPendingAskAnswered,
+  markPendingAskCancelled,
   newId,
 } = await import('../src/index.ts');
 import type { Stage, ULID } from '@pc/domain';
@@ -38,7 +38,7 @@ after(() => {
 
 function seedRun(projectId: ULID, podName = 'researcher', cc = 'cc-uuid-x'): ULID {
   const id = newId();
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id,
     projectId,
     podName,
@@ -51,12 +51,12 @@ function seedRun(projectId: ULID, podName = 'researcher', cc = 'cc-uuid-x'): ULI
   return id;
 }
 
-test('createPendingAskV2 writes an open row with defaults', () => {
+test('createPendingAsk writes an open row with defaults', () => {
   const p = createProject({ slug: 'pa-v2-create', name: 'PA V2 Create', stages, folderPath: tmpDir });
   const runId = seedRun(p.id as ULID);
   const askId = newId();
 
-  const row = createPendingAskV2({
+  const row = createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-x',
@@ -74,16 +74,16 @@ test('createPendingAskV2 writes an open row with defaults', () => {
   assert.equal(row.options, null);
   assert.equal(row.context, null);
 
-  const fetched = getPendingAskV2(askId);
+  const fetched = getPendingAsk(askId);
   assert.ok(fetched);
   assert.equal(fetched!.kind, 'orchestrator');
 });
 
-test('markPendingAskAnsweredV2 flips open → answered atomically; second call returns false', () => {
+test('markPendingAskAnswered flips open → answered atomically; second call returns false', () => {
   const p = createProject({ slug: 'pa-v2-answer', name: 'Answer', stages, folderPath: tmpDir });
   const runId = seedRun(p.id as ULID, 'researcher', 'cc-uuid-answer');
   const askId = newId();
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-answer',
@@ -97,7 +97,7 @@ test('markPendingAskAnsweredV2 flips open → answered atomically; second call r
     now: 1_700_000_000_000,
   });
 
-  const first = markPendingAskAnsweredV2({
+  const first = markPendingAskAnswered({
     id: askId,
     answer: 'a',
     answeredBy: 'user',
@@ -105,7 +105,7 @@ test('markPendingAskAnsweredV2 flips open → answered atomically; second call r
   });
   assert.equal(first, true);
 
-  const second = markPendingAskAnsweredV2({
+  const second = markPendingAskAnswered({
     id: askId,
     answer: 'b',
     answeredBy: 'user',
@@ -113,7 +113,7 @@ test('markPendingAskAnsweredV2 flips open → answered atomically; second call r
   });
   assert.equal(second, false);
 
-  const row = getPendingAskV2(askId);
+  const row = getPendingAsk(askId);
   assert.equal(row!.status, 'answered');
   assert.equal(row!.answerBody, 'a');
   assert.equal(row!.answeredBy, 'user');
@@ -122,11 +122,11 @@ test('markPendingAskAnsweredV2 flips open → answered atomically; second call r
   assert.equal(row!.options?.length, 2);
 });
 
-test('markPendingAskCancelledV2 flips open → cancelled; cancelling an answered row is a no-op', () => {
+test('markPendingAskCancelled flips open → cancelled; cancelling an answered row is a no-op', () => {
   const p = createProject({ slug: 'pa-v2-cancel', name: 'Cancel', stages, folderPath: tmpDir });
   const runId = seedRun(p.id as ULID, 'researcher', 'cc-uuid-cancel');
   const askId = newId();
-  createPendingAskV2({
+  createPendingAsk({
     id: askId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-cancel',
@@ -140,19 +140,19 @@ test('markPendingAskCancelledV2 flips open → cancelled; cancelling an answered
     now: 1_700_000_000_000,
   });
 
-  const cancelled = markPendingAskCancelledV2(askId, 1_700_000_003_000);
+  const cancelled = markPendingAskCancelled(askId, 1_700_000_003_000);
   assert.equal(cancelled, true);
 
-  const row = getPendingAskV2(askId);
+  const row = getPendingAsk(askId);
   assert.equal(row!.status, 'cancelled');
   assert.equal(row!.cancelledAt, 1_700_000_003_000);
 
   // A second cancel is a no-op.
-  assert.equal(markPendingAskCancelledV2(askId, 1_700_000_004_000), false);
+  assert.equal(markPendingAskCancelled(askId, 1_700_000_004_000), false);
 
   // Cancelling a different already-answered row is also a no-op.
   const askId2 = newId();
-  createPendingAskV2({
+  createPendingAsk({
     id: askId2,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-cancel',
@@ -161,13 +161,13 @@ test('markPendingAskCancelledV2 flips open → cancelled; cancelling an answered
     promptBody: '?',
     now: 1_700_000_000_000,
   });
-  markPendingAskAnsweredV2({
+  markPendingAskAnswered({
     id: askId2,
     answer: 'k',
     answeredBy: 'orchestrator',
     now: 1_700_000_001_000,
   });
-  assert.equal(markPendingAskCancelledV2(askId2, 1_700_000_005_000), false);
+  assert.equal(markPendingAskCancelled(askId2, 1_700_000_005_000), false);
 });
 
 test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => {
@@ -178,7 +178,7 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
   const newerId = newId();
   const answeredId = newId();
 
-  createPendingAskV2({
+  createPendingAsk({
     id: oldId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-target',
@@ -187,7 +187,7 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     promptBody: 'first',
     now: 1_700_000_000_000,
   });
-  createPendingAskV2({
+  createPendingAsk({
     id: newerId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-target',
@@ -197,7 +197,7 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     now: 1_700_000_001_000,
   });
   // Answered rows are excluded from the open list.
-  createPendingAskV2({
+  createPendingAsk({
     id: answeredId,
     agentRunId: runId,
     ccSessionId: 'cc-uuid-target',
@@ -207,7 +207,7 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     options: [{ value: 'ok', label: 'OK' }],
     now: 1_700_000_002_000,
   });
-  markPendingAskAnsweredV2({
+  markPendingAskAnswered({
     id: answeredId,
     answer: 'ok',
     answeredBy: 'orchestrator',
@@ -222,7 +222,7 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     folderPath: tmpDir,
   });
   const otherRunId = seedRun(otherP.id as ULID, 'planner', 'cc-uuid-other');
-  createPendingAskV2({
+  createPendingAsk({
     id: newId(),
     agentRunId: otherRunId,
     ccSessionId: 'cc-uuid-other',
@@ -232,13 +232,13 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     now: 1_700_000_005_000,
   });
 
-  const byProject = listOpenPendingAsksV2ForProject(p.id as ULID);
+  const byProject = listOpenPendingAsksForProject(p.id as ULID);
   assert.deepEqual(
     byProject.map((r) => r.id),
     [oldId, newerId],
   );
 
-  const bySession = listOpenPendingAsksV2ForSession('cc-uuid-target');
+  const bySession = listOpenPendingAsksForSession('cc-uuid-target');
   assert.deepEqual(
     bySession.map((r) => r.id),
     [oldId, newerId],

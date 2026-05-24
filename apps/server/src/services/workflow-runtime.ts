@@ -79,22 +79,22 @@ import {
 import type { NodeEdges } from '@pc/domain';
 import {
   encodeCwdForClaude,
-  spawnSubagentV2,
+  spawnSubagent,
   type SubagentSpawnHandle,
   type SubagentSpawnRequest,
 } from '@pc/runtime';
 import {
   registerWorkflowSubagentHandshake,
-} from './v2/workflow-subagent-handshake.ts';
+} from './workflow-subagent-handshake.ts';
 
-// Section 25 Phase D — workflow subagent spawner is `spawnSubagentV2` (the
+// Section 25 Phase D — workflow subagent spawner is `spawnSubagent` (the
 // LowLevelSpawn-based v2 path). Wraps the runtime entry with the apps/server
 // handshake-registry binding so workflow-spawned subagents receive their MCP
 // `oninitialized` notification via the existing /api/internal/mcp-handshake
 // route. Tests can still inject a custom `subagentSpawner` to bypass the
 // live spawn path entirely.
 const defaultSpawnSubagent = (req: SubagentSpawnRequest): SubagentSpawnHandle =>
-  spawnSubagentV2(req, {
+  spawnSubagent(req, {
     registerHandshakeListener: registerWorkflowSubagentHandshake,
   });
 

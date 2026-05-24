@@ -1,6 +1,4 @@
-// Section 25 Phase D — extracted from the deleted v1 AgentRunManager. The
-// invoke-depth cap is provider-agnostic plumbing (no relation to v1 vs v2
-// transport), so it survives the rip in its own module.
+// Invoke-depth cap on `pc_invoke_agent` nesting.
 //
 // Cap of 5 means: orchestrator (depth 1) → agent (depth 2) → … → depth 5.
 // Anything deeper rejects at the invoke route before pod materialisation.

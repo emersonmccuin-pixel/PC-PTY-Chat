@@ -1,6 +1,6 @@
 // Section 25 Session 10 — workflow runtime subagent spawner, v2.
 //
-// Drop-in replacement for v1 `spawnSubagent`. Public surface — `spawnSubagentV2`,
+// Drop-in replacement for v1 `spawnSubagent`. Public surface — `spawnSubagent`,
 // `SubagentSpawnHandle`, `SubagentSpawnRequest`, `SubagentSpawnResult` —
 // matches v1 byte-for-byte so the workflow-runtime swap is mechanical and
 // every test fake in `workflow-firing-smoke.test.ts` keeps working unchanged.
@@ -30,8 +30,8 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { EventEmitter } from 'node:events';
-import { LowLevelSpawn, type LowLevelSpawnInput } from './v2/low-level-spawn.ts';
-import type { SpawnLike } from './v2/agent-run.ts';
+import { LowLevelSpawn, type LowLevelSpawnInput } from './low-level-spawn.ts';
+import type { SpawnLike } from './agent-run.ts';
 import type { JsonlEvent } from './jsonl-tailer.ts';
 import type { SessionState } from './pty-session.ts';
 
@@ -115,7 +115,7 @@ export interface SubagentSessionLike extends EventEmitter {
 }
 
 /** Workflow-spawner deps. */
-export interface SubagentSpawnerV2Deps {
+export interface SubagentSpawnerDeps {
   /** Override the LowLevelSpawn factory. Tests inject an EventEmitter
    *  that satisfies `SpawnLike` and synthesises lifecycle events. */
   createLowLevelSpawn?: (input: LowLevelSpawnInput) => SpawnLike;
@@ -140,9 +140,9 @@ const PC_COMPLETE_NODE_TOOL = 'mcp__pc-rig__pc_complete_node';
 const PC_NODE_FAILED_TOOL = 'mcp__pc-rig__pc_node_failed';
 
 /** v2 workflow subagent spawn. Same public surface as v1 `spawnSubagent`. */
-export function spawnSubagentV2(
+export function spawnSubagent(
   req: SubagentSpawnRequest,
-  deps: SubagentSpawnerV2Deps = {},
+  deps: SubagentSpawnerDeps = {},
 ): SubagentSpawnHandle {
   const createSpawn =
     deps.createLowLevelSpawn ??

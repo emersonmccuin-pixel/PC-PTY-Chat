@@ -1,39 +1,33 @@
-// Section 25 Session 9 — AgentRun construction + registration helper.
+// Section 25 — AgentRun construction + registration helper.
 //
-// The orchestration layer the v2 HTTP routes call through. Sits on top of:
+// The orchestration layer the HTTP routes call through. Sits on top of:
 //
-//   - Session 8's `continueAgentV2` (mints the agent_runs_v2 row + computes
-//     pod revision for continuation dispatches).
-//   - Session 6's `AgentRun` + `AgentRunRegistry` wrappers.
-//   - Section 17's `preparePodSpawn` (pod materialisation; reused unchanged
-//     from v1 — same shared `materializePod` under the hood).
-//   - Session 8's `getActiveRunRegistry` (process-wide indexed lookup the
-//     pause/resume layer queries).
-//   - Session 7's `enqueueAndPushV2` (hybrid delivery for terminal envelopes).
+//   - `continueAgent` (mints the `agent_runs` row + computes pod revision
+//     for continuation dispatches).
+//   - `AgentRun` + `AgentRunRegistry` wrappers from @pc/runtime.
+//   - `preparePodSpawn` (pod materialisation via the shared `materializePod`).
+//   - `getActiveRunRegistry` (process-wide indexed lookup the pause/resume
+//     layer queries).
+//   - `enqueueAndPush` (hybrid delivery for terminal envelopes).
 //
 // Responsibilities:
 //
-//   - `dispatchFreshAgentV2`: validates the pod exists, materialises it,
-//     mints fresh agent_run_id + cc_provider_session_id (UUID), inserts an
-//     agent_runs_v2 row with `status: 'queued'` (Section 6's AgentRunRegistry
-//     decides whether the queue is full or the run goes straight to spawning),
+//   - `dispatchFreshAgent`: validates the pod exists, materialises it, mints
+//     fresh agent_run_id + cc_provider_session_id (UUID), inserts an
+//     `agent_runs` row with `status: 'queued'` (the AgentRunRegistry decides
+//     whether the queue is full or the run goes straight to spawning),
 //     constructs the AgentRun, registers it with active-runs, wires terminal
 //     persistence + channel-event emission, calls `run.start()`.
 //
-//   - `dispatchContinueAgentV2`: validates the parent run + JSONL retention
-//     guard + concurrent-continuation guard (Session 8's `continueAgentV2`
-//     plan does this), materialises the pod (same name as parent), constructs
-//     the AgentRun in mode='resume' with the parent's cc_provider_session_id,
-//     wires terminal handlers + start.
+//   - `dispatchContinueAgent`: validates the parent run + JSONL retention
+//     guard + concurrent-continuation guard (`continueAgent` plan does this),
+//     materialises the pod (same name as parent), constructs the AgentRun in
+//     mode='resume' with the parent's cc_provider_session_id, wires terminal
+//     handlers + start.
 //
-// Production callers: the two v2 HTTP routes added in this session
-// (`/api/projects/:projectId/agents/v2/:name/invoke` and
-// `/api/projects/:projectId/agent-runs/v2/:runId/continue`).
-//
-// What's NOT here: tool catalog wiring, pod prompt updates, smoke test —
-// those land in the same session as siblings of this module. Parallel-build
-// invariant: nothing here references v1 paths. Calling `dispatchFreshAgentV2`
-// has no effect on v1's `AgentRunManager`.
+// Production callers: the two HTTP routes
+// (`/api/projects/:projectId/agents/:name/invoke` and
+// `/api/projects/:projectId/agent-runs/:runId/continue`).
 
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -42,53 +36,49 @@ import { resolve } from 'node:path';
 import {
   computePodRevision,
   getAgentByName,
-  insertAgentRunRowV2,
-  markAgentRunTerminalV2,
+  insertAgentRunRow,
+  markAgentRunTerminal,
   newId,
-  updateAgentRunStatusV2,
+  updateAgentRunStatus,
 } from '@pc/db';
 import type {
   AgentFailedPayload,
-  AgentInboxEventKindV2,
-  AgentRunFailureCauseV2,
+  AgentInboxEventKind,
+  AgentRunFailureCause,
   ULID,
 } from '@pc/domain';
-import { v2 as runtimeV2 } from '@pc/runtime';
+import { AgentRun, AgentRunRegistry } from '@pc/runtime';
+import type { AgentRunRecord } from '@pc/runtime';
 
 import {
   buildAgentCompletedBody,
   buildAgentFailedBody,
   buildAgentQueuedStartedBody,
-} from '../agent-event-header.ts';
-import { preparePodSpawn, type PodSpawnPrep } from '../pod-spawn.ts';
-import type { ChannelServer } from '../channel-server.ts';
+} from './agent-event-header.ts';
+import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
+import type { ChannelServer } from './channel-server.ts';
 
-import { getActiveRunRegistry, type ActiveRunRegistry } from './active-runs.ts';
-import { enqueueAndPushV2 } from './delivery.ts';
-import { continueAgentV2, type ContinueAgentV2Result } from './pause-resume.ts';
+import { getActiveRunRegistry, type ActiveRunRegistry } from './agent-active-runs.ts';
+import { enqueueAndPush } from './agent-delivery.ts';
+import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
 
-type AgentRunRecord = runtimeV2.AgentRunRecord;
-
-const { AgentRun, AgentRunRegistry } = runtimeV2;
-type AgentRun = runtimeV2.AgentRun;
-
-/** Process-wide cap-and-queue registry shared by every v2 dispatch. Lives in
- *  the runtime layer (Section 6); we hold one singleton in this module so
- *  every route+spawn agrees on the active count. Tests inject their own via
- *  the deps argument on the helpers below. */
-let runRegistrySingleton: runtimeV2.AgentRunRegistry | null = null;
-function getRunRegistry(): runtimeV2.AgentRunRegistry {
+/** Process-wide cap-and-queue registry shared by every dispatch. Lives in
+ *  the runtime layer; we hold one singleton in this module so every
+ *  route+spawn agrees on the active count. Tests inject their own via the
+ *  deps argument on the helpers below. */
+let runRegistrySingleton: AgentRunRegistry | null = null;
+function getRunRegistry(): AgentRunRegistry {
   if (!runRegistrySingleton) runRegistrySingleton = new AgentRunRegistry();
   return runRegistrySingleton;
 }
 
 /** Test-only override. Pass `null` to revert to a fresh singleton on next
  *  read. */
-export function setRunRegistryForTest(reg: runtimeV2.AgentRunRegistry | null): void {
+export function setRunRegistryForTest(reg: AgentRunRegistry | null): void {
   runRegistrySingleton = reg;
 }
 
-export interface DispatchFreshAgentV2Input {
+export interface DispatchFreshAgentInput {
   projectId: ULID;
   /** Absolute path to the project's worktree. Becomes the spawn cwd + the
    *  worktree-bind root for the path-guard hook. */
@@ -109,11 +99,11 @@ export interface DispatchFreshAgentV2Input {
   slug: string;
 }
 
-export interface DispatchContinueAgentV2Input {
+export interface DispatchContinueAgentInput {
   projectId: ULID;
   worktreeDir: string;
   /** Parent run id to continue. Same scope rules as Session 8's
-   *  `continueAgentV2` — parent must be terminal completed/failed, JSONL
+   *  `continueAgent` — parent must be terminal completed/failed, JSONL
    *  must still be on disk, no other continuation in flight. */
   parentAgentRunId: ULID;
   input: string;
@@ -124,10 +114,10 @@ export interface DispatchContinueAgentV2Input {
   slug: string;
 }
 
-export interface DispatchAgentV2Deps {
+export interface DispatchAgentDeps {
   channelServer: ChannelServer;
   /** Inject for tests. Defaults to the process-wide singletons. */
-  runRegistry?: runtimeV2.AgentRunRegistry;
+  runRegistry?: AgentRunRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   /** Override the per-run scratch dir. Defaults to `<PC_DATA_DIR>/projects/
    *  <projectId>/agent-runs-v2/<runId>`. */
@@ -145,7 +135,7 @@ export interface DispatchAgentV2Deps {
   now?: () => number;
 }
 
-export interface DispatchAgentV2Success {
+export interface DispatchAgentSuccess {
   ok: true;
   agentRunId: ULID;
   ccSessionId: string;
@@ -156,7 +146,7 @@ export interface DispatchAgentV2Success {
   startedAt: number;
 }
 
-export type DispatchAgentV2Failure =
+export type DispatchAgentFailure =
   | {
       ok: false;
       cause: 'unknown-agent';
@@ -174,21 +164,21 @@ export type DispatchAgentV2Failure =
     }
   | {
       ok: false;
-      cause: ContinueAgentV2Result extends { ok: false; cause: infer C } ? C : never;
+      cause: ContinueAgentResult extends { ok: false; cause: infer C } ? C : never;
       error: string;
     };
 
-export type DispatchAgentV2Result = DispatchAgentV2Success | DispatchAgentV2Failure;
+export type DispatchAgentResult = DispatchAgentSuccess | DispatchAgentFailure;
 
 // ─────────────────────────────── FRESH DISPATCH ──────────────────────────────
 
 /** Validate, materialise, persist, construct, register, start. Returns a
  *  cause-tagged failure if any pre-spawn step fails; only the post-start
  *  failures funnel through the agent_runs_v2 row's terminal state. */
-export function dispatchFreshAgentV2(
-  input: DispatchFreshAgentV2Input,
-  deps: DispatchAgentV2Deps,
-): DispatchAgentV2Result {
+export function dispatchFreshAgent(
+  input: DispatchFreshAgentInput,
+  deps: DispatchAgentDeps,
+): DispatchAgentResult {
   const now = (deps.now ?? Date.now)();
 
   // Fail fast on unknown agent — pre-row-insert so the orchestrator can
@@ -252,7 +242,7 @@ export function dispatchFreshAgentV2(
   // Insert the row BEFORE constructing the AgentRun. If the wrapper throws
   // during construction (shouldn't, but defensively), we still have a row to
   // reconcile-orphan at the next boot.
-  insertAgentRunRowV2({
+  insertAgentRunRow({
     id: agentRunId,
     projectId: input.projectId,
     podName: input.agentName,
@@ -293,15 +283,15 @@ export function dispatchFreshAgentV2(
 // ─────────────────────────────── CONTINUATION ────────────────────────────────
 
 /** Plan + construct + register a continuation. The plan step (Session 8's
- *  `continueAgentV2`) handles all the guards — parent terminal, JSONL on
+ *  `continueAgent`) handles all the guards — parent terminal, JSONL on
  *  disk, no concurrent continuation, project exists. */
-export function dispatchContinueAgentV2(
-  input: DispatchContinueAgentV2Input,
-  deps: DispatchAgentV2Deps,
-): DispatchAgentV2Result {
+export function dispatchContinueAgent(
+  input: DispatchContinueAgentInput,
+  deps: DispatchAgentDeps,
+): DispatchAgentResult {
   const now = (deps.now ?? Date.now)();
 
-  const plan = continueAgentV2(
+  const plan = continueAgent(
     {
       parentAgentRunId: input.parentAgentRunId,
       input: input.input,
@@ -314,7 +304,7 @@ export function dispatchContinueAgentV2(
       ok: false,
       cause: plan.cause,
       error: plan.error,
-    } as DispatchAgentV2Failure;
+    } as DispatchAgentFailure;
   }
 
   // The plan already inserted the agent_runs_v2 row with status='queued'.
@@ -325,7 +315,7 @@ export function dispatchContinueAgentV2(
   try {
     mkdirSync(scratchDir, { recursive: true });
   } catch (err) {
-    markAgentRunTerminalV2({
+    markAgentRunTerminal({
       id: plan.plan.agentRunId,
       status: 'failed',
       result: null,
@@ -349,7 +339,7 @@ export function dispatchContinueAgentV2(
       filterMcpToReferencedTools: true,
     });
   } catch (err) {
-    markAgentRunTerminalV2({
+    markAgentRunTerminal({
       id: plan.plan.agentRunId,
       status: 'failed',
       result: null,
@@ -364,7 +354,7 @@ export function dispatchContinueAgentV2(
     };
   }
   if (!podPrep) {
-    markAgentRunTerminalV2({
+    markAgentRunTerminal({
       id: plan.plan.agentRunId,
       status: 'failed',
       result: null,
@@ -414,7 +404,7 @@ export function dispatchContinueAgentV2(
 // ─────────────────────────────── CONSTRUCT + REGISTER ────────────────────────
 
 interface ConstructAndStartArgs {
-  input: DispatchFreshAgentV2Input;
+  input: DispatchFreshAgentInput;
   podName: string;
   agentRunId: ULID;
   ccSessionId: string;
@@ -423,7 +413,7 @@ interface ConstructAndStartArgs {
   mode: 'fresh' | 'resume';
   initialInput: string;
   continuesParent: ULID | null;
-  deps: DispatchAgentV2Deps;
+  deps: DispatchAgentDeps;
 }
 
 function constructAndStart(args: ConstructAndStartArgs): AgentRun {
@@ -489,7 +479,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   const startedAt = (args.deps.now ?? Date.now)();
   const broadcastStateChanged = (
     status: 'queued' | 'spawning' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled',
-    extra: { result?: string; failureCause?: AgentRunFailureCauseV2 | null; endedAt?: number } = {},
+    extra: { result?: string; failureCause?: AgentRunFailureCause | null; endedAt?: number } = {},
   ): void => {
     if (!args.deps.broadcast) return;
     const record = {
@@ -532,14 +522,14 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   // broadcast a panel envelope.
   run.on('state', (next: string) => {
     if (next === 'spawning') {
-      updateAgentRunStatusV2({
+      updateAgentRunStatus({
         id: args.agentRunId,
         status: 'spawning',
         spawnedAt: Date.now(),
       });
       broadcastStateChanged('spawning');
     } else if (next === 'running') {
-      updateAgentRunStatusV2({
+      updateAgentRunStatus({
         id: args.agentRunId,
         status: 'running',
         readyAt: Date.now(),
@@ -572,10 +562,10 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   // works.
   run.on('queued-started', () => {
     const startedAt = Date.now();
-    enqueueAndPushV2(args.deps.channelServer, {
+    enqueueAndPush(args.deps.channelServer, {
       projectId: args.input.projectId,
       pcSessionId: args.input.dispatcherSessionId,
-      kind: 'agent-queued-started' as AgentInboxEventKindV2,
+      kind: 'agent-queued-started' as AgentInboxEventKind,
       slug: args.input.slug,
       source: 'agent',
       body: buildAgentQueuedStartedBody({
@@ -596,9 +586,9 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     'terminal',
     (info: { status: 'completed' | 'failed' | 'cancelled'; cause?: string; result?: string }) => {
       const completedAt = Date.now();
-      const failureCause: AgentRunFailureCauseV2 | null =
-        info.status === 'completed' ? null : (info.cause as AgentRunFailureCauseV2) ?? null;
-      markAgentRunTerminalV2({
+      const failureCause: AgentRunFailureCause | null =
+        info.status === 'completed' ? null : (info.cause as AgentRunFailureCause) ?? null;
+      markAgentRunTerminal({
         id: args.agentRunId,
         status: info.status,
         result: info.status === 'completed' ? info.result ?? '' : null,
@@ -645,11 +635,11 @@ interface EmitTerminalArgs {
   parentWorkItemId: ULID | null;
   terminalStatus: 'completed' | 'failed' | 'cancelled';
   result: string;
-  failureCause: AgentRunFailureCauseV2 | null;
+  failureCause: AgentRunFailureCause | null;
 }
 
 function emitTerminalEnvelope(args: EmitTerminalArgs): void {
-  const kind: AgentInboxEventKindV2 =
+  const kind: AgentInboxEventKind =
     args.terminalStatus === 'completed' ? 'agent-completed' : 'agent-failed';
   const body =
     args.terminalStatus === 'completed'
@@ -668,7 +658,7 @@ function emitTerminalEnvelope(args: EmitTerminalArgs): void {
           reason: describeFailure(args.failureCause) ?? args.terminalStatus,
           cause: agentFailureCauseToPayload(args.failureCause, args.terminalStatus),
         });
-  enqueueAndPushV2(args.channelServer, {
+  enqueueAndPush(args.channelServer, {
     projectId: args.projectId,
     pcSessionId: args.dispatcherSessionId,
     kind,
@@ -679,12 +669,12 @@ function emitTerminalEnvelope(args: EmitTerminalArgs): void {
   });
 }
 
-/** Map v2's `AgentRunFailureCauseV2` to the channel-event payload's
+/** Map v2's `AgentRunFailureCause` to the channel-event payload's
  *  `cause` field. The orchestrator pod prompt parses these to pick a
  *  next-step suggestion (retry / drop / hand-write); preserve the v1 enum
  *  shape so the parser doesn't need to change. */
 function agentFailureCauseToPayload(
-  cause: AgentRunFailureCauseV2 | null,
+  cause: AgentRunFailureCause | null,
   terminalStatus: 'completed' | 'failed' | 'cancelled',
 ): AgentFailedPayload['cause'] {
   if (terminalStatus === 'cancelled') return 'cancelled';
@@ -710,7 +700,7 @@ function agentFailureCauseToPayload(
   }
 }
 
-function describeFailure(cause: AgentRunFailureCauseV2 | null): string | null {
+function describeFailure(cause: AgentRunFailureCause | null): string | null {
   if (!cause) return null;
   switch (cause) {
     case 'spawn-stuck':
@@ -746,7 +736,7 @@ function describeFailure(cause: AgentRunFailureCauseV2 | null): string | null {
 
 function defaultAgentRunFactory(
   input: ConstructorParameters<typeof AgentRun>[0] & {
-    registry: runtimeV2.AgentRunRegistry;
+    registry: AgentRunRegistry;
   },
 ): AgentRun {
   const { registry, ...runInput } = input;

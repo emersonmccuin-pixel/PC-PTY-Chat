@@ -1550,9 +1550,9 @@ export interface NodeOutput {
   transcriptPath?: string;
 }
 
-/** Section 16b.8 — public snapshot of an agent run. Mirrors `AgentRunRecord`
- *  in apps/server/src/services/agent-run-manager.ts. Internal timer / session
- *  fields are stripped server-side before the shape leaves the manager. */
+/** Public snapshot of an agent run. Mirrors the AgentRunRecord shape the
+ *  server emits via the activity-panel shim. Internal timer / session fields
+ *  are stripped server-side before the shape leaves the registry. */
 export type AgentRunStatus =
   | 'spawning'
   | 'running'

@@ -502,12 +502,12 @@ export const agentAudit = sqliteTable(
   ],
 );
 
-// Section 25 — agent system tables. Defined in schema-v2.ts (bare names
-// post-Phase-D); re-exported here so drizzle-kit's single-file config picks
-// them up.
+// Section 25 — agent system tables. Defined in schema-agent-system.ts (kept
+// in a separate file so the concern stays grep-able). Re-exported here so
+// drizzle-kit's single-file config picks them up.
 export {
   agentRuns,
   pendingAsks,
   agentInbox,
   agentDeliveryAudit,
-} from './schema-v2.ts';
+} from './schema-agent-system.ts';

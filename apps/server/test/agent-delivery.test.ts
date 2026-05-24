@@ -1,7 +1,7 @@
 // Section 25 Session 7 — v2 delivery primitive contract.
 //
 // Mirrors v1's agent-inbox-emit.test.ts against the v2 surface. Exercises
-// `enqueueAndPushV2` + `drainPendingForSessionV2` against a real
+// `enqueueAndPush` + `drainPendingForSession` against a real
 // ChannelServer + real @pc/db (temp data dir).
 //
 // Run via:  pnpm --filter @pc/server test
@@ -22,16 +22,16 @@ const {
   closeDb,
   runMigrations,
   createProject,
-  getInboxRowV2,
-  getAuditForInboxV2,
-  listPendingForSessionV2,
+  getInboxRow,
+  getAuditForInbox,
+  listPendingForSession,
 } = await import('@pc/db');
-const { ChannelServer } = await import('../../src/services/channel-server.ts');
-const { drainPendingForSessionV2, enqueueAndPushV2, readTransportModeV2 } = await import(
-  '../../src/services/v2/delivery.ts'
+const { ChannelServer } = await import('../src/services/channel-server.ts');
+const { drainPendingForSession, enqueueAndPush, readTransportMode } = await import(
+  '../src/services/agent-delivery.ts'
 );
 
-import type { ChannelEvent } from '../../src/services/channel-server.ts';
+import type { ChannelEvent } from '../src/services/channel-server.ts';
 import type { Stage, ULID } from '@pc/domain';
 
 const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
@@ -102,15 +102,15 @@ async function registerFakeChild(sessionId: string, buf: unknown[]): Promise<Web
   return ws;
 }
 
-test('readTransportModeV2 defaults to hybrid + honors env override', () => {
+test('readTransportMode defaults to hybrid + honors env override', () => {
   delete process.env.PC_DELIVERY_TRANSPORT;
-  assert.equal(readTransportModeV2(), 'hybrid');
+  assert.equal(readTransportMode(), 'hybrid');
   process.env.PC_DELIVERY_TRANSPORT = 'inbox-only';
-  assert.equal(readTransportModeV2(), 'inbox-only');
+  assert.equal(readTransportMode(), 'inbox-only');
   process.env.PC_DELIVERY_TRANSPORT = 'channel-only';
-  assert.equal(readTransportModeV2(), 'channel-only');
+  assert.equal(readTransportMode(), 'channel-only');
   process.env.PC_DELIVERY_TRANSPORT = 'bogus';
-  assert.equal(readTransportModeV2(), 'hybrid');
+  assert.equal(readTransportMode(), 'hybrid');
   delete process.env.PC_DELIVERY_TRANSPORT;
 });
 
@@ -119,7 +119,7 @@ test('hybrid + live registrant: row written, pushed, flipped delivered, audit re
   const buf: unknown[] = [];
   const ws = await registerFakeChild(SESSION_ORCH, buf);
   try {
-    const result = enqueueAndPushV2(server, {
+    const result = enqueueAndPush(server, {
       projectId,
       pcSessionId: SESSION_ORCH,
       kind: 'agent-completed',
@@ -137,13 +137,13 @@ test('hybrid + live registrant: row written, pushed, flipped delivered, audit re
     }
     assert.equal(buf.length, 1, 'envelope reached the registrant');
 
-    const row = getInboxRowV2(result.inboxId!);
+    const row = getInboxRow(result.inboxId!);
     assert.ok(row);
     assert.equal(row!.status, 'delivered');
     assert.equal(row!.driver, 'channel');
     assert.ok(row!.deliveredAt);
 
-    const audit = getAuditForInboxV2(result.inboxId!);
+    const audit = getAuditForInbox(result.inboxId!);
     assert.ok(audit);
     assert.equal(audit!.driver, 'channel');
     // Latency is the wall-clock delta. With clock skew on Windows this can
@@ -156,7 +156,7 @@ test('hybrid + live registrant: row written, pushed, flipped delivered, audit re
 });
 
 test('hybrid + no registrant: row written, push fails, row stays pending for hook drain', () => {
-  const result = enqueueAndPushV2(server, {
+  const result = enqueueAndPush(server, {
     projectId,
     pcSessionId: 'sess-v2-no-bridge',
     kind: 'agent-failed',
@@ -168,21 +168,21 @@ test('hybrid + no registrant: row written, push fails, row stays pending for hoo
   assert.ok(result.inboxId);
   assert.equal(result.channelDelivered, false);
 
-  const row = getInboxRowV2(result.inboxId!);
+  const row = getInboxRow(result.inboxId!);
   assert.ok(row);
   assert.equal(row!.status, 'pending', 'row stays pending — UserPromptSubmit hook will drain');
   assert.equal(row!.driver, null);
   assert.equal(row!.deliveredAt, null);
 
   // No audit row should exist yet — v2 writes audit only on successful delivery.
-  const audit = getAuditForInboxV2(result.inboxId!);
+  const audit = getAuditForInbox(result.inboxId!);
   assert.equal(audit, null);
 });
 
 test('inbox-only mode: row written, channel push skipped, no audit', () => {
   process.env.PC_DELIVERY_TRANSPORT = 'inbox-only';
   try {
-    const result = enqueueAndPushV2(server, {
+    const result = enqueueAndPush(server, {
       projectId,
       pcSessionId: 'sess-v2-inbox-only',
       kind: 'agent-queued-started',
@@ -194,9 +194,9 @@ test('inbox-only mode: row written, channel push skipped, no audit', () => {
     assert.ok(result.inboxId);
     assert.equal(result.channelDelivered, false);
 
-    const row = getInboxRowV2(result.inboxId!);
+    const row = getInboxRow(result.inboxId!);
     assert.equal(row!.status, 'pending');
-    assert.equal(getAuditForInboxV2(result.inboxId!), null);
+    assert.equal(getAuditForInbox(result.inboxId!), null);
   } finally {
     delete process.env.PC_DELIVERY_TRANSPORT;
   }
@@ -208,7 +208,7 @@ test('channel-only mode: inbox skipped, only channel push attempted', async () =
   const session = 'sess-v2-channel-only';
   const ws = await registerFakeChild(session, buf);
   try {
-    const result = enqueueAndPushV2(server, {
+    const result = enqueueAndPush(server, {
       projectId,
       pcSessionId: session,
       kind: 'agent-completed',
@@ -232,12 +232,12 @@ test('channel-only mode: inbox skipped, only channel push attempted', async () =
   }
 });
 
-test('drainPendingForSessionV2: registers bridge → drains all pending rows for that session', async () => {
+test('drainPendingForSession: registers bridge → drains all pending rows for that session', async () => {
   // Enqueue 3 rows for a target session with no registrant yet. Then connect
   // the bridge + call drain manually.
   const session = 'sess-v2-drain';
   const enq = (body: string) =>
-    enqueueAndPushV2(server, {
+    enqueueAndPush(server, {
       projectId,
       pcSessionId: session,
       kind: 'agent-completed',
@@ -250,13 +250,13 @@ test('drainPendingForSessionV2: registers bridge → drains all pending rows for
   enq('<channel>b</channel>');
   enq('<channel>c</channel>');
 
-  const pendingBefore = listPendingForSessionV2(session);
+  const pendingBefore = listPendingForSession(session);
   assert.equal(pendingBefore.length, 3);
 
   const buf: unknown[] = [];
   const ws = await registerFakeChild(session, buf);
   try {
-    const drain = drainPendingForSessionV2(server, projectId, session, slug);
+    const drain = drainPendingForSession(server, projectId, session, slug);
     assert.equal(drain.attempted, 3);
     assert.equal(drain.drained, 3);
 
@@ -266,7 +266,7 @@ test('drainPendingForSessionV2: registers bridge → drains all pending rows for
     }
     assert.equal(buf.length, 3, 'all three envelopes reached the registrant');
 
-    const pendingAfter = listPendingForSessionV2(session);
+    const pendingAfter = listPendingForSession(session);
     assert.equal(pendingAfter.length, 0);
   } finally {
     ws.close();
@@ -274,10 +274,10 @@ test('drainPendingForSessionV2: registers bridge → drains all pending rows for
   }
 });
 
-test('drainPendingForSessionV2 in channel-only mode is a no-op', () => {
+test('drainPendingForSession in channel-only mode is a no-op', () => {
   process.env.PC_DELIVERY_TRANSPORT = 'channel-only';
   try {
-    const drain = drainPendingForSessionV2(server, projectId, 'whatever', slug);
+    const drain = drainPendingForSession(server, projectId, 'whatever', slug);
     assert.equal(drain.attempted, 0);
     assert.equal(drain.drained, 0);
   } finally {

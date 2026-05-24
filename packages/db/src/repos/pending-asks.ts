@@ -1,32 +1,28 @@
-// Section 25 Session 8 — pending_asks_v2 repo.
+// Section 25 — pending_asks repo.
 //
-// Lives alongside v1's `pending-asks.ts` during the parallel-build phase.
-// Same answer-once contract (atomic open→answered transition) against the
-// v2 table + the bare v2 kind taxonomy ('orchestrator' | 'user' | 'approval'
-// per design §1's identifier glossary).
-//
-// Status transitions are atomic via WHERE status='open' guards — JSONL-replay
-// re-delivery of an already-handled event cannot double-resume the child.
+// Atomic open→answered (or open→cancelled) flip via UPDATE WHERE status='open'.
+// JSONL-replay re-delivery of an already-handled event cannot double-resume
+// the child — the second update is a no-op (`changes === 0`).
 
 import { and, asc, eq } from 'drizzle-orm';
 
 import type {
-  PendingAskKindV2,
+  PendingAskKind,
   PendingAskOption,
-  PendingAskRowV2,
+  PendingAskRow,
   ULID,
 } from '@pc/domain';
 
 import { getDb } from '../connection.ts';
-import { pendingAsks } from '../schema-v2.ts';
+import { pendingAsks } from '../schema-agent-system.ts';
 
-export interface CreatePendingAskV2Input {
+export interface CreatePendingAskInput {
   id: ULID;
   agentRunId: ULID;
   ccSessionId: string;
   projectId: ULID;
   parentWorkItemId?: ULID | null;
-  kind: PendingAskKindV2;
+  kind: PendingAskKind;
   promptBody: string;
   context?: string | null;
   options?: PendingAskOption[] | null;
@@ -36,8 +32,8 @@ export interface CreatePendingAskV2Input {
 /** Write one open pending-ask row. Caller mints the ULID so the
  *  `agent-asks-*` event body can reference it before the row is fully
  *  persisted. */
-export function createPendingAskV2(input: CreatePendingAskV2Input): PendingAskRowV2 {
-  const row: PendingAskRowV2 = {
+export function createPendingAsk(input: CreatePendingAskInput): PendingAskRow {
+  const row: PendingAskRow = {
     id: input.id,
     agentRunId: input.agentRunId,
     ccSessionId: input.ccSessionId,
@@ -58,7 +54,7 @@ export function createPendingAskV2(input: CreatePendingAskV2Input): PendingAskRo
   return row;
 }
 
-export function getPendingAskV2(id: ULID): PendingAskRowV2 | null {
+export function getPendingAsk(id: ULID): PendingAskRow | null {
   const row = getDb()
     .select()
     .from(pendingAsks)
@@ -69,7 +65,7 @@ export function getPendingAskV2(id: ULID): PendingAskRowV2 | null {
 
 /** Open rows for a project, oldest first. Drives boot-time "you have N
  *  agents waiting on you" surfaces + Activity Panel scoping. */
-export function listOpenPendingAsksV2ForProject(projectId: ULID): PendingAskRowV2[] {
+export function listOpenPendingAsksForProject(projectId: ULID): PendingAskRow[] {
   return getDb()
     .select()
     .from(pendingAsks)
@@ -81,7 +77,7 @@ export function listOpenPendingAsksV2ForProject(projectId: ULID): PendingAskRowV
 /** Open rows for a CC provider session, oldest first. Used by the runtime
  *  to detect a duplicate pause for the same session (would indicate a
  *  cross-stream bug). */
-export function listOpenPendingAsksV2ForSession(ccSessionId: string): PendingAskRowV2[] {
+export function listOpenPendingAsksForSession(ccSessionId: string): PendingAskRow[] {
   return getDb()
     .select()
     .from(pendingAsks)
@@ -90,7 +86,7 @@ export function listOpenPendingAsksV2ForSession(ccSessionId: string): PendingAsk
     .all();
 }
 
-export interface AnswerPendingAskV2Input {
+export interface AnswerPendingAskInput {
   id: ULID;
   answer: string;
   answeredBy: 'orchestrator' | 'user';
@@ -101,7 +97,7 @@ export interface AnswerPendingAskV2Input {
  *  the row, `false` if it was already terminal. Caller surfaces the false
  *  case as `already-answered` / `cancelled` / `unknown-pending-ask` to its
  *  caller. */
-export function markPendingAskAnsweredV2(input: AnswerPendingAskV2Input): boolean {
+export function markPendingAskAnswered(input: AnswerPendingAskInput): boolean {
   const res = getDb()
     .update(pendingAsks)
     .set({
@@ -118,7 +114,7 @@ export function markPendingAskAnsweredV2(input: AnswerPendingAskV2Input): boolea
 /** Atomic `open → cancelled` transition. Used when the user cancels a
  *  paused agent from the Activity Panel or when the parent AgentRun is
  *  cancelled. */
-export function markPendingAskCancelledV2(id: ULID, now: number): boolean {
+export function markPendingAskCancelled(id: ULID, now: number): boolean {
   const res = getDb()
     .update(pendingAsks)
     .set({ status: 'cancelled', cancelledAt: now })

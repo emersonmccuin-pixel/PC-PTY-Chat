@@ -23,7 +23,7 @@
 //     mode='resume' on construction. There's no "answer-resume" flow here.
 
 import { EventEmitter } from 'node:events';
-import type { JsonlEvent } from '../jsonl-tailer.ts';
+import type { JsonlEvent } from './jsonl-tailer.ts';
 import {
   LowLevelSpawn,
   type LowLevelSpawnInput,

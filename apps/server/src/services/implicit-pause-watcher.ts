@@ -1,15 +1,15 @@
 // Section 25 Session 8 — implicit-pause watcher.
 //
 // Safety net for the cross-cutting "agent calls pc_ask_* but emits no
-// closing assistant text" case. Section 25 Session 7's JsonlTailerV2
+// closing assistant text" case. Section 25 Session 7's AgentRunJsonlTailer
 // emits `jsonl-pause-detected` when this happens; the explicit pause
-// primitive (recordExplicitPauseV2) is the PRIMARY path. The watcher
+// primitive (recordExplicitPause) is the PRIMARY path. The watcher
 // fires only as a backstop in case the MCP route didn't observe the
 // pause for whatever reason (route handler crashed, race with the
 // run terminating, etc.).
 //
 // Lifecycle: the orchestration layer constructs one watcher per active
-// AgentRun at register time. The watcher attaches a JsonlTailerV2 to the
+// AgentRun at register time. The watcher attaches a AgentRunJsonlTailer to the
 // run's CC session JSONL path. On `jsonl-pause-detected`, it consults the
 // caller's `isAlreadyPaused()` predicate (which reads the live AgentRun
 // state + checks for an open pending_asks_v2 row); only fires the
@@ -21,9 +21,7 @@
 
 import { existsSync } from 'node:fs';
 
-import { v2 as runtimeV2 } from '@pc/runtime';
-
-const { JsonlTailerV2 } = runtimeV2;
+import { AgentRunJsonlTailer } from '@pc/runtime';
 
 export interface ImplicitPauseWatcherInput {
   /** Path to the per-session JSONL the run writes to. Tailer attaches
@@ -53,7 +51,7 @@ export interface ImplicitPauseWatcher {
 export function createImplicitPauseWatcher(
   input: ImplicitPauseWatcherInput,
 ): ImplicitPauseWatcher {
-  let tailer: InstanceType<typeof JsonlTailerV2> | null = null;
+  let tailer: InstanceType<typeof AgentRunJsonlTailer> | null = null;
   let started = false;
   let stopped = false;
   let pollTimer: NodeJS.Timeout | null = null;
@@ -64,7 +62,7 @@ export function createImplicitPauseWatcher(
       pollTimer = setTimeout(tryAttach, input.pollIntervalMs ?? 250);
       return;
     }
-    tailer = new JsonlTailerV2({
+    tailer = new AgentRunJsonlTailer({
       filePath: input.jsonlPath,
       // Start at end-of-file — historical lines are not pauses we'd want
       // to re-trigger on every run-register call. The tailer's seek

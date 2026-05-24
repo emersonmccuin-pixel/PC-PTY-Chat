@@ -1,33 +1,15 @@
-// Section 25 — agent system v2 domain types.
+// Section 25 — agent system domain types (post-Phase-E bare names).
 //
-// Lives alongside v1 (`agent-run.ts` + `agent-comms.ts`) during the parallel
-// build phase. After Phase D's clean swap, v1 dies and the `V2` suffixes drop.
-//
-// Differences from v1:
-// - `AgentRunStatusV2` persists the full state machine (`queued | spawning |
-//   running | paused | completed | failed | cancelled`) instead of v1's
-//   intermediate-states-stay-in-memory split. The persisted status mirrors
-//   AgentRun's in-memory state 1:1 — simpler reconciliation, no surprise
-//   when restart-time sweeps see a `paused` row.
-// - `AgentRunFailureCauseV2` adds `mcp-handshake-never` and
-//   `kill-during-spawn` per design §8.1; drops v1's `concurrent-continuation`
-//   (the route layer rejects with 409 before a row is inserted, so the
-//   failure-cause taxonomy doesn't need to represent it).
-// - `AgentInboxEventKindV2` splits `agent-asks-orchestrator` back into
-//   `agent-asks-orchestrator` + `agent-asks-user` (Section 16b primitives)
-//   and adds `agent-run-changed` + `agent-jsonl-event` per design §5.4.
-// - `AgentInboxDriverV2` is `'channel' | 'user-prompt'`. No `'unknown'` or
-//   `'autonomous'` — every audit row gets a definite driver (audit row is
-//   written at flip time, not stubbed at enqueue).
-// - `PendingAskKindV2` is the bare `'orchestrator' | 'user' | 'approval'`
-//   (matches design §1's glossary; v1's `'ask-orchestrator' | 'ask-user'`
-//   were verbose).
+// Persisted shapes for the agent dispatch + pause + delivery layer. Mirrors
+// the `agent_runs` / `pending_asks` / `agent_inbox` / `agent_delivery_audit`
+// tables in `@pc/db`. Wire-level event kinds + payloads live in
+// `agent-comms.ts` (`AgentChannelEventKind` etc.).
 
 import type { ULID } from './ulid.ts';
 import type { PendingAskOption } from './agent-comms.ts';
 
 /** Full in-memory state machine, persisted 1:1. */
-export type AgentRunStatusV2 =
+export type AgentRunStatus =
   | 'queued'
   | 'spawning'
   | 'running'
@@ -36,7 +18,7 @@ export type AgentRunStatusV2 =
   | 'failed'
   | 'cancelled';
 
-export const AGENT_RUN_STATUSES_V2: readonly AgentRunStatusV2[] = [
+export const AGENT_RUN_STATUSES: readonly AgentRunStatus[] = [
   'queued',
   'spawning',
   'running',
@@ -48,7 +30,7 @@ export const AGENT_RUN_STATUSES_V2: readonly AgentRunStatusV2[] = [
 
 /** Coarse failure taxonomy. The wrapper picks one at terminal-failed; the
  *  route layer never invents new ones (preserves the closed-world property). */
-export type AgentRunFailureCauseV2 =
+export type AgentRunFailureCause =
   | 'spawn-stuck'
   | 'idle-timeout'
   | 'wall-clock-timeout'
@@ -62,7 +44,7 @@ export type AgentRunFailureCauseV2 =
   | 'kill-during-spawn'
   | 'server-restart';
 
-export const AGENT_RUN_FAILURE_CAUSES_V2: readonly AgentRunFailureCauseV2[] = [
+export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'spawn-stuck',
   'idle-timeout',
   'wall-clock-timeout',
@@ -77,9 +59,9 @@ export const AGENT_RUN_FAILURE_CAUSES_V2: readonly AgentRunFailureCauseV2[] = [
   'server-restart',
 ];
 
-/** One persisted agent_runs_v2 row. Mirrors AgentRunRecord but adds the
+/** One persisted agent_runs row. Mirrors the in-memory AgentRunRecord plus
  *  drift-detection fields and explicit lifecycle timestamps. */
-export interface AgentRunRowV2 {
+export interface AgentRunRow {
   id: ULID;
   projectId: ULID;
   /** PC session-id (ULID) of the orchestrator (or other AgentRun) that
@@ -89,14 +71,14 @@ export interface AgentRunRowV2 {
   ccSessionId: string;
   podName: string;
   /** Updated-at hash (or revision string) of the pod row at dispatch time.
-   *  Used by §6.4 drift detection to flag continuations against an edited
-   *  pod. NULL when the materialiser didn't supply a revision. */
+   *  Used by drift detection to flag continuations against an edited pod.
+   *  NULL when the materialiser didn't supply a revision. */
   podRevisionAtDispatch: string | null;
   /** Updated-at hash of the pod row at resume time. Differs from
    *  `podRevisionAtDispatch` iff the pod was edited between dispatch and
    *  resume. NULL for non-resumed runs. */
   podRevisionAtResume: string | null;
-  status: AgentRunStatusV2;
+  status: AgentRunStatus;
   /** Self-FK to parent run for continuations. */
   continues: ULID | null;
   parentInvokeDepth: number;
@@ -105,7 +87,7 @@ export interface AgentRunRowV2 {
   input: string | null;
   /** Final assistant text. NULL until terminal-completed. */
   result: string | null;
-  failureCause: AgentRunFailureCauseV2 | null;
+  failureCause: AgentRunFailureCause | null;
   failureReason: string | null;
   queuedAt: number;
   spawnedAt: number | null;
@@ -113,36 +95,37 @@ export interface AgentRunRowV2 {
   completedAt: number | null;
 }
 
-/** v2 pending-ask kind. Bare kinds matching design §1's identifier glossary. */
-export type PendingAskKindV2 = 'orchestrator' | 'user' | 'approval';
+/** Pending-ask kind. Matches the agent-system glossary (`orchestrator` / `user`
+ *  / `approval`). */
+export type PendingAskKind = 'orchestrator' | 'user' | 'approval';
 
-export const PENDING_ASK_KINDS_V2: readonly PendingAskKindV2[] = [
+export const PENDING_ASK_KINDS: readonly PendingAskKind[] = [
   'orchestrator',
   'user',
   'approval',
 ];
 
-export type PendingAskStatusV2 = 'open' | 'answered' | 'cancelled';
+export type PendingAskStatus = 'open' | 'answered' | 'cancelled';
 
-export const PENDING_ASK_STATUSES_V2: readonly PendingAskStatusV2[] = [
+export const PENDING_ASK_STATUSES: readonly PendingAskStatus[] = [
   'open',
   'answered',
   'cancelled',
 ];
 
-export interface PendingAskRowV2 {
+export interface PendingAskRow {
   id: ULID;
   agentRunId: ULID;
   /** Denormalised — survives agent_run row deletion / archival. */
   ccSessionId: string;
   projectId: ULID;
   parentWorkItemId: ULID | null;
-  kind: PendingAskKindV2;
+  kind: PendingAskKind;
   promptBody: string;
   context: string | null;
   /** Multi-choice for `approval` (always populated) and optional for `user`. */
   options: PendingAskOption[] | null;
-  status: PendingAskStatusV2;
+  status: PendingAskStatus;
   answerBody: string | null;
   answeredBy: 'orchestrator' | 'user' | null;
   createdAt: number;
@@ -150,10 +133,10 @@ export interface PendingAskRowV2 {
   cancelledAt: number | null;
 }
 
-/** v2 inbox event-kind set. Full superset from design §5.4 — adds the two
- *  pause kinds back (orchestrator + user) and the two run-state kinds
- *  (changed + jsonl-event) that v1 didn't carry. */
-export type AgentInboxEventKindV2 =
+/** Inbox event-kind set. Superset of the wire `AgentChannelEventKind` —
+ *  adds `agent-run-changed` + `agent-jsonl-event` for Activity Panel
+ *  consumers + splits `agent-asks-orchestrator` + `agent-asks-user`. */
+export type AgentInboxEventKind =
   | 'agent-asks-orchestrator'
   | 'agent-asks-user'
   | 'agent-approval-request'
@@ -163,7 +146,7 @@ export type AgentInboxEventKindV2 =
   | 'agent-run-changed'
   | 'agent-jsonl-event';
 
-export const AGENT_INBOX_EVENT_KINDS_V2: readonly AgentInboxEventKindV2[] = [
+export const AGENT_INBOX_EVENT_KINDS: readonly AgentInboxEventKind[] = [
   'agent-asks-orchestrator',
   'agent-asks-user',
   'agent-approval-request',
@@ -174,40 +157,40 @@ export const AGENT_INBOX_EVENT_KINDS_V2: readonly AgentInboxEventKindV2[] = [
   'agent-jsonl-event',
 ];
 
-export type AgentInboxStatusV2 = 'pending' | 'delivered';
+export type AgentInboxStatus = 'pending' | 'delivered';
 
-export const AGENT_INBOX_STATUSES_V2: readonly AgentInboxStatusV2[] = [
+export const AGENT_INBOX_STATUSES: readonly AgentInboxStatus[] = [
   'pending',
   'delivered',
 ];
 
-/** v2 delivery driver. No `'unknown'` — audit row is written at flip time
- *  with a definite driver, never stubbed at enqueue. */
-export type AgentInboxDriverV2 = 'channel' | 'user-prompt';
+/** Delivery driver. No `'unknown'` — audit row is written at flip time with
+ *  a definite driver, never stubbed at enqueue. */
+export type AgentInboxDriver = 'channel' | 'user-prompt';
 
-export const AGENT_INBOX_DRIVERS_V2: readonly AgentInboxDriverV2[] = [
+export const AGENT_INBOX_DRIVERS: readonly AgentInboxDriver[] = [
   'channel',
   'user-prompt',
 ];
 
-export interface AgentInboxRowV2 {
+export interface AgentInboxRow {
   id: ULID;
   projectId: ULID;
   /** Recipient PC session-id (orchestrator's session or another AgentRun's
    *  dispatcher_session_id). */
   pcSessionId: string;
-  kind: AgentInboxEventKindV2;
+  kind: AgentInboxEventKind;
   body: string;
-  status: AgentInboxStatusV2;
-  driver: AgentInboxDriverV2 | null;
+  status: AgentInboxStatus;
+  driver: AgentInboxDriver | null;
   createdAt: number;
   deliveredAt: number | null;
 }
 
-export interface AgentDeliveryAuditRowV2 {
+export interface AgentDeliveryAuditRow {
   id: ULID;
   inboxId: ULID;
-  driver: AgentInboxDriverV2;
+  driver: AgentInboxDriver;
   deliveredAt: number;
   /** Wall-clock ms between inbox-row creation and delivery. */
   latencyMs: number;

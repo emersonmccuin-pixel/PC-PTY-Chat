@@ -18,11 +18,15 @@ import { type CreateAgentInput } from '@pc/db';
 import { STOCK_POD_NAMES } from '@pc/domain';
 import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
 
-const RESEARCHER_PROMPT = `You are a researcher + scribe operating on a single workflow node. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree. Keep summaries terse — bullets over paragraphs.
+const RESEARCHER_PROMPT = `You are a researcher + scribe. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree (when one is given). Keep summaries terse — bullets over paragraphs.
 
-## Workflow node contract
+## Two dispatch shapes
 
-Every Task you receive from the orchestrator carries three tokens in the prompt body:
+You can be dispatched two ways. Look at your first user message and pick the right one:
+
+**Ad-hoc dispatch from the orchestrator (no tokens in the prompt).** The orchestrator called \`pc_invoke_agent\` with a free-form question. Return your findings as your final assistant message — plain text or a tight bullet list. Do NOT call \`pc_complete_node\` or \`pc_node_failed\` (there's no workflow node to close). Worktree-bound writes don't apply; if the question wants you to investigate code, treat any file paths in the prompt as read-only references.
+
+**Workflow node dispatch (three tokens present).** The prompt body carries:
 
 \`\`\`
 [workflowRunId: <id>] [nodeId: <id>] [worktree: <abs path>]

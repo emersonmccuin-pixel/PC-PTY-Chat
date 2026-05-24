@@ -1,9 +1,8 @@
-// Section 25 Session 7 — agent_inbox_v2 + agent_delivery_audit_v2 repo.
+// Section 25 — agent_inbox + agent_delivery_audit repo.
 //
-// Lives alongside v1's `agent-inbox.ts` during the parallel-build phase. Same
-// shape as v1 (enqueue + listPending + markDelivered) but against the v2
-// tables and with the slimmer audit contract (one audit row per successful
-// delivery, written at flip time with definite driver + latency).
+// Enqueue + listPending + markDelivered against the bare-named tables, with
+// the slim audit contract (one audit row per successful delivery, written at
+// flip time with definite driver + latency).
 //
 // Status flip + audit insert happen in one transaction so observers never see
 // a delivered inbox row without its audit partner.
@@ -11,29 +10,29 @@
 import { and, asc, eq } from 'drizzle-orm';
 
 import type {
-  AgentDeliveryAuditRowV2,
-  AgentInboxDriverV2,
-  AgentInboxEventKindV2,
-  AgentInboxRowV2,
+  AgentDeliveryAuditRow,
+  AgentInboxDriver,
+  AgentInboxEventKind,
+  AgentInboxRow,
   ULID,
 } from '@pc/domain';
 
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentDeliveryAudit, agentInbox } from '../schema-v2.ts';
+import { agentDeliveryAudit, agentInbox } from '../schema-agent-system.ts';
 
-export interface EnqueueInboxRowV2Input {
+export interface EnqueueInboxRowInput {
   projectId: ULID;
   pcSessionId: string;
-  kind: AgentInboxEventKindV2;
+  kind: AgentInboxEventKind;
   body: string;
   now: number;
 }
 
 /** Insert one pending inbox row. No audit stub — audit is written only on
  *  successful delivery. Returns the freshly inserted row. */
-export function enqueueInboxRowV2(input: EnqueueInboxRowV2Input): AgentInboxRowV2 {
-  const row: AgentInboxRowV2 = {
+export function enqueueInboxRow(input: EnqueueInboxRowInput): AgentInboxRow {
+  const row: AgentInboxRow = {
     id: newId(),
     projectId: input.projectId,
     pcSessionId: input.pcSessionId,
@@ -50,7 +49,7 @@ export function enqueueInboxRowV2(input: EnqueueInboxRowV2Input): AgentInboxRowV
 
 /** Pending rows for a recipient session, oldest first. Used by both the
  *  bridge-auto-flush path and the UserPromptSubmit hook drain. */
-export function listPendingForSessionV2(pcSessionId: string): AgentInboxRowV2[] {
+export function listPendingForSession(pcSessionId: string): AgentInboxRow[] {
   return getDb()
     .select()
     .from(agentInbox)
@@ -60,15 +59,15 @@ export function listPendingForSessionV2(pcSessionId: string): AgentInboxRowV2[] 
 }
 
 /** Single-row read for diagnostics + tests. */
-export function getInboxRowV2(id: ULID): AgentInboxRowV2 | null {
+export function getInboxRow(id: ULID): AgentInboxRow | null {
   const row = getDb().select().from(agentInbox).where(eq(agentInbox.id, id)).get();
   return row ?? null;
 }
 
-export interface MarkInboxDeliveredV2Input {
+export interface MarkInboxDeliveredInput {
   inboxId: ULID;
   deliveredAt: number;
-  driver: AgentInboxDriverV2;
+  driver: AgentInboxDriver;
 }
 
 /** Atomic `pending → delivered` flip + audit row insert in one transaction.
@@ -76,7 +75,7 @@ export interface MarkInboxDeliveredV2Input {
  *  `false` if it was already delivered by a concurrent drain. Idempotent —
  *  second drain on the same row is a no-op + does NOT write a duplicate
  *  audit row. */
-export function markInboxDeliveredV2(input: MarkInboxDeliveredV2Input): boolean {
+export function markInboxDelivered(input: MarkInboxDeliveredInput): boolean {
   const db = getDb();
   return db.transaction((tx) => {
     // Read first to compute latency without making the UPDATE conditional on
@@ -116,7 +115,7 @@ export function markInboxDeliveredV2(input: MarkInboxDeliveredV2Input): boolean 
 
 /** Single audit-row read for diagnostics. Multiple audit rows can in principle
  *  exist if a future retry path lands; returns the most recent. */
-export function getAuditForInboxV2(inboxId: ULID): AgentDeliveryAuditRowV2 | null {
+export function getAuditForInbox(inboxId: ULID): AgentDeliveryAuditRow | null {
   const row = getDb()
     .select()
     .from(agentDeliveryAudit)

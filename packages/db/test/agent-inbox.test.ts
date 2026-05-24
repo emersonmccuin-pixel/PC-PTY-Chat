@@ -15,11 +15,11 @@ const {
   closeDb,
   runMigrations,
   createProject,
-  enqueueInboxRowV2,
-  getAuditForInboxV2,
-  getInboxRowV2,
-  listPendingForSessionV2,
-  markInboxDeliveredV2,
+  enqueueInboxRow,
+  getAuditForInbox,
+  getInboxRow,
+  listPendingForSession,
+  markInboxDelivered,
 } = await import('../src/index.ts');
 import type { Stage, ULID } from '@pc/domain';
 
@@ -34,10 +34,10 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('enqueueInboxRowV2 writes a pending row with NULL driver', () => {
+test('enqueueInboxRow writes a pending row with NULL driver', () => {
   const p = createProject({ slug: 'inbox-v2-rt', name: 'Inbox V2 RT', stages, folderPath: tmpDir });
 
-  const row = enqueueInboxRowV2({
+  const row = enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: 'sess-orchestrator-1',
     kind: 'agent-completed',
@@ -50,19 +50,19 @@ test('enqueueInboxRowV2 writes a pending row with NULL driver', () => {
   assert.equal(row.deliveredAt, null);
   assert.equal(row.kind, 'agent-completed');
 
-  const fetched = getInboxRowV2(row.id);
+  const fetched = getInboxRow(row.id);
   assert.ok(fetched);
   assert.equal(fetched!.body, '<channel source="agent">child done</channel>');
 
   // v2 contract: audit row is NOT stubbed at enqueue (one row per successful
   // delivery, written at flip time).
-  assert.equal(getAuditForInboxV2(row.id), null);
+  assert.equal(getAuditForInbox(row.id), null);
 });
 
-test('markInboxDeliveredV2 flips pending → delivered + writes audit row', () => {
+test('markInboxDelivered flips pending → delivered + writes audit row', () => {
   const p = createProject({ slug: 'inbox-v2-flip', name: 'Flip', stages, folderPath: tmpDir });
 
-  const row = enqueueInboxRowV2({
+  const row = enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: 'sess-orchestrator-2',
     kind: 'agent-asks-orchestrator',
@@ -70,29 +70,29 @@ test('markInboxDeliveredV2 flips pending → delivered + writes audit row', () =
     now: 1700_000_000_000,
   });
 
-  const flipped = markInboxDeliveredV2({
+  const flipped = markInboxDelivered({
     inboxId: row.id,
     deliveredAt: 1700_000_005_000,
     driver: 'channel',
   });
   assert.equal(flipped, true);
 
-  const post = getInboxRowV2(row.id);
+  const post = getInboxRow(row.id);
   assert.equal(post!.status, 'delivered');
   assert.equal(post!.driver, 'channel');
   assert.equal(post!.deliveredAt, 1700_000_005_000);
 
-  const audit = getAuditForInboxV2(row.id);
+  const audit = getAuditForInbox(row.id);
   assert.ok(audit);
   assert.equal(audit!.driver, 'channel');
   assert.equal(audit!.deliveredAt, 1700_000_005_000);
   assert.equal(audit!.latencyMs, 5_000);
 });
 
-test('markInboxDeliveredV2 is idempotent — second flip returns false + no duplicate audit', () => {
+test('markInboxDelivered is idempotent — second flip returns false + no duplicate audit', () => {
   const p = createProject({ slug: 'inbox-v2-idem', name: 'Idem', stages, folderPath: tmpDir });
 
-  const row = enqueueInboxRowV2({
+  const row = enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: 'sess-orch-3',
     kind: 'agent-failed',
@@ -101,7 +101,7 @@ test('markInboxDeliveredV2 is idempotent — second flip returns false + no dupl
   });
 
   assert.equal(
-    markInboxDeliveredV2({
+    markInboxDelivered({
       inboxId: row.id,
       deliveredAt: 1700_000_001_000,
       driver: 'channel',
@@ -109,7 +109,7 @@ test('markInboxDeliveredV2 is idempotent — second flip returns false + no dupl
     true,
   );
   assert.equal(
-    markInboxDeliveredV2({
+    markInboxDelivered({
       inboxId: row.id,
       deliveredAt: 1700_000_002_000,
       driver: 'user-prompt',
@@ -118,35 +118,35 @@ test('markInboxDeliveredV2 is idempotent — second flip returns false + no dupl
   );
 
   // Driver + deliveredAt remain at the first flip's values.
-  const post = getInboxRowV2(row.id);
+  const post = getInboxRow(row.id);
   assert.equal(post!.driver, 'channel');
   assert.equal(post!.deliveredAt, 1700_000_001_000);
 
   // Exactly one audit row exists (single-row read returns the only one).
-  const audit = getAuditForInboxV2(row.id);
+  const audit = getAuditForInbox(row.id);
   assert.ok(audit);
   assert.equal(audit!.driver, 'channel');
 });
 
-test('listPendingForSessionV2 returns oldest-first + skips delivered rows', () => {
+test('listPendingForSession returns oldest-first + skips delivered rows', () => {
   const p = createProject({ slug: 'inbox-v2-list', name: 'List', stages, folderPath: tmpDir });
   const session = 'sess-list-target';
 
-  const rowA = enqueueInboxRowV2({
+  const rowA = enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: session,
     kind: 'agent-completed',
     body: 'A',
     now: 1700_000_000_000,
   });
-  const rowB = enqueueInboxRowV2({
+  const rowB = enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: session,
     kind: 'agent-failed',
     body: 'B',
     now: 1700_000_001_000,
   });
-  enqueueInboxRowV2({
+  enqueueInboxRow({
     projectId: p.id as ULID,
     pcSessionId: 'other-session',
     kind: 'agent-completed',
@@ -154,18 +154,18 @@ test('listPendingForSessionV2 returns oldest-first + skips delivered rows', () =
     now: 1700_000_002_000,
   });
 
-  const pending = listPendingForSessionV2(session);
+  const pending = listPendingForSession(session);
   assert.equal(pending.length, 2);
   assert.equal(pending[0].id, rowA.id);
   assert.equal(pending[1].id, rowB.id);
 
   // Flip A; only B remains.
-  markInboxDeliveredV2({
+  markInboxDelivered({
     inboxId: rowA.id,
     deliveredAt: 1700_000_003_000,
     driver: 'user-prompt',
   });
-  const after = listPendingForSessionV2(session);
+  const after = listPendingForSession(session);
   assert.equal(after.length, 1);
   assert.equal(after[0].id, rowB.id);
 });
