@@ -15,7 +15,7 @@
 
 if (!process.env.PC_SESSION_ID) process.exit(0);
 
-const { appendFileSync, readFileSync, writeFileSync, mkdirSync } = require('node:fs');
+const { appendFileSync, readFileSync, mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
 
 const PROJECT_DATA_DIR = '{{PROJECT_DATA_DIR}}';
@@ -25,7 +25,6 @@ const DATA_DIR = SESSION_ID ? PROJECT_DATA_DIR + '/sessions/' + SESSION_ID : PRO
 const EVENTS_FILE = DATA_DIR + '/events.jsonl';
 const STOP_MARKER = DATA_DIR + '/stop-markers.txt';
 const DEBUG_FILE  = DATA_DIR + '/hook-debug.jsonl';
-const TASKS_FILE  = DATA_DIR + '/tasks.json';
 
 const eventType = process.argv[2] ?? 'Unknown';
 
@@ -78,22 +77,13 @@ switch (eventType) {
     // input (subagent_type / description / prompt) — the chat panel can
     // synthesize the dedicated task-start bubble from that data.
     break;
-  case 'PostToolUse': {
+  case 'PostToolUse':
     // Section 23.4 — generic tool-end + Agent/Task task-end now flow
-    // through JSONL exclusively (jsonl-tool-result). Todos still live in
-    // a hook-accumulated snapshot until Section 23.5 migrates them
-    // client-side.
-    if (payload.tool_name === 'TodoWrite' && Array.isArray(payload.tool_input?.todos)) {
-      appendEvent({ ts: now, kind: 'todos', todos: payload.tool_input.todos });
-      break;
-    }
-    if (payload.tool_name === 'TaskCreate' || payload.tool_name === 'TaskUpdate') {
-      const todos = applyTaskChange(payload.tool_name, payload.tool_input, payload.tool_response);
-      if (todos) appendEvent({ ts: now, kind: 'todos', todos });
-      break;
-    }
+    // through JSONL exclusively (jsonl-tool-result).
+    // Section 23.5 — todos snapshots also derive client-side from
+    // jsonl-tool-call rows for TodoWrite/TaskCreate/TaskUpdate; the
+    // hook no longer accumulates state in tasks.json.
     break;
-  }
   case 'Stop': {
     // Section 23.4 — the assistant turn-end now flows through JSONL
     // exclusively (jsonl-turn-end on the assistant row whose stop_reason
@@ -106,23 +96,13 @@ switch (eventType) {
     } catch { /* swallow */ }
     break;
   }
-  case 'SubagentStop': {
-    // Section 0 phase 0e captured this as supplemental signal. Section 3 3g
-    // promotes transcriptPath into the event so the workflow runtime can
-    // correlate failures with the per-run JSONL CC wrote.
-    appendEvent({
-      ts: now,
-      kind: 'subagent-stop',
-      subagent: payload.subagent_type ?? payload.agent_type ?? null,
-      result: typeof payload.last_assistant_message === 'string'
-        ? truncate(payload.last_assistant_message, 4000)
-        : null,
-      transcriptPath: typeof payload.transcript_path === 'string'
-        ? payload.transcript_path
-        : null,
-    });
+  case 'SubagentStop':
+    // Section 23.6 — no live consumer. Pre-16 the workflow runtime read
+    // this for subagent transcript correlation; post-16 agents are
+    // dispatched directly via pc_invoke_agent and report through their
+    // own JSONL + agent-event channel. Chat panel returned null for the
+    // event anyway. Drop entirely.
     break;
-  }
   case 'SessionEnd': {
     // Composer disables on this in the chat panel — CC's session is gone.
     appendEvent({
@@ -156,65 +136,3 @@ switch (eventType) {
 }
 
 process.exit(0);
-
-function loadTaskState() {
-  try {
-    return JSON.parse(readFileSync(TASKS_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-function saveTaskState(state) {
-  try {
-    mkdirSync(dirname(TASKS_FILE), { recursive: true });
-    writeFileSync(TASKS_FILE, JSON.stringify(state, null, 2));
-  } catch {
-    /* swallow */
-  }
-}
-
-// Apply a TaskCreate or TaskUpdate to the persistent task state.
-// Returns the resulting todos array (sorted by numeric id), or null if no change.
-function applyTaskChange(toolName, input, response) {
-  const state = loadTaskState();
-
-  if (toolName === 'TaskCreate') {
-    const id = response?.task?.id ?? input?.id;
-    if (!id) return null;
-    state[id] = {
-      id: String(id),
-      subject: input?.subject ?? '',
-      description: input?.description ?? '',
-      activeForm: input?.activeForm ?? '',
-      status: 'pending',
-    };
-  } else if (toolName === 'TaskUpdate') {
-    const id = input?.taskId;
-    if (!id) return null;
-    const existing = state[id] || { id: String(id), subject: '', description: '', activeForm: '', status: 'pending' };
-    state[id] = {
-      ...existing,
-      subject: input?.subject ?? existing.subject,
-      description: input?.description ?? existing.description,
-      activeForm: input?.activeForm ?? existing.activeForm,
-      status: input?.status ?? existing.status,
-    };
-  } else {
-    return null;
-  }
-
-  saveTaskState(state);
-
-  return Object.values(state)
-    .sort((a, b) => {
-      const an = Number(a.id), bn = Number(b.id);
-      if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
-      return String(a.id).localeCompare(String(b.id));
-    })
-    .map((t) => ({
-      content: t.subject,
-      activeForm: t.activeForm,
-      status: t.status,
-    }));
-}

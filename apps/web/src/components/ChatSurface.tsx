@@ -27,6 +27,7 @@ import type {
   SystemEvent,
   TaskEndEvent,
   TaskStartEvent,
+  TodoItem,
   TodosEvent,
   ToolEndEvent,
   ToolStartEvent,
@@ -134,6 +135,89 @@ interface StableEnvelope {
 
 // ── JSONL→hook normalization + cross-channel dedupe (Section 0) ──────────
 
+/** Section 23.5 — derive todos snapshots from JSONL tool-calls. Before this
+ *  shipped, the hook accumulated state in tasks.json and emitted a full
+ *  snapshot per change; client just rendered. Post-23.5 the chat panel owns
+ *  derivation: walk the JSONL stream for TodoWrite/TaskCreate/TaskUpdate
+ *  tool-call inputs and synthesize a `kind:'todos'` chat-event after each.
+ *
+ *  TodoWrite carries the full list in `input.todos`. TaskCreate's id rarely
+ *  lands in `input` (CC assigns one in the tool response we don't have here);
+ *  use the `toolUseId` as the synthesized id — unique per dispatch, stable
+ *  across re-renders, irrelevant for the user-facing label. TaskUpdate keys
+ *  off `input.taskId` against ids previously seen. */
+function injectTodoSnapshots(events: WsEnvelope[]): WsEnvelope[] {
+  type Row = { id: string; subject: string; description: string; activeForm: string; status: TodoItem['status'] };
+  const state = new Map<string, Row>();
+  const out: WsEnvelope[] = [];
+
+  const snapshot = (): TodoItem[] =>
+    Array.from(state.values())
+      .sort((a, b) => {
+        const an = Number(a.id), bn = Number(b.id);
+        if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+        return a.id.localeCompare(b.id);
+      })
+      .map((r) => ({ content: r.subject, activeForm: r.activeForm, status: r.status }));
+
+  for (const env of events) {
+    out.push(env);
+    if (env.type !== 'jsonl') continue;
+    const ev = env.event as JsonlEvent | undefined;
+    if (!ev || ev.kind !== 'jsonl-tool-call') continue;
+    const input = (ev.input ?? {}) as Record<string, unknown>;
+    const name = ev.name;
+    let changed = false;
+    if (name === 'TodoWrite' && Array.isArray(input.todos)) {
+      state.clear();
+      const todos = input.todos as Array<Record<string, unknown>>;
+      for (let i = 0; i < todos.length; i++) {
+        const t = todos[i] ?? {};
+        const id = String(t.id ?? i + 1);
+        state.set(id, {
+          id,
+          subject: String(t.content ?? ''),
+          description: '',
+          activeForm: String(t.activeForm ?? ''),
+          status: (t.status as TodoItem['status']) ?? 'pending',
+        });
+      }
+      changed = true;
+    } else if (name === 'TaskCreate') {
+      const id = String(input.id ?? ev.toolUseId);
+      state.set(id, {
+        id,
+        subject: String(input.subject ?? ''),
+        description: String(input.description ?? ''),
+        activeForm: String(input.activeForm ?? ''),
+        status: 'pending',
+      });
+      changed = true;
+    } else if (name === 'TaskUpdate') {
+      const id = String(input.taskId ?? '');
+      if (id) {
+        const existing = state.get(id) ?? { id, subject: '', description: '', activeForm: '', status: 'pending' as const };
+        state.set(id, {
+          ...existing,
+          subject: typeof input.subject === 'string' ? input.subject : existing.subject,
+          description: typeof input.description === 'string' ? input.description : existing.description,
+          activeForm: typeof input.activeForm === 'string' ? input.activeForm : existing.activeForm,
+          status: (input.status as TodoItem['status']) ?? existing.status,
+        });
+        changed = true;
+      }
+    }
+    if (changed) {
+      out.push({
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'todos', todos: snapshot() } satisfies TodosEvent,
+      });
+    }
+  }
+  return out;
+}
+
 /** Convert a jsonl envelope into a hook-shape envelope so the downstream
  *  synthesizer doesn't need to branch on origin. Returns null for jsonl event
  *  kinds that aren't rendered as chat bubbles (queue ops → 0d; sidechain →
@@ -213,96 +297,6 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
     default:
       return null;
   }
-}
-
-/** Walk the envelope stream and mark hook envelopes that have a matching
- *  jsonl counterpart for suppression. Greedy left-to-right pairing.
- *  See Orchestrator.tsx pre-extraction history for the full rationale. */
-function buildSuppressionMap(envelopes: WsEnvelope[]): {
-  suppressed: Set<number>;
-  replacedBy: Map<number, number>;
-} {
-  const suppressed = new Set<number>();
-  const replacedBy = new Map<number, number>();
-  const hookUsers: Array<{ idx: number; text: string; claimed: boolean }> = [];
-  const hookAssistants: Array<{ idx: number; text: string; claimed: boolean }> = [];
-  const hookToolStarts = new Map<string, Array<{ idx: number; claimed: boolean }>>();
-  const hookToolEnds = new Map<string, Array<{ idx: number; claimed: boolean }>>();
-  const jsonlList: Array<{ idx: number; ev: JsonlEvent }> = [];
-
-  for (let i = 0; i < envelopes.length; i++) {
-    const env = envelopes[i]!;
-    if (env.type === 'event') {
-      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-      if (!ev || typeof ev !== 'object') continue;
-      if (ev.kind === 'user') {
-        hookUsers.push({ idx: i, text: (ev as UserEvent).text ?? '', claimed: false });
-      } else if (ev.kind === 'assistant') {
-        hookAssistants.push({
-          idx: i,
-          text: (ev as AssistantEvent).text ?? '',
-          claimed: false,
-        });
-      } else if (ev.kind === 'tool-start') {
-        const t = ev as ToolStartEvent;
-        if (t.toolUseId) {
-          const arr = hookToolStarts.get(t.toolUseId) ?? [];
-          arr.push({ idx: i, claimed: false });
-          hookToolStarts.set(t.toolUseId, arr);
-        }
-      } else if (ev.kind === 'tool-end') {
-        const t = ev as ToolEndEvent;
-        if (t.toolUseId) {
-          const arr = hookToolEnds.get(t.toolUseId) ?? [];
-          arr.push({ idx: i, claimed: false });
-          hookToolEnds.set(t.toolUseId, arr);
-        }
-      }
-    } else if (env.type === 'jsonl') {
-      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
-      if (ev && typeof ev === 'object') jsonlList.push({ idx: i, ev });
-    }
-  }
-
-  const claim = (
-    jsonlIdx: number,
-    pool: Array<{ idx: number; claimed: boolean }> | undefined,
-  ) => {
-    if (!pool) return;
-    for (const h of pool) {
-      if (h.claimed) continue;
-      h.claimed = true;
-      suppressed.add(h.idx);
-      replacedBy.set(jsonlIdx, h.idx);
-      return;
-    }
-  };
-
-  for (const { idx: jIdx, ev } of jsonlList) {
-    if (ev.kind === 'jsonl-user') {
-      for (const h of hookUsers) {
-        if (h.claimed || h.text !== ev.text) continue;
-        h.claimed = true;
-        suppressed.add(h.idx);
-        replacedBy.set(jIdx, h.idx);
-        break;
-      }
-    } else if (ev.kind === 'jsonl-turn-end') {
-      for (const h of hookAssistants) {
-        if (h.claimed || h.text !== ev.text) continue;
-        h.claimed = true;
-        suppressed.add(h.idx);
-        replacedBy.set(jIdx, h.idx);
-        break;
-      }
-    } else if (ev.kind === 'jsonl-tool-call') {
-      if (ev.toolUseId) claim(jIdx, hookToolStarts.get(ev.toolUseId));
-    } else if (ev.kind === 'jsonl-tool-result') {
-      if (ev.toolUseId) claim(jIdx, hookToolEnds.get(ev.toolUseId));
-    }
-  }
-
-  return { suppressed, replacedBy };
 }
 
 function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
@@ -631,11 +625,21 @@ export function ChatSurface({
   emptyState,
 }: ChatSurfaceProps) {
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
-    const { suppressed, replacedBy } = buildSuppressionMap(events);
+    // Section 23.5 — derive todos snapshots client-side from JSONL tool-calls
+    // (replaces the hook-accumulated tasks.json + snapshot emission). The
+    // hook no longer accumulates state; the synthetic envelopes injected
+    // below carry the same {kind:'todos'} shape as the legacy hook events.
+    const eventsWithTodos = injectTodoSnapshots(events);
+    // Section 23.8 — buildSuppressionMap retired. Live + new-session replay
+    // both source from JSONL; the hook no longer emits user/assistant/
+    // tool-start/tool-end (those died in 23.4) so there is no dual-pipe
+    // collision to dedupe. Legacy pre-23 sessions surface their hook events
+    // verbatim via the legacy events.jsonl fallback in
+    // loadSessionReplayEnvelopes; they don't have JSONL counterparts on
+    // disk for that session, so dedupe was always a no-op for them too.
     const out: StableEnvelope[] = [];
-    for (let i = 0; i < events.length; i++) {
-      if (suppressed.has(i)) continue;
-      const env = events[i]!;
+    for (let i = 0; i < eventsWithTodos.length; i++) {
+      const env = eventsWithTodos[i]!;
       if (env.type === 'ask') {
         // Scope ask cards to the owning session — transient sessions broadcast
         // ask envelopes on the same project WS; without this filter their
@@ -654,8 +658,7 @@ export function ChatSurface({
       if (env.type === 'jsonl') {
         const normalized = normalizeJsonlEnvelope(env);
         if (normalized) {
-          const stableIdx = replacedBy.get(i) ?? i;
-          out.push({ origIdx: stableIdx, env: normalized });
+          out.push({ origIdx: i, env: normalized });
         }
       }
     }

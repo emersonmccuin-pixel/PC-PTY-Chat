@@ -211,9 +211,8 @@ export class PtySession extends EventEmitter {
     } catch {
       this.lastEventCount = 0;
     }
-    // Reset per-session task state — task IDs restart at 1 in each CC session.
-    const tasksFile = resolve(dirname(this.eventsPath), 'tasks.json');
-    try { writeFileSync(tasksFile, '{}'); } catch { /* best effort */ }
+    // Section 23.5 — tasks.json went away with the hook-side accumulator;
+    // todos derive client-side from JSONL tool-call envelopes.
 
     this.loadDevChannels = opts.loadDevChannels ?? true;
     const args: string[] = [
