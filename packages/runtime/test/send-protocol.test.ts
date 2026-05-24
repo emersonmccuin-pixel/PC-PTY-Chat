@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   sendBracketedPaste,
   type SendDeps,
-} from '../../src/v2/send-protocol.ts';
+} from '../src/send-protocol.ts';
 
 interface FakeDeps extends SendDeps {
   writes: string[];

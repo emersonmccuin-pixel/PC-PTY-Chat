@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentRunRegistry } from '../../src/v2/agent-run-registry.ts';
+import { AgentRunRegistry } from '../src/agent-run-registry.ts';
 
 const wait = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 

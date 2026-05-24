@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   IDE_INTEGRATION_ENV_KEYS,
   scrubIdeEnv,
-} from '../../src/v2/env-scrub.ts';
+} from '../src/env-scrub.ts';
 
 test('scrubs every key in IDE_INTEGRATION_ENV_KEYS', () => {
   const env: Record<string, string> = {

@@ -15,7 +15,7 @@ import {
   encodeCwdForClaude,
   jsonlPathFor,
   projectDirFor,
-} from '../../src/v2/path-resolver.ts';
+} from '../src/path-resolver.ts';
 
 function withEnv<T>(key: string, value: string | undefined, fn: () => T): T {
   const prior = process.env[key];

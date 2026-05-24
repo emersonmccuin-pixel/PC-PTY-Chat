@@ -1,6 +1,6 @@
 // Section 25 Session 10 — MCP handshake routing for workflow-spawned subagents.
 //
-// Workflow subagent spawns go through `spawnSubagentV2`, which uses
+// Workflow subagent spawns go through `spawnSubagent`, which uses
 // `LowLevelSpawn` directly without an `AgentRun` wrapper. Their CC sessions
 // never enter the `ActiveRunRegistry` (which is scoped to orchestrator-
 // dispatched agents). The /api/internal/mcp-handshake route consults this

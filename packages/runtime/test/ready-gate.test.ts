@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ReadyGate, type ReadyTimestamps } from '../../src/v2/ready-gate.ts';
+import { ReadyGate, type ReadyTimestamps } from '../src/ready-gate.ts';
 
 const BRACKETED_PASTE_ON = '\x1b[?2004h';
 
