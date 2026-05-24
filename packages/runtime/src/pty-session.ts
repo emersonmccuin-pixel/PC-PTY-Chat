@@ -16,9 +16,9 @@ import {
   watchFile,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
+import { claudeProjectsRoot } from './path-resolver.ts';
 
 const DEFAULT_CLAUDE = 'C:\\Users\\example\\.local\\bin\\claude.exe';
 
@@ -187,8 +187,14 @@ export class PtySession extends EventEmitter {
     this.eventsPath = resolve(opts.eventsPath);
     this.jsonlEventsPath = resolve(dirname(this.eventsPath), 'jsonl-events.jsonl');
     this.workspaceDir = opts.workspaceDir;
-    this.claudeProjectsDir =
-      opts.claudeProjectsDir ?? join(homedir(), '.claude', 'projects');
+    // Honor CLAUDE_CONFIG_DIR (Section 15 lesson + Section 23 follow-up):
+    // claude.exe writes its session JSONL under
+    //   <CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/<uuid>.jsonl
+    // when that env var is set. Hardcoding `homedir() + '.claude'` here is
+    // the latent bug that pre-23 chat hid because hooks fed the chat panel
+    // regardless of where CC wrote its session log. Post-23 (JSONL is the
+    // canonical chat source) the mismatch silently empties the chat.
+    this.claudeProjectsDir = opts.claudeProjectsDir ?? claudeProjectsRoot();
     this.excludeJsonlPaths = new Set(
       (opts.excludeJsonlPaths ?? []).map((p) => resolve(p)),
     );
