@@ -43,6 +43,7 @@ interface WorkItemRow {
   version: number;
   // ── Section 26 — work-item-as-contract ──
   isAgentTask: boolean;
+  isWorkflowRoot: boolean;
   ephemeral: boolean;
   acceptanceCriteria: AcceptanceCriteria | null;
   expectedOutput: ExpectedOutput | null;
@@ -77,6 +78,7 @@ function toDomain(row: WorkItemRow): WorkItem {
     deletedAt: row.deletedAt,
     history: row.history,
     isAgentTask: row.isAgentTask,
+    isWorkflowRoot: row.isWorkflowRoot,
     ephemeral: row.ephemeral,
     acceptanceCriteria: row.acceptanceCriteria,
     expectedOutput: row.expectedOutput,
@@ -103,6 +105,8 @@ export interface CreateWorkItemInput {
   // ── Section 26 — work-item-as-contract (optional; pc_create_agent_work_item
   //   populates these. Direct callers leave them undefined for plain work items.) ──
   isAgentTask?: boolean;
+  /** Section 19 — mark this row a v2 workflow run root. Default false. */
+  isWorkflowRoot?: boolean;
   ephemeral?: boolean;
   acceptanceCriteria?: AcceptanceCriteria | null;
   expectedOutput?: ExpectedOutput | null;
@@ -267,6 +271,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
       position,
       version: 1,
       isAgentTask,
+      isWorkflowRoot: input.isWorkflowRoot ?? false,
       ephemeral: input.ephemeral ?? false,
       acceptanceCriteria: input.acceptanceCriteria ?? null,
       expectedOutput: input.expectedOutput ?? null,

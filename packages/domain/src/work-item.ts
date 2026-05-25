@@ -57,6 +57,11 @@ export interface WorkItem {
   /** True for work items dispatched as agent contracts. Hidden from the
    *  default kanban + table view; surfaced via "See Agent Contracts" toggle. */
   isAgentTask: boolean;
+  /** Section 19 — true when this row is a v2 workflow run's root. Each
+   *  workflow node spawns a child WI under it; DAG state lives in
+   *  `workflow_runs_v2` keyed by this id. Optional: pre-Section-19 rows + most
+   *  WorkItem constructors omit it (treated as false). */
+  isWorkflowRoot?: boolean;
   /** Throwaway dispatch flag — auto-archived 24h after reaching `complete`.
    *  Orchestrator opts in for quick-lookup dispatches. */
   ephemeral: boolean;

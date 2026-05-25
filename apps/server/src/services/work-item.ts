@@ -98,6 +98,8 @@ export interface CreateWorkItemServiceInput {
   // ── Section 26 — work-item-as-contract fields (optional; pc_create_agent_work_item
   //   populates these for dispatched-agent contracts). ──
   isAgentTask?: boolean;
+  /** Section 19 — mark a v2 workflow run root. */
+  isWorkflowRoot?: boolean;
   ephemeral?: boolean;
   acceptanceCriteria?: AcceptanceCriteria | null;
   expectedOutput?: ExpectedOutput | null;
@@ -279,6 +281,7 @@ export class WorkItemService {
       ...(input.type !== undefined ? { type: input.type } : {}),
       fields: validated.value,
       ...(input.isAgentTask !== undefined ? { isAgentTask: input.isAgentTask } : {}),
+      ...(input.isWorkflowRoot !== undefined ? { isWorkflowRoot: input.isWorkflowRoot } : {}),
       ...(input.ephemeral !== undefined ? { ephemeral: input.ephemeral } : {}),
       ...(input.acceptanceCriteria !== undefined
         ? { acceptanceCriteria: input.acceptanceCriteria }
