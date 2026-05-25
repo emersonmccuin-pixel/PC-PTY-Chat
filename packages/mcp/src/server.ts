@@ -156,11 +156,11 @@ export const TOOLS = [
   {
     name: 'pc_approve_work_item',
     description:
-      "Approve a tier-2/3 agent work item that's parked in `awaiting-verification`. Flips the work item to `complete` + `verification_status: 'passed'`. Use after reading the agent's report (body / attachments / fields via pc_get_work_item) when the work meets the bar. Optional `notes` get persisted on the work item as `verificationNotes` + an audit-logged history entry. The producer agent run is already terminal — no further dispatch is triggered. Fails 404 if the id is unknown, 400 if it's not an agent contract, 409 if it isn't currently awaiting verification.",
+      "Approve a tier-2/3 agent work item that's parked in `awaiting-verification`. Flips the work item to `complete` + `verification_status: 'passed'`. Use after reading the agent's report (body / attachments / fields via pc_get_work_item) when the work meets the bar. Optional `notes` get persisted on the work item as `verificationNotes` + an audit-logged history entry. The producer agent run is already terminal — no further dispatch is triggered. `id` accepts ULID or callsign (e.g. `pc-2.1`). Fails 404 if the id is unknown, 400 if it's not an agent contract, 409 if it isn't currently awaiting verification.",
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id (ULID)' },
+        id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
         notes: {
           type: 'string',
           description: 'optional reviewer note — persists on the work item + history',
@@ -172,11 +172,11 @@ export const TOOLS = [
   {
     name: 'pc_reject_work_item',
     description:
-      "Reject a tier-2/3 agent work item that's parked in `awaiting-verification` and wake the producer agent with feedback. Flips the work item to `in-progress` + `verification_status: 'failed'` with the feedback in `verificationNotes`, then spawns a continuation of the producer's agent run (via the Section 21 `pc_continue_agent` primitive) so the same agent gets the feedback in its conversation and tries again. Returns `{ ok, workItem, continuation: { ok, runId, sessionId, agentName, status, continues } }` so you can track the new run. `feedback` is required + non-empty. Fails 404 if the id is unknown, 400 if it's not an agent contract or feedback is missing, 409 if it isn't currently awaiting verification or has no assigned agent run.",
+      "Reject a tier-2/3 agent work item that's parked in `awaiting-verification` and wake the producer agent with feedback. Flips the work item to `in-progress` + `verification_status: 'failed'` with the feedback in `verificationNotes`, then spawns a continuation of the producer's agent run (via the Section 21 `pc_continue_agent` primitive) so the same agent gets the feedback in its conversation and tries again. Returns `{ ok, workItem, continuation: { ok, runId, sessionId, agentName, status, continues } }` so you can track the new run. `id` accepts ULID or callsign (e.g. `pc-2.1`). `feedback` is required + non-empty. Fails 404 if the id is unknown, 400 if it's not an agent contract or feedback is missing, 409 if it isn't currently awaiting verification or has no assigned agent run.",
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id (ULID)' },
+        id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
         feedback: {
           type: 'string',
           description:
@@ -205,11 +205,11 @@ export const TOOLS = [
   {
     name: 'pc_move_work_item',
     description:
-      "Move a work item to a different stage. Pass EITHER `toStage` (an explicit stage slug) OR `toFlag` (one of 'done' | 'cancelled' | 'new' — the system resolves to whichever stage carries that flag, surviving renames). When the destination has an `on_enter` workflow trigger, that workflow fires automatically against the bound wi-<id> worktree. Landing in an is_done stage flips status to `complete`; is_cancelled → `cancelled`. Use the optional `notes` to capture a reason (e.g. when cancelling) — lands on the card's move history.",
+      "Move a work item to a different stage. Pass EITHER `toStage` (an explicit stage slug) OR `toFlag` (one of 'done' | 'cancelled' | 'new' — the system resolves to whichever stage carries that flag, surviving renames). When the destination has an `on_enter` workflow trigger, that workflow fires automatically against the bound wi-<id> worktree. Landing in an is_done stage flips status to `complete`; is_cancelled → `cancelled`. Use the optional `notes` to capture a reason (e.g. when cancelling) — lands on the card's move history. `id` accepts ULID or callsign (e.g. `pc-2.1`).",
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id (ULID)' },
+        id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
         toStage: {
           type: 'string',
           description: 'destination stage id (use exactly one of toStage / toFlag)',
@@ -231,11 +231,11 @@ export const TOOLS = [
   {
     name: 'pc_update_work_item',
     description:
-      'Admin only — manually merge fields into a work item.',
+      'Admin only — manually merge fields into a work item. `id` accepts ULID or callsign (e.g. `pc-2.1`).',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id' },
+        id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
         fields: {
           type: 'object',
           description: 'fields to merge into workItem.fields (shallow merge)',
@@ -558,11 +558,11 @@ export const TOOLS = [
   {
     name: 'pc_get_work_item',
     description:
-      'Fetch the full work item by id — title, body, fields, stage, status, parent. Use this when an agent needs to read the work item it is operating on without filesystem digging. Returns { ok: true, workItem } or { ok: false, error } for unknown / archived ids.',
+      'Fetch the full work item by id or callsign — title, body, fields, stage, status, parent. Use this when an agent needs to read the work item it is operating on without filesystem digging. `id` accepts ULID or callsign (e.g. `pc-2.1`). Returns { ok: true, workItem } (the workItem includes `callsign` when present, NULL for agent contracts) or { ok: false, error } for unknown / archived ids.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'work item id (ULID)' },
+        id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
         includeArchived: {
           type: 'boolean',
           description: 'when true, also returns soft-deleted work items',
@@ -688,11 +688,11 @@ export const TOOLS = [
   {
     name: 'pc_attach_to_work_item',
     description:
-      'Attach a text/markdown/JSON payload to a work item. The default destination for agent output per Section 3 D13 (the "report I will read later" path). Server stamps provenance: source = "agent" + the passed agentName + nodeId + workflowRunId. Returns { ok: true, attachment } or { ok: false, error }.',
+      'Attach a text/markdown/JSON payload to a work item. The default destination for agent output per Section 3 D13 (the "report I will read later" path). Server stamps provenance: source = "agent" + the passed agentName + nodeId + workflowRunId. `workItemId` accepts ULID or callsign (e.g. `pc-2.1`). Returns { ok: true, attachment } or { ok: false, error }.',
     inputSchema: {
       type: 'object',
       properties: {
-        workItemId: { type: 'string', description: 'destination work item id (ULID)' },
+        workItemId: { type: 'string', description: 'destination work item id (ULID or callsign like pc-2.1)' },
         name: { type: 'string', description: 'attachment display name' },
         content: { type: 'string', description: 'attachment body (inline; no filesystem path variant)' },
         kind: {
@@ -1048,6 +1048,30 @@ function agentArgs(args: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/** Section 35 — Crockford base-32 ULID discriminant. Mirrors looksLikeUlid
+ *  in apps/server/src/services/work-item.ts. Used to short-circuit the
+ *  callsign-resolution round-trip when the caller already has a ULID. */
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+/** Section 35 — resolve a work-item reference (ULID or callsign) to a ULID
+ *  by hitting the modal-opener route (which accepts both shapes). Returns
+ *  null on miss / unknown project / bad shape. Mutation tools call this
+ *  first so the orchestrator can pass either id or callsign without the
+ *  mutation routes themselves having to widen. */
+async function resolveWorkItemIdViaServer(idOrCallsign: string): Promise<string | null> {
+  const ref = idOrCallsign.trim();
+  if (!ref) return null;
+  if (ULID_RE.test(ref)) return ref;
+  try {
+    const res = await getServer(projectPath(`work-items/${encodeURIComponent(ref)}`));
+    if (res.status < 200 || res.status >= 300) return null;
+    const parsed = JSON.parse(res.body) as { ok?: boolean; workItem?: { id?: string } };
+    return parsed.ok && typeof parsed.workItem?.id === 'string' ? parsed.workItem.id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Auto-derive a knowledge-doc name from the content body. Priority: first
  *  H1 (`# Heading`) → first non-empty line → fallback to a timestamp slug.
  *  Whitespace trimmed; capped at 64 chars; kebab-cased. */
@@ -1354,8 +1378,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_approve_work_item': {
-      const id = typeof args.id === 'string' ? args.id.trim() : '';
-      if (!id) {
+      const ref = typeof args.id === 'string' ? args.id.trim() : '';
+      if (!ref) {
         return {
           content: [{ type: 'text', text: 'pc_approve_work_item: id required' }],
           isError: true,
@@ -1364,6 +1388,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (!PROJECT_ID) {
         return {
           content: [{ type: 'text', text: 'pc_approve_work_item: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const id = await resolveWorkItemIdViaServer(ref);
+      if (!id) {
+        return {
+          content: [{ type: 'text', text: `pc_approve_work_item: unknown work item: ${ref}` }],
           isError: true,
         };
       }
@@ -1394,9 +1425,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_reject_work_item': {
-      const id = typeof args.id === 'string' ? args.id.trim() : '';
+      const ref = typeof args.id === 'string' ? args.id.trim() : '';
       const feedback = typeof args.feedback === 'string' ? args.feedback : '';
-      if (!id || !feedback.trim()) {
+      if (!ref || !feedback.trim()) {
         return {
           content: [
             { type: 'text', text: 'pc_reject_work_item: id and non-empty feedback required' },
@@ -1420,6 +1451,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               text: 'pc_reject_work_item: PC_SESSION_ID / PC_DISPATCHER_SESSION_ID not set',
             },
           ],
+          isError: true,
+        };
+      }
+      const id = await resolveWorkItemIdViaServer(ref);
+      if (!id) {
+        return {
+          content: [{ type: 'text', text: `pc_reject_work_item: unknown work item: ${ref}` }],
           isError: true,
         };
       }
@@ -1557,11 +1595,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_move_work_item': {
-      const id = typeof args.id === 'string' ? args.id : '';
+      const ref = typeof args.id === 'string' ? args.id : '';
       const toStage = typeof args.toStage === 'string' ? args.toStage : '';
       const toFlag = typeof args.toFlag === 'string' ? args.toFlag : '';
       const notes = typeof args.notes === 'string' ? args.notes : '';
-      if (!id) {
+      if (!ref) {
         return { content: [{ type: 'text', text: 'pc_move_work_item: id required' }], isError: true };
       }
       if (!toStage && !toFlag) {
@@ -1573,6 +1611,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (toStage && toFlag) {
         return {
           content: [{ type: 'text', text: 'pc_move_work_item: pass exactly one of toStage / toFlag (not both)' }],
+          isError: true,
+        };
+      }
+      const id = await resolveWorkItemIdViaServer(ref);
+      if (!id) {
+        return {
+          content: [{ type: 'text', text: `pc_move_work_item: unknown work item: ${ref}` }],
           isError: true,
         };
       }
@@ -1595,10 +1640,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_update_work_item': {
-      const id = typeof args.id === 'string' ? args.id : '';
+      const ref = typeof args.id === 'string' ? args.id : '';
       const fields = args.fields && typeof args.fields === 'object' ? args.fields : null;
-      if (!id || !fields) {
+      if (!ref || !fields) {
         return { content: [{ type: 'text', text: 'pc_update_work_item: id and fields required' }], isError: true };
+      }
+      const id = await resolveWorkItemIdViaServer(ref);
+      if (!id) {
+        return {
+          content: [{ type: 'text', text: `pc_update_work_item: unknown work item: ${ref}` }],
+          isError: true,
+        };
       }
       try {
         const res = await postServer(projectPath('work-items/update'), { id, fields });
@@ -2638,7 +2690,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_attach_to_work_item': {
-      const workItemId = typeof args.workItemId === 'string' ? args.workItemId : '';
+      const ref = typeof args.workItemId === 'string' ? args.workItemId : '';
       const name = typeof args.name === 'string' ? args.name : '';
       const content = typeof args.content === 'string' ? args.content : '';
       const kind = typeof args.kind === 'string' && args.kind.trim() ? args.kind.trim() : 'markdown';
@@ -2646,11 +2698,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const agentName = typeof args.agentName === 'string' ? args.agentName : undefined;
       const workflowRunId = typeof args.workflowRunId === 'string' ? args.workflowRunId : undefined;
       const nodeId = typeof args.nodeId === 'string' ? args.nodeId : undefined;
-      if (!workItemId || !name || !content) {
+      if (!ref || !name || !content) {
         return {
           content: [
             { type: 'text', text: 'pc_attach_to_work_item: workItemId, name, and content required' },
           ],
+          isError: true,
+        };
+      }
+      const workItemId = await resolveWorkItemIdViaServer(ref);
+      if (!workItemId) {
+        return {
+          content: [{ type: 'text', text: `pc_attach_to_work_item: unknown work item: ${ref}` }],
           isError: true,
         };
       }
