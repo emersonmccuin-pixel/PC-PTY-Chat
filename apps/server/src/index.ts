@@ -25,6 +25,7 @@ import {
   parseWorkflowText,
   serializeWorkflow,
   validateWorkflow,
+  validateWorkflowV2,
 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
@@ -2837,6 +2838,12 @@ app.post('/api/projects/:projectId/workflow-v2/fire', async (c) => {
   const wf = body.workflow as { id?: unknown; name?: unknown; nodes?: unknown } | undefined;
   if (!wf || typeof wf.id !== 'string' || typeof wf.name !== 'string' || !Array.isArray(wf.nodes)) {
     return c.json({ ok: false, error: 'workflow must have { id, name, nodes[] }' }, 400);
+  }
+  // 19.6 — validate the graph (cycles / when: grammar / ref integrity / trigger
+  // shape) before firing. Same validator the builder will call at publish time.
+  const graph = validateWorkflowV2(wf as never);
+  if (!graph.ok) {
+    return c.json({ ok: false, error: `invalid workflow: ${graph.errors.join('; ')}`, errors: graph.errors }, 400);
   }
   try {
     const trigger =
