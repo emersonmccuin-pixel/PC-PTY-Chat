@@ -726,6 +726,13 @@ button:disabled {
   color: var(--cream);
   border-color: var(--cream-soft);
 }
+/* Row variant — same stamp visual at 24px for use in the ProjectRail row,
+   left-aligned beside the project name. */
+.pc-project-tile-row {
+  width: 24px;
+  height: 24px;
+  font-size: 0.55rem;
+}
 
 /* Wax-seal avatar — YOU (cream stamp). */
 .chat-avatar-user {

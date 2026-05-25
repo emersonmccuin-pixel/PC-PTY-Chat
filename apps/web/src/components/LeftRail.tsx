@@ -1,19 +1,16 @@
-// LeftRail — Section 32.2 reshape: project tiles (56px compact) by default;
-// expands to 240px for Sessions list or Files tree. The old Projects/Sessions
-// tab toggle in the header is gone — projects live as wax-stamp tiles, the
-// footer "sessions" link flips the rail into Sessions mode, and an explicit
-// "‹ projects" link in the expanded modes flips back.
-//
-// Center-tab = files still overrides the rail content to FilesRail (5+P.C
-// behavior preserved); the rail auto-expands to 240px in that case via the
-// width derivation in Shell.tsx that watches centerTab + railMode.
+// LeftRail — Projects / Sessions tab wrapper for the rail panel. Sessions
+// view is scoped to the active project. 5+P.C: Files left the rail tab strip;
+// when the center tab is Files, rail content overrides to <FilesRail>
+// regardless of `mode`. Clicking a rail tab while in Files mode flips center
+// back to Orchestrator (rail-becomes-file-tree is a coupled state — leaving
+// it via the rail strip means the user is done browsing files).
 
 import type { Project } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
-import { useRailMode } from '@/store/rail-mode';
+import { useRailMode, type RailMode } from '@/store/rail-mode';
 import { FilesRail } from './FilesRail';
-import { ProjectTiles } from './ProjectTiles';
+import { ProjectRail } from './ProjectRail';
 import { SessionsRail } from './SessionsRail';
 
 interface LeftRailProps {
@@ -24,6 +21,11 @@ interface LeftRailProps {
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
 }
+
+const TABS: { mode: RailMode; label: string }[] = [
+  { mode: 'projects', label: 'Projects' },
+  { mode: 'sessions', label: 'Sessions' },
+];
 
 export function LeftRail({
   projects,
@@ -38,47 +40,43 @@ export function LeftRail({
   const centerTab = useActiveCenterTab((s) => s.tab);
   const setCenterTab = useActiveCenterTab((s) => s.setTab);
 
-  if (centerTab === 'files') {
-    return (
-      <div className="flex h-full flex-col">
-        <button
-          onClick={() => setCenterTab('orchestrator')}
-          className="border-b border-border bg-card px-3 py-2 text-left text-[10px] uppercase tracking-[0.08em] text-muted-foreground hover:text-accent"
-          title="Leave files view"
-        >
-          ‹ projects
-        </button>
-        <div className="flex-1 overflow-hidden">
-          <FilesRail project={activeProject} />
-        </div>
-      </div>
-    );
-  }
-
-  if (mode === 'sessions') {
-    return (
-      <div className="flex h-full flex-col">
-        <button
-          onClick={() => setMode('projects')}
-          className="border-b border-border bg-card px-3 py-2 text-left text-[10px] uppercase tracking-[0.08em] text-muted-foreground hover:text-accent"
-          title="Back to project tiles"
-        >
-          ‹ projects
-        </button>
-        <div className="flex-1 overflow-hidden">
-          <SessionsRail project={activeProject} events={events} />
-        </div>
-      </div>
-    );
-  }
+  const filesOverride = centerTab === 'files';
 
   return (
-    <ProjectTiles
-      projects={projects}
-      onCreateProject={onCreateProject}
-      onProjectDeleted={onProjectDeleted}
-      onProjectReorder={onProjectReorder}
-      onOpenSessions={() => setMode('sessions')}
-    />
+    <div className="flex h-full flex-col">
+      <div className="flex border-b border-border bg-card text-base">
+        {TABS.map((t) => (
+          <button
+            key={t.mode}
+            onClick={() => {
+              setMode(t.mode);
+              if (filesOverride) setCenterTab('orchestrator');
+            }}
+            className={
+              'flex-1 px-3 py-2 ' +
+              (!filesOverride && mode === t.mode
+                ? 'border-b-2 border-primary text-primary -mb-px'
+                : 'text-muted-foreground hover:text-foreground')
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-hidden">
+        {filesOverride ? (
+          <FilesRail project={activeProject} />
+        ) : mode === 'projects' ? (
+          <ProjectRail
+            projects={projects}
+            onCreateProject={onCreateProject}
+            onProjectDeleted={onProjectDeleted}
+            onProjectReorder={onProjectReorder}
+          />
+        ) : (
+          <SessionsRail project={activeProject} events={events} />
+        )}
+      </div>
+    </div>
   );
 }

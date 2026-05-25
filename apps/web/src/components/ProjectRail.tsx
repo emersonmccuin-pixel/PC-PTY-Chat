@@ -1,10 +1,14 @@
-// ProjectTiles — Section 32.2 compact rail view. Wax-stamp tiles for each
-// project, click to activate, right-click for the same context menu as the
-// full-width rail. Drag-reorder preserved.
+// Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
+// Source: apps/web/src/components/ProjectRail.tsx
+// Adapted for Project Companion: no inline create-project form here — the
+// "+ New project" button bubbles up via `onCreateProject` so the create flow
+// (folder picker + probe + POST /api/projects) lives in a top-level modal
+// shared with future affordances (Q5). Active-slug comes from a zustand
+// store, not props. Right-click context menu built out per D86 (5.4).
 //
-// Sits at 56px wide and renders icon-only. The full-width project list still
-// exists (ProjectRail) for the sessions / files expanded-rail modes; this
-// component is the default rail content.
+// Session 31 reshape: 32.2's compact tile column reverted to the full-name
+// project list. Each row now carries a small wax-stamp icon on the left
+// (24px square; same active/inactive treatment as the old 32px tile).
 
 import { useEffect, useMemo, useState } from 'react';
 
@@ -16,12 +20,11 @@ import {
   SoftDeleteProjectModal,
 } from './ProjectDangerModals';
 
-interface ProjectTilesProps {
+interface ProjectRailProps {
   projects: Project[];
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
-  onOpenSessions: () => void;
 }
 
 interface MenuPos {
@@ -39,26 +42,35 @@ function initials(name: string): string {
   return cleaned.slice(0, 2).toUpperCase() || '··';
 }
 
-export function ProjectTiles({
+export function ProjectRail({
   projects,
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
-  onOpenSessions,
-}: ProjectTilesProps) {
+}: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const setTab = useActiveCenterTab((s) => s.setTab);
   const [menu, setMenu] = useState<MenuPos | null>(null);
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+  // 5+.4 (D87) — drag state. `draggingId` is the source row; `dragOverId` +
+  // `dragOverPos` drive the insertion-line indicator. Drag is disabled while
+  // the filter input has text — reorder semantics on a partial view get weird
+  // fast, and the filter is a transient lookup tool anyway.
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragOverPos, setDragOverPos] = useState<'before' | 'after'>('before');
 
-  const dragEnabled = projects.length > 1;
+  // 5+.3 (D89): rail-local, transient, name-only substring filter.
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => p.name.toLowerCase().includes(q));
+  }, [projects, filter]);
 
-  const sortedProjects = useMemo(() => projects, [projects]);
+  const dragEnabled = filter.trim() === '' && projects.length > 1;
 
   useEffect(() => {
     if (!menu) return;
@@ -158,25 +170,33 @@ export function ProjectTiles({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
-      <div className="px-1 pt-3 pb-1 text-center text-[8px] uppercase tracking-[0.12em] text-[var(--fg-dim)]">
-        proj
-      </div>
-      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-1 py-2">
-        {sortedProjects.length === 0 ? (
-          <div className="px-2 py-2 text-center text-[10px] text-muted-foreground">
-            None yet
-          </div>
+      {projects.length > 0 && (
+        <div className="border-b border-border px-2 py-1.5">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter projects…"
+            className="w-full px-2 py-1 text-xs"
+          />
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto">
+        {projects.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No projects yet.</div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No matches.</div>
         ) : (
-          sortedProjects.map((p) => {
+          filtered.map((p) => {
             const isActive = p.slug === activeSlug;
             const isDragging = draggingId === p.id;
             const isOver = dragOverId === p.id;
             const showLineBefore = isOver && dragOverPos === 'before';
             const showLineAfter = isOver && dragOverPos === 'after';
             return (
-              <div key={p.id} className="relative w-full">
+              <div key={p.id} className="relative">
                 {showLineBefore && (
-                  <div className="pointer-events-none absolute left-1 right-1 top-0 z-10 h-0.5 bg-primary" />
+                  <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-0.5 bg-primary" />
                 )}
                 <button
                   draggable={dragEnabled}
@@ -187,44 +207,53 @@ export function ProjectTiles({
                   onClick={() => setActiveSlug(p.slug)}
                   onContextMenu={(e) => {
                     e.preventDefault();
+                    // stopPropagation so the SAME contextmenu doesn't bubble to
+                    // the window-level dismiss listener attached by the useEffect
+                    // above — React 18 commits + runs the effect fast enough that
+                    // the listener was live before bubbling finished, opening and
+                    // immediately closing the menu (5+.1 regression hunt).
                     e.stopPropagation();
                     setMenu({ project: p, x: e.clientX, y: e.clientY });
                   }}
-                  title={p.name}
+                  title={p.folderPath}
                   className={
-                    'pc-project-tile mx-auto block ' +
-                    (isActive ? 'pc-project-tile-active' : 'pc-project-tile-inactive') +
-                    (isDragging ? ' opacity-40' : '') +
-                    (dragEnabled ? ' cursor-grab active:cursor-grabbing' : '')
+                    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-base hover:bg-muted ' +
+                    (isActive
+                      ? 'border-l-2 border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary '
+                      : 'border-l-2 border-transparent text-foreground/80 ') +
+                    (isDragging ? 'opacity-40 ' : '') +
+                    (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
                   }
                 >
-                  {initials(p.name)}
+                  <span
+                    aria-hidden="true"
+                    className={
+                      'pc-project-tile pc-project-tile-row shrink-0 ' +
+                      (isActive ? 'pc-project-tile-active' : 'pc-project-tile-inactive')
+                    }
+                  >
+                    {initials(p.name)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
                 </button>
                 {showLineAfter && (
-                  <div className="pointer-events-none absolute bottom-0 left-1 right-1 z-10 h-0.5 bg-primary" />
+                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary" />
                 )}
               </div>
             );
           })
         )}
+      </div>
+      <div className="border-t border-border p-2">
         <button
           onClick={onCreateProject}
-          title="New project"
-          aria-label="New project"
-          className="pc-project-tile pc-project-tile-new mx-auto mt-2"
+          className="w-full px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
         >
-          +
+          + New project
         </button>
       </div>
-      <button
-        onClick={onOpenSessions}
-        title="Browse sessions for the active project"
-        className="border-t border-border px-1 py-2 text-center text-[9px] uppercase tracking-[0.08em] text-[var(--fg-dim)] hover:text-accent"
-      >
-        sessions
-      </button>
       {filesNote && (
-        <div className="border-t border-border bg-success/10 px-2 py-1 text-[10px] text-success">
+        <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
           {filesNote}
         </div>
       )}
