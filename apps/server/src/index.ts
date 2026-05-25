@@ -54,6 +54,7 @@ import {
   insertStatuslineSnapshot,
   listLatestSnapshotPerSession,
   getLatestSnapshotForProject,
+  workflowRunsV2Repo,
 } from '@pc/db';
 import type { Stage, StatuslineSnapshot } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
@@ -2847,6 +2848,16 @@ app.post('/api/projects/:projectId/workflow-v2/fire', async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 400);
   }
+});
+
+// Section 19.4f — read a v2 run (sidecar state + event log). Project-scoped.
+app.get('/api/projects/:projectId/workflow-v2/runs/:runId', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const run = workflowRunsV2Repo.getRunForProject(c.req.param('runId') as never, runtime.project.id);
+  if (!run) return c.json({ ok: false, error: 'run not found' }, 404);
+  return c.json({ ok: true, run, events: workflowRunsV2Repo.listEvents(run.id) });
 });
 
 // Section 19.4f — apply an orchestrator/human review decision to a paused v2 run.
