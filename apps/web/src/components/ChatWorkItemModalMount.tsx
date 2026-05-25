@@ -85,7 +85,10 @@ export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMou
     );
   }
 
-  const item = items.find((i) => i.id === workItemId);
+  // Section 35 — chat rich-links may carry a callsign (`pc-pty-chat-4`) as
+  // the ref instead of the canonical ULID. Match either shape against the
+  // local list so callsign clicks land on the right row.
+  const item = items.find((i) => i.id === workItemId || i.callsign === workItemId);
   if (!item) {
     return (
       <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80">
