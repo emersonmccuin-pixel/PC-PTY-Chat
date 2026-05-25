@@ -700,6 +700,50 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_save_workflow_draft',
+    description:
+      'Section 19.9 — push an in-progress draft of the v2 workflow currently being authored in the workflow-builder modal. Use this after each meaningful structural change (node added, edge wired, trigger set, position dragged) so the visualizer renders the workflow forming. The draft is NOT written to disk — only `pc_publish_workflow` does that. Server keys the draft by the transient PC_SESSION_ID env var (already set by the host); state clears automatically when the workflow-builder session ends. Drafts can be incomplete (missing nodes / wires) — they only need a top-level `id`. 400 on shape errors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        def: {
+          type: 'object',
+          description: 'in-progress v2 workflow object: { id, name, triggers?, nodes: [...], ... }',
+          additionalProperties: true,
+        },
+      },
+      required: ['def'],
+    },
+  },
+  {
+    name: 'pc_read_workflow_draft',
+    description:
+      'Section 19.9 — read the current v2 workflow-builder draft for this session. Use this at the start of edit-mode, or any time you suspect the user has dragged nodes / wired edges in the visualizer since your last `pc_save_workflow_draft` write (sync-model-A — the user can edit the graph between your turns). Returns { ok: true, def: <current draft or null> } if a draft exists; { ok: true, def: null } if none. PC_SESSION_ID env is the implicit scope.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_get_stages',
+    description:
+      'Section 19.9 — list the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a v2 workflow (`stage-on-entry` trigger). Returns { ok: true, stages: [{ id, name, order }, ...] }. Stage `id` is what goes into `triggers[].stage` — never use the name. (Equivalent to `pc_list_stages`; kept under the locked Section 19 name.)',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_publish_workflow',
+    description:
+      'Section 19.9 — publish the v2 workflow to disk. Validates the graph (cycles, unknown node ids, `when:` grammar, trigger shape, ref integrity), writes the YAML to `<project>/.project-companion/workflows/<def.id>.yaml`, reloads the v2 registry, and broadcasts `project-workflows-changed` so the Workflows tab refreshes. Returns 201 on first-write, 200 on overwrite. 400 on validation errors with per-path `errors:` array — translate to plain English and re-publish after fixing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        def: {
+          type: 'object',
+          description: 'v2 workflow object: { id, name, triggers: [...], nodes: [...], description?, worktree?, max_concurrency? }',
+          additionalProperties: true,
+        },
+      },
+      required: ['def'],
+    },
+  },
+  {
     name: 'pc_write_claude_md',
     description:
       'Write the project-level CLAUDE.md from the conversational setup wizard (5.6 / D82). Overwrites the existing file. Use this as the SINGLE tool call at the end of the wizard interview, once the user confirms the preview. `content` is the full markdown body (the server does not interpolate). 400 if content is missing or empty. Broadcasts project-claude-md-changed on success so the modal can close.',
@@ -2730,6 +2774,132 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [
             { type: 'text', text: `pc_update_workflow_draft failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_save_workflow_draft': {
+      const def = args.def && typeof args.def === 'object' ? args.def : null;
+      if (!def) {
+        return {
+          content: [{ type: 'text', text: 'pc_save_workflow_draft: def required' }],
+          isError: true,
+        };
+      }
+      const sessionId = process.env.PC_SESSION_ID ?? '';
+      if (!sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_save_workflow_draft: PC_SESSION_ID env not set (transient workflow-builder session is the only valid caller)',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(projectPath('workflow-builder/draft'), { sessionId, def });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_save_workflow_draft failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_save_workflow_draft failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_read_workflow_draft': {
+      const sessionId = process.env.PC_SESSION_ID ?? '';
+      if (!sessionId) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_read_workflow_draft: PC_SESSION_ID env not set (transient workflow-builder session is the only valid caller)',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const res = await getServer(
+          projectPath(`workflow-builder/draft/${encodeURIComponent(sessionId)}`),
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_read_workflow_draft failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_read_workflow_draft failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_get_stages': {
+      // Same shape as pc_list_stages (kept under the locked Section 19 name).
+      try {
+        if (!PROJECT_ID) throw new Error('PC_PROJECT_ID required');
+        const res = await getServer(`/api/projects/${PROJECT_ID}`);
+        if (res.status >= 200 && res.status < 300) {
+          try {
+            const project = JSON.parse(res.body) as { stages?: Array<{ id: string; name: string; order: number }> };
+            const stages = (project.stages ?? []).map((s) => ({ id: s.id, name: s.name, order: s.order }));
+            return { content: [{ type: 'text', text: JSON.stringify({ ok: true, stages }) }] };
+          } catch {
+            return { content: [{ type: 'text', text: `pc_get_stages parse error: ${res.body.slice(0, 200)}` }], isError: true };
+          }
+        }
+        return {
+          content: [{ type: 'text', text: `pc_get_stages failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_get_stages failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_publish_workflow': {
+      const def = args.def && typeof args.def === 'object' ? args.def : null;
+      if (!def) {
+        return {
+          content: [{ type: 'text', text: 'pc_publish_workflow: def required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer(projectPath('workflow-v2/definitions'), { workflow: def });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_publish_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_publish_workflow failed: ${(err as Error).message}` },
           ],
           isError: true,
         };

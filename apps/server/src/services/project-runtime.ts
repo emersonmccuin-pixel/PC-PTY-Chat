@@ -71,6 +71,12 @@ export class ProjectRuntime {
   private agentDesigner: PtySession | null = null;
   private agentDesignerPrep: PodSpawnPrep | null = null;
   private workflowCreator: PtySession | null = null;
+  /** Section 19.9 — transient `workflow-builder` stock pod session that drives
+   *  the new "+ New workflow" modal (v2-aware). Distinct from `workflowCreator`
+   *  which targets v1 schema and stays alive until Section 19.12 culls it. */
+  private workflowBuilder: PtySession | null = null;
+  private workflowBuilderPrep: PodSpawnPrep | null = null;
+  private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
   /** Tracks the transient PC_SESSION_ID assigned to the current workflow-
    *  creator. Used to scope draft-state cleanup on session exit. */
@@ -94,6 +100,11 @@ export class ProjectRuntime {
    *  visualizer via the `workflow-creator-draft` WS envelope. Cleared on
    *  session exit (4b.3's `endWorkflowCreator` plus a sweep in `shutdown()`). */
   private readonly workflowCreatorDrafts: Map<string, Workflow> = new Map();
+  /** Section 19.9 — v2 workflow-builder drafts keyed by transient PC_SESSION_ID.
+   *  Populated by `pc_save_workflow_draft` mid-interview; consumed by the
+   *  visualizer via the `workflow-builder-draft` WS envelope. Cleared on
+   *  session exit. */
+  private readonly workflowBuilderDrafts: Map<string, WorkflowV2.Workflow> = new Map();
 
   constructor(public project: Project, private readonly opts: ProjectRuntimeOptions) {}
 
@@ -558,9 +569,14 @@ export class ProjectRuntime {
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
     try { this.workflowCreator?.kill(); } catch { /* best-effort */ }
+    try { this.workflowBuilder?.kill(); } catch { /* best-effort */ }
+    try { this.workflowBuilderPrep?.cleanup(); } catch { /* best-effort */ }
     this.pty = null;
     this.workflowCreator = null;
     this.workflowCreatorSessionId = null;
+    this.workflowBuilder = null;
+    this.workflowBuilderPrep = null;
+    this.workflowBuilderSessionId = null;
     this.workflow = null;
     this.worktreesSvc = null;
     this.registry = null;
@@ -568,6 +584,7 @@ export class ProjectRuntime {
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
     this.workflowCreatorDrafts.clear();
+    this.workflowBuilderDrafts.clear();
   }
 
   /** 17b.12 — transient agent-designer session backed by the agent-designer
@@ -740,6 +757,107 @@ export class ProjectRuntime {
     if (this.workflowCreatorSessionId) {
       this.clearWorkflowCreatorDraft(this.workflowCreatorSessionId);
       this.workflowCreatorSessionId = null;
+    }
+  }
+
+  // ── Section 19.9 — workflow-builder transient session (v2-aware) ──────────
+  //
+  // Mirror of `startAgentDesigner` (uses `preparePodSpawn` to materialise the
+  // pod's prompt + tool allowlist — REPLACES CC's default identity). Distinct
+  // from `startWorkflowCreator` above which is the v1 pod; both coexist until
+  // Section 19.12.
+
+  /** Section 19.9 — stash the latest v2 workflow-builder draft for a session.
+   *  Called by the matching HTTP endpoint when `pc_save_workflow_draft` fires.
+   *  Index.ts handles the WS broadcast. */
+  setWorkflowBuilderDraft(sessionId: string, def: WorkflowV2.Workflow): void {
+    this.workflowBuilderDrafts.set(sessionId, def);
+  }
+
+  /** Section 19.9 — read the current draft for a session. Used by
+   *  `pc_read_workflow_draft` so the agent can pick up user drags between
+   *  turns (sync-model-A). Returns undefined if no draft exists. */
+  getWorkflowBuilderDraft(sessionId: string): WorkflowV2.Workflow | undefined {
+    return this.workflowBuilderDrafts.get(sessionId);
+  }
+
+  /** Section 19.9 — drop draft state for a specific workflow-builder session.
+   *  Called from `endWorkflowBuilder`. */
+  clearWorkflowBuilderDraft(sessionId: string): void {
+    this.workflowBuilderDrafts.delete(sessionId);
+  }
+
+  /** Section 19.9 — transient PtySession driving the conversational v2
+   *  workflow-builder modal. Spawned with `--agent workflow-builder` (replaces
+   *  CC's default identity with the pod's content). One workflow-builder at a
+   *  time per project; calling `start` again kills the prior one. */
+  startWorkflowBuilder(): PtySession {
+    this.endWorkflowBuilder();
+    this.refreshHooksIfStale();
+    const transientId = `wb-${randomUUID()}`;
+    const sessionDir = this.sessionDataPath(transientId);
+    mkdirSync(sessionDir, { recursive: true });
+    const cc = this.transientCcSession();
+
+    const prep = preparePodSpawn({
+      agentName: 'workflow-builder',
+      projectId: this.project.id,
+      worktreeDir: this.project.folderPath,
+      scratchDir: sessionDir,
+      filterMcpToReferencedTools: false,
+    });
+    if (!prep) {
+      throw new Error(
+        'workflow-builder pod row not found — boot-time seedStockPods should have ensured it exists',
+      );
+    }
+    this.workflowBuilderPrep = prep;
+
+    this.workflowBuilder = new PtySession({
+      workspaceDir: this.project.folderPath,
+      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
+      eventsPath: resolve(sessionDir, 'events.jsonl'),
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      claudeSessionId: cc.ccSessionId,
+      resume: false,
+      jsonlPath: cc.jsonlPath,
+      extraEnv: { PC_SESSION_ID: transientId, ...prep.extraEnv },
+      agentName: 'workflow-builder',
+      mcpConfigPath: prep.mcpConfigPath,
+    });
+    this.workflowBuilderSessionId = transientId;
+    return this.workflowBuilder;
+  }
+
+  /** Returns the live workflow-builder PtySession, or null if not started /
+   *  exited. */
+  workflowBuilderPty(): PtySession | null {
+    return this.workflowBuilder && this.workflowBuilder.getState() !== 'exited'
+      ? this.workflowBuilder
+      : null;
+  }
+
+  /** The transient PC_SESSION_ID assigned to the current workflow-builder
+   *  PtySession (or the most-recently exited one). Used by the draft-state
+   *  endpoint to scope cleanup. */
+  workflowBuilderSession(): string | null {
+    return this.workflowBuilderSessionId;
+  }
+
+  /** Kill the workflow-builder session + clean up the materialised pod files
+   *  + drop its draft state. Idempotent. */
+  endWorkflowBuilder(): void {
+    if (this.workflowBuilder) {
+      try { this.workflowBuilder.kill(); } catch { /* best-effort */ }
+      this.workflowBuilder = null;
+    }
+    if (this.workflowBuilderPrep) {
+      try { this.workflowBuilderPrep.cleanup(); } catch { /* best-effort */ }
+      this.workflowBuilderPrep = null;
+    }
+    if (this.workflowBuilderSessionId) {
+      this.clearWorkflowBuilderDraft(this.workflowBuilderSessionId);
+      this.workflowBuilderSessionId = null;
     }
   }
 

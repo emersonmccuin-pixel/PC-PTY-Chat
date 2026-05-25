@@ -25,6 +25,13 @@ export const STOCK_POD_NAME_LIST = [
   // the rest of Section 36's surface (origin column wiring, pod-routes
   // shape, pod-defaults, etc.) is still parked in stash@{0}.
   'caisson',
+  // 2026-05-25: v2 workflow-builder pod (Section 19.9). Mirrors agent-designer
+  // structurally — transient session, replaces CC's default identity, drives
+  // the "+ New workflow" modal. v2-schema-aware: 5 node kinds, $-refs,
+  // reject-only kick-back primitive. Distinct from the v1 `workflow-creator`
+  // pod (which targets the typed-edges + inputs: schema and stays alive until
+  // Section 19.12 culls it).
+  'workflow-builder',
 ] as const;
 
 export type StockPodName = (typeof STOCK_POD_NAME_LIST)[number];

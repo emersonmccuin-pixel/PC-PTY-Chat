@@ -57,7 +57,7 @@ import {
   getLatestSnapshotForProject,
   workflowRunsV2Repo,
 } from '@pc/db';
-import type { Stage, StatuslineSnapshot } from '@pc/domain';
+import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
@@ -1303,6 +1303,89 @@ app.delete('/api/projects/:projectId/workflow-creator', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   runtime.endWorkflowCreator();
+  return c.json({ ok: true });
+});
+
+// ── Workflow-builder transient session (Section 19.9, v2-aware) ────────────
+//
+// Mirror of agent-designer wiring. Spawns CC with `--agent workflow-builder`
+// (replaces CC's default identity with the pod's content) + the materialised
+// pod mcp.json. Distinct from `workflow-creator` above (which is the v1 pod);
+// both coexist until Section 19.12.
+//
+// WS envelopes:
+//   { type: 'workflow-builder-state', state }
+//   { type: 'workflow-builder-event', event }       — legacy hook events
+//   { type: 'workflow-builder-jsonl', event }       — JSONL tailer events
+//   { type: 'workflow-builder-exit', code, signal }
+//   { type: 'workflow-builder-draft', sessionId, def } — broadcast by the
+//     /workflow-builder/draft POST handler when pc_save_workflow_draft fires
+
+function attachWorkflowBuilderHandlers(
+  projectId: ULID,
+  session: ReturnType<ProjectRuntime['startWorkflowBuilder']>,
+): void {
+  const flag = session as unknown as { __pcWorkflowBuilderAttached?: boolean };
+  if (flag.__pcWorkflowBuilderAttached) return;
+  session.on('state', (state: string) =>
+    broadcastTo(projectId, { type: 'workflow-builder-state', state }),
+  );
+  session.on('event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'workflow-builder-event', event }),
+  );
+  session.on('jsonl-event', (event: unknown) =>
+    broadcastTo(projectId, { type: 'workflow-builder-jsonl', event }),
+  );
+  session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    broadcastTo(projectId, { type: 'workflow-builder-exit', code, signal });
+  });
+  flag.__pcWorkflowBuilderAttached = true;
+}
+
+app.post('/api/projects/:projectId/workflow-builder/start', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    const session = runtime.startWorkflowBuilder();
+    attachWorkflowBuilderHandlers(id, session);
+    return c.json({
+      ok: true,
+      state: session.getState(),
+      sessionId: runtime.workflowBuilderSession(),
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
+app.post('/api/projects/:projectId/workflow-builder/send', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const session = runtime.workflowBuilderPty();
+  if (!session) return c.json({ ok: false, error: 'no workflow-builder session' }, 409);
+  const body = await c.req.json<{ text?: string }>();
+  if (typeof body.text !== 'string' || body.text === '') {
+    return c.json({ ok: false, error: 'text required' }, 400);
+  }
+  session.send(body.text);
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/workflow-builder/interrupt', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.workflowBuilderPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.delete('/api/projects/:projectId/workflow-builder', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  runtime.endWorkflowBuilder();
   return c.json({ ok: true });
 });
 
@@ -2572,6 +2655,48 @@ app.post('/api/projects/:projectId/workflow-creator/draft', async (c) => {
   runtime.setWorkflowCreatorDraft(sessionId, def);
   broadcastTo(id, { type: 'workflow-creator-draft', sessionId, def, edges });
   return c.json({ ok: true });
+});
+
+/** Section 19.9 — stash an in-progress v2 workflow-builder draft.
+ *  Does NOT write to disk — only `pc_publish_workflow` does that.
+ *  Broadcasts `workflow-builder-draft` so the modal's visualizer re-renders.
+ *
+ *  Drafts are loosely validated — they need a top-level `id` (string) so the
+ *  draft store can key them, but the rest of the shape may be incomplete
+ *  during mid-interview saves. The visualizer renders whatever shape arrives;
+ *  full validation runs only at `pc_publish_workflow` time. */
+app.post('/api/projects/:projectId/workflow-builder/draft', async (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const payload = await c.req.json<{ sessionId?: string; def?: unknown }>();
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+  if (!sessionId) return c.json({ ok: false, error: 'sessionId required' }, 400);
+  if (!payload.def || typeof payload.def !== 'object') {
+    return c.json({ ok: false, error: 'def required' }, 400);
+  }
+  const rawDef = payload.def as Record<string, unknown>;
+  const wfId = typeof rawDef.id === 'string' && rawDef.id ? rawDef.id : '';
+  if (!wfId) return c.json({ ok: false, error: 'def.id required' }, 400);
+  // No full v2 validation here — drafts can be incomplete mid-interview.
+  // Cast through unknown so the in-memory store accepts the partial shape;
+  // pc_publish_workflow runs the full validator before any YAML hits disk.
+  const def = payload.def as unknown as WorkflowV2.Workflow;
+  runtime.setWorkflowBuilderDraft(sessionId, def);
+  broadcastTo(id, { type: 'workflow-builder-draft', sessionId, def });
+  return c.json({ ok: true });
+});
+
+/** Section 19.9 — read the current draft for a workflow-builder session.
+ *  Used by `pc_read_workflow_draft` so the agent can pick up user drags
+ *  between turns (sync-model-A). Returns `{ ok: true, def: <draft or null> }`. */
+app.get('/api/projects/:projectId/workflow-builder/draft/:sessionId', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const sessionId = c.req.param('sessionId');
+  const def = runtime.getWorkflowBuilderDraft(sessionId);
+  return c.json({ ok: true, def: def ?? null });
 });
 
 app.get('/api/projects/:projectId/workflow-runs', (c) => {

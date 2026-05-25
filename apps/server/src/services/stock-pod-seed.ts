@@ -17,6 +17,7 @@
 import { type CreateAgentInput } from '@pc/db';
 import { mergeRequiredAgentTools, STOCK_POD_NAMES } from '@pc/domain';
 import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
+import { WORKFLOW_BUILDER_POD_CONTENT } from './workflow-builder-pod-content.ts';
 
 const RESEARCHER_PROMPT = `You are a researcher + scribe. Use Read, Glob, and Grep to gather context (these can reach anywhere on the user's filesystem — see Worktree binding below); use WebFetch + WebSearch for external information; use Bash + Edit to write or mutate files inside the bound worktree (when one is given). Keep summaries terse — bullets over paragraphs.
 
@@ -832,7 +833,7 @@ const QUICK_TASKS_PM_POD_CONTENT: CreateAgentInput = {
 /** Ordered list of stock pod content the boot-time seed walks. Researcher
  *  first to keep parity with the 17e-starter seed order; rest alphabetical.
  *  agent-designer joined the roster in 17b.7; code-writer in 17e.5;
- *  quick-tasks-pm in 34.2; caisson in 35.1. */
+ *  quick-tasks-pm in 34.2; caisson in 35.1; workflow-builder in 19.9. */
 export const STOCK_POD_CONTENT: readonly CreateAgentInput[] = [
   RESEARCHER_POD_CONTENT,
   AGENT_DESIGNER_POD_CONTENT,
@@ -842,6 +843,7 @@ export const STOCK_POD_CONTENT: readonly CreateAgentInput[] = [
   PLANNER_POD_CONTENT,
   QUICK_TASKS_PM_POD_CONTENT,
   REVIEWER_POD_CONTENT,
+  WORKFLOW_BUILDER_POD_CONTENT,
   WRITER_POD_CONTENT,
 ];
 

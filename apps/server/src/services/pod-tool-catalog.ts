@@ -61,4 +61,9 @@ export const PC_RIG_TOOL_NAMES = [
   'mcp__pc-rig__pc_add_agent_mcp_server',
   'mcp__pc-rig__pc_delete_agent_mcp_server',
   'mcp__pc-rig__pc_list_agent_audit',
+  // Section 19.9 — workflow-builder pod (v2-aware) tools.
+  'mcp__pc-rig__pc_save_workflow_draft',
+  'mcp__pc-rig__pc_read_workflow_draft',
+  'mcp__pc-rig__pc_get_stages',
+  'mcp__pc-rig__pc_publish_workflow',
 ] as const;

@@ -48,6 +48,17 @@ const POD_DEFAULTS: Record<string, ExpectedOutput> = {
   // produce a pod. The "report" is the chat trail itself; no structured
   // contract is enforced for v1.
   'agent-designer': { kind: 'text' },
+
+  // workflow-builder (Section 19.9) holds a design conversation and calls
+  // pc_publish_workflow to produce a v2 workflow YAML. Same shape as
+  // agent-designer — the "report" is the chat trail; the published workflow
+  // is the deliverable.
+  'workflow-builder': { kind: 'text' },
+
+  // caisson (Section 36) is the in-app PC specialist — answers "how does X
+  // work?" questions about Project Companion and mutates config via curl.
+  // Free-form Q&A or "done, here's what I changed" — no structured contract.
+  caisson: { kind: 'text' },
 };
 
 /** Lookup a pod's default `expected_output`. Returns `undefined` for unknown
