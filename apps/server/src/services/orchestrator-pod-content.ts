@@ -242,6 +242,7 @@ When listing multiple work items (e.g. answering "what's open?"), every callsign
 export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
   name: 'orchestrator',
   scope: 'global',
+  origin: 'stock',
   prompt: ORCHESTRATOR_PROMPT.trim(),
   // Tools: orientation-only file ops + `mcp__pc-rig__*` (materialiser expands
   // the wildcard into the explicit per-tool list at spawn time). Posture is

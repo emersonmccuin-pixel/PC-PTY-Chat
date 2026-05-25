@@ -63,12 +63,7 @@ import {
   POD_AUDIT_ACTORS,
   POD_AUDIT_FIELDS,
   POD_KNOWLEDGE_KINDS,
-  STOCK_POD_NAMES,
 } from '@pc/domain';
-
-/** Re-export for back-compat — moved canonical source to `@pc/domain`
- *  (`packages/domain/src/stock-pod-names.ts`) in the 2026-05-22 cleanup. */
-export { STOCK_POD_NAMES };
 
 export type PodMutationKind = 'created' | 'updated' | 'deleted';
 
@@ -468,7 +463,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     const id = c.req.param('id') as ULID;
     const existing = getAgentById(id);
     if (!existing) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
-    if (!STOCK_POD_NAMES.has(existing.name)) {
+    if (existing.origin !== 'stock') {
       return c.json(
         { ok: false, error: 'reset-to-default is only available for stock pods' },
         400,
@@ -550,14 +545,14 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     return c.json({ ok: true, pod: updated });
   });
 
-  /** Soft-delete a pod. Stock specialists are 409 (their names live in
-   *  STOCK_POD_NAMES; deleting them would orphan running CC sessions that
-   *  depend on the seeded shape). */
+  /** Soft-delete a pod. Stock specialists are 409 (deleting them would
+   *  orphan running CC sessions that depend on the seeded shape). Reads the
+   *  `origin` column rather than a hardcoded name list (Section 36). */
   app.delete('/api/agents/pods/:id', (c) => {
     const id = c.req.param('id') as ULID;
     const existing = getAgentById(id);
     if (!existing) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
-    if (STOCK_POD_NAMES.has(existing.name)) {
+    if (existing.origin === 'stock') {
       return c.json(
         {
           ok: false,

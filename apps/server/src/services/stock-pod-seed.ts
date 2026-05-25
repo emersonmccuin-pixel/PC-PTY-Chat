@@ -15,7 +15,7 @@
 // flat-file `templates/.project-companion/agents/` directory.
 
 import { type CreateAgentInput } from '@pc/db';
-import { mergeRequiredAgentTools, STOCK_POD_NAMES } from '@pc/domain';
+import { mergeRequiredAgentTools } from '@pc/domain';
 import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
 import { WORKFLOW_BUILDER_POD_CONTENT } from './workflow-builder-pod-content.ts';
 
@@ -529,6 +529,7 @@ For large extractions, attach the JSON to the pinned work item via \`pc_attach_t
 const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   name: 'researcher',
   scope: 'global',
+  origin: 'stock',
   prompt: RESEARCHER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -557,6 +558,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
 const WRITER_POD_CONTENT: CreateAgentInput = {
   name: 'writer',
   scope: 'global',
+  origin: 'stock',
   prompt: WRITER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -581,6 +583,7 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
 const REVIEWER_POD_CONTENT: CreateAgentInput = {
   name: 'reviewer',
   scope: 'global',
+  origin: 'stock',
   prompt: REVIEWER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -604,6 +607,7 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
 const PLANNER_POD_CONTENT: CreateAgentInput = {
   name: 'planner',
   scope: 'global',
+  origin: 'stock',
   prompt: PLANNER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -626,6 +630,7 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
 const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
   name: 'agent-designer',
   scope: 'global',
+  origin: 'stock',
   prompt: AGENT_DESIGNER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -650,6 +655,7 @@ const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
 const CAISSON_POD_CONTENT: CreateAgentInput = {
   name: 'caisson',
   scope: 'global',
+  origin: 'stock',
   prompt: CAISSON_PROMPT.trim(),
   // Tools: orientation reads + Bash for curl + read-side MCP tools for typed
   // catalog access + comms (ask + approval gate). Bash is the load-bearing
@@ -682,6 +688,7 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
 const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
   name: 'code-writer',
   scope: 'global',
+  origin: 'stock',
   prompt: CODE_WRITER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -708,6 +715,7 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
 const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
   name: 'extractor',
   scope: 'global',
+  origin: 'stock',
   prompt: EXTRACTOR_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'Read',
@@ -800,6 +808,7 @@ Example: "Marked [ping Pat](pc://work-item/01HZAB...) done. 4 left."
 const QUICK_TASKS_PM_POD_CONTENT: CreateAgentInput = {
   name: 'quick-tasks-pm',
   scope: 'global',
+  origin: 'stock',
   prompt: QUICK_TASKS_PM_PROMPT.trim(),
   // Tools: orientation reads + work-item read/write + Quick Tasks MCP verbs
   // + basic chat. Deliberately OFF: pc_invoke_agent / pc_continue_agent
@@ -869,36 +878,14 @@ export interface SeedStockPodsResult {
   skippedCount: number;
 }
 
-/** Verify the seeded names + 'orchestrator' (seeded separately) match the
- *  canonical roster in `@pc/domain`. Cheap module-load tripwire — drift
- *  here means identity checks elsewhere in the app will silently misbehave. */
-function assertNoStockPodNameDrift(): void {
-  const seeded = new Set<string>(['orchestrator', ...STOCK_POD_CONTENT.map((p) => p.name)]);
-  for (const name of seeded) {
-    if (!STOCK_POD_NAMES.has(name)) {
-      throw new Error(
-        `Stock pod "${name}" is seeded but missing from STOCK_POD_NAMES in @pc/domain. ` +
-          `Add it to packages/domain/src/stock-pod-names.ts.`,
-      );
-    }
-  }
-  for (const name of STOCK_POD_NAMES) {
-    if (!seeded.has(name)) {
-      throw new Error(
-        `Stock pod "${name}" is in STOCK_POD_NAMES but no seed entry exists. ` +
-          `Either drop it from packages/domain/src/stock-pod-names.ts or add a seed.`,
-      );
-    }
-  }
-}
-
 /** Boot-time seed for the stock specialist pods. Insert-or-drift-reseed
  *  semantics per pod (via `seedPodWithDriftReseed`): non-user-edited rows
  *  auto-pick up source changes; user-edited rows are left intact and the
- *  drift is reported. Runs a name-drift check first; throws if the seeded
- *  set diverges from the canonical `STOCK_POD_NAMES` list. */
+ *  drift is reported. Section 36 removed the name-list drift assertion —
+ *  identity ("is this stock?") lives on the `agents.origin` column now;
+ *  STOCK_POD_CONTENT is the only place that lists names + writes
+ *  `origin: 'stock'`. */
 export function seedStockPods(): SeedStockPodsResult {
-  assertNoStockPodNameDrift();
   const entries: SeedStockPodEntry[] = [];
   let insertedCount = 0;
   let reseededCount = 0;

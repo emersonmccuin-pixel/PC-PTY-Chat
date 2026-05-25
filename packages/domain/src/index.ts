@@ -173,12 +173,6 @@ export type {
   PodSpawnBundle,
 } from './pod.ts';
 export { POD_AUDIT_ACTORS, POD_AUDIT_FIELDS, POD_KNOWLEDGE_KINDS, POD_SCOPES } from './pod.ts';
-export type { StockPodName } from './stock-pod-names.ts';
-export {
-  DISPATCHABLE_STOCK_PODS,
-  STOCK_POD_NAME_LIST,
-  STOCK_POD_NAMES,
-} from './stock-pod-names.ts';
 export type {
   AgentBodyContext,
   AgentBodyContextWorkItem,

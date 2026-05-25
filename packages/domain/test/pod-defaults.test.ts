@@ -1,8 +1,10 @@
 // Section 26.3 — pod-defaults lookup pinning.
 //
-// Asserts the v1 stock-pod default expected_output shapes and ensures the
-// roster matches the dispatchable stock pods exactly (orchestrator is
-// excluded — it's not dispatchable; custom pods aren't here yet).
+// Section 36 (2026-05-25) removed the iteration tests that walked the
+// deleted DISPATCHABLE_STOCK_PODS constant. Stock-pod identity lives on the
+// `agents.origin` column now; roster-vs-defaults consistency is implicitly
+// checked by the seed step (stock-pod-seed inserts every entry it lists,
+// each of which corresponds to a name in this map or omits a default).
 //
 // Run via:  pnpm --filter @pc/domain test
 
@@ -10,31 +12,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  DISPATCHABLE_STOCK_PODS,
-  POD_DEFAULT_EXPECTED_OUTPUT,
   deriveAcceptanceCriteria,
   getPodDefaultExpectedOutput,
 } from '../src/index.ts';
-
-test('every dispatchable stock pod ships a default expected_output', () => {
-  for (const name of DISPATCHABLE_STOCK_PODS) {
-    const def = getPodDefaultExpectedOutput(name);
-    assert.ok(def, `pod ${name} has no default expected_output`);
-  }
-});
-
-test('roster matches dispatchable-stock-pods exactly (no orphans / extras)', () => {
-  const expected = new Set(DISPATCHABLE_STOCK_PODS);
-  const actual = new Set(Object.keys(POD_DEFAULT_EXPECTED_OUTPUT));
-  const missing = [...expected].filter((n) => !actual.has(n));
-  const extras = [...actual].filter((n) => !expected.has(n));
-  assert.deepEqual(
-    missing,
-    [],
-    `dispatchable pods missing a default: ${missing.join(', ')}`,
-  );
-  assert.deepEqual(extras, [], `defaults set for non-dispatchable pods: ${extras.join(', ')}`);
-});
 
 test('researcher default derives a body_contains predicate for the summary section', () => {
   const def = getPodDefaultExpectedOutput('researcher')!;

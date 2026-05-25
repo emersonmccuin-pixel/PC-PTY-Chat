@@ -16,7 +16,9 @@ import { join } from 'node:path';
 const tmpDataDir = mkdtempSync(join(tmpdir(), 'pc-pod-routes-db-'));
 process.env.PC_DATA_DIR = tmpDataDir;
 
-const { closeDb, listAgentAudit, runMigrations, softDeleteAgent } = await import('@pc/db');
+const { closeDb, createAgent, listAgentAudit, runMigrations, softDeleteAgent } = await import(
+  '@pc/db'
+);
 const { Hono } = await import('hono');
 const { registerPodRoutes } = await import('../src/routes/pod-routes.ts');
 const { mergeRequiredAgentTools } = await import('@pc/domain');
@@ -376,9 +378,10 @@ test('POST /api/agents/pods/:id/reset-to-default rejects non-stock pods', async 
 });
 
 test('POST /api/agents/pods/:id/reset-to-default invokes the reset helper for stock pods + broadcasts', async () => {
-  // Use `agent-designer` — the one stock name the DELETE-refuses-stock-names
-  // test (line ~567) skips, so we can seed a real DB row here without
-  // tripping its UNIQUE-on-name loop.
+  // Section 36 — stock identity is the `origin` column now. POST
+  // /api/agents/pods doesn't accept `origin` from callers (always lands as
+  // 'user-created'), so seed the test row via the repo directly to plant
+  // `origin: 'stock'`.
   const resetStub: ResetStub = {
     calls: [],
     result: {
@@ -387,17 +390,16 @@ test('POST /api/agents/pods/:id/reset-to-default invokes the reset helper for st
     },
   };
   const { app, broadcasts, changedHookCalls } = freshApp({ resetStub });
-  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
-    name: 'agent-designer',
-    prompt: 'live-edited',
-  });
-  const id = (create.data.pod as { id: string }).id;
+  const stock = createAgent(
+    { name: 'agent-designer', scope: 'global', origin: 'stock', prompt: 'live-edited' },
+    { actor: 'orchestrator', reason: 'test-fixture' },
+  );
   broadcasts.length = 0;
   changedHookCalls.length = 0;
   const { status, data } = await fetchJson(
     app,
     'POST',
-    `/api/agents/pods/${id}/reset-to-default`,
+    `/api/agents/pods/${stock.id}/reset-to-default`,
     { reason: 'test-reset' },
   );
   assert.equal(status, 200);
@@ -406,17 +408,13 @@ test('POST /api/agents/pods/:id/reset-to-default invokes the reset helper for st
   assert.equal(resetStub.calls.length, 1);
   assert.equal(resetStub.calls[0]!.name, 'agent-designer');
   assert.equal(resetStub.calls[0]!.reason, 'test-reset');
-  // Broadcast fired because resetFields was non-empty. The no-broadcast
-  // branch (resetFields=[]) is verified by inspection of the route — adding
-  // a second test would re-seed agent-designer and collide on UNIQUE.
+  // Broadcast fired because resetFields was non-empty.
   assert.equal(broadcasts.length, 1);
   assert.equal(broadcasts[0]!.change, 'updated');
   assert.equal(changedHookCalls.length, 1);
-  // Teardown — soft-delete via the repo directly to free the agent-designer
-  // name. The DELETE route is stock-name-gated (409) so the route path can't
-  // do this cleanup. Other tests in this file mint agent-designer under the
-  // assumption it's free.
-  softDeleteAgent(id as never, { actor: 'user', reason: 'test-cleanup' });
+  // Teardown — soft-delete via the repo directly. The DELETE route is
+  // origin-gated (409 on stock).
+  softDeleteAgent(stock.id, { actor: 'user', reason: 'test-cleanup' });
 });
 
 test('POST /api/agents/pods rejects missing name', async () => {
@@ -547,12 +545,17 @@ test('DELETE /api/agents/pods/:id soft-deletes a regular pod', async () => {
   assert.equal(after.status, 404);
 });
 
-test('DELETE /api/agents/pods/:id refuses stock specialist names', async () => {
+test('DELETE /api/agents/pods/:id refuses stock specialists (Section 36 — by origin)', async () => {
   const { app } = freshApp();
+  // Section 36 — DELETE guard reads agents.origin, not a hard-coded name
+  // list. POST defaults to origin='user-created', so seed via createAgent
+  // directly to plant origin: 'stock'.
   for (const stock of ['orchestrator', 'researcher', 'writer', 'reviewer', 'planner', 'extractor', 'code-writer']) {
-    const create = await fetchJson(app, 'POST', '/api/agents/pods', { name: stock });
-    const id = (create.data.pod as { id: string }).id;
-    const { status, data } = await fetchJson(app, 'DELETE', `/api/agents/pods/${id}`);
+    const row = createAgent(
+      { name: stock, scope: 'global', origin: 'stock', prompt: 'stock seed' },
+      { actor: 'orchestrator', reason: 'test-fixture' },
+    );
+    const { status, data } = await fetchJson(app, 'DELETE', `/api/agents/pods/${row.id}`);
     assert.equal(status, 409, `expected 409 for stock pod ${stock}`);
     assert.equal(data.kind, 'stock-specialist');
   }
@@ -925,24 +928,35 @@ test('17b.10: full orchestrator flow — create pod, add knowledge, read it, aud
   assert.equal(knowledge[0]?.name, 'tone-guide');
 });
 
-test('17b.10: stock-pod delete returns 409 regardless of actor', async () => {
+test('17b.10 (Section 36): stock-pod delete returns 409 regardless of actor', async () => {
   const { app } = freshApp();
-  // 'agent-designer' was added to STOCK_POD_NAMES in 17b.7 — use it (no
-  // earlier test in this file mints it, so the UNIQUE name index doesn't
-  // 400 the POST).
-  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
-    name: 'agent-designer',
-    prompt: 'stock seed',
-  });
-  assert.equal(create.status, 201);
-  const id = (create.data.pod as { id: string }).id;
+  // Section 36 — stock identity is the `origin` column now. POST doesn't
+  // accept `origin` from callers, so seed via createAgent directly to plant
+  // origin: 'stock'.
+  const stock = createAgent(
+    { name: 'agent-designer', scope: 'global', origin: 'stock', prompt: 'stock seed' },
+    { actor: 'orchestrator', reason: 'test-fixture' },
+  );
 
   // Orchestrator-as-actor doesn't bypass the guard.
   const del = await fetchJson(
     app,
     'DELETE',
-    `/api/agents/pods/${id}?actor=orchestrator&reason=mcp-delete`,
+    `/api/agents/pods/${stock.id}?actor=orchestrator&reason=mcp-delete`,
   );
   assert.equal(del.status, 409);
   assert.equal((del.data as { kind?: string }).kind, 'stock-specialist');
+
+  // Inverse: a user-created pod with the same DELETE call succeeds —
+  // proves the guard reads the column, not the name.
+  const userPod = createAgent(
+    { name: 'cold-emailer-section-36', scope: 'global', prompt: 'user pod' },
+    { actor: 'user', reason: 'test-fixture' },
+  );
+  const delUser = await fetchJson(
+    app,
+    'DELETE',
+    `/api/agents/pods/${userPod.id}?actor=user&reason=ui-delete`,
+  );
+  assert.equal(delUser.status, 200);
 });

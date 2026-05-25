@@ -92,6 +92,11 @@ const SEED_OWNED_FIELDS = [
   'maxTurns',
   'outputDestination',
   'description',
+  // Section 36 — drift-reseed picks up source changes to dispatch_guidance.
+  // origin is set at insert + not patchable through updateAgent, so it stays
+  // off this list (the migration backfilled existing stock rows, and new
+  // installs insert with origin: 'stock' from the start).
+  'dispatchGuidance',
 ] as const;
 
 function collectDriftedFields(live: PodAgentRow, content: CreateAgentInput): string[] {
@@ -106,7 +111,13 @@ function collectDriftedFields(live: PodAgentRow, content: CreateAgentInput): str
   } as unknown as Record<string, unknown>;
   const liveAny = live as unknown as Record<string, unknown>;
   for (const f of SEED_OWNED_FIELDS) {
-    if (JSON.stringify(seed[f]) !== JSON.stringify(liveAny[f])) drift.push(f);
+    // Normalize undefined → null so a seed content that omits the field
+    // matches a live row whose column defaulted to null. Without this,
+    // dispatchGuidance (seed = undefined, live = null) false-drifts on every
+    // unrelated boot for pods that don't set it.
+    const seedVal = seed[f] ?? null;
+    const liveVal = liveAny[f] ?? null;
+    if (JSON.stringify(seedVal) !== JSON.stringify(liveVal)) drift.push(f);
   }
   return drift;
 }

@@ -276,6 +276,7 @@ Edit-mode behaviour:
 export const WORKFLOW_BUILDER_POD_CONTENT: CreateAgentInput = {
   name: 'workflow-builder',
   scope: 'global',
+  origin: 'stock',
   prompt: WORKFLOW_BUILDER_PROMPT.trim(),
   tools: mergeRequiredAgentTools([
     'mcp__pc-rig__pc_save_workflow_draft',
