@@ -27,14 +27,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
-import ReactMarkdown from 'react-markdown';
-import remarkBreaks from 'remark-breaks';
-import remarkGfm from 'remark-gfm';
 
 import { api, WorkflowValidationError } from '@/api/client';
 import type { Workflow, WorkflowEdges } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
-import { AskCard } from './AskCard';
+import { WorkflowDesignerChat } from './WorkflowDesignerChat';
 import { WorkflowGraph } from './WorkflowGraph';
 
 interface EditingWorkflow {
@@ -56,31 +53,9 @@ interface CreateWorkflowModalProps {
   editingWorkflow?: EditingWorkflow;
 }
 
-type Bubble =
-  | { kind: 'user'; text: string; ts: number }
-  | { kind: 'assistant'; text: string; ts: number };
-
-interface AskItem {
-  toolName: string;
-  toolUseId: string;
-  toolInput: unknown;
-  ts: number;
-}
-
-/** Flat list rendered in the chat column. Bubbles and asks share a single
- *  list so the picker shows up exactly where the model raised it. */
-type Item =
-  | { kind: 'bubble'; bubble: Bubble }
-  | { kind: 'ask'; ask: AskItem };
-
 type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
 type TabId = 'conversation' | 'raw';
-
-/** 4f.2b handoff prefix. The first user message in an edit-mode session
- *  starts with this — used by the model to switch behavior AND used by the
- *  chat panel to filter the bubble out of view. */
-const EDIT_HANDOFF_PREFIX = '[edit-mode workflowId=';
 
 function buildEditHandoff(editing: EditingWorkflow): string {
   return [
@@ -104,10 +79,7 @@ export function CreateWorkflowModal({
   editingWorkflow,
 }: CreateWorkflowModalProps) {
   const isEditMode = Boolean(editingWorkflow);
-  const [items, setItems] = useState<Item[]>([]);
-  const [answeredAsks, setAnsweredAsks] = useState<Record<string, string>>({});
   const [state, setState] = useState<SessionState>('spawning');
-  const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [draftDef, setDraftDef] = useState<Workflow | null>(editingWorkflow?.def ?? null);
@@ -141,8 +113,6 @@ export function CreateWorkflowModal({
 
   useEffect(() => {
     let cancelled = false;
-    setItems([]);
-    setAnsweredAsks({});
     setState('spawning');
     setError(null);
     setSessionId(null);
@@ -193,10 +163,12 @@ export function CreateWorkflowModal({
     });
   }, [state, isEditMode, projectId]);
 
-  // Walk every new envelope since last render — mirrors CreateAgentModal's
-  // pattern. `workflow-creator-draft` and `ask` envelopes are filtered to this
-  // session so a stale broadcast (or the orchestrator's own asks) can't
-  // poison the modal.
+  // Walk every new envelope since last render for the modal-owned concerns:
+  // session state (drives the handoff + header), the live draft (visualizer),
+  // and the commit signal (close). The chat bubbles + ask cards are owned by
+  // <WorkflowDesignerChat> (it re-derives from the same `events` stream and
+  // feeds ChatSurface). `workflow-creator-draft` is filtered to this session
+  // so a stale broadcast can't poison the visualizer.
   useEffect(() => {
     const start = events.length >= processedRef.current ? processedRef.current : 0;
     const end = events.length;
@@ -207,20 +179,6 @@ export function CreateWorkflowModal({
       if (env.type === 'workflow-creator-state') {
         const s = (env as { state?: string }).state;
         if (s) setState(s as SessionState);
-      } else if (env.type === 'workflow-creator-event') {
-        const ev = (env as { event?: { kind?: string; text?: string; ts?: string } }).event;
-        if (!ev) continue;
-        const ts = ev.ts ? Date.parse(ev.ts) : Date.now();
-        if (ev.kind === 'user' && typeof ev.text === 'string') {
-          // 4f.2b — filter out the edit-mode handoff bubble. The model still
-          // receives it (it was sent via the API); the chat panel hides it
-          // so the user sees a clean conversation starting from the model's
-          // acknowledgment.
-          if (ev.text.startsWith(EDIT_HANDOFF_PREFIX)) continue;
-          appendBubble({ kind: 'user', text: ev.text, ts });
-        } else if (ev.kind === 'assistant' && typeof ev.text === 'string' && ev.text.trim()) {
-          appendBubble({ kind: 'assistant', text: ev.text, ts });
-        }
       } else if (env.type === 'workflow-creator-exit') {
         setState('exited');
       } else if (env.type === 'workflow-creator-draft') {
@@ -235,19 +193,6 @@ export function CreateWorkflowModal({
           // visualizer still renders the structural shape).
           setDraftEdges(d.edges ?? {});
         }
-      } else if (env.type === 'ask') {
-        // Hooks forward `sessionId` (PC_SESSION_ID env) alongside the ask
-        // payload. Drop asks whose sessionId doesn't match ours — they belong
-        // to the orchestrator or another transient session.
-        const a = env as {
-          sessionId?: string | null;
-          toolName?: string;
-          toolUseId?: string;
-          toolInput?: unknown;
-        };
-        if (!sessionId || a.sessionId !== sessionId) continue;
-        if (!a.toolName || !a.toolUseId) continue;
-        appendAsk({ toolName: a.toolName, toolUseId: a.toolUseId, toolInput: a.toolInput, ts: Date.now() });
       } else if (env.type === 'project-workflows-changed') {
         // pc_create_workflow / pc_edit_workflow committed → close so the
         // WorkflowList refreshes. Filter to our session's id via the
@@ -263,50 +208,9 @@ export function CreateWorkflowModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, sessionId]);
 
-  function appendBubble(b: Bubble) {
-    setItems((prev) => {
-      if (
-        prev.some(
-          (p) => p.kind === 'bubble' && p.bubble.kind === b.kind && p.bubble.text === b.text && p.bubble.ts === b.ts,
-        )
-      ) {
-        return prev;
-      }
-      return [...prev, { kind: 'bubble', bubble: b }];
-    });
-  }
-
-  function appendAsk(a: AskItem) {
-    setItems((prev) => {
-      if (prev.some((p) => p.kind === 'ask' && p.ask.toolUseId === a.toolUseId)) return prev;
-      return [...prev, { kind: 'ask', ask: a }];
-    });
-  }
-
-  function replyToAsk(toolUseId: string, answer: string) {
-    if (send({ type: 'ask-reply', toolUseId, answer })) {
-      setAnsweredAsks((prev) => ({ ...prev, [toolUseId]: answer }));
-    }
-  }
-
-  async function handleSend() {
-    const text = draft.trim();
-    if (!text || state === 'spawning' || state === 'exited') return;
-    setDraft('');
-    setError(null);
-    try {
-      await api.sendWorkflowCreator(projectId, text);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-
-  async function handleInterrupt() {
-    try {
-      await api.interruptWorkflowCreator(projectId);
-    } catch {
-      /* best-effort */
-    }
+  // Reply to an AskUserQuestion pick — wired to the session's WS.
+  function replyToAsk(toolUseId: string, answer: string): boolean {
+    return send({ type: 'ask-reply', toolUseId, answer });
   }
 
   async function handleSaveRaw() {
@@ -332,7 +236,6 @@ export function CreateWorkflowModal({
     }
   }
 
-  const canSend = draft.trim().length > 0 && state !== 'spawning' && state !== 'exited';
   const rawDirty = isEditMode && rawYaml !== originalYaml;
   const canSaveRaw = rawDirty && !savingRaw;
   const statusLabel = useMemo<string>(() => {
@@ -396,59 +299,12 @@ export function CreateWorkflowModal({
         ) : (
           <Group orientation="horizontal" id="pc-create-workflow-split" className="flex-1 min-h-0">
             <Panel id="chat" defaultSize="40%" minSize="28%">
-              <div className="flex h-full flex-col">
-                <BubbleList
-                  items={items}
-                  thinking={state === 'thinking'}
-                  answeredAsks={answeredAsks}
-                  onAskReply={replyToAsk}
-                  emptyHint={
-                    isEditMode
-                      ? 'Loading the existing workflow into the editor…'
-                      : 'Tell the workflow-creator what you want this workflow to do. It will interview you, draft the workflow, and commit when you confirm.'
-                  }
-                />
-                <footer className="border-t border-border bg-muted/20 p-3">
-                  <div className="flex items-end gap-2">
-                    <textarea
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          void handleSend();
-                        }
-                      }}
-                      placeholder={
-                        state === 'spawning'
-                          ? 'Waiting for session to start…'
-                          : isEditMode
-                            ? 'Describe what you want to change. Enter sends, Shift+Enter for a newline.'
-                            : 'Describe the workflow you want. Enter sends, Shift+Enter for a newline.'
-                      }
-                      rows={3}
-                      disabled={state === 'spawning' || state === 'exited'}
-                      className="flex-1 resize-none border border-border bg-background p-2 font-sans text-xs outline-none focus:border-primary disabled:opacity-50"
-                    />
-                    <div className="flex flex-col gap-2">
-                      <button
-                        onClick={() => void handleSend()}
-                        disabled={!canSend}
-                        className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                      >
-                        Send
-                      </button>
-                      <button
-                        onClick={() => void handleInterrupt()}
-                        disabled={state !== 'thinking'}
-                        className="border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
-                      >
-                        Stop
-                      </button>
-                    </div>
-                  </div>
-                </footer>
-              </div>
+              <WorkflowDesignerChat
+                projectId={projectId}
+                events={events}
+                sessionId={sessionId}
+                onAskReply={replyToAsk}
+              />
             </Panel>
             <Separator className="w-px bg-border transition-colors hover:bg-primary" />
             <Panel id="graph" defaultSize="60%" minSize="32%">
@@ -550,73 +406,3 @@ function RawYamlBody({
   );
 }
 
-function BubbleList({
-  items,
-  thinking,
-  answeredAsks,
-  onAskReply,
-  emptyHint,
-}: {
-  items: Item[];
-  thinking: boolean;
-  answeredAsks: Record<string, string>;
-  onAskReply: (toolUseId: string, answer: string) => void;
-  emptyHint: string;
-}) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [items, thinking]);
-
-  return (
-    <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-      {items.length === 0 && !thinking && (
-        <p className="text-xs italic text-muted-foreground">{emptyHint}</p>
-      )}
-      {items.map((item, i) => {
-        if (item.kind === 'bubble') {
-          return <BubbleRow key={`bubble-${item.bubble.ts}-${i}`} bubble={item.bubble} />;
-        }
-        const a = item.ask;
-        return (
-          <AskCard
-            key={`ask-${a.toolUseId}`}
-            toolName={a.toolName}
-            toolUseId={a.toolUseId}
-            toolInput={a.toolInput}
-            answered={answeredAsks[a.toolUseId]}
-            onReply={(answer) => onAskReply(a.toolUseId, answer)}
-          />
-        );
-      })}
-      {thinking && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-block h-2 w-2 animate-pulse bg-muted-foreground/60" />
-          Thinking…
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BubbleRow({ bubble }: { bubble: Bubble }) {
-  if (bubble.kind === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap break-words border border-border bg-primary/30 px-3 py-2 text-xs">
-          {bubble.text}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[80%] border border-border bg-background px-3 py-2 text-xs">
-        <div className="markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{bubble.text}</ReactMarkdown>
-        </div>
-      </div>
-    </div>
-  );
-}
