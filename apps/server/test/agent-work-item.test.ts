@@ -320,6 +320,190 @@ test('createAgentWorkItem — rejects malformed raw_acceptance_criteria entries'
   );
 });
 
+// ── 22.6 — per-predicate-kind validation ─────────────────────────────────
+//
+// The evaluator (packages/domain/src/ac-evaluator.ts) assumes the required
+// fields exist on every predicate. Pre-22.6 we validated only `kind`, so a
+// malformed predicate like `{ kind: 'files_exist' }` (no `paths`) would
+// persist + then crash with a TypeError at verification. These tests pin
+// per-kind structural rejection at persistence time.
+
+test('22.6: files_exist without paths → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — missing `paths`
+          rawAcceptanceCriteria: [{ kind: 'files_exist' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /paths/.test((err as Error).message),
+  );
+});
+
+test('22.6: files_exist with non-string element in paths → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — non-string element
+          rawAcceptanceCriteria: [{ kind: 'files_exist', paths: ['ok', 42] }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError &&
+      /paths\[1\] must be a non-empty string/.test((err as Error).message),
+  );
+});
+
+test('22.6: fields_populated without keys → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — missing `keys`
+          rawAcceptanceCriteria: [{ kind: 'fields_populated' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /keys/.test((err as Error).message),
+  );
+});
+
+test('22.6: bash_exit_zero without command → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — missing `command`
+          rawAcceptanceCriteria: [{ kind: 'bash_exit_zero' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /command/.test((err as Error).message),
+  );
+});
+
+test('22.6: bash_exit_zero with non-string command → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — non-string `command`
+          rawAcceptanceCriteria: [{ kind: 'bash_exit_zero', command: 42 }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /command/.test((err as Error).message),
+  );
+});
+
+test('22.6: bash_exit_zero with invalid cwd → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error — unknown `cwd`
+          rawAcceptanceCriteria: [{ kind: 'bash_exit_zero', command: 'ls', cwd: 'home' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /cwd/.test((err as Error).message),
+  );
+});
+
+test('22.6: field_matches missing key or pattern → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error
+          rawAcceptanceCriteria: [{ kind: 'field_matches', key: 'x' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /pattern/.test((err as Error).message),
+  );
+});
+
+test('22.6: attachments_present without names → rejected', () => {
+  const { svc } = mkFakeService();
+  assert.throws(
+    () =>
+      createAgentWorkItem(
+        {
+          title: 't',
+          task: 't',
+          pod: 'researcher',
+          // @ts-expect-error
+          rawAcceptanceCriteria: [{ kind: 'attachments_present' }],
+        },
+        { workItemService: svc, getProject: () => mkProject() },
+      ),
+    (err: unknown) =>
+      err instanceof AgentWorkItemInputError && /names/.test((err as Error).message),
+  );
+});
+
+test('22.6: well-formed predicates of every kind pass validation', () => {
+  const { svc, calls } = mkFakeService();
+  createAgentWorkItem(
+    {
+      title: 't',
+      task: 't',
+      pod: 'researcher',
+      rawAcceptanceCriteria: [
+        { kind: 'files_exist', paths: ['out.md'] },
+        { kind: 'fields_populated', keys: ['owner'] },
+        { kind: 'field_matches', key: 'state', pattern: '^done$' },
+        { kind: 'bash_exit_zero', command: 'true', cwd: 'worktree' },
+        { kind: 'attachments_present', names: ['report.md'] },
+        { kind: 'body_contains', pattern: 'summary' },
+        { kind: 'child_work_items_done', all: true },
+      ],
+    },
+    { workItemService: svc, getProject: () => mkProject() },
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.input.acceptanceCriteria!.length, 7);
+});
+
 // Section 26 carry-over #1 — `expected_output` validator rejects unknown
 // nested fields. Pre-fix the orchestrator could smuggle task content via
 // non-schema fields like `description` / `shape`; derivation library saw no

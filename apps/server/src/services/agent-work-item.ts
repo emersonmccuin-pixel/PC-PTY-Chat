@@ -15,6 +15,7 @@
 
 import type {
   AcceptancePredicate,
+  AcceptancePredicateKind,
   ExpectedOutput,
   Project,
   ULID,
@@ -234,8 +235,17 @@ function assertExpectedOutputShape(value: unknown): asserts value is ExpectedOut
   }
 }
 
-/** Validate that every entry in a raw AC list has a known `kind`. Pass-through
- *  for everything else (the evaluator handles structural mismatches on use). */
+/** Validate every entry in a raw AC list. Beyond `kind`, each predicate must
+ *  carry the fields the evaluator reads — the evaluator assumes they exist
+ *  and crashes with TypeErrors otherwise. Section 22.6 — stabilization fix:
+ *  previously this validated only `kind`, so a malformed predicate (`{ kind:
+ *  'files_exist' }` with no `paths`) would persist and then explode at
+ *  verification time. The handoff also called out that `bash_exit_zero`
+ *  predicates run real shell commands — flagged here as well.
+ *
+ *  This validator catches structural problems at persistence time and
+ *  surfaces clear per-predicate error messages so the orchestrator can fix
+ *  the call. */
 function assertAcceptanceCriteriaShape(
   value: unknown,
 ): asserts value is AcceptancePredicate[] {
@@ -244,10 +254,9 @@ function assertAcceptanceCriteriaShape(
   }
   for (let i = 0; i < value.length; i++) {
     const entry = value[i];
+    const path = `raw_acceptance_criteria[${i}]`;
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new AgentWorkItemInputError(
-        `raw_acceptance_criteria[${i}]: predicate must be an object`,
-      );
+      throw new AgentWorkItemInputError(`${path}: predicate must be an object`);
     }
     const k = (entry as { kind?: unknown }).kind;
     if (
@@ -255,8 +264,93 @@ function assertAcceptanceCriteriaShape(
       !(ACCEPTANCE_PREDICATE_KINDS as readonly string[]).includes(k)
     ) {
       throw new AgentWorkItemInputError(
-        `raw_acceptance_criteria[${i}].kind must be one of: ${ACCEPTANCE_PREDICATE_KINDS.join(', ')}`,
+        `${path}.kind must be one of: ${ACCEPTANCE_PREDICATE_KINDS.join(', ')}`,
       );
+    }
+    assertPredicateFields(entry as Record<string, unknown>, k as AcceptancePredicateKind, path);
+  }
+}
+
+/** Per-kind structural validation. Throws on missing or wrong-typed fields. */
+function assertPredicateFields(
+  pred: Record<string, unknown>,
+  kind: AcceptancePredicateKind,
+  path: string,
+): void {
+  switch (kind) {
+    case 'files_exist': {
+      assertStringArray(pred.paths, `${path}.paths`);
+      if (pred.min_size_bytes !== undefined) {
+        if (typeof pred.min_size_bytes !== 'number' || !Number.isFinite(pred.min_size_bytes)) {
+          throw new AgentWorkItemInputError(`${path}.min_size_bytes must be a finite number`);
+        }
+      }
+      return;
+    }
+    case 'fields_populated': {
+      assertStringArray(pred.keys, `${path}.keys`);
+      return;
+    }
+    case 'field_matches': {
+      assertNonEmptyString(pred.key, `${path}.key`);
+      assertNonEmptyString(pred.pattern, `${path}.pattern`);
+      return;
+    }
+    case 'bash_exit_zero': {
+      // Note: `bash_exit_zero` runs the supplied string through a real shell
+      // at verification time (see services/agent-verification.ts). Treat this
+      // as a deliberate local-shell execution surface — the orchestrator must
+      // own the contents of `command`.
+      assertNonEmptyString(pred.command, `${path}.command`);
+      if (pred.cwd !== undefined && pred.cwd !== 'worktree' && pred.cwd !== 'project') {
+        throw new AgentWorkItemInputError(
+          `${path}.cwd must be "worktree" or "project" (got ${JSON.stringify(pred.cwd)})`,
+        );
+      }
+      return;
+    }
+    case 'attachments_present': {
+      assertStringArray(pred.names, `${path}.names`);
+      return;
+    }
+    case 'body_contains': {
+      assertNonEmptyString(pred.pattern, `${path}.pattern`);
+      if (pred.regex !== undefined && typeof pred.regex !== 'boolean') {
+        throw new AgentWorkItemInputError(`${path}.regex must be a boolean`);
+      }
+      return;
+    }
+    case 'child_work_items_done': {
+      if (pred.count !== undefined) {
+        if (
+          typeof pred.count !== 'number' ||
+          !Number.isInteger(pred.count) ||
+          pred.count < 0
+        ) {
+          throw new AgentWorkItemInputError(`${path}.count must be a non-negative integer`);
+        }
+      }
+      if (pred.all !== undefined && typeof pred.all !== 'boolean') {
+        throw new AgentWorkItemInputError(`${path}.all must be a boolean`);
+      }
+      return;
+    }
+  }
+}
+
+function assertNonEmptyString(value: unknown, path: string): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new AgentWorkItemInputError(`${path} must be a non-empty string`);
+  }
+}
+
+function assertStringArray(value: unknown, path: string): void {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new AgentWorkItemInputError(`${path} must be a non-empty string[]`);
+  }
+  for (let i = 0; i < value.length; i++) {
+    if (typeof value[i] !== 'string' || value[i]!.length === 0) {
+      throw new AgentWorkItemInputError(`${path}[${i}] must be a non-empty string`);
     }
   }
 }
