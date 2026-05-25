@@ -35,10 +35,14 @@ interface WorkflowSummary {
   fileName: string;
 }
 
+/** v1 registry's invalid-entry shape — server returns ValidationError
+ *  objects, NOT strings. The pre-19.x interface declared `string[]` and
+ *  rendering crashed once a real invalid v1 file landed (or a v2 file leaked
+ *  into the v1 registry, the 19.10 UI-walk symptom). */
 interface InvalidWorkflowSummary {
   fileName: string;
   partialStageId: string | null;
-  errors: string[];
+  errors: Array<{ path: string; message: string }>;
 }
 
 interface WorkflowList {
@@ -299,6 +303,13 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           ))}
         </Section>
 
+        {/*
+          Workflows · v1 (legacy). Section 19.x: v1 registry now skips files
+          carrying `version: 2`, so this section only renders for actual
+          legacy YAML. Render expects ValidationError objects (was wrongly
+          typed as string[] pre-19.10 — UI walk crashed on the first real
+          invalid entry).
+        */}
         <Section
           title="Workflows · v1 (legacy)"
           empty="No legacy workflow files."
@@ -336,7 +347,8 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
               <ul className="mt-1 list-disc pl-5 text-xs text-destructive">
                 {wf.errors.map((err, i) => (
                   <li key={i} className="font-mono">
-                    {err}
+                    {err.path ? <span className="text-foreground/80">{err.path}: </span> : null}
+                    {err.message}
                   </li>
                 ))}
               </ul>

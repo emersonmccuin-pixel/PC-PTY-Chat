@@ -11,6 +11,7 @@ import type { NodeEdges, Workflow } from '@pc/domain';
 
 import { parseTypedWorkflowText } from './typed-parser.ts';
 import { type ValidationError } from './validator.ts';
+import { isV2WorkflowText } from './serialize-v2.ts';
 
 export interface ValidWorkflowEntry {
   filePath: string;
@@ -69,6 +70,15 @@ export class WorkflowRegistry {
         });
         continue;
       }
+
+      // Section 19.x — v2 workflow files coexist in the same dir. Skip them
+      // here so the v1 registry doesn't surface a v2 YAML as a v1-validator
+      // failure (which then poisons WorkflowList rendering: v2 schemas don't
+      // map to v1's ValidationError {path,message} shape downstream). The v2
+      // registry handles these via WorkflowV2Registry.reload(). Surfaced live
+      // in the 19.10 UI walk: publishing a v2 workflow crashed React because
+      // the v1 registry was treating it as an invalid v1 file.
+      if (isV2WorkflowText(yamlText)) continue;
 
       const result = parseTypedWorkflowText(yamlText, { expectedId });
       if (result.ok && result.workflow) {
