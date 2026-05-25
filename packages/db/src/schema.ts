@@ -511,6 +511,20 @@ export const agents = sqliteTable(
     maxTurns: integer('max_turns'),
     outputDestination: text('output_destination').$type<AgentOutputDestination | null>(),
     description: text('description').notNull().default(''),
+    /** Section 36 — `'stock'` (seeded by PC) vs `'user-created'` (any other
+     *  row). Replaces the multi-list "is this pod stock?" pattern (deleted
+     *  STOCK_POD_NAMES + the web mirror + the drift assertion). Defaulted to
+     *  `'user-created'` so any insert path that doesn't pass `origin`
+     *  explicitly lands as user-created; the seed inserts pass `'stock'`. */
+    origin: text('origin')
+      .notNull()
+      .default('user-created')
+      .$type<'stock' | 'user-created'>(),
+    /** Section 36 — orchestrator-facing "when to dispatch this agent" hint,
+     *  rendered into `{{AVAILABLE_AGENTS}}` by the pod materializer. Different
+     *  from `description` (which has UI-display contracts); may be longer +
+     *  more directive. Nullable — most user-created pods don't need one. */
+    dispatchGuidance: text('dispatch_guidance'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),

@@ -47,6 +47,8 @@ function makeAgent(patch: Partial<PodAgentRow> = {}): PodAgentRow {
     maxTurns: 20,
     outputDestination: null,
     description: 'Reads sources and returns synthesised findings.',
+    origin: 'stock',
+    dispatchGuidance: null,
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     deletedAt: null,

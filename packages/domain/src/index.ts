@@ -167,6 +167,7 @@ export type {
   PodKnowledgeRow,
   PodMcpServerConfig,
   PodMcpServerRow,
+  PodOrigin,
   PodScope,
   PodSecretRow,
   PodSpawnBundle,

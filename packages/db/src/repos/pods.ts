@@ -33,6 +33,7 @@ import type {
   PodKnowledgeRow,
   PodMcpServerConfig,
   PodMcpServerRow,
+  PodOrigin,
   PodScope,
   PodSecretRow,
   PodSpawnBundle,
@@ -61,6 +62,12 @@ export interface CreateAgentInput {
   maxTurns?: number | null;
   outputDestination?: AgentOutputDestination | null;
   description?: string;
+  /** Section 36 — defaults to `'user-created'`. Only the boot-time stock-pod
+   *  seed passes `'stock'`. */
+  origin?: PodOrigin;
+  /** Section 36 — orchestrator-facing dispatch hint, rendered into the
+   *  orchestrator's `{{AVAILABLE_AGENTS}}` variable. Optional. */
+  dispatchGuidance?: string | null;
 }
 
 function rowToAgent(row: typeof agents.$inferSelect): PodAgentRow {
@@ -76,6 +83,8 @@ function rowToAgent(row: typeof agents.$inferSelect): PodAgentRow {
     maxTurns: row.maxTurns ?? null,
     outputDestination: row.outputDestination ?? null,
     description: row.description,
+    origin: row.origin,
+    dispatchGuidance: row.dispatchGuidance ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt ?? null,
@@ -97,6 +106,8 @@ function agentSnapshot(row: PodAgentRow): string {
     maxTurns: row.maxTurns,
     outputDestination: row.outputDestination,
     description: row.description,
+    origin: row.origin,
+    dispatchGuidance: row.dispatchGuidance,
   });
 }
 
@@ -121,6 +132,8 @@ export function createAgent(input: CreateAgentInput, audit: AuditInput): PodAgen
     maxTurns: input.maxTurns ?? null,
     outputDestination: input.outputDestination ?? null,
     description: input.description ?? '',
+    origin: input.origin ?? 'user-created',
+    dispatchGuidance: input.dispatchGuidance ?? null,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -228,6 +241,9 @@ export interface UpdateAgentInput {
   maxTurns?: number | null;
   outputDestination?: AgentOutputDestination | null;
   description?: string;
+  /** Section 36 — patchable so future UI can edit it; `origin` is NOT
+   *  patchable (set once at creation). */
+  dispatchGuidance?: string | null;
 }
 
 /** Map UpdateAgentInput keys to (PodAuditField, db-column-name) pairs. Order
@@ -243,6 +259,7 @@ const UPDATE_AGENT_FIELD_MAP: ReadonlyArray<
   ['maxTurns', 'max_turns', 'maxTurns'],
   ['outputDestination', 'output_destination', 'outputDestination'],
   ['description', 'description', 'description'],
+  ['dispatchGuidance', 'dispatch_guidance', 'dispatchGuidance'],
 ];
 
 export function updateAgent(
@@ -447,6 +464,10 @@ export function cloneAgentToProject(
     maxTurns: source.maxTurns,
     outputDestination: source.outputDestination,
     description: source.description,
+    // Cloned pods are user-created regardless of the source's origin —
+    // the new row is the user's own copy in this project.
+    origin: 'user-created' as PodOrigin,
+    dispatchGuidance: source.dispatchGuidance,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,

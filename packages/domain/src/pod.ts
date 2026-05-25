@@ -40,6 +40,7 @@ export type PodAuditField =
   | 'tools'
   | 'output_destination'
   | 'name'
+  | 'dispatch_guidance'
   | 'knowledge'
   | 'secret'
   | 'mcp_server'
@@ -56,6 +57,7 @@ export const POD_AUDIT_FIELDS: readonly PodAuditField[] = [
   'tools',
   'output_destination',
   'name',
+  'dispatch_guidance',
   'knowledge',
   'secret',
   'mcp_server',
@@ -73,6 +75,13 @@ export interface PodMcpServerConfig {
   env?: Record<string, string>;
   url?: string;
 }
+
+/** Provenance of an agent row. `'stock'` rows are seeded by PC at boot;
+ *  `'user-created'` rows came from any other path (orchestrator dispatch,
+ *  agent-designer, UI, MCP `pc_create_agent`). Section 36 — replaces the
+ *  multi-list "is this pod stock?" pattern; route-layer protection reads
+ *  this column. */
+export type PodOrigin = 'stock' | 'user-created';
 
 /** Row in the `agents` table. Scalar settings + tools allowlist; per-pod
  *  content lives in the child tables. */
@@ -92,6 +101,13 @@ export interface PodAgentRow {
   maxTurns: number | null;
   outputDestination: AgentOutputDestination | null;
   description: string;
+  /** Section 36 — `'stock'` vs `'user-created'`. Stock pods can't be deleted
+   *  or edited via user-facing routes (route-layer guard reads this column). */
+  origin: PodOrigin;
+  /** Section 36 — orchestrator-facing "when to dispatch this agent" hint,
+   *  rendered into the orchestrator's `{{AVAILABLE_AGENTS}}` variable. Null
+   *  for most user-created pods (their `description` is enough). */
+  dispatchGuidance: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
