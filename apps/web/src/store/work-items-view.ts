@@ -1,7 +1,9 @@
 // Work-items view preferences. Section 26.7: "See Agent Contracts" toggle
 // that hides `isAgentTask` rows from the kanban (and the future table view).
-// Defaults to ON during Section 26 dogfood; flip default to OFF when Section
-// 1.5 ships the chat rich-link / hover-preview surface.
+// Flipped to OFF in Section 1.5.10 — agent work items now surface in chat
+// as rich-link pills (hover preview + click to modal), so kanban no longer
+// needs to render them by default. User can re-enable via the toolbar
+// toggle if they want to see the full picture.
 //
 // Global for v1. Section 14's per-project filter store absorbs this when it
 // lands; persist key stays so migration can read the old value.
@@ -17,7 +19,7 @@ interface WorkItemsViewState {
 export const useWorkItemsView = create<WorkItemsViewState>()(
   persist(
     (set) => ({
-      showAgentContracts: true,
+      showAgentContracts: false,
       setShowAgentContracts: (showAgentContracts) => set({ showAgentContracts }),
     }),
     { name: 'pc.work-items-view' },

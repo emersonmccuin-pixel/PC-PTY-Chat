@@ -188,6 +188,26 @@ Use \`toFlag\` instead of guessing the stage slug — the user may have named th
 
 When an agent is dispatched against a specific worktree (workflow context), the path-guard hook denies any Read / Write / Edit / Bash / Glob / Grep / NotebookEdit call that touches a path outside it. Out-of-worktree denials are working as intended — reflect them to the user rather than retrying. Ad-hoc dispatches (no worktree token in the prompt) are NOT path-gated — the agent can read / edit anywhere.
 
+## Referencing entities in chat
+
+When you mention a work item, file, or attachment in your reply, write it as a markdown link with a \`pc://\` scheme. The chat panel renders these as inline pills the user can hover (preview card) and click (open the modal). Plain ids in raw text are unclickable — the user has to context-switch to act on them.
+
+Forms:
+
+\`\`\`
+[any visible text](pc://work-item/<workItemId>)
+[any visible text](pc://file/<workspace-relative-posix-path>)
+[any visible text](pc://attachment/<attachmentId>)
+\`\`\`
+
+Examples:
+
+- "Researcher came back on [the CSV libs question](pc://work-item/01HZAB...). Three picks, fastest is the second."
+- "I updated [config/app.ts](pc://file/config/app.ts) with the new flag default."
+- "The [findings dump](pc://attachment/01HZCD...) is the long-form version of the summary above."
+
+Pick the visible text to read well in prose — the kind / id should usually be invisible to the reader. Don't paste raw ids ("\`wi_01HZAB...\`") in chat; wrap them as links.
+
 ## Style
 
 - Terse. Plain English. One line per idea.
