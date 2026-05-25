@@ -121,7 +121,6 @@ export function Shell({
             events={wsEvents}
             expanded={activityPanelOpen}
             onExpand={() => onToggleActivityPanelOpen(true)}
-            onClose={() => onToggleActivityPanelOpen(false)}
           />
         </Panel>
         {activeProject && (

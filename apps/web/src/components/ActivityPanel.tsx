@@ -33,7 +33,6 @@ interface ActivityPanelProps {
   events: WsEnvelope[];
   expanded: boolean;
   onExpand: () => void;
-  onClose: () => void;
 }
 
 const ACTIVE_STATUSES = new Set<WorkflowRun['status']>([
@@ -47,7 +46,6 @@ export function ActivityPanel({
   events,
   expanded,
   onExpand,
-  onClose,
 }: ActivityPanelProps) {
   // Single 5s tick so elapsed-time strings re-render without per-card timers.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -129,7 +127,7 @@ export function ActivityPanel({
 
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
-      <Header onClose={onClose} />
+      <Header />
       {project === null ? (
         <div className="flex-1 px-3 py-2 text-xs text-muted-foreground">
           No project selected.
@@ -234,20 +232,10 @@ function GutterBadge({
   );
 }
 
-function Header({ onClose }: { onClose: () => void }) {
+function Header() {
   return (
-    <div className="flex items-center justify-between border-b border-border px-3 py-2">
-      <div className="text-sm uppercase tracking-wider text-muted-foreground">
-        Activity
-      </div>
-      <button
-        onClick={onClose}
-        title="Hide activity panel"
-        aria-label="Hide activity panel"
-        className="px-1 text-xs text-muted-foreground hover:text-foreground"
-      >
-        ▸
-      </button>
+    <div className="border-b border-border px-3 py-2 text-sm uppercase tracking-wider text-muted-foreground">
+      Activity
     </div>
   );
 }
