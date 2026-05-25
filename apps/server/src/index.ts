@@ -112,6 +112,7 @@ import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
+import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
@@ -933,6 +934,11 @@ app.post('/api/projects', async (c) => {
 // pod across every loaded ProjectRuntime. Worker pods (researcher, etc.)
 // are intentionally NOT restarted — killing them mid-task would orphan
 // their work, and the next dispatch re-reads the DB anyway.
+// Section 34.3 — Quick Tasks HTTP routes. Surfaces the cross-project capture
+// verbs for the chrome quick-add button (34.7) + the MCP tools
+// (`pc_create_quick_task`, `pc_list_quick_tasks`, `pc_list_quick_tasks_for_project`).
+registerQuickTasksRoutes(app, { registry: projectRegistry });
+
 registerPodRoutes(app, {
   broadcastAll,
   resetStockPodToDefault: (name, reason) => {

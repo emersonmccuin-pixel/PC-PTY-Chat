@@ -187,6 +187,59 @@ export const TOOLS = [
     },
   },
   {
+    name: 'pc_create_quick_task',
+    description:
+      "Capture an atomic todo on the pinned cross-project Quick Tasks surface. Use for 'remember to ping Pat', 'review John's PTO', 'renew the domain Friday' — short, user-facing tasks that aren't worth a full work item on a regular project. Lands in the Quick Tasks project's intake stage. `taggedProjectId` is optional: pass the current project's id when the task obviously belongs to it (the user sees a 'tagged HR Ops' chip on the row); omit for personal/no-project tasks. NOT for agent contracts — quick tasks aren't dispatched, they're done by the human. Use pc_create_agent_work_item for agent-bound work.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'short scannable title' },
+        body: { type: 'string', description: 'optional free-form notes / context' },
+        taggedProjectId: {
+          type: 'string',
+          description:
+            "optional project id (ULID) the task belongs to. Soft pointer; not a hard FK. Omit / null for untagged.",
+        },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'pc_list_quick_tasks',
+    description:
+      "List quick tasks. Filters: `status` ('open' default | 'complete' | 'all'), `taggedProjectId` (ULID for matching; empty string for untagged-only; omit for any). Returns the array of WorkItems in (position, createdAt) order.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['open', 'complete', 'all'],
+          description: "default 'open' (pending + in-progress).",
+        },
+        taggedProjectId: {
+          type: 'string',
+          description: "filter by tag. ULID matches that project; empty string filters to untagged-only; omit for any.",
+        },
+        dueBefore: {
+          type: 'string',
+          description: "ISO date string; matches rows whose `fields.dueDate` is on or before that date.",
+        },
+      },
+    },
+  },
+  {
+    name: 'pc_list_quick_tasks_for_project',
+    description:
+      "List the quick tasks tagged to a given project. Lets the orchestrator answer 'what quick tasks do I have for this project?'. Returns the array of WorkItems (in Quick Tasks project) whose `taggedProjectId` matches.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'project id (ULID) whose tagged quick tasks to fetch.' },
+      },
+      required: ['projectId'],
+    },
+  },
+  {
     name: 'pc_log_bug',
     description:
       "File a bug in the user's PC-PTY-Chat dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
@@ -1480,6 +1533,96 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             { type: 'text', text: `pc_reject_work_item failed: ${(err as Error).message}` },
           ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_quick_task': {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const taskBody = typeof args.body === 'string' ? args.body : undefined;
+      const taggedProjectId =
+        typeof args.taggedProjectId === 'string' && args.taggedProjectId.length > 0
+          ? args.taggedProjectId
+          : null;
+      if (!title) {
+        return {
+          content: [{ type: 'text', text: 'pc_create_quick_task: title required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await postServer('/api/quick-tasks', {
+          title,
+          ...(taskBody !== undefined ? { body: taskBody } : {}),
+          taggedProjectId,
+        });
+        if (res.status < 200 || res.status >= 300) {
+          return {
+            content: [{ type: 'text', text: `pc_create_quick_task failed (${res.status}): ${res.body}` }],
+            isError: true,
+          };
+        }
+        const parsed = JSON.parse(res.body) as { ok?: boolean; workItem?: { id?: string; title?: string } };
+        const id = parsed.workItem?.id ?? '?';
+        const tagSuffix = taggedProjectId ? `, tagged ${taggedProjectId}` : ', untagged';
+        return {
+          content: [{ type: 'text', text: `Added to Quick Tasks (id: ${id}${tagSuffix}). Title: ${title}` }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_create_quick_task failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_quick_tasks': {
+      const params: string[] = [];
+      if (typeof args.status === 'string') params.push(`status=${encodeURIComponent(args.status)}`);
+      if (typeof args.taggedProjectId === 'string')
+        params.push(`taggedProjectId=${encodeURIComponent(args.taggedProjectId)}`);
+      if (typeof args.dueBefore === 'string') params.push(`dueBefore=${encodeURIComponent(args.dueBefore)}`);
+      const qs = params.length > 0 ? `?${params.join('&')}` : '';
+      try {
+        const res = await getServer(`/api/quick-tasks/list${qs}`);
+        if (res.status < 200 || res.status >= 300) {
+          return {
+            content: [{ type: 'text', text: `pc_list_quick_tasks failed (${res.status}): ${res.body}` }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: 'text', text: res.body }] };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_quick_tasks failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_list_quick_tasks_for_project': {
+      const projectId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
+      if (!projectId) {
+        return {
+          content: [{ type: 'text', text: 'pc_list_quick_tasks_for_project: projectId required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await getServer(`/api/quick-tasks/for-project/${encodeURIComponent(projectId)}`);
+        if (res.status < 200 || res.status >= 300) {
+          return {
+            content: [
+              { type: 'text', text: `pc_list_quick_tasks_for_project failed (${res.status}): ${res.body}` },
+            ],
+            isError: true,
+          };
+        }
+        return { content: [{ type: 'text', text: res.body }] };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_list_quick_tasks_for_project failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

@@ -43,6 +43,10 @@ export const PC_RIG_TOOL_NAMES = [
   // 26.6 additions — tier-2/3 verification verbs
   'mcp__pc-rig__pc_approve_work_item',
   'mcp__pc-rig__pc_reject_work_item',
+  // 34.3 additions — Quick Tasks cross-project capture tools
+  'mcp__pc-rig__pc_create_quick_task',
+  'mcp__pc-rig__pc_list_quick_tasks',
+  'mcp__pc-rig__pc_list_quick_tasks_for_project',
   // 17b additions — pod CRUD MCP tools
   'mcp__pc-rig__pc_get_agent',
   'mcp__pc-rig__pc_update_agent_prompt',

@@ -134,6 +134,24 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'pc-rig',
   },
   {
+    slug: 'mcp__pc-rig__pc_create_quick_task',
+    label: 'Add a quick task',
+    description: "Capture an atomic todo on the cross-project Quick Tasks surface.",
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_list_quick_tasks',
+    label: 'List quick tasks',
+    description: "Read the Quick Tasks list with optional status / tag / due filters.",
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_list_quick_tasks_for_project',
+    label: "List a project's quick tasks",
+    description: "Quick tasks tagged to a specific project.",
+    source: 'pc-rig',
+  },
+  {
     slug: 'mcp__pc-rig__pc_approve_work_item',
     label: 'Approve agent work item',
     description:
