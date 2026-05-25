@@ -158,6 +158,7 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
   // chat panel.
   const setTelemetry = useOrchestratorTelemetry((s) => s.set);
   const setSessionMeta = useOrchestratorTelemetry((s) => s.setSession);
+  const setRuntime = useOrchestratorTelemetry((s) => s.setRuntime);
   const clearTelemetry = useOrchestratorTelemetry((s) => s.clear);
   useEffect(() => {
     setTelemetry({ model: liveModel, usage: sessionUsage });
@@ -188,6 +189,25 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     }
     return null;
   }, [events]);
+
+  // Section 31.8 — latest `jsonl-turn-duration` durationMs. Fires AFTER
+  // `jsonl-turn-end`; composer status line shows the most-recent value as
+  // a "Ns" tail. Walk newest-first; null until the first turn lands.
+  const lastTurnDurationMs = useMemo<number | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (ev?.kind === 'jsonl-turn-duration' && ev.durationMs != null) {
+        return ev.durationMs;
+      }
+    }
+    return null;
+  }, [events]);
+
+  useEffect(() => {
+    setRuntime({ sessionState: latestSessionState, lastTurnDurationMs });
+  }, [latestSessionState, lastTurnDurationMs, setRuntime]);
 
   // session-end event from CC's SessionEnd hook. The PTY is gone; disable the
   // composer + surface a footer notice. Cleared when a fresh session is active.

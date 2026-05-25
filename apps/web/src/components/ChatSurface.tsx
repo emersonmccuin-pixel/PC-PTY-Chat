@@ -36,6 +36,7 @@ import type {
 } from '@/hooks/use-project-ws';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
+import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { AskCard } from '@/components/AskCard';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
@@ -2615,6 +2616,65 @@ function ApprovalBubble({ event, projectId, resolved, onResolved }: ApprovalBubb
 
 const PROMPT_HISTORY_CAP = 100;
 
+function formatTokenCount(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) {
+    const k = n / 1_000;
+    return k >= 100 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
+  }
+  const m = n / 1_000_000;
+  return m >= 100 ? `${Math.round(m)}M` : `${m.toFixed(1)}M`;
+}
+
+function formatTurnDuration(ms: number): string {
+  if (ms < 1_000) return `${ms}ms`;
+  const seconds = ms / 1_000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const mins = Math.floor(seconds / 60);
+  const remS = Math.round(seconds % 60);
+  return remS === 0 ? `${mins}m` : `${mins}m ${remS}s`;
+}
+
+function ComposerRuntimeChips({
+  sessionState,
+  tokenTotal,
+  lastTurnMs,
+}: {
+  sessionState: string | null;
+  tokenTotal: number;
+  lastTurnMs: number | null;
+}) {
+  // Match the surrounding toolbar's 10px uppercase muted-fg look so the
+  // chips read as quiet metadata, not active controls. State chip carries
+  // a colored dot so the active session state is scannable at a glance.
+  const stateTone =
+    sessionState === 'requires_action'
+      ? 'bg-warning'
+      : sessionState === 'running'
+        ? 'bg-primary'
+        : sessionState === 'idle'
+          ? 'bg-foreground/40'
+          : 'bg-foreground/20';
+  return (
+    <span className="flex items-center gap-3 text-[var(--fg-dim)]">
+      {sessionState && (
+        <span className="inline-flex items-center gap-1.5" title="CC session_state_changed">
+          <span className={`h-1.5 w-1.5 rounded-full ${stateTone}`} />
+          <span>{sessionState.replace('_', ' ')}</span>
+        </span>
+      )}
+      {tokenTotal > 0 && (
+        <span title="Session token total (input + output + cache)">
+          {formatTokenCount(tokenTotal)} tok
+        </span>
+      )}
+      {lastTurnMs != null && (
+        <span title="Most-recent turn duration">{formatTurnDuration(lastTurnMs)}</span>
+      )}
+    </span>
+  );
+}
+
 function historyStorageKey(key: string) {
   return `pc:prompt-history:${key}`;
 }
@@ -2726,15 +2786,29 @@ function Composer({
 
   const historyLen = historyRef.current.length;
 
+  // Section 31.8 — composer status line surfaces session state + summed
+  // token total + most-recent turn duration. Subscribes to the orchestrator
+  // telemetry store the same way the App header does.
+  const sessionState = useOrchestratorTelemetry((s) => s.sessionState);
+  const usage = useOrchestratorTelemetry((s) => s.usage);
+  const lastTurnMs = useOrchestratorTelemetry((s) => s.lastTurnDurationMs);
+  const tokenTotal =
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.cacheCreationTokens +
+    usage.cacheReadTokens;
+
   // Section 32.4 — cockpit toolbar. Right-side hint surfaces the ↑/↓
   // prompt-history affordance that was previously invisible. The slash-
   // commands chip shipped in 32.4 was removed — PC doesn't expose any
   // slash commands of its own today; CC's PTY-native ones are usable
   // directly without a UI affordance hinting at them.
+  // Section 31.8 added the session-state · tokens · turn-duration trio
+  // between the prompt-history chip and the send-hint.
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
-      <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
+      <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
         <span
           className="inline-flex items-center gap-1.5 text-[var(--fg-dim)]"
           title="↑/↓ in the textarea walks your prompt history for this project"
@@ -2743,6 +2817,11 @@ function Composer({
           <kbd className="border border-border px-1 text-[9px]">↓</kbd>
           <span>prompt history · {historyLen}</span>
         </span>
+        <ComposerRuntimeChips
+          sessionState={sessionState}
+          tokenTotal={tokenTotal}
+          lastTurnMs={lastTurnMs}
+        />
         <span className="ml-auto text-[var(--fg-dim)]">
           enter to send · shift+enter newline
         </span>

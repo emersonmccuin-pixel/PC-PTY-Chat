@@ -31,8 +31,17 @@ interface OrchestratorTelemetryState {
   /** Section 32.5 — session metadata for the header breadcrumb dropdown. */
   sessionId: string | null;
   sessionLabel: string | null;
+  /** Section 31.3 — most-recent CC `session_state_changed` value
+   *  (`idle` | `running` | `requires_action` | …) seen in JSONL. Drives the
+   *  composer status-line state indicator. Null until first signal lands. */
+  sessionState: string | null;
+  /** Section 31.8 — durationMs of the most-recent `jsonl-turn-duration`
+   *  envelope (fires after `jsonl-turn-end`). Composer status line shows
+   *  the latest value as a "Ns" tail. */
+  lastTurnDurationMs: number | null;
   set: (next: { model: string | null; usage: UsageTotals }) => void;
   setSession: (next: { sessionId: string | null; sessionLabel: string | null }) => void;
+  setRuntime: (next: { sessionState: string | null; lastTurnDurationMs: number | null }) => void;
   clear: () => void;
 }
 
@@ -42,14 +51,19 @@ export const useOrchestratorTelemetry = create<OrchestratorTelemetryState>(
     usage: EMPTY_USAGE,
     sessionId: null,
     sessionLabel: null,
+    sessionState: null,
+    lastTurnDurationMs: null,
     set: (next) => set(next),
     setSession: (next) => set(next),
+    setRuntime: (next) => set(next),
     clear: () =>
       set({
         model: null,
         usage: EMPTY_USAGE,
         sessionId: null,
         sessionLabel: null,
+        sessionState: null,
+        lastTurnDurationMs: null,
       }),
   }),
 );
