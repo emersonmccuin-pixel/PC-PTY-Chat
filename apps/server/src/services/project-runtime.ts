@@ -11,8 +11,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { OrchestratorSession, Project, ULID, Workflow } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID, Workflow, WorkflowV2 } from '@pc/domain';
 import { isQuickTasksKind } from '@pc/domain';
+import type { ReviewDecision } from '@pc/workflows';
 import {
   createOrchestratorSession,
   endOrchestratorSession,
@@ -27,6 +28,11 @@ import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import { WorktreeService } from './worktree.ts';
 import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
+import {
+  fireDagWorkflow,
+  applyV2ReviewDecision,
+  type DagRunServiceOptions,
+} from './dag-run-service.ts';
 import { evaluateBoolean } from './output-substitution.ts';
 import { migrateWorkflowsInPlace } from './workflow-boot-migration.ts';
 import { WorkItemService } from './work-item.ts';
@@ -183,6 +189,44 @@ export class ProjectRuntime {
       });
     }
     return this.workflow;
+  }
+
+  /** Section 19.4f — assemble the live deps options for the v2 DAG executor
+   *  from this project's existing context (same surfaces WorkflowRuntime uses). */
+  private dagRunOptions(): DagRunServiceOptions {
+    return {
+      projectId: this.project.id,
+      workspaceDir: this.project.folderPath,
+      channelPort: this.opts.channelPort,
+      getProject: () => this.project,
+      workItemService: this.workItemService(),
+      worktrees: this.worktrees(),
+      sessionDirFor: (pcSessionId) => this.sessionDataPath(pcSessionId),
+      broadcast: this.opts.broadcast,
+    };
+  }
+
+  /** Fire a v2 workflow. Returns once the run is set up (root WI + sidecar);
+   *  the run itself proceeds in the background (the executor advances on its
+   *  own and broadcasts state). Errors after setup are logged, not thrown. */
+  async fireV2Workflow(
+    workflow: WorkflowV2.Workflow,
+    trigger: WorkflowV2.WorkflowTrigger = { kind: 'manual' },
+  ): Promise<{ runId: ULID; rootWorkItemId: ULID }> {
+    const res = await fireDagWorkflow(workflow, trigger, this.dagRunOptions());
+    res.done.catch((err: Error) => {
+      console.error(`[dag-run] run ${res.runId} failed:`, err.message);
+    });
+    return { runId: res.runId, rootWorkItemId: res.rootWorkItemId };
+  }
+
+  /** Apply an orchestrator/human review decision to a paused v2 run. */
+  async applyV2Review(
+    runId: ULID,
+    reviewNodeId: string,
+    decision: ReviewDecision,
+  ): Promise<string | null> {
+    return applyV2ReviewDecision(runId, reviewNodeId, decision, this.dagRunOptions());
   }
 
   /** Lazy: WorkItemService — owns create/patch/move/softDelete/restore/list/get

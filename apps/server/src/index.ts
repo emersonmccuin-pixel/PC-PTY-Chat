@@ -2824,6 +2824,53 @@ app.post('/api/projects/:projectId/workflow/run', async (c) => {
   }
 });
 
+// Section 19.4f — fire a v2 (Section-19) DAG workflow. The definition is
+// passed inline in the body until the v2 workflow registry + builder UI land
+// (19.9–19.11). Returns the run id + root work-item id; the run proceeds in the
+// background and broadcasts state over WS (`workflow-v2-run-changed`).
+app.post('/api/projects/:projectId/workflow-v2/fire', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ workflow?: unknown; trigger?: unknown }>();
+  const wf = body.workflow as { id?: unknown; name?: unknown; nodes?: unknown } | undefined;
+  if (!wf || typeof wf.id !== 'string' || typeof wf.name !== 'string' || !Array.isArray(wf.nodes)) {
+    return c.json({ ok: false, error: 'workflow must have { id, name, nodes[] }' }, 400);
+  }
+  try {
+    const trigger =
+      body.trigger && typeof body.trigger === 'object'
+        ? (body.trigger as { kind: 'manual' | 'stage-on-entry' | 'schedule' | 'event' })
+        : { kind: 'manual' as const };
+    const res = await runtime.fireV2Workflow(wf as never, trigger as never);
+    return c.json({ ok: true, ...res });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+// Section 19.4f — apply an orchestrator/human review decision to a paused v2 run.
+app.post('/api/projects/:projectId/workflow-v2/review', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ runId?: string; nodeId?: string; decision?: string; notes?: string }>();
+  if (!body.runId || !body.nodeId || (body.decision !== 'approve' && body.decision !== 'reject')) {
+    return c.json({ ok: false, error: 'require { runId, nodeId, decision: approve|reject }' }, 400);
+  }
+  try {
+    const decision =
+      body.decision === 'reject'
+        ? { kind: 'reject' as const, ...(body.notes ? { notes: body.notes } : {}) }
+        : { kind: 'approve' as const };
+    const status = await runtime.applyV2Review(body.runId as never, body.nodeId, decision);
+    if (status === null) return c.json({ ok: false, error: 'run not found' }, 404);
+    return c.json({ ok: true, status });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
 // Proxy to the channel server. POSTs the UI's test message to the path-routed
 // channel entry at `/channel/<slug>/test` (4c / D35) so the channel server
 // accepts it. Source segment `test` matches the existing `X-Sender: test`
