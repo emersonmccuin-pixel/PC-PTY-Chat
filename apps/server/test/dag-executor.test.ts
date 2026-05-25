@@ -31,6 +31,7 @@ interface Recorder {
   deps: DagExecutorDeps;
   agentCalls: string[];
   cmdCalls: string[];
+  carries: { id: string; carry: Record<string, string> }[];
   reviewRequests: string[];
   events: { type: string; nodeId?: string }[];
   holds: string[];
@@ -42,6 +43,7 @@ interface Recorder {
 function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutcome } = {}): Recorder {
   const agentCalls: string[] = [];
   const cmdCalls: string[] = [];
+  const carries: { id: string; carry: Record<string, string> }[] = [];
   const reviewRequests: string[] = [];
   const events: { type: string; nodeId?: string }[] = [];
   const holds: string[] = [];
@@ -51,9 +53,10 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
 
   const deps: DagExecutorDeps = {
     resolveRef: () => (nodeId, field) => outputs[field ? `${nodeId}.${field}` : nodeId] ?? '',
-    dispatchAgent: async (node) => {
+    dispatchAgent: async (node, ctx) => {
       callCount[node.id] = (callCount[node.id] ?? 0) + 1;
       agentCalls.push(node.id);
+      carries.push({ id: node.id, carry: { ...ctx.carry } });
       outputs[node.id] = `output-of-${node.id}`;
       return opts.agentOutcome
         ? opts.agentOutcome(node.id, callCount[node.id]!)
@@ -78,6 +81,7 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
     deps,
     agentCalls,
     cmdCalls,
+    carries,
     reviewRequests,
     events,
     holds,
@@ -170,6 +174,30 @@ test('reject past the ceiling → held for human, run fails', async () => {
   assert.deepEqual(r.holds, ['rev']);
   assert.ok(r.events.some((e) => e.type === 'iteration_ceiling_hit'));
   assert.deepEqual(r.agentCalls, ['code', 'code']); // never re-ran a 3rd time; done never ran
+});
+
+test('reject carry: reviewer notes flow into the re-dispatched node via $self.output (19.5)', async () => {
+  const r = recorder();
+  const exec = DagExecutor.start(
+    wf([
+      agent('code', ['rev']),
+      review('rev', {
+        next: ['done'],
+        reject: { back_to: 'code', max_iterations: 3, carry: { feedback: '$self.output.notes' } },
+      }),
+      agent('done'),
+    ]),
+    r.deps,
+    base
+  );
+  await exec.advance(); // first dispatch — no feedback yet
+  assert.equal(r.carries[0]!.id, 'code');
+  assert.equal(r.carries[0]!.carry.feedback ?? '', '');
+
+  await exec.onReviewDecision('rev', { kind: 'reject', notes: 'tests miss edge case X' });
+  // code re-ran; the reviewer's notes landed in its carry
+  const reRun = r.carries.filter((c) => c.id === 'code')[1];
+  assert.equal(reRun!.carry.feedback, 'tests miss edge case X');
 });
 
 test('cancellation between layers stops the run', async () => {

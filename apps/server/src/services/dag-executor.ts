@@ -173,8 +173,11 @@ export class DagExecutor {
           | WorkflowV2.OrchestratorReviewNode;
         this.state = markRunning(this.state, id);
         this.state = markAwaitingReview(this.state, id);
-        await this.deps.requestReview(node, this.ctx(resolve), this.resolveBundle(node, resolve));
-        this.deps.event({ type: 'review_requested', nodeId: id });
+        const bundle = this.resolveBundle(node, resolve);
+        await this.deps.requestReview(node, this.ctx(resolve), bundle);
+        // Persist the assembled bundle into the audit log so the review surface
+        // is durable + replayable without re-resolving upstream WIs (19.5).
+        this.deps.event({ type: 'review_requested', nodeId: id, data: { bundle } });
       }
       this.deps.persist(this.state, 'awaiting-review');
       return 'awaiting-review';
@@ -223,18 +226,25 @@ export class DagExecutor {
     }
   }
 
-  /** Carry values wired from a reject edge that targets this node (resolved
-   *  via `$self`/`$nodeId.output` against the review node's output). */
+  /** Carry values wired from a reject edge that targets this node. `$self.output`
+   *  resolves to the reviewer's reject notes (a review node's "output" IS its
+   *  verdict — stashed in `state.rejectFeedback` by applyReviewDecision so it
+   *  survives the loop-subtree reset); other `$nodeId.output` refs read upstream
+   *  child WIs via the resolver. */
   private carryFor(nodeId: string, resolve: RefResolver): Record<string, string> {
     const carry: Record<string, string> = {};
     for (const n of this.workflow.nodes) {
       if (!isReview(n) || !n.reject || n.reject.back_to !== nodeId) continue;
+      const feedback = this.state.rejectFeedback?.[n.id] ?? '';
       for (const [key, expr] of Object.entries(n.reject.carry ?? {})) {
-        // `$self` in a reject.carry refers to the review node itself.
-        carry[key] = expr.replace(/\$self\./g, `$${n.id}.`).replace(
-          /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?/g,
-          (_m, ref: string, field: string | undefined) => resolve(ref, field)
-        );
+        carry[key] = expr
+          // `$self.output[.field]` → the reviewer's notes (replacer fn avoids
+          // `$`-mangling if the feedback text itself contains `$`).
+          .replace(/\$self\.output(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?/g, () => feedback)
+          .replace(
+            /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?/g,
+            (_m, ref: string, field: string | undefined) => resolve(ref, field)
+          );
       }
     }
     return carry;

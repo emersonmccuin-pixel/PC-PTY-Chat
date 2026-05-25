@@ -150,6 +150,8 @@ test('reject under ceiling: resets loop subtree to pending, bumps iteration', ()
   assert.equal(s.nodes.code.state, 'pending');
   assert.equal(s.nodes.r.state, 'pending');
   assert.equal(s.rejectIterations!.r, 1);
+  // reviewer notes stashed at run-level so they survive the reset (for carry).
+  assert.equal(s.rejectFeedback!.r, 'fix it');
   // code is dispatchable again
   assert.deepEqual(selectReady(w, s, noResolve).ready, ['code']);
 });

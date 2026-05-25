@@ -287,6 +287,11 @@ export interface WorkflowDagState {
   /** Reject-edge kick-back counts, keyed by the review node id owning the edge.
    *  Compared against `RejectEdge.max_iterations` to trigger the ceiling hold. */
   rejectIterations?: Record<string, number>;
+  /** Latest reviewer reject notes, keyed by review node id. Survives the
+   *  loop-subtree reset (which wipes per-node records) so a reject edge's
+   *  `carry: { x: $self.output[.field] }` injects the reviewer's feedback into
+   *  the re-dispatched `back_to` node. A review node's "output" IS its verdict. */
+  rejectFeedback?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

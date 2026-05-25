@@ -207,6 +207,12 @@ export function applyReviewDecision(
     return { state: next, kickedBack: null, heldForHuman: false };
   }
 
+  // Stash the reviewer's notes at run-level so they survive the subtree reset
+  // below and feed `reject.carry: { x: $self.output }` on re-dispatch (lock 1).
+  if (decision.notes) {
+    next.rejectFeedback = { ...(next.rejectFeedback ?? {}), [reviewNodeId]: decision.notes };
+  }
+
   const reject = node && isReviewNode(node) ? node.reject : undefined;
   if (!reject) {
     next.nodes[reviewNodeId] = {
