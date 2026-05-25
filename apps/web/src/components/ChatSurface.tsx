@@ -33,6 +33,7 @@ import type {
   ToolStartEvent,
   UserEvent,
   WsEnvelope,
+  WsStatus,
 } from '@/hooks/use-project-ws';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
@@ -682,6 +683,11 @@ interface ChatSurfaceProps {
   footerSlot?: ReactNode;
   /** Content rendered when there are no events to show. */
   emptyState?: ReactNode;
+  /** Connection status of the WS feeding `events`. When the socket drops
+   *  mid-turn the thinking indicator shows a "Reconnecting…" notice instead
+   *  of a misleading live "Thinking" with a climbing timer. Transient
+   *  surfaces that manage their own lifecycle omit this. */
+  wsStatus?: WsStatus;
 }
 
 export function ChatSurface({
@@ -699,6 +705,7 @@ export function ChatSurface({
   bannerSlot,
   footerSlot,
   emptyState,
+  wsStatus,
 }: ChatSurfaceProps) {
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
     // Section 23.5 — derive todos snapshots client-side from JSONL tool-calls
@@ -779,10 +786,42 @@ export function ChatSurface({
     return anyJsonl ? busy : null;
   }, [events]);
 
+  // liveState values that mean the turn is NOT in flight. `exited` is the
+  // crash/dead path — without it here a process that died mid-turn left the
+  // spinner spinning forever (server DOES broadcast state:'exited', we just
+  // weren't honoring it). `spawning` covers a respawn after a server restart.
   const isThinking =
     jsonlBusy === null
       ? liveState === 'thinking'
-      : jsonlBusy && liveState !== 'ready';
+      : jsonlBusy &&
+        liveState !== 'ready' &&
+        liveState !== 'exited' &&
+        liveState !== 'spawning';
+
+  // Live "what is it doing" label for the thinking indicator. Newest-first
+  // scan for the most recent progress signal in the JSONL stream.
+  const activity = useMemo<string | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (!ev) continue;
+      if (ev.kind === 'jsonl-turn-end') return null;
+      if (ev.kind === 'jsonl-tool-call') return activityLabel(ev.name, ev.input);
+      if (ev.kind === 'jsonl-tool-result') return 'Working through the result';
+      if (ev.kind === 'jsonl-stream-event') return 'Writing a response';
+    }
+    return null;
+  }, [events]);
+
+  // Liveness proxy: timestamp of the most recent envelope of any kind. During
+  // a live turn SOMETHING flows (raw chunks, jsonl, stream events); a growing
+  // gap means the agent went quiet — or the process/server died. Drives the
+  // "updated Ns ago" readout + the stall hint.
+  const [lastEnvelopeAt, setLastEnvelopeAt] = useState<number>(() => Date.now());
+  useEffect(() => {
+    setLastEnvelopeAt(Date.now());
+  }, [events.length]);
 
   // Queued-prompt UI (CC's JSONL queue lines don't carry the prompt text;
   // cache locally and pop on dequeue events).
@@ -1092,7 +1131,13 @@ export function ChatSurface({
               <div className="text-center text-xs text-muted-foreground">{emptyState}</div>
             )}
             {isThinking && (
-              <ThinkingIndicator elapsedMs={elapsedMs} interruptedAt={interruptedAt} />
+              <ThinkingIndicator
+                elapsedMs={elapsedMs}
+                interruptedAt={interruptedAt}
+                activity={activity}
+                lastEnvelopeAt={lastEnvelopeAt}
+                wsStatus={wsStatus}
+              />
             )}
           </div>
         </div>
@@ -1614,12 +1659,53 @@ function formatElapsed(ms: number): string {
   return `${m}m ${rem.toString().padStart(2, '0')}s`;
 }
 
+const TOOL_VERBS: Record<string, string> = {
+  Read: 'Reading',
+  Edit: 'Editing',
+  Write: 'Writing',
+  NotebookEdit: 'Editing',
+  Bash: 'Running',
+  PowerShell: 'Running',
+  Glob: 'Finding files',
+  Grep: 'Searching',
+  WebFetch: 'Fetching',
+  WebSearch: 'Searching the web',
+  Task: 'Delegating to',
+  Agent: 'Delegating to',
+  TodoWrite: 'Updating the plan',
+};
+
+/** Human-readable "what is it doing right now" string for the thinking
+ *  indicator. Reuses `summarizeInput` for the per-tool detail; strips the
+ *  `mcp__<server>__` prefix off MCP tool names so they read cleanly. */
+function activityLabel(tool: string, input: unknown): string {
+  const clean = tool.startsWith('mcp__')
+    ? tool.split('__').pop() ?? tool
+    : tool;
+  const verb = TOOL_VERBS[tool];
+  const base = verb ?? clean;
+  const summary = summarizeInput(tool, input);
+  return summary ? `${base} ${summary}` : base;
+}
+
+/** Quiet window (no envelopes at all) after which we warn the turn may have
+ *  stalled or the agent may have died. CC turns can legitimately think for a
+ *  while, but raw PTY output / stream events keep flowing during real work, so
+ *  a full minute of dead silence is a strong "something's wrong" signal. */
+const STALL_WARN_MS = 60_000;
+
 function ThinkingIndicator({
   elapsedMs,
   interruptedAt,
+  activity,
+  lastEnvelopeAt,
+  wsStatus,
 }: {
   elapsedMs: number;
   interruptedAt: number | null;
+  activity: string | null;
+  lastEnvelopeAt: number;
+  wsStatus?: WsStatus;
 }) {
   const [sinceInterrupt, setSinceInterrupt] = useState(0);
   useEffect(() => {
@@ -1633,13 +1719,46 @@ function ThinkingIndicator({
     return () => clearInterval(id);
   }, [interruptedAt]);
 
+  // Live "ms since last envelope" so the activity readout reflects real
+  // movement and a stall becomes visible (the counter keeps climbing).
+  const [sinceEnvelope, setSinceEnvelope] = useState(0);
+  useEffect(() => {
+    const tick = () => setSinceEnvelope(Date.now() - lastEnvelopeAt);
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [lastEnvelopeAt]);
+
+  // Connection lost mid-turn: don't pretend the agent is working. The socket
+  // dropped (server restart / network blip) and reconnects on a backoff.
+  const disconnected = wsStatus === 'closed' || wsStatus === 'connecting';
+  if (disconnected) {
+    return (
+      <div className="self-start flex flex-col gap-1 border border-warning/60 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+        <div className="flex items-center gap-2">
+          <span className="thinking-dots inline-flex items-center gap-0.5">
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+          </span>
+          <span>Reconnecting to the app…</span>
+        </div>
+        <div className="text-[10px] uppercase tracking-wider opacity-90">
+          Lost the connection to the local server — retrying. Your chat resumes once it's back.
+        </div>
+      </div>
+    );
+  }
+
   const interrupting = interruptedAt !== null;
   const stuck = interrupting && sinceInterrupt > 5_000;
+  const stalled = !interrupting && sinceEnvelope > STALL_WARN_MS;
+  const showAgo = !interrupting && sinceEnvelope > 4_000;
   return (
     <div
       className={
         'self-start flex flex-col gap-1 border px-3 py-1.5 text-xs ' +
-        (interrupting
+        (interrupting || stalled
           ? 'border-warning/60 bg-warning/10 text-warning'
           : 'border-border bg-card text-muted-foreground')
       }
@@ -1655,6 +1774,23 @@ function ThinkingIndicator({
           {interrupting ? formatElapsed(sinceInterrupt) : formatElapsed(elapsedMs)}
         </span>
       </div>
+      {!interrupting && activity && (
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="min-w-0 truncate font-mono opacity-90" title={activity}>
+            {activity}
+          </span>
+          {showAgo && (
+            <span className="shrink-0 tabular-nums opacity-70">
+              · updated {formatElapsed(sinceEnvelope)} ago
+            </span>
+          )}
+        </div>
+      )}
+      {stalled && (
+        <div className="text-[10px] uppercase tracking-wider opacity-90">
+          No updates for {formatElapsed(sinceEnvelope)} — Claude may have stopped. Use "+ New session" to reset if it doesn't recover.
+        </div>
+      )}
       {stuck && (
         <div className="text-[10px] uppercase tracking-wider opacity-90">
           Claude isn't responding to the interrupt — click it again, or use "+ New session" if stuck.

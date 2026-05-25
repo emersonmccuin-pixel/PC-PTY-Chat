@@ -368,6 +368,7 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
       bannerSlot={bannerSlot}
       footerSlot={footerSlot}
       emptyState={emptyState}
+      wsStatus={wsStatus}
     />
   );
 }
