@@ -27,6 +27,28 @@ export default function App() {
   const sessionLabel = useOrchestratorTelemetry((s) => s.sessionLabel);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const sessionBreadcrumbRef = useRef<HTMLButtonElement | null>(null);
+  const [brandMenuOpen, setBrandMenuOpen] = useState(false);
+  const brandMenuRef = useRef<HTMLDivElement | null>(null);
+  const brandButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!brandMenuOpen) return;
+    function onClick(e: MouseEvent) {
+      const t = e.target as Node;
+      if (brandMenuRef.current?.contains(t)) return;
+      if (brandButtonRef.current?.contains(t)) return;
+      setBrandMenuOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setBrandMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [brandMenuOpen]);
 
   // Activity panel open/closed lives in settings_global.activity_panel.
   // `showAllProjects` field still in settings schema (additive — Section 7
@@ -151,14 +173,24 @@ export default function App() {
         className="flex items-center border-b border-border bg-card text-xs"
         style={{ height: 32 }}
       >
-        <div
-          className="flex shrink-0 items-center gap-1.5 px-3"
-          style={{ width: 192 }}
-        >
-          <img src="/icon.svg" alt="" className="h-5 w-5" />
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
-            caisson
-          </span>
+        <div className="flex shrink-0 items-center" style={{ width: 192 }}>
+          <button
+            ref={brandButtonRef}
+            type="button"
+            onClick={() => setBrandMenuOpen((v) => !v)}
+            className={`flex h-full w-full items-center gap-1.5 px-3 text-left hover:bg-muted/50 ${
+              brandMenuOpen ? 'bg-muted/50' : ''
+            }`}
+            aria-haspopup="menu"
+            aria-expanded={brandMenuOpen}
+            title="App menu"
+          >
+            <img src="/icon.svg" alt="" className="h-5 w-5" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
+              caisson
+            </span>
+            <span className="text-[10px] text-[var(--fg-dim)]">▾</span>
+          </button>
         </div>
         <div className="flex flex-1 items-center gap-3 pr-3">
         {activeProject && (
@@ -219,15 +251,6 @@ export default function App() {
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setSettingsOpen(true)}
-            disabled={!settings}
-            title="App settings"
-            aria-label="App settings"
-            className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-          >
-            ⚙
-          </button>
-          <button
             onClick={() => persistActivityPanelSetting({ open: !activityPanelOpen })}
             disabled={!settings}
             title={activityPanelOpen ? 'Hide activity panel' : 'Show activity panel'}
@@ -276,6 +299,27 @@ export default function App() {
           anchorEl={sessionBreadcrumbRef.current}
           onClose={() => setSessionSwitcherOpen(false)}
         />
+      )}
+      {brandMenuOpen && (
+        <div
+          ref={brandMenuRef}
+          role="menu"
+          style={{ position: 'fixed', top: 32, left: 0, width: 192, zIndex: 50 }}
+          className="border border-primary/40 bg-popover py-1 text-popover-foreground shadow-2xl"
+        >
+          <button
+            role="menuitem"
+            type="button"
+            disabled={!settings}
+            onClick={() => {
+              setBrandMenuOpen(false);
+              setSettingsOpen(true);
+            }}
+            className="block w-full px-3 py-1.5 text-left text-xs hover:bg-muted disabled:opacity-40"
+          >
+            App settings…
+          </button>
+        </div>
       )}
       {createOpen && (
         <CreateProjectModal
