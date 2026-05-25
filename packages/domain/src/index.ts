@@ -88,6 +88,10 @@ export type {
   WorkflowRunStatus,
   WorkflowRunTrigger,
 } from './workflow-run.ts';
+// Section 19 v2 workflow types — namespaced to coexist with the legacy
+// workflow.ts surface above until 19.12 culls it. Access as WorkflowV2.Workflow,
+// WorkflowV2.AgentNode, WorkflowV2.WORKFLOW_NODE_KINDS, etc.
+export * as WorkflowV2 from './workflow-v2.ts';
 export type {
   OrchestratorSession,
   ProviderId,
