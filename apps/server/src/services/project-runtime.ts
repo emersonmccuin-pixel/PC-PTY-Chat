@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { resolve } from 'node:path';
 
 import type { OrchestratorSession, Project, ULID, Workflow } from '@pc/domain';
+import { isQuickTasksKind } from '@pc/domain';
 import {
   createOrchestratorSession,
   endOrchestratorSession,
@@ -248,32 +249,38 @@ export class ProjectRuntime {
     // here, CC writes elsewhere when env var is set, hooks hid the
     // mismatch by feeding the chat panel directly).
     const jsonlPath = jsonlPathFor(this.project.folderPath, session.providerSessionId);
-    // Section 16a.3 — materialise the orchestrator pod into the project's
-    // workspace. Replaces the pre-16a `--append-system-prompt-file` lever
-    // (which layered PC's PM identity on top of CC's coding-assistant
-    // default). `--agent orchestrator` instead REPLACES the default — PC
-    // owns the orchestrator's prompt + tool surface end-to-end via the pod
-    // row seeded at server boot (16a.2).
+    // Section 16a.3 — materialise the project's PM pod into the workspace.
+    // Replaces the pre-16a `--append-system-prompt-file` lever (which layered
+    // PC's PM identity on top of CC's coding-assistant default). `--agent
+    // <name>` REPLACES the default — PC owns the prompt + tool surface end-
+    // to-end via the pod row seeded at server boot (16a.2).
+    //
+    // Section 34.2 — Quick Tasks project spawns with `--agent quick-tasks-pm`
+    // (constrained tool surface: no specialist dispatch, no work-item-as-
+    // contract verbs). All other projects spawn with `--agent orchestrator`.
+    const pmAgentName = isQuickTasksKind(this.project.kind)
+      ? 'quick-tasks-pm'
+      : 'orchestrator';
     let podPrep: PodSpawnPrep;
     try {
       const prep = preparePodSpawn({
-        agentName: 'orchestrator',
+        agentName: pmAgentName,
         worktreeDir: this.project.folderPath,
         scratchDir: sessionDir,
       });
       if (!prep) {
-        // Boot-time seed (16a.2) always inserts the row; a null here
+        // Boot-time seed (16a.2 / 34.2) always inserts the row; a null here
         // means the DB is in an unexpected state (row deleted manually
-        // mid-session?). Fail loud — falling back to a default-CC
-        // orchestrator would silently lose the locked tool allowlist.
+        // mid-session?). Fail loud — falling back to a default-CC PM
+        // would silently lose the locked tool allowlist.
         throw new Error(
-          'orchestrator pod row not found (boot-time seed did not run, or row was deleted)',
+          `${pmAgentName} pod row not found (boot-time seed did not run, or row was deleted)`,
         );
       }
       podPrep = prep;
     } catch (err) {
       throw new Error(
-        `orchestrator pod materialisation failed: ${(err as Error).message}`,
+        `${pmAgentName} pod materialisation failed: ${(err as Error).message}`,
       );
     }
 
@@ -287,7 +294,7 @@ export class ProjectRuntime {
       extraEnv: { PC_SESSION_ID: session.row.id, ...podPrep.extraEnv },
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
-      agentName: 'orchestrator',
+      agentName: pmAgentName,
       mcpConfigPath: podPrep.mcpConfigPath,
     });
 
