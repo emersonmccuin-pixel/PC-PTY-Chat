@@ -41,6 +41,7 @@ import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
 import { LiveRichLink } from '@/components/LiveRichLink';
 import { ExternalLink } from '@/components/ExternalLink';
+import { RemoteControlCorner } from '@/components/RemoteControlCorner';
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
 // + task-end cards; TodoWrite + TaskCreate/Update → todos snapshot card).
@@ -1103,6 +1104,7 @@ export function ChatSurface({
             ↓ Jump to recent
           </button>
         )}
+        <RemoteControlCorner events={events} />
       </div>
       {bannerSlot}
       {!composerHidden && (

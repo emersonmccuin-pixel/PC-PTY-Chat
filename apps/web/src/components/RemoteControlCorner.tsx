@@ -20,7 +20,7 @@ export function RemoteControlCorner({ events }: Props) {
   };
 
   return (
-    <div className="pointer-events-none absolute bottom-3.5 right-4 z-20">
+    <div className="pointer-events-none absolute bottom-2 right-3 z-20">
       <button
         type="button"
         onClick={handleClick}
@@ -28,8 +28,8 @@ export function RemoteControlCorner({ events }: Props) {
         className="pc-remote-indicator pointer-events-auto"
         title={url ? `Open ${url}` : 'Remote control active'}
       >
-        <span className="pc-remote-pulse-dot" />
-        <span className="pc-remote-label">remote</span>
+        <span className="pc-remote-dot" />
+        <span>remote</span>
         {idDisplay ? <span className="pc-remote-id">{idDisplay}</span> : null}
       </button>
     </div>
