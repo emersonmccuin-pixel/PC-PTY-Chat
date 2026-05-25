@@ -392,6 +392,10 @@ function attachPtyHandlers(
     // row carries rich per-turn metadata; we log every one to the DB. Surface
     // design is deferred per the buildout — collect data first.
     maybePersistPostTurnSummary(projectId, event);
+    // Section 31.9 — CC's `ai-title` envelope is the canonical session-name
+    // source. Fires repeatedly as the title is refined; persist + broadcast
+    // every update so the rail row + chat title bar stay live.
+    maybeApplyAiTitle(projectId, event);
   });
   session.on('jsonl-path-resolved', (jsonlPath: string) => {
     const active = getActiveOrchestratorSession(projectId);
@@ -429,6 +433,27 @@ function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   if (!active || active.title) return;
   const title = deriveTitleFromText(ev.text);
   if (!title) return;
+  setOrchestratorSessionTitle(active.id, title);
+  const updated = getActiveOrchestratorSession(projectId);
+  if (updated) broadcastTo(projectId, { type: 'session-title-updated', session: updated });
+}
+
+/** Section 31.9 — bind the rail session row title + chat title bar to CC's
+ *  `ai-title`. Fires repeatedly through the session as CC refines the title;
+ *  every update overwrites the persisted value + broadcasts.
+ *  Replaces the pre-31.9 first-user-prompt heuristic (`maybeSetSessionTitle`
+ *  stays in place as a fallback for sessions that never get an ai-title —
+ *  e.g. very short sessions, or pre-31.9 historical rows).
+ */
+function maybeApplyAiTitle(projectId: ULID, event: unknown): void {
+  if (!event || typeof event !== 'object') return;
+  const ev = event as { kind?: string; title?: string };
+  if (ev.kind !== 'jsonl-ai-title' || typeof ev.title !== 'string') return;
+  const title = ev.title.trim();
+  if (!title) return;
+  const active = getActiveOrchestratorSession(projectId);
+  if (!active) return;
+  if (active.title === title) return;
   setOrchestratorSessionTitle(active.id, title);
   const updated = getActiveOrchestratorSession(projectId);
   if (updated) broadcastTo(projectId, { type: 'session-title-updated', session: updated });
