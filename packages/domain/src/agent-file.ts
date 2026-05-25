@@ -14,10 +14,6 @@
 import { parseDocument, Document, isMap } from 'yaml';
 
 import {
-  AGENT_COLORS,
-  AGENT_EFFORTS,
-  AGENT_MEMORY_SCOPES,
-  AGENT_PERMISSION_MODES,
   type AgentColor,
   type AgentDef,
   type AgentEffort,
