@@ -643,30 +643,33 @@ button:disabled {
   border-radius: 0 10px 10px 10px;
 }
 
-/* Wax-seal avatar — PM (gold stamp). */
+/* Wax-seal avatar — PM (gold stamp). Deeper saturation so CC reads
+   distinctly against the YOU cream stamp. */
 .chat-avatar {
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 2px solid var(--gold);
+  border: 2px solid var(--gold-deep);
   background:
-    radial-gradient(circle at 36% 28%, rgba(212, 166, 74, 0.55), rgba(212, 166, 74, 0.06)),
-    radial-gradient(circle at 70% 75%, rgba(184, 137, 58, 0.30), transparent 60%);
-  color: var(--gold);
+    radial-gradient(circle at 36% 28%, rgba(184, 137, 58, 0.85), rgba(140, 100, 36, 0.35)),
+    radial-gradient(circle at 70% 75%, rgba(120, 84, 28, 0.55), transparent 60%);
+  color: #f1d796;
   box-shadow:
     0 0 0 1px var(--paper),
-    0 0 8px var(--gold-glow),
-    inset 0 1px 0 rgba(255, 220, 130, 0.20),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+    0 0 8px rgba(184, 137, 58, 0.45),
+    inset 0 1px 0 rgba(255, 220, 130, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   letter-spacing: 0.06em;
   flex-shrink: 0;
   font-family: var(--font-mono);
-  margin-top: 2px;
+  /* Drop the avatar so its top edge sits flush with the card's top border
+     (speaker label height + .chat-turn-col gap). */
+  margin-top: 19px;
 }
 
 /* Wax-seal avatar — YOU (cream stamp). */
