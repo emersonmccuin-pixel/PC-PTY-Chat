@@ -20,6 +20,11 @@ export const STOCK_POD_NAME_LIST = [
   'extractor',
   'agent-designer',
   'quick-tasks-pm',
+  // 2026-05-25: in-app specialist seeded by Section 36 (commit 78751c4 +
+  // the stashed WIP at stash@{0}). Added here as a server-boot unblock —
+  // the rest of Section 36's surface (origin column wiring, pod-routes
+  // shape, pod-defaults, etc.) is still parked in stash@{0}.
+  'caisson',
 ] as const;
 
 export type StockPodName = (typeof STOCK_POD_NAME_LIST)[number];
