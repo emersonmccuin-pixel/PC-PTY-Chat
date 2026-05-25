@@ -109,4 +109,8 @@ export interface Project {
    *  boot-time-seeded singleton. Drives rail layout, picker hygiene, and
    *  the Tasks-tab fork. */
   kind: ProjectKind;
+  /** Section 35 — monotonic, never-reused counter for top-level callsign
+   *  numbering. Highest assigned root number. Surfaced for forensic /
+   *  debug use; UI doesn't read it directly. */
+  callsignSeq: number;
 }

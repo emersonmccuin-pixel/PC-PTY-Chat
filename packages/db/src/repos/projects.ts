@@ -30,6 +30,7 @@ interface ProjectRow {
   folderPath: string;
   gitRemote: string | null;
   kind: ProjectKind;
+  callsignSeq: number;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -45,6 +46,7 @@ function toDomain(row: ProjectRow): Project {
     gitRemote: row.gitRemote,
     settings: withProjectSettingsDefaults(row.settings as Partial<ProjectSettings>),
     kind: row.kind ?? 'standard',
+    callsignSeq: row.callsignSeq ?? 0,
   };
 }
 
@@ -124,6 +126,7 @@ export function createProject(input: CreateProjectInput): Project {
     gitRemote,
     settings: withProjectSettingsDefaults(input.settings as Partial<ProjectSettings> | undefined),
     kind,
+    callsignSeq: 0,
   };
 }
 

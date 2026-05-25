@@ -80,6 +80,11 @@ export interface WorkItem {
    *  app-level lookups treat dangling tags as untagged. Only meaningful on
    *  rows whose `projectId` is the Quick Tasks project. */
   taggedProjectId: ULID | null;
+  /** Section 35 — display-alias short code (e.g. `pc-2`, `pc-2.1`). ULID
+   *  stays canonical. NULL on agent contracts (`isAgentTask = true`) by
+   *  design — they don't burn user-visible numbers. Write-once: stable
+   *  across re-parenting. */
+  callsign: string | null;
 }
 
 /** Append-only event log written by mutation paths in the repo + by the

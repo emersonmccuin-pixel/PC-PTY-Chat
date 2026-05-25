@@ -60,6 +60,7 @@ function mkFakeService(): { svc: WorkItemService; calls: CapturedCall[] } {
         assignedAgentRunId: input.assignedAgentRunId ?? null,
         worktreePath: input.worktreePath ?? null,
         taggedProjectId: input.taggedProjectId ?? null,
+        callsign: null,
       } satisfies WorkItem;
     },
   } as unknown as WorkItemService;

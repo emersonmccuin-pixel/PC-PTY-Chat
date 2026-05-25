@@ -12,7 +12,7 @@ import type {
 } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
-import { workItems } from '../schema.ts';
+import { projects, workItems } from '../schema.ts';
 
 /** Optimistic-concurrency conflict. Server returns 409 + current row when this throws. */
 export class WorkItemVersionConflictError extends Error {
@@ -52,6 +52,7 @@ interface WorkItemRow {
   assignedAgentRunId: ULID | null;
   worktreePath: string | null;
   taggedProjectId: ULID | null;
+  callsign: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -85,6 +86,7 @@ function toDomain(row: WorkItemRow): WorkItem {
     assignedAgentRunId: row.assignedAgentRunId,
     worktreePath: row.worktreePath,
     taggedProjectId: row.taggedProjectId,
+    callsign: row.callsign,
   };
 }
 
@@ -119,6 +121,30 @@ export function listWorkItems(projectId: ULID): WorkItem[] {
     .select()
     .from(workItems)
     .where(and(eq(workItems.projectId, projectId), isNull(workItems.deletedAt)))
+    .orderBy(asc(workItems.position), asc(workItems.createdAt))
+    .all() as WorkItemRow[];
+  return rows.map(toDomain);
+}
+
+/** Section 34 — list rows in `quickTasksProjectId` whose `tagged_project_id`
+ *  matches `taggedProjectId`. Used by `pc_list_quick_tasks_for_project` to
+ *  answer "what quick tasks belong to this project?" without scanning every
+ *  row. The partial index on `work_items.tagged_project_id` makes this O(N
+ *  rows tagged to the target), not O(all quick tasks). */
+export function listQuickTasksTaggedTo(
+  quickTasksProjectId: ULID,
+  taggedProjectId: ULID,
+): WorkItem[] {
+  const rows = getDb()
+    .select()
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.projectId, quickTasksProjectId),
+        eq(workItems.taggedProjectId, taggedProjectId),
+        isNull(workItems.deletedAt),
+      ),
+    )
     .orderBy(asc(workItems.position), asc(workItems.createdAt))
     .all() as WorkItemRow[];
   return rows.map(toDomain);
@@ -159,36 +185,124 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
   const id = newId();
   const parentId = input.parentId ?? null;
   const position = input.position ?? nextPosition(input.projectId, input.stageId, parentId);
-  const row: WorkItemRow = {
-    id,
-    projectId: input.projectId,
-    parentId,
-    title: input.title,
-    body: input.body ?? '',
-    stageId: input.stageId,
-    status: 'pending',
-    statusReason: null,
-    type: input.type ?? 'task',
-    fields: input.fields ?? {},
-    history: input.initialHistory ?? [],
-    position,
-    version: 1,
-    isAgentTask: input.isAgentTask ?? false,
-    ephemeral: input.ephemeral ?? false,
-    acceptanceCriteria: input.acceptanceCriteria ?? null,
-    expectedOutput: input.expectedOutput ?? null,
-    verificationTier: input.verificationTier ?? null,
-    verificationStatus: input.verificationStatus ?? null,
-    verificationNotes: input.verificationNotes ?? null,
-    assignedAgentRunId: input.assignedAgentRunId ?? null,
-    worktreePath: input.worktreePath ?? null,
-    taggedProjectId: input.taggedProjectId ?? null,
-    createdAt: now,
-    updatedAt: now,
-    deletedAt: null,
-  };
-  getDb().insert(workItems).values(row).run();
-  return toDomain(row);
+  const isAgentTask = input.isAgentTask ?? false;
+
+  // Section 35 — claim a callsign in the same transaction as the insert so
+  // concurrent creates can't race on the projects.callsign_seq bump or on
+  // the per-parent suffix scan. Agent contracts stay NULL by design.
+  const db = getDb();
+  return db.transaction((tx) => {
+    let callsign: string | null = null;
+    if (!isAgentTask) {
+      // A parent might be an agent contract (no callsign of its own) or a
+      // dangling/soft-deleted row. In both cases the new row is treated as
+      // an effective root and gets a top-level number — same fallback the
+      // migration backfill applies.
+      let parentCallsign: string | null = null;
+      if (parentId != null) {
+        const parentRow = tx
+          .select({ callsign: workItems.callsign, isAgentTask: workItems.isAgentTask })
+          .from(workItems)
+          .where(eq(workItems.id, parentId))
+          .get() as { callsign: string | null; isAgentTask: boolean } | undefined;
+        if (parentRow && !parentRow.isAgentTask && parentRow.callsign != null) {
+          parentCallsign = parentRow.callsign;
+        }
+      }
+      if (parentCallsign == null) {
+        const projectRow = tx
+          .select({ slug: projects.slug, callsignSeq: projects.callsignSeq })
+          .from(projects)
+          .where(eq(projects.id, input.projectId))
+          .get() as { slug: string; callsignSeq: number } | undefined;
+        if (projectRow) {
+          const next = (projectRow.callsignSeq ?? 0) + 1;
+          tx.update(projects)
+            .set({ callsignSeq: next, updatedAt: now })
+            .where(eq(projects.id, input.projectId))
+            .run();
+          callsign = `${projectRow.slug}-${next}`;
+        }
+      } else {
+        // Per-parent next suffix = MAX(existing suffix) + 1 across all
+        // non-agent siblings (live and archived) — never reuse a child
+        // number even after a sibling is archived.
+        const prefix = `${parentCallsign}.`;
+        const siblings = tx
+          .select({ callsign: workItems.callsign })
+          .from(workItems)
+          .where(
+            and(
+              eq(workItems.parentId, parentId!),
+              eq(workItems.isAgentTask, false),
+              isNotNull(workItems.callsign),
+            ),
+          )
+          .all() as { callsign: string }[];
+        let maxSuffix = 0;
+        for (const s of siblings) {
+          if (!s.callsign.startsWith(prefix)) continue;
+          const tail = s.callsign.slice(prefix.length);
+          // Skip deeper-nested callsigns (descendants of siblings).
+          if (tail.includes('.')) continue;
+          const n = Number.parseInt(tail, 10);
+          if (Number.isFinite(n) && n > maxSuffix) maxSuffix = n;
+        }
+        callsign = `${parentCallsign}.${maxSuffix + 1}`;
+      }
+    }
+
+    const row: WorkItemRow = {
+      id,
+      projectId: input.projectId,
+      parentId,
+      title: input.title,
+      body: input.body ?? '',
+      stageId: input.stageId,
+      status: 'pending',
+      statusReason: null,
+      type: input.type ?? 'task',
+      fields: input.fields ?? {},
+      history: input.initialHistory ?? [],
+      position,
+      version: 1,
+      isAgentTask,
+      ephemeral: input.ephemeral ?? false,
+      acceptanceCriteria: input.acceptanceCriteria ?? null,
+      expectedOutput: input.expectedOutput ?? null,
+      verificationTier: input.verificationTier ?? null,
+      verificationStatus: input.verificationStatus ?? null,
+      verificationNotes: input.verificationNotes ?? null,
+      assignedAgentRunId: input.assignedAgentRunId ?? null,
+      worktreePath: input.worktreePath ?? null,
+      taggedProjectId: input.taggedProjectId ?? null,
+      callsign,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    tx.insert(workItems).values(row).run();
+    return toDomain(row);
+  });
+}
+
+/** Section 35 — look up a work item by its callsign (`pc-2`, `pc-2.1`, …)
+ *  within a project. Returns null if no live row matches. Callsign is
+ *  project-scoped + write-once + only assigned to non-agent rows; the
+ *  partial unique index guarantees at most one match per project. */
+export function getWorkItemByCallsign(projectId: ULID, callsign: string): WorkItem | null {
+  const row = getDb()
+    .select()
+    .from(workItems)
+    .where(
+      and(
+        eq(workItems.projectId, projectId),
+        eq(workItems.callsign, callsign),
+        isNull(workItems.deletedAt),
+      ),
+    )
+    .get() as WorkItemRow | undefined;
+  return row ? toDomain(row) : null;
 }
 
 /** Move a work item to a new stage, appending a 'move' history entry.

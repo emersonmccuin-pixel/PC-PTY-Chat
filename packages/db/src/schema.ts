@@ -62,6 +62,11 @@ export const projects = sqliteTable(
      *  for the boot-time-seeded singleton. The partial unique index below
      *  ensures at most one live `'quick-tasks'` row per installation. */
     kind: text('kind').notNull().default('standard').$type<ProjectKind>(),
+    /** Section 35 — monotonic, never-reused counter for top-level callsign
+     *  numbering. New top-level work items claim `callsign_seq + 1` and
+     *  bump the column in the same transaction (SQLite serializes writes
+     *  → race-free). Archived numbers don't come back. */
+    callsignSeq: integer('callsign_seq').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
@@ -112,6 +117,12 @@ export const workItems = sqliteTable(
      *  dangling tags as untagged). Only meaningful when `projectId` is the
      *  Quick Tasks project; ignored on standard projects' rows. */
     taggedProjectId: text('tagged_project_id').$type<ULID | null>(),
+    /** Section 35 — display-alias short code (e.g. `pc-2`, `pc-2.1`). ULID
+     *  stays the canonical id everywhere internal. Nullable: agent contracts
+     *  (`is_agent_task = 1`) stay NULL so they don't burn the user-visible
+     *  number space. Partial unique index enforces uniqueness scoped to
+     *  project, ignoring NULLs. */
+    callsign: text('callsign'),
     // ── Section 26 — work-item-as-contract ──
     /** True when the row was created by `pc_create_agent_work_item`. Hidden
      *  from the default kanban + table view; surfaced via the
