@@ -4,3 +4,19 @@
 export { buildTopologicalLayers, computeUpstreams, forwardEdges, findForwardCycle } from './topo.ts';
 export { evaluateCondition, checkTriggerRule } from './when.ts';
 export { substituteRefs, shellQuote, type RefResolver } from './refs.ts';
+export {
+  initDagState,
+  selectReady,
+  markRunning,
+  markAwaitingReview,
+  settleNode,
+  markSkipped,
+  loopSubtree,
+  applyReviewDecision,
+  computeRunStatus,
+  type ReadySelection,
+  type SkipReason,
+  type ReviewDecision,
+  type ReviewOutcome,
+  type RunStatus,
+} from './step.ts';
