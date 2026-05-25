@@ -125,7 +125,11 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up.
 const ROOT = resolve(__dirname, '..', '..', '..');
 const PUBLIC = resolve(ROOT, 'apps', 'web', 'dist');
-const DATA = resolve(ROOT, 'data');
+// Section 22.3 — single runtime contract: every server-internal data path
+// resolves through `getDataDir()` (`PC_DATA_DIR` env or workspace-root/data).
+// The persisted `dataDir` settings field is cosmetic/informational; changing
+// it is rejected at PATCH time and the GET always surfaces this value.
+const DATA = getDataDir();
 const TEMPLATES = resolve(ROOT, 'templates');
 
 const PORT = Number(process.env.PORT ?? 4040);
@@ -638,16 +642,23 @@ app.post('/api/ask', async (c) => {
 
 function readSettings(): GlobalSettings {
   const stored = getGlobalSettings();
-  return withSettingsDefaults(stored ?? {}, getDataDir(), homedir());
+  // Section 22.3 — always surface the effective runtime dataDir (the value
+  // every storage path actually uses), overriding any stale persisted value.
+  // The modal field is informational and read-only; changing it requires
+  // restarting with a different PC_DATA_DIR env var.
+  const merged = withSettingsDefaults(stored ?? {}, getDataDir(), homedir());
+  return { ...merged, dataDir: getDataDir() };
 }
 
 app.get('/api/settings', (c) => {
   return c.json({ ok: true, settings: readSettings() });
 });
 
-/** Partial settings update. Body accepts any subset of the envelope. Returns
- *  the merged envelope + a `restartRequired` flag if `dataDir` changed (only
- *  field that needs a restart per v1 decision #24). */
+/** Partial settings update. Body accepts any subset of the envelope.
+ *
+ *  Section 22.3 — `dataDir` is informational only: ignored on PATCH, always
+ *  returned as the effective `getDataDir()` value. Restart with a different
+ *  `PC_DATA_DIR` env var to actually move storage. */
 app.patch('/api/settings', async (c) => {
   const body = await c.req
     .json<Partial<GlobalSettings>>()
@@ -655,7 +666,8 @@ app.patch('/api/settings', async (c) => {
   const current = readSettings();
   const merged: GlobalSettings = withSettingsDefaults(
     {
-      dataDir: typeof body.dataDir === 'string' ? body.dataDir.trim() || current.dataDir : current.dataDir,
+      // dataDir is always the effective runtime value — see comment above.
+      dataDir: getDataDir(),
       telemetryOptIn:
         typeof body.telemetryOptIn === 'boolean' ? body.telemetryOptIn : current.telemetryOptIn,
       projectsFolder:
@@ -825,18 +837,32 @@ app.delete('/api/projects/:projectId/files', (c) => {
   projectRegistry.remove(id);
   const folder = project.folderPath;
   const removed: string[] = [];
+  const skipped: { dir: string; reason: string }[] = [];
   for (const sub of ['.project-companion', '.claude']) {
     const target = resolve(folder, sub);
-    if (existsSync(target)) {
-      try {
-        rmSync(target, { recursive: true, force: true });
-        removed.push(sub);
-      } catch (err) {
-        return c.json({ ok: false, error: `failed to remove ${sub}: ${(err as Error).message}` }, 500);
+    if (!existsSync(target)) continue;
+    // Section 22.7 — `.claude/` is a user-owned dir name (Claude Code itself
+    // uses it). Only remove it when PC's ownership marker is present, so an
+    // attach-to-git'd repo's pre-existing `.claude/` config isn't wiped.
+    // `.project-companion/` is unambiguously PC-owned and skips the check.
+    if (sub === '.claude') {
+      const marker = resolve(target, '.pc-managed');
+      if (!existsSync(marker)) {
+        skipped.push({
+          dir: sub,
+          reason: 'no .pc-managed marker — PC did not create this directory',
+        });
+        continue;
       }
     }
+    try {
+      rmSync(target, { recursive: true, force: true });
+      removed.push(sub);
+    } catch (err) {
+      return c.json({ ok: false, error: `failed to remove ${sub}: ${(err as Error).message}` }, 500);
+    }
   }
-  return c.json({ ok: true, removed });
+  return c.json({ ok: true, removed, skipped });
 });
 
 /** D86 — open the project's folder in the OS file manager.
@@ -3538,7 +3564,15 @@ app.get('*', async (c, next) => {
 
   const requested = url.pathname === '/' ? '/index.html' : url.pathname;
   const filePath = resolve(PUBLIC, '.' + requested);
-  if (!filePath.startsWith(PUBLIC)) return c.text('Forbidden', 403);
+  // Section 22.7 — `startsWith(PUBLIC)` is unsafe across sibling-prefix
+  // paths (a sibling directory "dist-evil" would match the "dist" prefix).
+  // `path.relative` containment rejects '..' walks AND sibling prefixes.
+  const rel = relative(PUBLIC, filePath);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    // Empty `rel` means filePath === PUBLIC — treat as "no file" not as the
+    // public dir itself.
+    if (rel !== '') return c.text('Forbidden', 403);
+  }
 
   try {
     const s = await stat(filePath);

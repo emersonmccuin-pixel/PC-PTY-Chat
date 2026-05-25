@@ -446,8 +446,6 @@ function GeneralTab({
 
 function StorageTab({
   draft,
-  dataDirDirty,
-  onDraftChange,
 }: {
   draft: GlobalSettings;
   dataDirDirty: boolean;
@@ -457,19 +455,18 @@ function StorageTab({
     <div className="flex flex-col gap-4">
       <FieldRow
         label="Data dir"
-        help="Where PC stores sqlite, worktrees, events. Changing requires a restart."
+        help={
+          'Where PC stores sqlite, worktrees, and events. ' +
+          'Read-only — to change, restart PC with the PC_DATA_DIR environment ' +
+          'variable set to the target path.'
+        }
       >
         <input
           type="text"
           value={draft.dataDir}
-          onChange={(e) => onDraftChange({ dataDir: e.target.value })}
-          className="w-full border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+          readOnly
+          className="w-full cursor-default border border-border bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
         />
-        {dataDirDirty && (
-          <div className="mt-1 border border-warning/60 bg-warning/10 px-2 py-1 text-xs text-warning">
-            Restart required for data-dir change to take effect.
-          </div>
-        )}
       </FieldRow>
     </div>
   );

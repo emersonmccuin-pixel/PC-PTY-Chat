@@ -58,6 +58,7 @@ export class ProjectScaffold {
     this.writeHooks(target);
     this.writeWorkflowSeeds(target);
     this.writeReadme(target);
+    this.writeOwnershipMarker(target);
   }
 
   /** Like writeAll but skips README.md — used by attach-to-git so the user's
@@ -66,6 +67,29 @@ export class ProjectScaffold {
     this.writeConfigs(target);
     this.writeHooks(target);
     this.writeWorkflowSeeds(target);
+    this.writeOwnershipMarker(target);
+  }
+
+  /** Section 22.7 — write a marker file inside `.claude/` so the
+   *  delete-files endpoint knows the directory is PC-owned. Without this,
+   *  a project adopted via attach-to-git could have its pre-existing
+   *  `.claude/` configuration wiped on delete. */
+  writeOwnershipMarker(target: ProjectScaffoldTarget): void {
+    const dir = resolve(target.folderPath, '.claude');
+    mkdirSync(dir, { recursive: true });
+    const marker = resolve(dir, '.pc-managed');
+    const body = [
+      'This file marks the parent .claude/ directory as owned by Project',
+      'Companion. The DELETE /api/projects/:id/files endpoint will remove',
+      "the directory only when this marker is present. Don't add this file",
+      "to a .claude/ directory PC didn't create.",
+      '',
+      `project: ${target.projectName}`,
+      `slug: ${target.projectSlug}`,
+      `projectId: ${target.projectId}`,
+      '',
+    ].join('\n');
+    writeFileSync(marker, body, 'utf8');
   }
 
   /**
