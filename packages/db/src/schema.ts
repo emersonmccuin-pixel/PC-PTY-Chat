@@ -539,3 +539,43 @@ export {
   agentInbox,
   agentDeliveryAudit,
 } from './schema-agent-system.ts';
+
+// Section 31.12 — post-turn summary log. CC's `system:post_turn_summary` row
+// carries rich per-turn metadata (title/description/needs_action/artifact_urls)
+// the buildout deferred placing in UI until a week of real data could inform
+// the call. Land the table now; surface design after.
+export const postTurnSummaries = sqliteTable(
+  'post_turn_summaries',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    /** CC provider session id (the uuid in the .jsonl filename). Nullable for
+     *  legacy or pre-Section-15 sessions where we don't have it. */
+    sessionId: text('session_id'),
+    /** UUID of the assistant turn this summary describes. */
+    summarizesUuid: text('summarizes_uuid'),
+    statusCategory: text('status_category'),
+    statusDetail: text('status_detail'),
+    isNoteworthy: integer('is_noteworthy').notNull().default(0),
+    title: text('title'),
+    description: text('description'),
+    recentAction: text('recent_action'),
+    needsAction: integer('needs_action').notNull().default(0),
+    /** Stored as JSON text — value shape varies; the tailer preserves whatever
+     *  CC wrote. Null when CC omits it. */
+    artifactUrls: text('artifact_urls'),
+    /** ISO string from the JSONL row, if present. */
+    timestamp: text('timestamp'),
+    /** Server insert time, epoch ms. Used for ordering across sessions. */
+    createdAt: integer('created_at').notNull(),
+    /** Full original entry as JSON text — forensic / future surface decisions. */
+    raw: text('raw').notNull(),
+  },
+  (t) => [
+    index('post_turn_summaries_project_idx').on(t.projectId, t.createdAt),
+    index('post_turn_summaries_session_idx').on(t.sessionId, t.timestamp),
+  ],
+);

@@ -137,6 +137,17 @@ export {
   listFailedRunDismissalsForRuns,
 } from './repos/failed-run-dismissals.ts';
 
+// Section 31.12 — post-turn summary log repo.
+export {
+  insertPostTurnSummary,
+  listPostTurnSummariesForProject,
+  listPostTurnSummariesForSession,
+} from './repos/post-turn-summaries.ts';
+export type {
+  InsertPostTurnSummaryInput,
+  PostTurnSummaryRow,
+} from './repos/post-turn-summaries.ts';
+
 // Section 25 — agent inbox / delivery repo.
 export {
   enqueueInboxRow,

@@ -31,6 +31,7 @@ import {
   getActiveOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
+  insertPostTurnSummary,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   getGlobalSettings,
@@ -387,6 +388,10 @@ function attachPtyHandlers(
   // so the chat panel can merge them without ambiguity.
   session.on('jsonl-event', (event: unknown) => {
     broadcastTo(projectId, { type: 'jsonl', event });
+    // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
+    // row carries rich per-turn metadata; we log every one to the DB. Surface
+    // design is deferred per the buildout — collect data first.
+    maybePersistPostTurnSummary(projectId, event);
   });
   session.on('jsonl-path-resolved', (jsonlPath: string) => {
     const active = getActiveOrchestratorSession(projectId);
@@ -436,6 +441,59 @@ function deriveTitleFromText(text: string): string {
   const firstLine = trimmed.split(/\r?\n/, 1)[0]!.replace(/\s+/g, ' ').trim();
   if (firstLine.length <= 60) return firstLine;
   return firstLine.slice(0, 57).trimEnd() + '…';
+}
+
+/**
+ * Section 31.12 — persist CC's `system:post_turn_summary` JSONL events to the
+ * DB. Idempotent by (projectId, summarizes_uuid); replay won't double-write.
+ *
+ * SessionId comes from the raw entry — CC always tags JSONL rows with their
+ * owning session uuid. Best-effort: if a row arrives without it (legacy
+ * shape), we still log with sessionId=null rather than dropping the data.
+ */
+function maybePersistPostTurnSummary(projectId: ULID, event: unknown): void {
+  if (!event || typeof event !== 'object') return;
+  const ev = event as {
+    kind?: string;
+    summarizesUuid?: string | null;
+    statusCategory?: string | null;
+    statusDetail?: string | null;
+    isNoteworthy?: boolean;
+    title?: string | null;
+    description?: string | null;
+    recentAction?: string | null;
+    needsAction?: boolean;
+    artifactUrls?: unknown;
+    timestamp?: string | null;
+    raw?: unknown;
+  };
+  if (ev.kind !== 'jsonl-post-turn-summary') return;
+  const raw = (ev.raw ?? {}) as { sessionId?: unknown };
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId : null;
+  try {
+    insertPostTurnSummary({
+      id: newId(),
+      projectId,
+      sessionId,
+      summarizesUuid: ev.summarizesUuid ?? null,
+      statusCategory: ev.statusCategory ?? null,
+      statusDetail: ev.statusDetail ?? null,
+      isNoteworthy: ev.isNoteworthy === true,
+      title: ev.title ?? null,
+      description: ev.description ?? null,
+      recentAction: ev.recentAction ?? null,
+      needsAction: ev.needsAction === true,
+      artifactUrls: ev.artifactUrls ?? null,
+      timestamp: ev.timestamp ?? null,
+      createdAt: Date.now(),
+      raw: ev.raw ?? null,
+    });
+  } catch (err) {
+    console.error(
+      '[pc] insertPostTurnSummary failed:',
+      (err as Error).message,
+    );
+  }
 }
 
 // ── Global endpoints ──────────────────────────────────────────────────────

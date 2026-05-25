@@ -120,6 +120,13 @@
       "when": 1779832800000,
       "tag": "0016_work_item_as_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1780012800000,
+      "tag": "0017_post_turn_summaries",
+      "breakpoints": true
     }
   ]
 }
