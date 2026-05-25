@@ -65,7 +65,19 @@ const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 // "render the firehose, learn what's noise" intent. The turn_duration
 // `durationMs` value still rides the assistant bubble's "· Ns" suffix —
 // that's additive, not a hide.
-const SUPPRESSED_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set();
+//
+// Section 31 exception: subtypes that ALSO emit a typed envelope (their
+// dedicated renderer is the canonical surface) are suppressed here so the
+// chat doesn't double-render the same event as both a system row and the
+// typed shape. The typed envelope still carries `raw` for the expand-for-raw
+// path, so no information is lost.
+const SUPPRESSED_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
+  'session_state_changed',
+  'compact_boundary',
+  'microcompact_boundary',
+  'turn_duration',
+  'post_turn_summary',
+]);
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -293,6 +305,76 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
         type: 'event',
         event: { kind: 'queue-dequeue', timestamp: ev.timestamp },
       };
+    // Section 31 — new typed envelopes from the tailer extension. The
+    // generic jsonl-system row for the same subtype rides alongside (the
+    // tailer emits BOTH so the "expand for raw" surface still works); the
+    // EventBubble dispatch keeps the typed envelopes and drops the redundant
+    // system rows for these subtypes via SUPPRESSED_SYSTEM_SUBTYPES.
+    case 'jsonl-session-state':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'session-state',
+          state: ev.state,
+          permissionMode: ev.permissionMode,
+          ts: ev.timestamp ?? undefined,
+        },
+      };
+    case 'jsonl-compact':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'compact-boundary',
+          trigger: ev.trigger,
+          preTokens: ev.preTokens,
+          messagesSummarized: ev.messagesSummarized,
+          ts: ev.timestamp ?? undefined,
+        },
+      };
+    case 'jsonl-microcompact':
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'microcompact',
+          trigger: ev.trigger,
+          preTokens: ev.preTokens,
+          tokensSaved: ev.tokensSaved,
+          ts: ev.timestamp ?? undefined,
+        },
+      };
+    case 'jsonl-usage':
+      // PM turn-footer chips only render when speed ≠ standard or a cache
+      // miss happened. Suppress the no-op case so the chat doesn't gain a
+      // hidden footer row per turn.
+      if (
+        (!ev.speed || ev.speed === 'standard') &&
+        !ev.cacheMissReason
+      ) {
+        return null;
+      }
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'turn-footer',
+          speed: ev.speed,
+          cacheMissReason: ev.cacheMissReason,
+          model: ev.model,
+        },
+      };
+    // Section 31 — Internal-only envelopes (no chat surface today).
+    case 'jsonl-ai-title':
+    case 'jsonl-last-prompt':
+    case 'jsonl-file-history':
+    case 'jsonl-bridge-session':
+    case 'jsonl-turn-duration':
+    case 'jsonl-post-turn-summary':
+    case 'jsonl-tool-progress':
+    case 'jsonl-stream-event':
+      return null;
     case 'jsonl-sidechain':
       return null;
     default:
@@ -1177,6 +1259,45 @@ function EventBubble({
       return <QueueIndicator text="queued" />;
     case 'queue-dequeue':
       return <QueueIndicator text="dequeued" />;
+    // Section 31 — typed-envelope renderers for the kept JSONL signals that
+    // need distinct visual shapes vs. the generic system-row bubble.
+    case 'session-state':
+      return <SessionStateDivider event={event as { state: string; permissionMode?: string | null }} />;
+    case 'compact-boundary':
+      return (
+        <CompactBoundaryRule
+          event={
+            event as {
+              trigger?: string | null;
+              preTokens?: number | null;
+              messagesSummarized?: number | null;
+            }
+          }
+        />
+      );
+    case 'microcompact':
+      return (
+        <MicrocompactDivider
+          event={
+            event as {
+              tokensSaved?: number | null;
+              preTokens?: number | null;
+            }
+          }
+        />
+      );
+    case 'turn-footer':
+      return (
+        <TurnFooterChips
+          event={
+            event as {
+              speed?: string | null;
+              cacheMissReason?: string | null;
+              model?: string | null;
+            }
+          }
+        />
+      );
     case 'session-end':
     case 'subagent-stop':
       return null;
@@ -1189,6 +1310,111 @@ function QueueIndicator({ text }: { text: string }) {
   return (
     <div className="self-center px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">
       · {text} ·
+    </div>
+  );
+}
+
+// ── Section 31 — JSONL-signal-firehose renderers ─────────────────────────
+
+const SESSION_STATE_LABEL: Record<string, string> = {
+  idle: 'idle',
+  running: 'running',
+  requires_action: 'awaiting input',
+};
+
+function SessionStateDivider({
+  event,
+}: {
+  event: { state: string; permissionMode?: string | null };
+}) {
+  const label = SESSION_STATE_LABEL[event.state] ?? event.state.replace(/_/g, ' ');
+  return (
+    <div className="self-center flex w-full items-center gap-2 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+      <span className="h-px flex-1 bg-border" />
+      <span>· {label} ·</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function CompactBoundaryRule({
+  event,
+}: {
+  event: {
+    trigger?: string | null;
+    preTokens?: number | null;
+    messagesSummarized?: number | null;
+  };
+}) {
+  const trigger = event.trigger ? ` ${event.trigger}` : '';
+  const tokens =
+    typeof event.preTokens === 'number'
+      ? ` · ${event.preTokens.toLocaleString()} tokens compacted`
+      : '';
+  const msgs =
+    typeof event.messagesSummarized === 'number'
+      ? ` · ${event.messagesSummarized} messages`
+      : '';
+  return (
+    <div className="self-center flex w-full items-center gap-2 px-2 py-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+      <span className="h-px flex-1 border-t border-dashed border-border" />
+      <span className="px-1">compacted{trigger}{tokens}{msgs}</span>
+      <span className="h-px flex-1 border-t border-dashed border-border" />
+    </div>
+  );
+}
+
+function MicrocompactDivider({
+  event,
+}: {
+  event: { tokensSaved?: number | null; preTokens?: number | null };
+}) {
+  const saved =
+    typeof event.tokensSaved === 'number'
+      ? `· ${event.tokensSaved.toLocaleString()} tokens freed`
+      : '';
+  return (
+    <div className="self-center flex w-full items-center gap-2 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+      <span className="h-px flex-1 bg-border" />
+      <span>· microcompact {saved} ·</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+const SPEED_TONE: Record<string, string> = {
+  slow: 'border-amber-600/60 bg-amber-950/30 text-amber-200',
+  fast: 'border-emerald-600/60 bg-emerald-950/30 text-emerald-200',
+};
+
+function TurnFooterChips({
+  event,
+}: {
+  event: { speed?: string | null; cacheMissReason?: string | null; model?: string | null };
+}) {
+  const hasSpeed = event.speed && event.speed !== 'standard';
+  const hasMiss = !!event.cacheMissReason;
+  if (!hasSpeed && !hasMiss) return null;
+  return (
+    <div className="self-start flex flex-wrap items-center gap-1.5 px-1 text-[10px]">
+      {hasSpeed && (
+        <span
+          className={`inline-flex items-center gap-1 border px-1.5 py-0.5 font-mono uppercase tracking-wider ${
+            SPEED_TONE[event.speed!] ?? 'border-border bg-muted text-muted-foreground'
+          }`}
+          title={event.model ? `${event.speed} · ${event.model}` : event.speed!}
+        >
+          {event.speed}
+        </span>
+      )}
+      {hasMiss && (
+        <span
+          className="inline-flex items-center gap-1 border border-amber-600/60 bg-amber-950/30 px-1.5 py-0.5 font-mono uppercase tracking-wider text-amber-200"
+          title={`Prompt cache miss · ${event.cacheMissReason}`}
+        >
+          cache miss · {event.cacheMissReason}
+        </span>
+      )}
     </div>
   );
 }

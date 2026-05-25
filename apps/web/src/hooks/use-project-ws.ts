@@ -177,6 +177,47 @@ export interface QueueEvent extends ChatEventBase {
   timestamp: string | null;
 }
 
+/** Section 31 — session state flips (idle / running / requires_action). Renders
+ *  as an inline state-transition divider in chat. Composer enable/disable is
+ *  driven separately (31.3) from the latest state value seen in the stream. */
+export interface SessionStateEvent extends ChatEventBase {
+  kind: 'session-state';
+  state: string;
+  permissionMode?: string | null;
+}
+
+/** Section 31 — auto context-compaction boundary. Renders as a centered
+ *  dashed rule with token-freed annotation. */
+export interface CompactBoundaryEvent extends ChatEventBase {
+  kind: 'compact-boundary';
+  trigger?: string | null;
+  preTokens?: number | null;
+  messagesSummarized?: number | null;
+}
+
+/** Section 31 — silent micro-compaction (tool-result cleanup). Renders as an
+ *  inline state-transition divider. */
+export interface MicrocompactEvent extends ChatEventBase {
+  kind: 'microcompact';
+  trigger?: string | null;
+  preTokens?: number | null;
+  tokensSaved?: number | null;
+}
+
+/** Section 31 — PM turn footer chips for speed / cache_miss. Synthesized from
+ *  jsonl-usage envelopes when the assistant turn carries a non-standard
+ *  speed value or a cache-miss reason — both are rare-but-meaningful per the
+ *  buildout. Renders as a small chip row beside the preceding assistant
+ *  bubble.  */
+export interface TurnFooterEvent extends ChatEventBase {
+  kind: 'turn-footer';
+  speed?: string | null;
+  cacheMissReason?: string | null;
+  /** Model that produced the chips' source turn. Useful when the speed value
+   *  is "slow" because of a forced downgrade. */
+  model?: string | null;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -193,6 +234,10 @@ export type ChatEvent =
   | StopFailureEvent
   | SystemEvent
   | QueueEvent
+  | SessionStateEvent
+  | CompactBoundaryEvent
+  | MicrocompactEvent
+  | TurnFooterEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────
