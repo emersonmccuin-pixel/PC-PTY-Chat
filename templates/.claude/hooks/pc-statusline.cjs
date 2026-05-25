@@ -70,6 +70,8 @@ function extractSnapshot(input, pcSessionId) {
           currentUsage: Number(input.context_window.current_usage) || 0,
           contextWindowSize: Number(input.context_window.context_window_size) || 0,
           usedPercentage: Number(input.context_window.used_percentage) || 0,
+          totalInputTokens: Number(input.context_window.total_input_tokens) || 0,
+          totalOutputTokens: Number(input.context_window.total_output_tokens) || 0,
         }
       : null,
   };

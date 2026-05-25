@@ -576,6 +576,12 @@ export const statuslineSnapshots = sqliteTable(
     contextCurrentUsage: integer('context_current_usage'),
     contextWindowSize: integer('context_window_size'),
     contextUsedPercentage: real('context_used_percentage'),
+    /** Section 31.11 follow-up — session-cumulative input + output tokens
+     *  from CC's statusline `context_window.total_input_tokens` /
+     *  `total_output_tokens`. Latest snapshot per session = end-of-session
+     *  total; aggregate sums these for global day/week views. */
+    totalInputTokens: integer('total_input_tokens'),
+    totalOutputTokens: integer('total_output_tokens'),
   },
   (t) => [
     index('statusline_snapshots_project_idx').on(t.projectId, t.receivedAt),

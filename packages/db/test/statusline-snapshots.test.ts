@@ -79,6 +79,8 @@ function makeSnapshot(
     contextCurrentUsage: 12_000,
     contextWindowSize: 200_000,
     contextUsedPercentage: 6.0,
+    totalInputTokens: 10_000,
+    totalOutputTokens: 2_000,
   };
 }
 

@@ -33,6 +33,8 @@ export interface StatuslineSnapshot {
     currentUsage: number;
     contextWindowSize: number;
     usedPercentage: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
   } | null;
 }
 

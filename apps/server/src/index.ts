@@ -2874,6 +2874,8 @@ app.post('/api/internal/statusline-data', async (c) => {
       contextCurrentUsage: snapshot.contextWindow?.currentUsage ?? null,
       contextWindowSize: snapshot.contextWindow?.contextWindowSize ?? null,
       contextUsedPercentage: snapshot.contextWindow?.usedPercentage ?? null,
+      totalInputTokens: snapshot.contextWindow?.totalInputTokens ?? null,
+      totalOutputTokens: snapshot.contextWindow?.totalOutputTokens ?? null,
     });
   } catch (err) {
     // Unknown project / DB write error. Live rail keeps working off the
@@ -2899,17 +2901,31 @@ app.get('/api/usage/aggregate', (c) => {
   const windowDays = Math.min(365, Math.max(1, Number(c.req.query('windowDays') ?? 30)));
   const sinceMs = Date.now() - windowDays * 24 * 60 * 60 * 1000;
   const rows = listLatestSnapshotPerSession(sinceMs);
-  const buckets = new Map<string, { costUsd: number; sessions: number }>();
+  const buckets = new Map<
+    string,
+    { costUsd: number; sessions: number; inputTokens: number; outputTokens: number }
+  >();
   for (const r of rows) {
-    if (r.totalCostUsd == null) continue;
+    // Include sessions that emitted at least one snapshot in-window, even if
+    // cost was null. Token counts may be zero on subscription accounts that
+    // haven't seen the new columns populated yet.
     const key = formatBucket(new Date(r.receivedAt), bucket);
-    const entry = buckets.get(key) ?? { costUsd: 0, sessions: 0 };
-    entry.costUsd += r.totalCostUsd;
+    const entry =
+      buckets.get(key) ?? { costUsd: 0, sessions: 0, inputTokens: 0, outputTokens: 0 };
+    entry.costUsd += r.totalCostUsd ?? 0;
+    entry.inputTokens += r.totalInputTokens ?? 0;
+    entry.outputTokens += r.totalOutputTokens ?? 0;
     entry.sessions += 1;
     buckets.set(key, entry);
   }
   const result = Array.from(buckets.entries())
-    .map(([b, v]) => ({ bucket: b, costUsd: v.costUsd, sessions: v.sessions }))
+    .map(([b, v]) => ({
+      bucket: b,
+      costUsd: v.costUsd,
+      sessions: v.sessions,
+      inputTokens: v.inputTokens,
+      outputTokens: v.outputTokens,
+    }))
     .sort((a, b) => (a.bucket < b.bucket ? 1 : a.bucket > b.bucket ? -1 : 0));
   return c.json({ ok: true, bucket, windowDays, rows: result });
 });
@@ -2973,6 +2989,8 @@ app.get('/api/projects/:projectId/statusline', (c) => {
             currentUsage: row.contextCurrentUsage,
             contextWindowSize: row.contextWindowSize,
             usedPercentage: row.contextUsedPercentage ?? 0,
+            totalInputTokens: row.totalInputTokens ?? 0,
+            totalOutputTokens: row.totalOutputTokens ?? 0,
           }
         : null,
   };

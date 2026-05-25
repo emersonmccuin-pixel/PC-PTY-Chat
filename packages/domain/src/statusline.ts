@@ -37,5 +37,8 @@ export interface StatuslineSnapshot {
     currentUsage: number;
     contextWindowSize: number;
     usedPercentage: number;
+    /** Section 31.11 follow-up — running session-cumulative totals. */
+    totalInputTokens: number;
+    totalOutputTokens: number;
   } | null;
 }

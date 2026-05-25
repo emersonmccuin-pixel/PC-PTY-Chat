@@ -36,12 +36,16 @@ interface OrchestratorTelemetryState {
    *  composer status-line state indicator. Null until first signal lands. */
   sessionState: string | null;
   /** Section 31.8 — durationMs of the most-recent `jsonl-turn-duration`
-   *  envelope (fires after `jsonl-turn-end`). Composer status line shows
-   *  the latest value as a "Ns" tail. */
+   *  envelope (fires after `jsonl-turn-end`). */
   lastTurnDurationMs: number | null;
+  /** Section 31.8 follow-up — context-window fill % (0..100) from CC's
+   *  statusline payload. Drives the composer status-line ctx bar. Null
+   *  until the first statusline snapshot lands. */
+  contextUsedPct: number | null;
   set: (next: { model: string | null; usage: UsageTotals }) => void;
   setSession: (next: { sessionId: string | null; sessionLabel: string | null }) => void;
   setRuntime: (next: { sessionState: string | null; lastTurnDurationMs: number | null }) => void;
+  setContextUsedPct: (next: number | null) => void;
   clear: () => void;
 }
 
@@ -53,9 +57,11 @@ export const useOrchestratorTelemetry = create<OrchestratorTelemetryState>(
     sessionLabel: null,
     sessionState: null,
     lastTurnDurationMs: null,
+    contextUsedPct: null,
     set: (next) => set(next),
     setSession: (next) => set(next),
     setRuntime: (next) => set(next),
+    setContextUsedPct: (next) => set({ contextUsedPct: next }),
     clear: () =>
       set({
         model: null,
@@ -64,6 +70,7 @@ export const useOrchestratorTelemetry = create<OrchestratorTelemetryState>(
         sessionLabel: null,
         sessionState: null,
         lastTurnDurationMs: null,
+        contextUsedPct: null,
       }),
   }),
 );

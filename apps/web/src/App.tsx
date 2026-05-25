@@ -7,6 +7,7 @@ import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
+import { useGlobalUsageToday } from '@/hooks/use-global-usage-today';
 import { useRichLinkInvalidator } from '@/hooks/use-rich-link-invalidator';
 import { useStatuslineSync } from '@/hooks/use-statusline-sync';
 import { useActiveCenterTab } from '@/store/active-center-tab';
@@ -23,7 +24,6 @@ export default function App() {
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const activeTab = useActiveCenterTab((s) => s.tab);
   const telemetryModel = useOrchestratorTelemetry((s) => s.model);
-  const telemetryUsage = useOrchestratorTelemetry((s) => s.usage);
   const sessionId = useOrchestratorTelemetry((s) => s.sessionId);
   const sessionLabel = useOrchestratorTelemetry((s) => s.sessionLabel);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
@@ -89,6 +89,7 @@ export default function App() {
   const ws = useProjectWs(activeProject);
   useRichLinkInvalidator(ws.events);
   useStatuslineSync(activeProject?.id ?? null, ws.events);
+  const globalUsageToday = useGlobalUsageToday(ws.events);
 
   const persistActivityPanelSetting = useCallback(
     (patch: { open?: boolean }) => {
@@ -227,28 +228,28 @@ export default function App() {
               <span className="text-foreground">{telemetryModel}</span>
             </span>
           )}
-          {(telemetryUsage.inputTokens +
-            telemetryUsage.outputTokens +
-            telemetryUsage.cacheCreationTokens +
-            telemetryUsage.cacheReadTokens) > 0 && (
-            <span
-              className="flex items-center gap-1.5 tabular-nums"
-              title={formatTokenTooltip(telemetryUsage)}
-            >
-              <span className="text-[var(--fg-dim)]">tokens</span>
-              <span className="text-foreground">
-                {formatTokens(
-                  telemetryUsage.inputTokens +
-                    telemetryUsage.outputTokens +
-                    telemetryUsage.cacheCreationTokens +
-                    telemetryUsage.cacheReadTokens,
-                )}
+          {globalUsageToday.today &&
+            (globalUsageToday.today.inputTokens > 0 ||
+              globalUsageToday.today.outputTokens > 0 ||
+              globalUsageToday.today.costUsd > 0) && (
+              <span
+                className="flex items-center gap-1.5 tabular-nums"
+                title={formatGlobalUsageTooltip(globalUsageToday.today)}
+              >
+                <span className="text-[var(--fg-dim)]">today</span>
+                <span className="text-foreground">
+                  {formatTokens(
+                    globalUsageToday.today.inputTokens +
+                      globalUsageToday.today.outputTokens,
+                  )}
+                </span>
+                <span className="text-[var(--fg-dim)]">·</span>
+                <span className="text-foreground">
+                  {formatCost(globalUsageToday.today.costUsd)}
+                </span>
+                <span className="text-[var(--fg-dim)]">est</span>
               </span>
-              <span className="text-[var(--fg-dim)]">·</span>
-              <span className="text-foreground">{formatCostFromUsage(telemetryUsage)}</span>
-              <span className="text-[var(--fg-dim)]">est</span>
-            </span>
-          )}
+            )}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -356,21 +357,10 @@ export default function App() {
 }
 
 // Anthropic list pricing per 1M tokens (Opus tier). Same constants StatusBar
-// used pre-32.4; kept here so the header roll-up shows the same numbers.
-const OPUS_PRICING_PER_TOKEN = {
-  input: 15 / 1_000_000,
-  output: 75 / 1_000_000,
-  cacheCreate: 18.75 / 1_000_000,
-  cacheRead: 1.5 / 1_000_000,
-};
-
-interface UsageLike {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-}
-
+// Token + cost formatting for the global usage roll-up in the top-right
+// header. Cost comes pre-computed from CC's statusline (cost.total_cost_usd
+// summed per session at the bucket level); no per-token pricing table needed
+// post-31.11 follow-up.
 function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k';
@@ -384,26 +374,22 @@ function formatCost(dollars: number): string {
   return '$' + dollars.toFixed(2);
 }
 
-function formatCostFromUsage(u: UsageLike): string {
-  return formatCost(
-    u.inputTokens * OPUS_PRICING_PER_TOKEN.input +
-      u.outputTokens * OPUS_PRICING_PER_TOKEN.output +
-      u.cacheCreationTokens * OPUS_PRICING_PER_TOKEN.cacheCreate +
-      u.cacheReadTokens * OPUS_PRICING_PER_TOKEN.cacheRead,
-  );
-}
-
-function formatTokenTooltip(u: UsageLike): string {
-  const total =
-    u.inputTokens + u.outputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+function formatGlobalUsageTooltip(b: {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  sessions: number;
+  bucket: string;
+}): string {
+  const total = b.inputTokens + b.outputTokens;
   return (
-    `input:        ${u.inputTokens.toLocaleString()}\n` +
-    `output:       ${u.outputTokens.toLocaleString()}\n` +
-    `cache write:  ${u.cacheCreationTokens.toLocaleString()}\n` +
-    `cache read:   ${u.cacheReadTokens.toLocaleString()}\n` +
+    `Today (${b.bucket})\n` +
     `─────────────────────\n` +
-    `total:        ${total.toLocaleString()}\n\n` +
+    `input:        ${b.inputTokens.toLocaleString()}\n` +
+    `output:       ${b.outputTokens.toLocaleString()}\n` +
+    `total tokens: ${total.toLocaleString()}\n` +
+    `sessions:     ${b.sessions}\n\n` +
     `est. API cost (informational — subscription billing):\n` +
-    `  ${formatCostFromUsage(u)}`
+    `  ${formatCost(b.costUsd)}`
   );
 }

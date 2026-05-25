@@ -2616,37 +2616,17 @@ function ApprovalBubble({ event, projectId, resolved, onResolved }: ApprovalBubb
 
 const PROMPT_HISTORY_CAP = 100;
 
-function formatTokenCount(n: number): string {
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) {
-    const k = n / 1_000;
-    return k >= 100 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
-  }
-  const m = n / 1_000_000;
-  return m >= 100 ? `${Math.round(m)}M` : `${m.toFixed(1)}M`;
-}
-
-function formatTurnDuration(ms: number): string {
-  if (ms < 1_000) return `${ms}ms`;
-  const seconds = ms / 1_000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const mins = Math.floor(seconds / 60);
-  const remS = Math.round(seconds % 60);
-  return remS === 0 ? `${mins}m` : `${mins}m ${remS}s`;
-}
-
 function ComposerRuntimeChips({
   sessionState,
-  tokenTotal,
-  lastTurnMs,
+  contextUsedPct,
 }: {
   sessionState: string | null;
-  tokenTotal: number;
-  lastTurnMs: number | null;
+  contextUsedPct: number | null;
 }) {
-  // Match the surrounding toolbar's 10px uppercase muted-fg look so the
-  // chips read as quiet metadata, not active controls. State chip carries
-  // a colored dot so the active session state is scannable at a glance.
+  // State chip on the left — colored dot + label. Context-window fill bar
+  // on the right (within this flex group; the send-hint stays ml-auto).
+  // The ctx bar is the "am I about to auto-compact?" gauge — CC compacts
+  // around 85-90% by default, so we tone the bar by threshold.
   const stateTone =
     sessionState === 'requires_action'
       ? 'bg-warning'
@@ -2655,6 +2635,14 @@ function ComposerRuntimeChips({
         : sessionState === 'idle'
           ? 'bg-foreground/40'
           : 'bg-foreground/20';
+  const barTone =
+    contextUsedPct == null
+      ? 'bg-foreground/20'
+      : contextUsedPct >= 85
+        ? 'bg-destructive'
+        : contextUsedPct >= 65
+          ? 'bg-warning'
+          : 'bg-primary/60';
   return (
     <span className="flex items-center gap-3 text-[var(--fg-dim)]">
       {sessionState && (
@@ -2663,14 +2651,27 @@ function ComposerRuntimeChips({
           <span>{sessionState.replace('_', ' ')}</span>
         </span>
       )}
-      {tokenTotal > 0 && (
-        <span title="Session token total (input + output + cache)">
-          {formatTokenCount(tokenTotal)} tok
+      <span
+        className="inline-flex items-center gap-2"
+        title={
+          contextUsedPct == null
+            ? 'Context window — no data yet (CC fills this after the first turn)'
+            : `Context window: ${contextUsedPct.toFixed(0)}% used. CC auto-compacts around 85-90%.`
+        }
+      >
+        <span>ctx</span>
+        <span className="relative h-1.5 w-24 overflow-hidden bg-muted">
+          <span
+            className={`absolute inset-y-0 left-0 ${barTone}`}
+            style={{
+              width: `${contextUsedPct == null ? 0 : Math.min(100, contextUsedPct)}%`,
+            }}
+          />
         </span>
-      )}
-      {lastTurnMs != null && (
-        <span title="Most-recent turn duration">{formatTurnDuration(lastTurnMs)}</span>
-      )}
+        <span className="tabular-nums text-foreground">
+          {contextUsedPct == null ? '—' : `${contextUsedPct.toFixed(0)}%`}
+        </span>
+      </span>
     </span>
   );
 }
@@ -2786,25 +2787,16 @@ function Composer({
 
   const historyLen = historyRef.current.length;
 
-  // Section 31.8 — composer status line surfaces session state + summed
-  // token total + most-recent turn duration. Subscribes to the orchestrator
-  // telemetry store the same way the App header does.
+  // Section 31.8 follow-up (user feedback) — the composer status line now
+  // shows ONLY context-window fill + session state. Tokens + cost + turn
+  // duration moved to the global app header (which aggregates across all
+  // sessions, not just the current chat). Showing fewer signals here puts
+  // the load-bearing "am I about to be compacted?" gauge front + center.
   const sessionState = useOrchestratorTelemetry((s) => s.sessionState);
-  const usage = useOrchestratorTelemetry((s) => s.usage);
-  const lastTurnMs = useOrchestratorTelemetry((s) => s.lastTurnDurationMs);
-  const tokenTotal =
-    usage.inputTokens +
-    usage.outputTokens +
-    usage.cacheCreationTokens +
-    usage.cacheReadTokens;
+  const contextUsedPct = useOrchestratorTelemetry((s) => s.contextUsedPct);
 
   // Section 32.4 — cockpit toolbar. Right-side hint surfaces the ↑/↓
-  // prompt-history affordance that was previously invisible. The slash-
-  // commands chip shipped in 32.4 was removed — PC doesn't expose any
-  // slash commands of its own today; CC's PTY-native ones are usable
-  // directly without a UI affordance hinting at them.
-  // Section 31.8 added the session-state · tokens · turn-duration trio
-  // between the prompt-history chip and the send-hint.
+  // prompt-history affordance that was previously invisible.
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
@@ -2819,8 +2811,7 @@ function Composer({
         </span>
         <ComposerRuntimeChips
           sessionState={sessionState}
-          tokenTotal={tokenTotal}
-          lastTurnMs={lastTurnMs}
+          contextUsedPct={contextUsedPct}
         />
         <span className="ml-auto text-[var(--fg-dim)]">
           enter to send · shift+enter newline

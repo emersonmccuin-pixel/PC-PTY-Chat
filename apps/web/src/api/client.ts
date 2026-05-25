@@ -1093,7 +1093,13 @@ export const api = {
       ok: true;
       bucket: string;
       windowDays: number;
-      rows: Array<{ bucket: string; costUsd: number; sessions: number }>;
+      rows: Array<{
+        bucket: string;
+        costUsd: number;
+        sessions: number;
+        inputTokens: number;
+        outputTokens: number;
+      }>;
     }>(`/api/usage/aggregate?bucket=${bucket}&windowDays=${windowDays}`),
 
   /** Section 23 — server returns envelope-shape objects so the client can

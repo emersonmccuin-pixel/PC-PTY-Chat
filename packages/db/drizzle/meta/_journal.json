@@ -134,6 +134,13 @@
       "when": 1780099200000,
       "tag": "0018_statusline_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1780185600000,
+      "tag": "0019_statusline_total_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -6,7 +6,14 @@ import { useEffect, useRef } from 'react';
 
 import { api } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { type StatuslineSnapshot, useStatuslineStore } from '@/store/statusline';
+
+function publishContextPct(snapshot: StatuslineSnapshot | null): void {
+  useOrchestratorTelemetry
+    .getState()
+    .setContextUsedPct(snapshot?.contextWindow?.usedPercentage ?? null);
+}
 
 export function useStatuslineSync(projectId: string | null, events: WsEnvelope[]): void {
   const lastIdx = useRef(0);
@@ -16,13 +23,18 @@ export function useStatuslineSync(projectId: string | null, events: WsEnvelope[]
   // first paint after the user opens PC mid-session.
   useEffect(() => {
     lastIdx.current = 0;
-    if (!projectId) return;
+    if (!projectId) {
+      publishContextPct(null);
+      return;
+    }
     let cancelled = false;
     api
       .getStatuslineSnapshot(projectId)
       .then((snap) => {
         if (cancelled || !snap) return;
-        useStatuslineStore.getState().set(projectId, snap as StatuslineSnapshot);
+        const typed = snap as StatuslineSnapshot;
+        useStatuslineStore.getState().set(projectId, typed);
+        publishContextPct(typed);
       })
       .catch(() => {
         /* best-effort */
@@ -39,7 +51,10 @@ export function useStatuslineSync(projectId: string | null, events: WsEnvelope[]
       if (!env || typeof env !== 'object') continue;
       if (env.type === 'statusline-snapshot') {
         const snap = (env as { snapshot?: StatuslineSnapshot }).snapshot;
-        if (snap) useStatuslineStore.getState().set(projectId, snap);
+        if (snap) {
+          useStatuslineStore.getState().set(projectId, snap);
+          publishContextPct(snap);
+        }
       }
     }
     lastIdx.current = events.length;

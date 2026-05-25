@@ -28,6 +28,8 @@ export interface InsertStatuslineSnapshotInput {
   contextCurrentUsage: number | null;
   contextWindowSize: number | null;
   contextUsedPercentage: number | null;
+  totalInputTokens: number | null;
+  totalOutputTokens: number | null;
 }
 
 export interface StatuslineSnapshotRow extends InsertStatuslineSnapshotInput {}
@@ -36,14 +38,20 @@ export function insertStatuslineSnapshot(input: InsertStatuslineSnapshotInput): 
   getDb().insert(statuslineSnapshots).values(input).run();
 }
 
-/** Latest snapshot per `pcSessionId` within a time window. The cost field
- *  on the latest snapshot represents end-of-session running total — sum
- *  these across sessions to get the period total. */
+/** Latest snapshot per `pcSessionId` within a time window. The cost +
+ *  token fields on the latest snapshot are end-of-session running totals —
+ *  sum across sessions to get the period total. */
 export function listLatestSnapshotPerSession(
   sinceMs: number,
 ): Pick<
   StatuslineSnapshotRow,
-  'pcSessionId' | 'projectId' | 'receivedAt' | 'totalCostUsd' | 'modelId'
+  | 'pcSessionId'
+  | 'projectId'
+  | 'receivedAt'
+  | 'totalCostUsd'
+  | 'modelId'
+  | 'totalInputTokens'
+  | 'totalOutputTokens'
 >[] {
   // sqlite ROW_NUMBER() partition over (pc_session_id) ordered by received_at
   // desc; take rn=1 = latest. Drizzle's typed select doesn't cover window
@@ -54,8 +62,11 @@ export function listLatestSnapshotPerSession(
     received_at: number;
     total_cost_usd: number | null;
     model_id: string | null;
+    total_input_tokens: number | null;
+    total_output_tokens: number | null;
   }>(sql`
-    SELECT pc_session_id, project_id, received_at, total_cost_usd, model_id
+    SELECT pc_session_id, project_id, received_at, total_cost_usd, model_id,
+           total_input_tokens, total_output_tokens
     FROM (
       SELECT
         pc_session_id,
@@ -63,6 +74,8 @@ export function listLatestSnapshotPerSession(
         received_at,
         total_cost_usd,
         model_id,
+        total_input_tokens,
+        total_output_tokens,
         ROW_NUMBER() OVER (
           PARTITION BY pc_session_id
           ORDER BY received_at DESC
@@ -79,6 +92,8 @@ export function listLatestSnapshotPerSession(
     receivedAt: r.received_at,
     totalCostUsd: r.total_cost_usd,
     modelId: r.model_id,
+    totalInputTokens: r.total_input_tokens,
+    totalOutputTokens: r.total_output_tokens,
   }));
 }
 
@@ -154,5 +169,7 @@ function rowToDomain(
     contextCurrentUsage: row.contextCurrentUsage,
     contextWindowSize: row.contextWindowSize,
     contextUsedPercentage: row.contextUsedPercentage,
+    totalInputTokens: row.totalInputTokens,
+    totalOutputTokens: row.totalOutputTokens,
   };
 }
