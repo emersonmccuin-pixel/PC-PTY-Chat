@@ -131,6 +131,18 @@ switch (eventType) {
     });
     break;
   }
+  case 'Notification': {
+    // Section 31.6 — CC's Notification hook fires for any user-visible
+    // alert ("Permission needed", "Idle reminder", etc.). Surface as a
+    // chat-side info row so the user notices it without watching the CLI.
+    appendEvent({
+      ts: now,
+      kind: 'notification',
+      message: typeof payload.message === 'string' ? payload.message : '',
+      title: typeof payload.title === 'string' ? payload.title : null,
+    });
+    break;
+  }
   default:
     appendEvent({ ts: now, kind: 'unknown-event', eventType, payload });
 }

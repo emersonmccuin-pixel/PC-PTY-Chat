@@ -1358,6 +1358,12 @@ function EventBubble({
           }
         />
       );
+    case 'notification':
+      return (
+        <NotificationRow
+          event={event as { message: string; title?: string | null }}
+        />
+      );
     case 'session-end':
     case 'subagent-stop':
       return null;
@@ -1446,6 +1452,21 @@ const SPEED_TONE: Record<string, string> = {
   slow: 'border-amber-600/60 bg-amber-950/30 text-amber-200',
   fast: 'border-emerald-600/60 bg-emerald-950/30 text-emerald-200',
 };
+
+function NotificationRow({
+  event,
+}: {
+  event: { message: string; title?: string | null };
+}) {
+  return (
+    <div className="self-start flex max-w-[90%] items-center gap-2 border-l-2 border-info bg-info/5 px-2 py-1 text-xs text-foreground">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-info">
+        {event.title ?? 'Claude'}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{event.message || '(no message)'}</span>
+    </div>
+  );
+}
 
 function TurnFooterChips({
   event,
