@@ -29,12 +29,14 @@ import {
 type Node = WorkflowV2.WorkflowNode;
 type State = WorkflowV2.WorkflowDagState;
 
-/** Per-dispatch context handed to deps. `carry` holds reject-edge wired values. */
+/** Per-dispatch context handed to deps. `carry` holds reject-edge wired values;
+ *  `resolve` lets the dep render `$nodeId.output[.field]` in task/command bodies. */
 export interface DagNodeContext {
   runId: ULID;
   rootWorkItemId: ULID | null;
   worktreePath: string | null;
   carry: Record<string, string>;
+  resolve: RefResolver;
 }
 
 export interface NodeOutcome {
@@ -78,13 +80,13 @@ function isReview(n: Node): n is WorkflowV2.HumanReviewNode | WorkflowV2.Orchest
 
 export class DagExecutor {
   private readonly byId: Map<string, Node>;
-  private readonly ctxBase: Omit<DagNodeContext, 'carry'>;
+  private readonly ctxBase: Omit<DagNodeContext, 'carry' | 'resolve'>;
 
   constructor(
     private readonly workflow: WorkflowV2.Workflow,
     private state: State,
     private readonly deps: DagExecutorDeps,
-    ctxBase: Omit<DagNodeContext, 'carry'>
+    ctxBase: Omit<DagNodeContext, 'carry' | 'resolve'>
   ) {
     this.byId = new Map(workflow.nodes.map((n) => [n.id, n]));
     this.ctxBase = ctxBase;
@@ -94,7 +96,7 @@ export class DagExecutor {
   static start(
     workflow: WorkflowV2.Workflow,
     deps: DagExecutorDeps,
-    ctxBase: Omit<DagNodeContext, 'carry'>
+    ctxBase: Omit<DagNodeContext, 'carry' | 'resolve'>
   ): DagExecutor {
     return new DagExecutor(workflow, initDagState(workflow), deps, ctxBase);
   }
@@ -104,7 +106,7 @@ export class DagExecutor {
     workflow: WorkflowV2.Workflow,
     state: State,
     deps: DagExecutorDeps,
-    ctxBase: Omit<DagNodeContext, 'carry'>
+    ctxBase: Omit<DagNodeContext, 'carry' | 'resolve'>
   ): DagExecutor {
     return new DagExecutor(workflow, state, deps, ctxBase);
   }
@@ -113,8 +115,8 @@ export class DagExecutor {
     return this.state;
   }
 
-  private ctx(carry: Record<string, string> = {}): DagNodeContext {
-    return { ...this.ctxBase, carry };
+  private ctx(resolve: RefResolver, carry: Record<string, string> = {}): DagNodeContext {
+    return { ...this.ctxBase, carry, resolve };
   }
 
   /** Default Review Bundle = the review node's immediate upstreams' outputs. */
@@ -171,7 +173,7 @@ export class DagExecutor {
           | WorkflowV2.OrchestratorReviewNode;
         this.state = markRunning(this.state, id);
         this.state = markAwaitingReview(this.state, id);
-        await this.deps.requestReview(node, this.ctx(), this.resolveBundle(node, resolve));
+        await this.deps.requestReview(node, this.ctx(resolve), this.resolveBundle(node, resolve));
         this.deps.event({ type: 'review_requested', nodeId: id });
       }
       this.deps.persist(this.state, 'awaiting-review');
@@ -196,10 +198,10 @@ export class DagExecutor {
           try {
             const outcome =
               node.kind === 'agent'
-                ? await this.deps.dispatchAgent(node, this.ctx(carry))
+                ? await this.deps.dispatchAgent(node, this.ctx(resolve, carry))
                 : await this.deps.runCommand(
                     node as WorkflowV2.BashNode | WorkflowV2.ScriptNode,
-                    this.ctx(carry)
+                    this.ctx(resolve, carry)
                   );
             return { id, outcome };
           } catch (err) {
