@@ -455,6 +455,7 @@ export class ProjectRuntime {
     const transientId = `ad-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
+    const cc = this.transientCcSession();
 
     const prep = preparePodSpawn({
       agentName: 'agent-designer',
@@ -475,11 +476,34 @@ export class ProjectRuntime {
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      claudeSessionId: cc.ccSessionId,
+      resume: false,
+      jsonlPath: cc.jsonlPath,
       extraEnv: { PC_SESSION_ID: transientId, ...prep.extraEnv },
       agentName: 'agent-designer',
       mcpConfigPath: prep.mcpConfigPath,
     });
     return this.agentDesigner;
+  }
+
+  /** Deterministic CC session identity for a transient (non-resumable) modal
+   *  session — agent-designer / workflow-creator / setup-wizard. Mirrors the
+   *  orchestrator's session ownership (resolveSessionForSpawn): mint a clean
+   *  UUID, pass it as `--session-id`, and tail the EXACT jsonl path CC writes.
+   *
+   *  Without this, PtySession falls back to a directory scan of
+   *  `~/.claude/projects/<cwd-hash>/` and attaches to the newest `.jsonl` by
+   *  mtime — which latches onto a SIBLING claude.exe writing into the same
+   *  cwd (e.g. a VS Code Claude Code session open in the same project folder),
+   *  bleeding that unrelated chat into the modal. The CC session id is
+   *  intentionally distinct from PC's internal `PC_SESSION_ID` (the `ad-`/`wc-`/
+   *  `sw-` prefixed id that names the on-disk session dir). */
+  private transientCcSession(): { ccSessionId: string; jsonlPath: string } {
+    const ccSessionId = randomUUID();
+    return {
+      ccSessionId,
+      jsonlPath: jsonlPathFor(this.project.folderPath, ccSessionId),
+    };
   }
 
   /** Returns the live agent-designer PtySession, or null. */
@@ -537,11 +561,15 @@ export class ProjectRuntime {
     const transientId = `wc-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
+    const cc = this.transientCcSession();
     this.workflowCreator = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      claudeSessionId: cc.ccSessionId,
+      resume: false,
+      jsonlPath: cc.jsonlPath,
       extraEnv: { PC_SESSION_ID: transientId },
       appendSystemPromptPath: resolve(
         this.project.folderPath,
@@ -592,11 +620,15 @@ export class ProjectRuntime {
     const transientId = `sw-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
+    const cc = this.transientCcSession();
     this.setupWizard = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      claudeSessionId: cc.ccSessionId,
+      resume: false,
+      jsonlPath: cc.jsonlPath,
       extraEnv: { PC_SESSION_ID: transientId },
       appendSystemPromptPath: resolve(
         this.project.folderPath,
