@@ -1,5 +1,9 @@
 export type { ULID } from './ulid.ts';
 export type {
+  StatuslineRateLimit,
+  StatuslineSnapshot,
+} from './statusline.ts';
+export type {
   WorkItem,
   WorkItemHistoryEntry,
   WorkItemStatus,

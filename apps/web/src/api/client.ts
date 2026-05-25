@@ -1073,6 +1073,14 @@ export const api = {
       `/api/projects/${projectId}/sessions`,
     ).then((r) => r.sessions),
 
+  /** Section 31.7 — latest statusline snapshot for a project; null if none
+   *  received yet. Initial-fetch path so the rail caps aren't blank on first
+   *  paint after the user opens PC mid-session. */
+  getStatuslineSnapshot: (projectId: ULID) =>
+    getJson<{ ok: true; snapshot: unknown | null }>(
+      `/api/projects/${projectId}/statusline`,
+    ).then((r) => r.snapshot),
+
   /** Section 23 — server returns envelope-shape objects so the client can
    *  demux on `type`. New path: `{type:'jsonl', event}`. Legacy fallback:
    *  `{type:'event', event}` (pre-23 hook-written events.jsonl). */

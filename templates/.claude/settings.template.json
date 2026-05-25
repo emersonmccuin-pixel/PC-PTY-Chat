@@ -138,5 +138,9 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"{{PROJECT_FOLDER}}/.claude/hooks/pc-statusline.cjs\""
   }
 }

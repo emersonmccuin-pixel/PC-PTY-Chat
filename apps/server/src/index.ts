@@ -52,7 +52,7 @@ import {
   updateProjectMeta,
   updateProjectStages,
 } from '@pc/db';
-import type { Stage } from '@pc/domain';
+import type { Stage, StatuslineSnapshot } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
@@ -2794,6 +2794,46 @@ app.post('/api/projects/:projectId/agent-runs/:runId/cancel', (c) => {
   }
   entry.run.cancel();
   return c.json({ ok: true, status: 'cancelled' });
+});
+
+/** Section 31.7 — statusline-command bridge. CC's `statusLine.command` hook
+ *  POSTs here on every status-line refresh (~1×/turn debounced) with the
+ *  extracted snapshot. Latest-per-project wins; broadcast immediately to WS
+ *  subscribers so the left rail's usage caps update live. Account-wide
+ *  rate-limit fields stay correct because they ride every snapshot. */
+const latestStatuslineByProject = new Map<string, StatuslineSnapshot>();
+
+app.post('/api/internal/statusline-data', async (c) => {
+  let body: Partial<StatuslineSnapshot & { projectId: string }>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: 'invalid json' }, 400);
+  }
+  if (!body.projectId || !body.pcSessionId) {
+    return c.json({ ok: false, error: 'projectId + pcSessionId required' }, 400);
+  }
+  const snapshot: StatuslineSnapshot = {
+    pcSessionId: body.pcSessionId,
+    ccSessionId: body.ccSessionId ?? '',
+    receivedAt: Date.now(),
+    model: body.model ?? null,
+    rateLimits: body.rateLimits ?? { fiveHour: null, sevenDay: null },
+    cost: body.cost ?? null,
+    contextWindow: body.contextWindow ?? null,
+  };
+  latestStatuslineByProject.set(body.projectId, snapshot);
+  broadcastTo(body.projectId as ULID, { type: 'statusline-snapshot', snapshot });
+  return c.json({ ok: true });
+});
+
+/** Latest snapshot for a project; null if none received yet. Used for the
+ *  initial-fetch path so the rail isn't blank until the next statusline
+ *  refresh. */
+app.get('/api/projects/:projectId/statusline', (c) => {
+  const projectId = c.req.param('projectId') as ULID;
+  const snapshot = latestStatuslineByProject.get(projectId) ?? null;
+  return c.json({ ok: true, snapshot });
 });
 
 /** Section 22 / Phase D — internal endpoint posted by pc-rig (the per-spawn

@@ -15,10 +15,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, type Project } from '@/api/client';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
+import { useStatuslineStore } from '@/store/statusline';
 import {
   DeleteProjectFilesModal,
   SoftDeleteProjectModal,
 } from './ProjectDangerModals';
+import { UsageCapsPanel } from './UsageCapsPanel';
 
 interface ProjectRailProps {
   projects: Project[];
@@ -51,6 +53,13 @@ export function ProjectRail({
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const setTab = useActiveCenterTab((s) => s.setTab);
+  const activeProject = useMemo(
+    () => projects.find((p) => p.slug === activeSlug) ?? null,
+    [projects, activeSlug],
+  );
+  const activeSnapshot = useStatuslineStore((s) =>
+    activeProject ? s.byProject[activeProject.id] ?? null : null,
+  );
   const [menu, setMenu] = useState<MenuPos | null>(null);
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
@@ -255,6 +264,7 @@ export function ProjectRail({
           + New project
         </button>
       </div>
+      <UsageCapsPanel snapshot={activeSnapshot} />
       {filesNote && (
         <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
           {filesNote}

@@ -8,6 +8,7 @@ import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
 import { useRichLinkInvalidator } from '@/hooks/use-rich-link-invalidator';
+import { useStatuslineSync } from '@/hooks/use-statusline-sync';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
@@ -87,6 +88,7 @@ export default function App() {
 
   const ws = useProjectWs(activeProject);
   useRichLinkInvalidator(ws.events);
+  useStatuslineSync(activeProject?.id ?? null, ws.events);
 
   const persistActivityPanelSetting = useCallback(
     (patch: { open?: boolean }) => {
