@@ -31,6 +31,7 @@ import { postMoveStatusForStage, validateFields } from '@pc/domain';
 import {
   createWorkItem as dbCreateWorkItem,
   getWorkItem as dbGetWorkItem,
+  getWorkItemByCallsign as dbGetWorkItemByCallsign,
   getWorkItemIncludingArchived,
   listArchivedWorkItems,
   listWorkItems as dbListWorkItems,
@@ -40,6 +41,34 @@ import {
   softDeleteWorkItem as dbSoftDeleteWorkItem,
   WorkItemVersionConflictError,
 } from '@pc/db';
+
+/** Crockford base-32 ULID — 26 chars, no I/L/O/U. Case-insensitive.
+ *  Used to discriminate a ULID reference from a callsign in the modal
+ *  opener route. Exported for routes that need the same discriminant
+ *  (e.g. the includeArchived ULID branch). */
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+export function looksLikeUlid(ref: string): boolean {
+  return ULID_RE.test(ref);
+}
+
+/** Section 35 — resolve a work-item reference that may be either a ULID
+ *  (canonical id) or a callsign (`pc-2`, `pc-2.1`). Used by the modal-
+ *  opener route + MCP tools so the orchestrator can hand the user a
+ *  human-readable handle without the system having to remember which
+ *  shape it's looking at. Returns null if no live row matches. */
+export function resolveWorkItemRef(projectId: ULID, ref: string): WorkItem | null {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  if (ULID_RE.test(trimmed)) {
+    const wi = dbGetWorkItem(trimmed as ULID);
+    // Project-scope guard: a ULID lookup that hits a different project
+    // returns null so the route reports 404 instead of leaking the row.
+    if (wi && wi.projectId !== projectId) return null;
+    return wi;
+  }
+  return dbGetWorkItemByCallsign(projectId, trimmed);
+}
 
 export type WorkItemBroadcast = (event: {
   type: 'work-items-changed';

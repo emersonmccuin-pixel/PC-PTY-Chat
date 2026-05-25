@@ -79,6 +79,8 @@ import { ChannelServer } from './services/channel-server.ts';
 import { listCustomCommands } from './services/custom-commands.ts';
 import {
   FieldValidationError,
+  looksLikeUlid,
+  resolveWorkItemRef,
   UnknownStageError,
   WorkItemVersionConflictError,
 } from './services/work-item.ts';
@@ -1488,6 +1490,7 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
     parentId?: string | null;
     type?: string;
     fields?: Record<string, unknown>;
+    taggedProjectId?: string | null;
   }>();
   const title = typeof body.title === 'string' ? body.title.trim() : '';
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
@@ -1508,6 +1511,9 @@ app.post('/api/projects/:projectId/work-items/create', async (c) => {
       ...(body.parentId !== undefined ? { parentId: body.parentId as ULID | null } : {}),
       ...(typeOpt !== undefined ? { type: typeOpt } : {}),
       ...(body.fields !== undefined ? { fields: body.fields } : {}),
+      ...(body.taggedProjectId !== undefined
+        ? { taggedProjectId: body.taggedProjectId as ULID | null }
+        : {}),
     });
     return c.json({ ok: true, workItem });
   } catch (err) {
@@ -1695,18 +1701,32 @@ app.post('/api/projects/:projectId/work-items/:wiId/reject', async (c) => {
 
 // ── Work item :wiId routes (new) ──────────────────────────────────────────
 
-/** Fetch a single work item by id. `?includeArchived=1` returns soft-deleted
- *  rows too (used by restore flows). */
+/** Fetch a single work item by id OR callsign (Section 35).
+ *  `?includeArchived=1` returns soft-deleted rows too (used by restore flows).
+ *  Accepts both shapes so chat rich-link clicks resolve whether the
+ *  orchestrator wrote `pc://work-item/01KS...` or `pc://work-item/pc-2.1`. */
 app.get('/api/projects/:projectId/work-items/:wiId', (c) => {
-  const id = c.req.param('projectId');
-  const wiId = c.req.param('wiId') as ULID;
+  const id = c.req.param('projectId') as ULID;
+  const ref = c.req.param('wiId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const includeArchived = c.req.query('includeArchived') === '1';
-  const workItem = runtime.workItemService().get(wiId, { includeArchived });
-  if (!workItem) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
-  if (workItem.projectId !== id) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
-  return c.json({ ok: true, workItem });
+  const resolved = resolveWorkItemRef(id, ref);
+  if (resolved) {
+    if (includeArchived || resolved.deletedAt == null) {
+      return c.json({ ok: true, workItem: resolved });
+    }
+  }
+  // Fallback for the `?includeArchived=1` ULID-only path (resolver excludes
+  // archived rows by design; the includeArchived branch needs the
+  // including-archived read).
+  if (includeArchived && looksLikeUlid(ref)) {
+    const archived = runtime.workItemService().get(ref as ULID, { includeArchived: true });
+    if (archived && archived.projectId === id) {
+      return c.json({ ok: true, workItem: archived });
+    }
+  }
+  return c.json({ ok: false, error: `unknown work item: ${ref}` }, 404);
 });
 
 /** Version-checked patch. Body: `{ version, title?, body?, stageId?, parentId?,
