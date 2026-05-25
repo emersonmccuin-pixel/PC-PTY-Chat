@@ -871,6 +871,29 @@ export const api = {
       def,
     }),
 
+  // ── Workflow v2 definitions + runs (Section 19.11) ────────────────────────
+  /** Section 19.11 — list every v2 workflow definition for a project. */
+  listV2WorkflowDefinitions: (projectId: ULID) =>
+    getJson<{
+      ok: true;
+      valid: Array<{ id: string; name: string; workflow: V2WorkflowDefSummary }>;
+      invalid: Array<{ fileName: string; errors: string[] }>;
+    }>(`/api/projects/${projectId}/workflow-v2/definitions`),
+
+  /** Section 19.11 — list every v2 workflow run for a project (sidecar rows). */
+  listV2WorkflowRuns: (projectId: ULID) =>
+    getJson<{ ok: true; runs: V2RunSummary[] }>(
+      `/api/projects/${projectId}/workflow-v2/runs`,
+    ),
+
+  /** Section 19.11 — manual "Run now" for a v2 workflow. The full definition
+   *  is passed inline today; the trigger is `manual`. */
+  fireV2Workflow: (projectId: ULID, workflow: unknown) =>
+    postJson<{ ok: true; runId: string; workItemId?: string }>(
+      `/api/projects/${projectId}/workflow-v2/fire`,
+      { workflow, trigger: { kind: 'manual' } },
+    ),
+
   // ── Workflows (4e) ────────────────────────────────────────────────────
   /** Full Workflow def for the drawer's Definition tab + raw YAML text for
    *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. 4h.11a — also returns
@@ -1727,4 +1750,41 @@ export interface WorkflowRun {
   nodeOutputs: Record<string, NodeOutput>;
   lastReason?: string;
   metadata?: Record<string, unknown>;
+}
+
+// Section 19.11 — slim summary shapes for the Workflows tab v2 section. The
+// full v2 Workflow type lives in @pc/domain (WorkflowV2.Workflow); the list
+// endpoint passes it through verbatim, but the tab only needs id + name +
+// trigger count to render the row.
+export interface V2WorkflowDefSummary {
+  id: string;
+  name: string;
+  description?: string;
+  triggers: Array<{ kind: string; stage?: string }>;
+  nodes: Array<{ id: string; kind: string }>;
+  disabled?: boolean;
+}
+
+export type V2RunStatus =
+  | 'pending'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface V2RunSummary {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  projectId: string;
+  workItemId: string | null;
+  trigger: string;
+  stageId: string | null;
+  status: V2RunStatus;
+  worktreePath: string | null;
+  lastReason: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
 }

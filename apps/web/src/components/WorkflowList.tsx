@@ -8,7 +8,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { AttachedToWorkItem, Project, ULID, Workflow, WorkflowEdges } from '@/api/client';
+import type {
+  AttachedToWorkItem,
+  Project,
+  ULID,
+  V2RunSummary,
+  V2WorkflowDefSummary,
+  Workflow,
+  WorkflowEdges,
+} from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
@@ -87,6 +95,12 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const [registry, setRegistry] = useState<WorkflowList | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  // Section 19.11 — v2 definitions + runs surface alongside v1 in this tab
+  // until Section 19.12 culls v1 entirely.
+  const [v2Defs, setV2Defs] = useState<Array<{ id: string; name: string; workflow: V2WorkflowDefSummary }>>([]);
+  const [v2Invalid, setV2Invalid] = useState<Array<{ fileName: string; errors: string[] }>>([]);
+  const [v2Runs, setV2Runs] = useState<V2RunSummary[]>([]);
+  const [v2RunErr, setV2RunErr] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<
@@ -103,14 +117,19 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
   const refetch = useCallback(
     async (projectId: ULID) => {
       try {
-        const [reg, app, runResp] = await Promise.all([
+        const [reg, app, runResp, v2DefResp, v2RunResp] = await Promise.all([
           getJson<WorkflowList>(`/api/projects/${projectId}/workflows`),
           getJson<{ approvals: PendingApproval[] }>(`/api/projects/${projectId}/approvals`),
           getJson<{ runs: WorkflowRun[] }>(`/api/projects/${projectId}/workflow-runs`),
+          api.listV2WorkflowDefinitions(projectId),
+          api.listV2WorkflowRuns(projectId),
         ]);
         setRegistry(reg);
         setApprovals(app.approvals);
         setRuns(runResp.runs);
+        setV2Defs(v2DefResp.valid);
+        setV2Invalid(v2DefResp.invalid);
+        setV2Runs(v2RunResp.runs);
         setError(null);
       } catch (e) {
         setError((e as Error).message);
@@ -123,12 +142,17 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
     setRegistry(null);
     setApprovals([]);
     setRuns([]);
+    setV2Defs([]);
+    setV2Invalid([]);
+    setV2Runs([]);
     void refetch(project.id);
   }, [project.id, refetch]);
 
   // Refetch on workflow lifecycle events. Listens for `project-workflows-changed`
   // (4f.1 broadcasts: created / updated / deleted / duplicated / disabled) plus
-  // the older event-kinds for approvals and runs.
+  // the older event-kinds for approvals and runs. Section 19.11 — also tracks
+  // `workflow-v2-run-changed` so the v2 sub-section's run-count + status pills
+  // tick live.
   useEffect(() => {
     if (events.length === 0) return;
     const last = events[events.length - 1];
@@ -139,11 +163,24 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
       kind === 'task-start' ||
       kind === 'task-end' ||
       last.type === 'work-items-changed' ||
-      last.type === 'project-workflows-changed'
+      last.type === 'project-workflows-changed' ||
+      last.type === 'workflow-v2-run-changed'
     ) {
       void refetch(project.id);
     }
   }, [events, project.id, refetch]);
+
+  async function fireV2Now(def: V2WorkflowDefSummary) {
+    setV2RunErr(null);
+    try {
+      const { runId } = await api.fireV2Workflow(project.id, def);
+      // Show the user the run started; refetch will pull in the sidecar row.
+      void refetch(project.id);
+      return runId;
+    } catch (e) {
+      setV2RunErr(`${def.id}: ${(e as Error).message}`);
+    }
+  }
 
   async function toggleDisabled(wf: WorkflowSummary) {
     setToggleErr(null);
@@ -208,10 +245,19 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
           ))}
         </Section>
 
+        {v2RunErr && (
+          <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            v2 fire failed: {v2RunErr}
+            <button onClick={() => setV2RunErr(null)} className="ml-2 underline">
+              dismiss
+            </button>
+          </div>
+        )}
+
         <Section
-          title="Workflows"
-          empty="No workflow files in workspace/.project-companion/workflows/."
-          count={registry ? registry.valid.length + registry.invalid.length : null}
+          title="Workflows · v2"
+          empty="No v2 workflows yet. Click + New workflow to author one."
+          count={v2Defs.length + v2Invalid.length}
           action={
             <button
               type="button"
@@ -221,6 +267,42 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
               + New workflow
             </button>
           }
+        >
+          {v2Defs.map((entry) => (
+            <V2WorkflowRow
+              key={entry.id}
+              def={entry.workflow}
+              runs={v2Runs.filter((r) => r.workflowId === entry.id)}
+              onRunNow={() => void fireV2Now(entry.workflow)}
+            />
+          ))}
+          {v2Invalid.map((wf) => (
+            <div
+              key={wf.fileName}
+              className="border border-destructive bg-destructive/10 px-3 py-2 text-sm"
+            >
+              <div className="mb-1 flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 bg-destructive px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive-foreground">
+                  <span aria-hidden="true">✕</span>
+                  invalid v2 yaml
+                </span>
+                <span className="font-medium text-foreground">{wf.fileName}</span>
+              </div>
+              <ul className="mt-1 list-disc pl-5 text-xs text-destructive">
+                {wf.errors.map((err, i) => (
+                  <li key={i} className="font-mono">
+                    {err}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </Section>
+
+        <Section
+          title="Workflows · v1 (legacy)"
+          empty="No legacy workflow files."
+          count={registry ? registry.valid.length + registry.invalid.length : null}
         >
           {registry?.valid.map((wf) => (
             <WorkflowRow
@@ -628,5 +710,86 @@ function MenuItem({
       <span>{label}</span>
       {sublabel && <span className="text-[10px] text-muted-foreground">{sublabel}</span>}
     </button>
+  );
+}
+
+/** Section 19.11 — row for a v2 workflow definition. Simpler shape than the
+ *  v1 WorkflowRow (no lifecycle menu yet; just run-now + status pills).
+ *  Lifecycle actions (edit / duplicate / delete / disable) land in a follow-up
+ *  pass after the v1 cull. */
+function V2WorkflowRow({
+  def,
+  runs,
+  onRunNow,
+}: {
+  def: V2WorkflowDefSummary;
+  runs: V2RunSummary[];
+  onRunNow: () => void;
+}) {
+  const runCount = runs.length;
+  const failedCount = runs.filter((r) => r.status === 'failed').length;
+  const runningCount = runs.filter((r) => r.status === 'running' || r.status === 'paused').length;
+  const stageTrigger = def.triggers.find((t) => t.kind === 'stage-on-entry');
+  const isCallable = def.triggers.some((t) => t.kind === 'manual');
+  return (
+    <div className="relative flex w-full items-stretch border border-border bg-card text-sm hover:bg-muted">
+      <div
+        className={
+          'flex flex-1 items-center justify-between px-3 py-2 text-left ' +
+          (def.disabled ? 'bg-muted/40 text-muted-foreground saturate-0' : '')
+        }
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-foreground">{def.name || def.id}</span>
+            <span className="bg-primary/20 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+              v2
+            </span>
+            {def.disabled && (
+              <span className="bg-foreground/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-background">
+                Paused
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {def.id} · {def.nodes.length} node{def.nodes.length === 1 ? '' : 's'}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {runningCount > 0 && (
+            <span className="bg-primary/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+              {runningCount} running
+            </span>
+          )}
+          {runCount > 0 && (
+            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              {runCount} run{runCount === 1 ? '' : 's'}
+              {failedCount > 0 && (
+                <span className="ml-1 text-destructive">· {failedCount} failed</span>
+              )}
+            </span>
+          )}
+          {stageTrigger && (
+            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              on_enter: {stageTrigger.stage}
+            </span>
+          )}
+          {isCallable && (
+            <span className="bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              callable
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRunNow}
+        disabled={def.disabled}
+        className="border-l border-border px-3 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        title="Fire this workflow with kind=manual"
+      >
+        Run now
+      </button>
+    </div>
   );
 }

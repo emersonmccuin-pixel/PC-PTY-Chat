@@ -3041,6 +3041,16 @@ app.get('/api/projects/:projectId/workflow-v2/runs/:runId', (c) => {
   return c.json({ ok: true, run, events: workflowRunsV2Repo.listEvents(run.id) });
 });
 
+// Section 19.11 — list every v2 run for a project (Workflows tab uses this
+// to render per-definition run counts + status pills). Project-scoped.
+app.get('/api/projects/:projectId/workflow-v2/runs', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const runs = workflowRunsV2Repo.listRunsByProject(runtime.project.id);
+  return c.json({ ok: true, runs });
+});
+
 // Section 19.4f — apply an orchestrator/human review decision to a paused v2 run.
 app.post('/api/projects/:projectId/workflow-v2/review', async (c) => {
   const id = c.req.param('projectId');
