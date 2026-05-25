@@ -20,6 +20,7 @@ import type {
   WorkItemType,
 } from '@pc/domain';
 import { isWorkItemType, withSettingsDefaults } from '@pc/domain';
+import { setConfiguredClaudeExe } from '@pc/runtime';
 import {
   parseTypedWorkflowDef,
   parseWorkflowText,
@@ -61,6 +62,7 @@ import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
+import { runPreflight } from './services/preflight.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
   dispatchContinueAgent,
@@ -138,6 +140,12 @@ const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
 runMigrations();
+
+// Section 10 Phase 0 — push the configured claude.exe override (if any) into
+// the runtime resolver so every spawn honors GlobalSettings.claudeExe. Null =
+// resolver falls through to CLAUDE_EXE → PATH → ~/.local/bin. readSettings is
+// a hoisted declaration; the DB is ready post-migration.
+setConfiguredClaudeExe(readSettings().claudeExe);
 
 // Section 16a.2 — seed the global orchestrator pod if it doesn't already
 // exist. Idempotent on every boot; user/MCP edits to the row survive (the
@@ -672,6 +680,12 @@ app.patch('/api/settings', async (c) => {
       dataDir: getDataDir(),
       telemetryOptIn:
         typeof body.telemetryOptIn === 'boolean' ? body.telemetryOptIn : current.telemetryOptIn,
+      claudeExe:
+        body.claudeExe === undefined
+          ? current.claudeExe
+          : typeof body.claudeExe === 'string' && body.claudeExe.trim()
+            ? body.claudeExe.trim()
+            : null,
       projectsFolder:
         typeof body.projectsFolder === 'string' && body.projectsFolder.trim()
           ? body.projectsFolder.trim()
@@ -713,8 +727,20 @@ app.patch('/api/settings', async (c) => {
     homedir(),
   );
   setGlobalSettings(merged);
+  // Keep the runtime resolver in lockstep with the stored override. Takes
+  // effect on the next spawn (existing PtY sessions keep their resolved path).
+  setConfiguredClaudeExe(merged.claudeExe);
   const restartRequired = merged.dataDir !== current.dataDir;
   return c.json({ ok: true, settings: merged, restartRequired });
+});
+
+// ── Preflight (Section 10 Phase 0) ────────────────────────────────────────
+
+/** Structured report of runtime-dependency health (claude binary + version,
+ *  git, soft deps). The onboarding wizard + a diagnostics view consume this. */
+app.get('/api/preflight', async (c) => {
+  const preflight = await runPreflight();
+  return c.json({ ok: true, preflight });
 });
 
 // ── Filesystem browse + probe (create-project UI) ─────────────────────────

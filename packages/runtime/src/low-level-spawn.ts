@@ -25,8 +25,8 @@ import { stripAnsiPreserveSpacing, collapseAnsiToWhitespace } from './ansi.ts';
 import { jsonlPathFor } from './path-resolver.ts';
 import { ReadyGate, type ReadyTimestamps } from './ready-gate.ts';
 import { sendBracketedPaste, type SendResult } from './send-protocol.ts';
+import { requireClaudeBinary } from './claude-resolver.ts';
 
-const DEFAULT_CLAUDE_EXE = 'C:\\Users\\example\\.local\\bin\\claude.exe';
 // 60s. Init-complete variance is 1013–2391ms in a clean sandbox; under banner
 // load + concurrent dispatches Windows resume can stretch to 30–35s. The
 // Section 18 V-4 lesson is that `session.kill()` isn't synchronous on Windows,
@@ -63,8 +63,8 @@ export interface LowLevelSpawnInput {
    *  this file's `command` field must point at the bundled
    *  `packages/mcp/dist/server.mjs`, not `npx -y tsx`. */
   mcpConfigPath?: string;
-  /** Optional override of the claude.exe binary path. Defaults to
-   *  `process.env.CLAUDE_EXE` or the hardcoded fallback. */
+  /** Per-spawn override of the claude binary path. Omit to let
+   *  `requireClaudeBinary` resolve (config → CLAUDE_EXE → PATH → ~/.local/bin). */
   claudeExe?: string;
   /** Optional handshake timeout. Default 60s. */
   handshakeTimeoutMs?: number;
@@ -146,8 +146,7 @@ export class LowLevelSpawn extends EventEmitter {
     if (this.started) throw new Error('LowLevelSpawn: start() called twice');
     this.started = true;
 
-    const claudeExe =
-      this.input.claudeExe ?? process.env.CLAUDE_EXE ?? DEFAULT_CLAUDE_EXE;
+    const claudeExe = requireClaudeBinary(this.input.claudeExe);
     const mcpConfigPath = this.input.mcpConfigPath ?? '.mcp.json';
 
     this.resolvedJsonlPath = jsonlPathFor(

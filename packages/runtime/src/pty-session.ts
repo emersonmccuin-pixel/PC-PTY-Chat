@@ -19,8 +19,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 import { claudeProjectsRoot } from './path-resolver.ts';
-
-const DEFAULT_CLAUDE = 'C:\\Users\\example\\.local\\bin\\claude.exe';
+import { requireClaudeBinary } from './claude-resolver.ts';
 
 /** claude.exe v2+ detects IDE-embedded mode from env vars set by the host
  *  (VS Code, JetBrains, or a parent claude.exe). When PC spawns a child
@@ -78,6 +77,8 @@ export function encodeCwdForClaude(cwd: string): string {
 
 export interface PtySessionOptions {
   workspaceDir: string;
+  /** Per-spawn override of the claude binary path. Omit to let
+   *  `requireClaudeBinary` resolve (config → CLAUDE_EXE → PATH → ~/.local/bin). */
   claudeExe?: string;
   stopMarkerPath: string;
   eventsPath: string;
@@ -182,7 +183,7 @@ export class PtySession extends EventEmitter {
 
   constructor(opts: PtySessionOptions) {
     super();
-    const claudeExe = opts.claudeExe ?? process.env.CLAUDE_EXE ?? DEFAULT_CLAUDE;
+    const claudeExe = requireClaudeBinary(opts.claudeExe);
     this.stopMarkerPath = resolve(opts.stopMarkerPath);
     this.eventsPath = resolve(opts.eventsPath);
     this.jsonlEventsPath = resolve(dirname(this.eventsPath), 'jsonl-events.jsonl');

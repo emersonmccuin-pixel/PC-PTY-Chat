@@ -56,6 +56,14 @@ export {
 export { IDE_INTEGRATION_ENV_KEYS, scrubIdeEnv } from './env-scrub.ts';
 
 export {
+  clearClaudeProbeCache,
+  requireClaudeBinary,
+  resolveClaudeBinary,
+  setConfiguredClaudeExe,
+} from './claude-resolver.ts';
+export type { ClaudeBinarySource, ClaudeResolution, ResolveOptions } from './claude-resolver.ts';
+
+export {
   collapseAnsiToWhitespace,
   stripAnsiPreserveSpacing,
 } from './ansi.ts';

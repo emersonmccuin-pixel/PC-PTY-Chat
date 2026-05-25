@@ -57,6 +57,13 @@ export interface GlobalSettings {
   /** Telemetry opt-in. Default false. */
   telemetryOptIn: boolean;
   /**
+   * Section 10 Phase 0 — explicit override for the claude binary path. Null =
+   * resolve automatically (CLAUDE_EXE env → PATH → ~/.local/bin). Highest-
+   * priority source in the resolver after a per-spawn arg. Set by the
+   * onboarding wizard once it locates/installs Claude Code.
+   */
+  claudeExe: string | null;
+  /**
    * Default parent dir for new projects. Used by the create-project folder
    * picker as the initial path. Hot-reloadable — no restart required.
    */
@@ -96,6 +103,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
   return {
     dataDir,
     telemetryOptIn: false,
+    claudeExe: null,
     projectsFolder: joinPath(homeDir, 'Projects'),
     activityPanel: {
       open: true,
@@ -163,6 +171,7 @@ export function withSettingsDefaults(
   return {
     dataDir: stored.dataDir ?? defaults.dataDir,
     telemetryOptIn: stored.telemetryOptIn ?? defaults.telemetryOptIn,
+    claudeExe: stored.claudeExe ?? defaults.claudeExe,
     projectsFolder: stored.projectsFolder ?? defaults.projectsFolder,
     activityPanel: {
       open: stored.activityPanel?.open ?? defaults.activityPanel.open,
