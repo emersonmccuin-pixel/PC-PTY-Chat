@@ -133,14 +133,59 @@ export interface ListWorkItemsServiceOptions {
   parentId?: ULID | null;
   /** Default false. When true, returns archived rows in place of live ones. */
   includeArchived?: boolean;
-  cursor?: ULID;
+  /** Opaque continuation token from a previous response's `nextCursor`. The
+   *  server encodes the last row's (position, createdAt, id) tuple so the
+   *  next page resumes correctly under the repo's (position ASC, createdAt
+   *  ASC) ordering. Section 22.5 — previously this was a bare ULID compared
+   *  with `id > cursor`, which skipped or duplicated rows whenever the id
+   *  order disagreed with the position/createdAt order (i.e. anytime a row
+   *  had been drag-reordered). */
+  cursor?: string;
   /** Hard cap of 500 per the buildout. Default 200. */
   limit?: number;
 }
 
 export interface ListWorkItemsServiceResult {
   items: WorkItem[];
-  nextCursor: ULID | null;
+  nextCursor: string | null;
+}
+
+/** Cursor payload — the row key tuple the repo's ORDER BY uses. Encoded as
+ *  base64-JSON so the wire shape is opaque to the client. Versioned via the
+ *  `v` field so future order-key changes don't silently misinterpret old
+ *  cursors held by a long-running tab. */
+interface WorkItemCursor {
+  v: 1;
+  position: number;
+  createdAt: number;
+  id: string;
+}
+
+function encodeCursor(c: WorkItemCursor): string {
+  return Buffer.from(JSON.stringify(c), 'utf8').toString('base64url');
+}
+
+function decodeCursor(raw: string): WorkItemCursor | null {
+  try {
+    const json = Buffer.from(raw, 'base64url').toString('utf8');
+    const parsed = JSON.parse(json) as Partial<WorkItemCursor>;
+    if (
+      parsed.v !== 1 ||
+      typeof parsed.position !== 'number' ||
+      typeof parsed.createdAt !== 'number' ||
+      typeof parsed.id !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      v: 1,
+      position: parsed.position,
+      createdAt: parsed.createdAt,
+      id: parsed.id,
+    };
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_LIMIT = 200;
@@ -180,13 +225,31 @@ export class WorkItemService {
       return true;
     });
 
-    // Cursor: ULID lexical compare. Repo already orders by (position,
-    // createdAt); for pagination we slice by id > cursor.
-    const sliced = opts.cursor
-      ? filtered.filter((wi) => wi.id > opts.cursor!)
+    // Section 22.5 — cursor encodes (position, createdAt, id). Tuple-style
+    // strict-greater-than picks up exactly where the previous page left off
+    // under the repo's (position ASC, createdAt ASC) ordering. An unparseable
+    // cursor is treated as "start from the beginning" — same behaviour as a
+    // missing cursor.
+    const cursorTuple = opts.cursor ? decodeCursor(opts.cursor) : null;
+    const sliced = cursorTuple
+      ? filtered.filter((wi) => {
+          if (wi.position !== cursorTuple.position) return wi.position > cursorTuple.position;
+          if (wi.createdAt !== cursorTuple.createdAt) {
+            return wi.createdAt > cursorTuple.createdAt;
+          }
+          return wi.id > cursorTuple.id;
+        })
       : filtered;
     const page = sliced.slice(0, limit);
-    const nextCursor = sliced.length > limit ? (page[page.length - 1]!.id as ULID) : null;
+    const nextCursor =
+      sliced.length > limit
+        ? encodeCursor({
+            v: 1,
+            position: page[page.length - 1]!.position,
+            createdAt: page[page.length - 1]!.createdAt,
+            id: page[page.length - 1]!.id,
+          })
+        : null;
     return { items: page, nextCursor };
   }
 
