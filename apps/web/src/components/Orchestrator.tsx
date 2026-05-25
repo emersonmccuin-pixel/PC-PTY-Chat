@@ -15,9 +15,10 @@ import type {
   WsOutbound,
   WsStatus,
 } from '@/hooks/use-project-ws';
+import { useOrchestratorTelemetry, type UsageTotals } from '@/store/orchestrator-telemetry';
 import { useViewingSession } from '@/store/viewing-session';
 import { ChatSurface } from '@/components/ChatSurface';
-import { StatusBar, type UsageTotals } from '@/components/StatusBar';
+import { StatusBar } from '@/components/StatusBar';
 
 interface OrchestratorProps {
   project: Project;
@@ -148,6 +149,17 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     }
     return session?.model ?? null;
   }, [events, session?.model]);
+
+  // Section 32.4 — publish telemetry into a shared store so App.tsx's
+  // slim header can render the same model + token roll-up the StatusBar
+  // shows. Clear on unmount so the header doesn't show stale data when
+  // the user switches to a tab without a chat panel.
+  const setTelemetry = useOrchestratorTelemetry((s) => s.set);
+  const clearTelemetry = useOrchestratorTelemetry((s) => s.clear);
+  useEffect(() => {
+    setTelemetry({ model: liveModel, usage: sessionUsage });
+  }, [liveModel, sessionUsage, setTelemetry]);
+  useEffect(() => () => clearTelemetry(), [clearTelemetry]);
 
   // Section 31.3 — most-recent CC `session_state_changed` value seen in
   // JSONL. States: `idle` / `running` / `requires_action`. Drives the
@@ -294,9 +306,8 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
 
   const footerSlot = (
     <StatusBar
-      model={liveModel}
-      usage={sessionUsage}
       projectId={project.id}
+      projectName={project.name}
       wsStatus={wsStatus}
     />
   );

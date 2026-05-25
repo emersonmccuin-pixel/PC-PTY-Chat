@@ -8,6 +8,7 @@ import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
+import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 
 export default function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -18,6 +19,8 @@ export default function App() {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const activeTab = useActiveCenterTab((s) => s.tab);
+  const telemetryModel = useOrchestratorTelemetry((s) => s.model);
+  const telemetryUsage = useOrchestratorTelemetry((s) => s.usage);
 
   // Activity panel open/closed lives in settings_global.activity_panel.
   // `showAllProjects` field still in settings schema (additive — Section 7
@@ -155,7 +158,37 @@ export default function App() {
             <span>{tabLabel(activeTab)}</span>
           </div>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-3 text-[10px] uppercase tracking-[0.04em]">
+          {telemetryModel && (
+            <span className="flex items-center gap-1.5" title="Active orchestrator model">
+              <span className="text-[var(--fg-dim)]">model</span>
+              <span className="text-foreground">{telemetryModel}</span>
+            </span>
+          )}
+          {(telemetryUsage.inputTokens +
+            telemetryUsage.outputTokens +
+            telemetryUsage.cacheCreationTokens +
+            telemetryUsage.cacheReadTokens) > 0 && (
+            <span
+              className="flex items-center gap-1.5 tabular-nums"
+              title={formatTokenTooltip(telemetryUsage)}
+            >
+              <span className="text-[var(--fg-dim)]">tokens</span>
+              <span className="text-foreground">
+                {formatTokens(
+                  telemetryUsage.inputTokens +
+                    telemetryUsage.outputTokens +
+                    telemetryUsage.cacheCreationTokens +
+                    telemetryUsage.cacheReadTokens,
+                )}
+              </span>
+              <span className="text-[var(--fg-dim)]">·</span>
+              <span className="text-foreground">{formatCostFromUsage(telemetryUsage)}</span>
+              <span className="text-[var(--fg-dim)]">est</span>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setSettingsOpen(true)}
             disabled={!settings}
@@ -236,5 +269,58 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+// Anthropic list pricing per 1M tokens (Opus tier). Same constants StatusBar
+// used pre-32.4; kept here so the header roll-up shows the same numbers.
+const OPUS_PRICING_PER_TOKEN = {
+  input: 15 / 1_000_000,
+  output: 75 / 1_000_000,
+  cacheCreate: 18.75 / 1_000_000,
+  cacheRead: 1.5 / 1_000_000,
+};
+
+interface UsageLike {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k';
+  return (n / 1_000_000).toFixed(2) + 'M';
+}
+
+function formatCost(dollars: number): string {
+  if (dollars === 0) return '$0.00';
+  if (dollars < 0.01) return '<$0.01';
+  if (dollars < 1) return '$' + dollars.toFixed(3);
+  return '$' + dollars.toFixed(2);
+}
+
+function formatCostFromUsage(u: UsageLike): string {
+  return formatCost(
+    u.inputTokens * OPUS_PRICING_PER_TOKEN.input +
+      u.outputTokens * OPUS_PRICING_PER_TOKEN.output +
+      u.cacheCreationTokens * OPUS_PRICING_PER_TOKEN.cacheCreate +
+      u.cacheReadTokens * OPUS_PRICING_PER_TOKEN.cacheRead,
+  );
+}
+
+function formatTokenTooltip(u: UsageLike): string {
+  const total =
+    u.inputTokens + u.outputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+  return (
+    `input:        ${u.inputTokens.toLocaleString()}\n` +
+    `output:       ${u.outputTokens.toLocaleString()}\n` +
+    `cache write:  ${u.cacheCreationTokens.toLocaleString()}\n` +
+    `cache read:   ${u.cacheReadTokens.toLocaleString()}\n` +
+    `─────────────────────\n` +
+    `total:        ${total.toLocaleString()}\n\n` +
+    `est. API cost (informational — subscription billing):\n` +
+    `  ${formatCostFromUsage(u)}`
   );
 }

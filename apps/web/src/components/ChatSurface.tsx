@@ -2687,8 +2687,42 @@ function Composer({
     }
   }
 
+  const historyLen = historyRef.current.length;
+
+  // Section 32.4 — cockpit toolbar. Slash chip inserts "/" into the
+  // textarea (CC's slash commands are PTY-native; the chip is a hint of
+  // "the / world exists here"). Model chip is read-only display; future
+  // passes can wire it to a picker. Right-side hint surfaces the ↑/↓
+  // prompt-history affordance that was previously invisible.
+  function insertSlash() {
+    setText((prev) => (prev.startsWith('/') ? prev : `/${prev}`));
+    textareaRef.current?.focus();
+  }
+
   return (
-    <div className="flex flex-col gap-2 border-t border-border bg-card px-4 py-3">
+    <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
+        <button
+          type="button"
+          onClick={insertSlash}
+          title="Insert / to start a slash command (claude-code handles it)"
+          className="inline-flex items-center gap-1.5 border border-border px-2 py-0.5 hover:border-cream-soft hover:text-accent"
+        >
+          <span>/ commands</span>
+        </button>
+        <span className="text-[var(--fg-dim)]">·</span>
+        <span
+          className="inline-flex items-center gap-1.5 text-[var(--fg-dim)]"
+          title="↑/↓ in the textarea walks your prompt history for this project"
+        >
+          <kbd className="border border-border px-1 text-[9px]">↑</kbd>
+          <kbd className="border border-border px-1 text-[9px]">↓</kbd>
+          <span>prompt history · {historyLen}</span>
+        </span>
+        <span className="ml-auto text-[var(--fg-dim)]">
+          enter to send · shift+enter newline
+        </span>
+      </div>
       <textarea
         ref={textareaRef}
         value={text}
@@ -2719,7 +2753,7 @@ function Composer({
         }}
         placeholder={
           placeholder ??
-          'Message the orchestrator (Enter to send, Shift+Enter for newline, ↑/↓ for history)'
+          'Message the orchestrator…'
         }
         disabled={disabled}
         className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none disabled:opacity-50"
@@ -2749,9 +2783,9 @@ function Composer({
           type="button"
           onClick={submit}
           disabled={disabled || !text.trim()}
-          className="bg-primary px-3 py-1 text-xs font-medium uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          className="bg-primary px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          Send
+          Send ↵
         </button>
         <button
           type="button"
@@ -2759,19 +2793,19 @@ function Composer({
           disabled={disabled || interruptFeedback === 'sent'}
           title="Stop the current response (sends Escape to the PTY)"
           className={
-            'px-3 py-1 text-xs font-medium uppercase tracking-wider disabled:opacity-100 ' +
+            'border px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50 ' +
             (interruptFeedback === 'sent'
-              ? 'bg-success text-background'
+              ? 'border-success bg-success/10 text-success'
               : interruptFeedback === 'failed'
-                ? 'bg-warning text-background'
-                : 'bg-destructive text-destructive-foreground hover:bg-destructive/90')
+                ? 'border-warning bg-warning/10 text-warning'
+                : 'border-border text-muted-foreground hover:border-destructive hover:text-destructive')
           }
         >
           {interruptFeedback === 'sent'
             ? '✓ Sent'
             : interruptFeedback === 'failed'
               ? 'Failed — not connected'
-              : 'Interrupt'}
+              : 'Interrupt esc'}
         </button>
       </div>
     </div>
