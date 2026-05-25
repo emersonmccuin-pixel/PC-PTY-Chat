@@ -765,7 +765,21 @@ test('system row carries raw entry through for the debug-expand surface', () => 
 // Section 31 — kept JSONL signals get typed envelopes (firehose principle)
 // ─────────────────────────────────────────────────────────────────────────
 
-test('Section 31 — ai-title emits jsonl-ai-title with the title', () => {
+test('Section 31 — ai-title with aiTitle field (real CC shape) emits jsonl-ai-title', () => {
+  // CC writes ai-title rows as `{type: 'ai-title', aiTitle: '...', sessionId: '...'}`
+  // — verified 2026-05-25 against live JSONL. The original 31.1 fixture used
+  // `title:` which doesn't match production; both are accepted now.
+  const f = freshFile([
+    { type: 'ai-title', aiTitle: 'Continue previous coding session', sessionId: 'abc' },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, [
+    { kind: 'jsonl-ai-title', title: 'Continue previous coding session' },
+  ]);
+});
+
+test('Section 31 — ai-title with title fallback still works', () => {
   const f = freshFile([{ type: 'ai-title', title: 'Section 31 building' }]);
   const events = collect(f);
   cleanup(f);
@@ -773,7 +787,11 @@ test('Section 31 — ai-title emits jsonl-ai-title with the title', () => {
 });
 
 test('Section 31 — ai-title with empty title drops silently', () => {
-  const f = freshFile([{ type: 'ai-title', title: '' }, { type: 'ai-title' }]);
+  const f = freshFile([
+    { type: 'ai-title', aiTitle: '' },
+    { type: 'ai-title', title: '' },
+    { type: 'ai-title' },
+  ]);
   const events = collect(f);
   cleanup(f);
   assert.equal(events.length, 0);

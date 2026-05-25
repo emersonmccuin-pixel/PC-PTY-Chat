@@ -534,9 +534,18 @@ export class JsonlTailer extends EventEmitter {
     // envelopes so the web side can drive session title, remote-control
     // corner indicator, and internal plumbing surfaces.
     if (type === 'ai-title') {
-      const title = typeof entry.title === 'string' ? (entry.title as string) : '';
-      if (title) {
-        this.emit('event', { kind: 'jsonl-ai-title', title } satisfies JsonlEvent);
+      // CC writes the title as `aiTitle` (camelCase), NOT `title`. Verified
+      // 2026-05-25 against live JSONL — every captured ai-title row carries
+      // `aiTitle`. Tolerate `title` as a fallback in case the field renames
+      // upstream.
+      const titleVal =
+        typeof entry.aiTitle === 'string'
+          ? (entry.aiTitle as string)
+          : typeof entry.title === 'string'
+            ? (entry.title as string)
+            : '';
+      if (titleVal) {
+        this.emit('event', { kind: 'jsonl-ai-title', title: titleVal } satisfies JsonlEvent);
       }
       return;
     }
