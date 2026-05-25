@@ -270,6 +270,8 @@ test('assistant message with usage → jsonl-usage with all four token counts', 
     cacheCreationTokens: 56,
     cacheReadTokens: 78,
     model: 'claude-opus-4-7',
+    speed: null,
+    cacheMissReason: null,
   });
   assert.equal(events[1]!.kind, 'jsonl-turn-end');
 });
@@ -303,6 +305,8 @@ test('assistant message with usage on mid-loop tool_use → jsonl-usage but NO t
     cacheCreationTokens: 0,
     cacheReadTokens: 50,
     model: 'claude-opus-4-7',
+    speed: null,
+    cacheMissReason: null,
   });
 });
 
@@ -368,6 +372,8 @@ test('usage with partial fields → missing counts default to 0', () => {
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
     model: null,
+    speed: null,
+    cacheMissReason: null,
   });
 });
 
@@ -488,12 +494,15 @@ test('isSidechain: true short-circuits → only jsonl-sidechain event', () => {
   assert.equal(events[0]!.kind, 'jsonl-sidechain');
 });
 
-test('unknown type silently dropped', () => {
+test('cut top-level types silently dropped', () => {
+  // Cut list per Section 31: permission-mode and agent-setting stay
+  // un-decoded. Attachment without a recognized subtype is dropped too.
+  // ai-title and file-history-snapshot now have typed envelopes; covered in
+  // the Section 31 test block below.
   const f = freshFile([
     { type: 'permission-mode', mode: 'plan' },
-    { type: 'file-history-snapshot', snapshotId: 'abc' },
+    { type: 'agent-setting', activeAgent: 'orchestrator' },
     { type: 'attachment', path: '/foo' },
-    { type: 'ai-title', title: 'A chat' },
   ]);
   const events = collect(f);
   cleanup(f);
@@ -750,4 +759,296 @@ test('system row carries raw entry through for the debug-expand surface', () => 
   if (!ev || ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
   const r = ev.raw as Record<string, unknown>;
   assert.equal(r.weirdField, 'should survive');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Section 31 — kept JSONL signals get typed envelopes (firehose principle)
+// ─────────────────────────────────────────────────────────────────────────
+
+test('Section 31 — ai-title emits jsonl-ai-title with the title', () => {
+  const f = freshFile([{ type: 'ai-title', title: 'Section 31 building' }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.deepEqual(events, [{ kind: 'jsonl-ai-title', title: 'Section 31 building' }]);
+});
+
+test('Section 31 — ai-title with empty title drops silently', () => {
+  const f = freshFile([{ type: 'ai-title', title: '' }, { type: 'ai-title' }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 0);
+});
+
+test('Section 31 — last-prompt emits internal jsonl-last-prompt', () => {
+  const f = freshFile([{ type: 'last-prompt', uuid: 'msg_42' }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-last-prompt') throw new Error('expected jsonl-last-prompt');
+  assert.equal(ev.uuid, 'msg_42');
+});
+
+test('Section 31 — file-history-snapshot emits internal jsonl-file-history', () => {
+  const f = freshFile([{ type: 'file-history-snapshot', snapshotId: 'snap_7', files: [] }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-file-history') throw new Error('expected jsonl-file-history');
+  assert.equal(ev.snapshotId, 'snap_7');
+});
+
+test('Section 31 — bridge-session emits jsonl-bridge-session', () => {
+  const f = freshFile([{ type: 'bridge-session', bridgeSessionId: 'bridge_abc' }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-bridge-session') throw new Error('expected jsonl-bridge-session');
+  assert.equal(ev.bridgeSessionId, 'bridge_abc');
+});
+
+test('Section 31 — tool_progress emits jsonl-tool-progress with elapsed seconds', () => {
+  const f = freshFile([
+    {
+      type: 'tool_progress',
+      tool_use_id: 'tu_long',
+      tool_name: 'Bash',
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 12.4,
+      task_id: 'task_99',
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-tool-progress') throw new Error('expected jsonl-tool-progress');
+  assert.equal(ev.toolUseId, 'tu_long');
+  assert.equal(ev.toolName, 'Bash');
+  assert.equal(ev.elapsedSeconds, 12.4);
+  assert.equal(ev.taskId, 'task_99');
+});
+
+test('Section 31 — stream_event emits jsonl-stream-event with the raw event', () => {
+  const inner = { type: 'content_block_delta', delta: { type: 'text_delta', text: 'p' } };
+  const f = freshFile([{ type: 'stream_event', event: inner, parent_tool_use_id: null }]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 1);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-stream-event') throw new Error('expected jsonl-stream-event');
+  assert.deepEqual(ev.event, inner);
+});
+
+test('Section 31 — system session_state_changed emits BOTH jsonl-session-state AND jsonl-system', () => {
+  // Typed envelope drives composer + inline divider; generic system row stays
+  // for legacy consumers + the "expand for raw" surface.
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'session_state_changed',
+      level: 'info',
+      state: 'requires_action',
+      permissionMode: 'default',
+      timestamp: '2026-05-25T16:00:00Z',
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 2);
+  const typed = events.find((e) => e.kind === 'jsonl-session-state');
+  if (!typed || typed.kind !== 'jsonl-session-state') throw new Error('missing typed envelope');
+  assert.equal(typed.state, 'requires_action');
+  assert.equal(typed.permissionMode, 'default');
+  const generic = events.find((e) => e.kind === 'jsonl-system');
+  assert.ok(generic && generic.kind === 'jsonl-system' && generic.subtype === 'session_state_changed');
+});
+
+test('Section 31 — system session_state_changed without state drops typed envelope but keeps generic', () => {
+  const f = freshFile([
+    { type: 'system', subtype: 'session_state_changed', level: 'info' },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  // Only the generic jsonl-system fires; typed envelope drops because state
+  // was missing.
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.kind, 'jsonl-system');
+});
+
+test('Section 31 — system compact_boundary emits jsonl-compact with metadata', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'compact_boundary',
+      level: 'info',
+      compactMetadata: {
+        trigger: 'manual',
+        preTokens: 145000,
+        messagesSummarized: 40,
+        userContext: 'long thread',
+      },
+      logicalParentUuid: 'uuid_abc',
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  assert.equal(events.length, 2);
+  const compact = events.find((e) => e.kind === 'jsonl-compact');
+  if (!compact || compact.kind !== 'jsonl-compact') throw new Error('expected jsonl-compact');
+  assert.equal(compact.trigger, 'manual');
+  assert.equal(compact.preTokens, 145000);
+  assert.equal(compact.messagesSummarized, 40);
+});
+
+test('Section 31 — system microcompact_boundary emits jsonl-microcompact', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'microcompact_boundary',
+      level: 'info',
+      microcompactMetadata: {
+        trigger: 'auto',
+        preTokens: 80000,
+        tokensSaved: 12000,
+        compactedToolIds: ['tu_1', 'tu_2'],
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const micro = events.find((e) => e.kind === 'jsonl-microcompact');
+  if (!micro || micro.kind !== 'jsonl-microcompact') throw new Error('expected jsonl-microcompact');
+  assert.equal(micro.tokensSaved, 12000);
+  assert.equal(micro.preTokens, 80000);
+});
+
+test('Section 31 — system turn_duration emits jsonl-turn-duration', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'turn_duration',
+      level: 'info',
+      durationMs: 4275,
+      budgetTokens: 200000,
+      messageCount: 18,
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const td = events.find((e) => e.kind === 'jsonl-turn-duration');
+  if (!td || td.kind !== 'jsonl-turn-duration') throw new Error('expected jsonl-turn-duration');
+  assert.equal(td.durationMs, 4275);
+  assert.equal(td.messageCount, 18);
+});
+
+test('Section 31 — system post_turn_summary emits jsonl-post-turn-summary', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'post_turn_summary',
+      level: 'info',
+      summarizes_uuid: 'msg_abc',
+      status_category: 'in_progress',
+      status_detail: 'tool_use',
+      is_noteworthy: true,
+      title: 'Refactor work',
+      description: 'Touched 3 files',
+      recent_action: 'Edit',
+      needs_action: false,
+      artifact_urls: ['file:///foo'],
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const ps = events.find((e) => e.kind === 'jsonl-post-turn-summary');
+  if (!ps || ps.kind !== 'jsonl-post-turn-summary') throw new Error('expected jsonl-post-turn-summary');
+  assert.equal(ps.title, 'Refactor work');
+  assert.equal(ps.statusCategory, 'in_progress');
+  assert.equal(ps.isNoteworthy, true);
+  assert.equal(ps.needsAction, false);
+});
+
+test('Section 31 — system memory_saved formats writtenPaths into the message', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'memory_saved',
+      level: 'info',
+      writtenPaths: ['feedback_x.md', 'feedback_y.md'],
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.match(ev.message, /Saved 2 entries to memory/);
+});
+
+test('Section 31 — system files_persisted formats counts into the message', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'files_persisted',
+      level: 'info',
+      files: [{ filename: 'a.md' }, { filename: 'b.md' }, { filename: 'c.md' }],
+      failed: [{ filename: 'd.md', error: 'EACCES' }],
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.equal(ev.message, 'Wrote 3 files (1 failed)');
+});
+
+test('Section 31 — system api_retry formats attempt + delay like api_error', () => {
+  const f = freshFile([
+    {
+      type: 'system',
+      subtype: 'api_retry',
+      level: 'warn',
+      attempt: 2,
+      max_retries: 10,
+      retry_delay_ms: 4000,
+      error_status: 529,
+      error: 'Overloaded',
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const ev = events[0]!;
+  if (ev.kind !== 'jsonl-system') throw new Error('expected jsonl-system');
+  assert.equal(ev.message, 'Overloaded (HTTP 529) — retrying in 4.0s (attempt 2/10)');
+});
+
+test('Section 31 — usage carries speed + cacheMissReason when present', () => {
+  const f = freshFile([
+    {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'x' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          speed: 'slow',
+        },
+        diagnostics: {
+          cache_miss_reason: 'tools_changed',
+        },
+      },
+    },
+  ]);
+  const events = collect(f);
+  cleanup(f);
+  const usage = events.find((e) => e.kind === 'jsonl-usage');
+  if (!usage || usage.kind !== 'jsonl-usage') throw new Error('expected jsonl-usage');
+  assert.equal(usage.speed, 'slow');
+  assert.equal(usage.cacheMissReason, 'tools_changed');
 });

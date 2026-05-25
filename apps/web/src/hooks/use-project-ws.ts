@@ -247,6 +247,12 @@ export interface JsonlUsageEvent {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   model: string | null;
+  /** Section 31 — `usage.speed` (slow / standard / fast). Renders as a
+   *  turn-footer chip when ≠ standard. */
+  speed: string | null;
+  /** Section 31 — `message.diagnostics.cache_miss_reason`. Renders as a
+   *  turn-footer warning chip when a cache miss happens. */
+  cacheMissReason: string | null;
 }
 
 /** `type: 'system'` rows from CC's JSONL — API errors, init banners, etc.
@@ -261,6 +267,119 @@ export interface JsonlSystemEvent {
   raw: unknown;
 }
 
+// ── Section 31 — kept JSONL signals with typed envelopes ──────────────────
+
+/** CC's auto-generated session title. Drives the left-rail session row title
+ *  and the chat title bar. Fires repeatedly as the title is refined. */
+export interface JsonlAiTitleEvent {
+  kind: 'jsonl-ai-title';
+  title: string;
+}
+
+/** Leaf pointer (internal). Plumbed for resume correctness; never directly
+ *  rendered. */
+export interface JsonlLastPromptEvent {
+  kind: 'jsonl-last-prompt';
+  uuid: string | null;
+  raw: unknown;
+}
+
+/** Per-message file-state snapshot (internal). Plumbed for "what files did
+ *  this session touch"; never directly rendered. */
+export interface JsonlFileHistoryEvent {
+  kind: 'jsonl-file-history';
+  snapshotId: string | null;
+  raw: unknown;
+}
+
+/** Links session to a `/remote-control` `bridgeSessionId`. Drives the
+ *  center-column lower-right remote-control corner indicator. */
+export interface JsonlBridgeSessionEvent {
+  kind: 'jsonl-bridge-session';
+  bridgeSessionId: string | null;
+  raw: unknown;
+}
+
+/** Long-running tool progress. Renders as a live progress line inside the
+ *  tool-group child card. */
+export interface JsonlToolProgressEvent {
+  kind: 'jsonl-tool-progress';
+  toolUseId: string;
+  toolName: string;
+  parentToolUseId: string | null;
+  elapsedSeconds: number | null;
+  taskId: string | null;
+  raw: unknown;
+}
+
+/** Partial assistant tokens for smoother live streaming. */
+export interface JsonlStreamEventEnvelope {
+  kind: 'jsonl-stream-event';
+  event: unknown;
+  parentToolUseId: string | null;
+  raw: unknown;
+}
+
+/** Session state flips. Drives composer enable/disable + inline divider.
+ *  Replaces the hook-event scan / sessionEnded heuristic. */
+export interface JsonlSessionStateEvent {
+  kind: 'jsonl-session-state';
+  state: string;
+  permissionMode: string | null;
+  timestamp: string | null;
+  raw: unknown;
+}
+
+/** Automatic context compaction boundary. Renders as a centered dashed-rule
+ *  in chat. */
+export interface JsonlCompactEvent {
+  kind: 'jsonl-compact';
+  trigger: string | null;
+  preTokens: number | null;
+  messagesSummarized: number | null;
+  timestamp: string | null;
+  raw: unknown;
+}
+
+/** Silent micro-compaction (tool-result cleanup). Renders as an inline
+ *  state-transition divider. */
+export interface JsonlMicrocompactEvent {
+  kind: 'jsonl-microcompact';
+  trigger: string | null;
+  preTokens: number | null;
+  tokensSaved: number | null;
+  timestamp: string | null;
+  raw: unknown;
+}
+
+/** Completion-time turn duration. Rides the PM bubble timestamp header.
+ *  Fires AFTER the preceding `jsonl-turn-end`. */
+export interface JsonlTurnDurationEvent {
+  kind: 'jsonl-turn-duration';
+  durationMs: number | null;
+  budgetTokens: number | null;
+  messageCount: number | null;
+  timestamp: string | null;
+  raw: unknown;
+}
+
+/** Model-generated post-turn summary. Logged to a per-project table;
+ *  render surface TBD per the Section 31 buildout. */
+export interface JsonlPostTurnSummaryEvent {
+  kind: 'jsonl-post-turn-summary';
+  summarizesUuid: string | null;
+  statusCategory: string | null;
+  statusDetail: string | null;
+  isNoteworthy: boolean;
+  title: string | null;
+  description: string | null;
+  recentAction: string | null;
+  needsAction: boolean;
+  artifactUrls: unknown;
+  timestamp: string | null;
+  raw: unknown;
+}
+
 export type JsonlEvent =
   | JsonlUserEvent
   | JsonlTurnEndEvent
@@ -270,7 +389,18 @@ export type JsonlEvent =
   | JsonlQueueDequeueEvent
   | JsonlSidechainEvent
   | JsonlUsageEvent
-  | JsonlSystemEvent;
+  | JsonlSystemEvent
+  | JsonlAiTitleEvent
+  | JsonlLastPromptEvent
+  | JsonlFileHistoryEvent
+  | JsonlBridgeSessionEvent
+  | JsonlToolProgressEvent
+  | JsonlStreamEventEnvelope
+  | JsonlSessionStateEvent
+  | JsonlCompactEvent
+  | JsonlMicrocompactEvent
+  | JsonlTurnDurationEvent
+  | JsonlPostTurnSummaryEvent;
 
 // ── Outbound WS messages (Q8 chat send + interrupt + ask-reply) ───────────
 

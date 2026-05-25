@@ -3,6 +3,13 @@
 // calls; replaces the hook-driven derivation that misses the four documented
 // Stop-skip cases (see docs/design/chat-reliability.md).
 //
+// Section 31 extends the catalog to surface every kept JSONL signal claude.exe
+// emits — see docs/buildout/jsonl-signal-firehose.md for the locked render
+// placements and the cut list. Cut signals stay un-decoded; kept signals get
+// typed envelopes (the ones that drive distinct UI shapes) or richer formatter
+// strings inside the generic jsonl-system pass-through (the ones that render
+// as system rows).
+//
 // Pure module: no PtySession / WS / DB awareness. Tested by pointing at a real
 // JSONL file and reading the emitted events.
 
@@ -32,12 +39,17 @@ export type JsonlEvent =
       // Each assistant entry (mid-loop OR turn-end) carries one of these.
       // Client sums across entries to get session totals — sidechain entries
       // short-circuit before this fires, so subagent tokens don't pollute
-      // orchestrator totals.
+      // orchestrator totals. Section 31 extended with `speed` (turn-footer
+      // chip when ≠ standard) and `cacheMissReason` (turn-footer warning chip
+      // when a miss happens) — both ride on the same usage envelope so the
+      // client only has to subscribe once.
       inputTokens: number;
       outputTokens: number;
       cacheCreationTokens: number;
       cacheReadTokens: number;
       model: string | null;
+      speed: string | null;
+      cacheMissReason: string | null;
     }
   | { kind: 'jsonl-sidechain'; raw: unknown }
   /**
@@ -52,12 +64,105 @@ export type JsonlEvent =
    * Per [[hand-user-everything]] / 2026-05-19 ask: the user must see EVERY
    * system message a claude code CLI user would see; missing this surface is
    * how "stuck in Thinking" with no diagnosis becomes a frustrating bug.
+   *
+   * Section 31: kept subtypes that warrant distinct rendering shapes also emit
+   * their own typed envelopes (`jsonl-session-state`, `jsonl-compact`,
+   * `jsonl-microcompact`, `jsonl-turn-duration`, `jsonl-post-turn-summary`).
+   * The generic `jsonl-system` envelope still fires for them so legacy
+   * consumers keep working — the web side knows which subtypes to render via
+   * their typed envelope instead of the generic system row.
    */
   | {
       kind: 'jsonl-system';
       subtype: string;
       level: string;
       message: string;
+      timestamp: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — CC's auto-generated session title. Drives the left-rail
+   *  session row title and the chat title bar. Fires repeatedly through a
+   *  session as the title is refined. */
+  | { kind: 'jsonl-ai-title'; title: string }
+  /** Section 31 — leaf-pointer metadata. Internal use only (resume
+   *  correctness, "jump to last prompt"); never directly rendered. */
+  | { kind: 'jsonl-last-prompt'; uuid: string | null; raw: unknown }
+  /** Section 31 — per-message file-state snapshot for diff tracking. Internal
+   *  use only ("what files did this session touch"); never directly rendered. */
+  | { kind: 'jsonl-file-history'; snapshotId: string | null; raw: unknown }
+  /** Section 31 — links session to a `/remote-control` `bridgeSessionId`.
+   *  Combined with `system:bridge_status`, drives the center-column lower-right
+   *  remote-control corner indicator. */
+  | { kind: 'jsonl-bridge-session'; bridgeSessionId: string | null; raw: unknown }
+  /** Section 31 — long-running tool progress mid-execution. Renders as a live
+   *  progress line inside the tool-group child card. */
+  | {
+      kind: 'jsonl-tool-progress';
+      toolUseId: string;
+      toolName: string;
+      parentToolUseId: string | null;
+      elapsedSeconds: number | null;
+      taskId: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — partial assistant tokens for smoother live streaming.
+   *  Empirical pass found zero `stream_event` rows in 22,738 records; emit
+   *  anyway and let the renderer gate on actual fires. */
+  | { kind: 'jsonl-stream-event'; event: unknown; parentToolUseId: string | null; raw: unknown }
+  /** Section 31 — session state flips between idle / running / requires_action.
+   *  Drives composer disable/enable AND an inline state-transition divider.
+   *  Replaces the hook-event scan / sessionEnded heuristic. */
+  | {
+      kind: 'jsonl-session-state';
+      state: string;
+      permissionMode: string | null;
+      timestamp: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — automatic context compaction boundary. Renders as a
+   *  centered dashed-rule boundary marker in chat. */
+  | {
+      kind: 'jsonl-compact';
+      trigger: string | null;
+      preTokens: number | null;
+      messagesSummarized: number | null;
+      timestamp: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — silent micro-compaction (tool-result cleanup). Renders as
+   *  an inline state-transition divider. */
+  | {
+      kind: 'jsonl-microcompact';
+      trigger: string | null;
+      preTokens: number | null;
+      tokensSaved: number | null;
+      timestamp: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — completion-time turn duration. Rides the PM bubble
+   *  timestamp header. Fires AFTER the preceding `jsonl-turn-end`. */
+  | {
+      kind: 'jsonl-turn-duration';
+      durationMs: number | null;
+      budgetTokens: number | null;
+      messageCount: number | null;
+      timestamp: string | null;
+      raw: unknown;
+    }
+  /** Section 31 — model-generated post-turn summary. `needs_action`,
+   *  `artifact_urls`, `title`, `description`, etc. TBD render surface; logged
+   *  to a per-project table per the buildout. */
+  | {
+      kind: 'jsonl-post-turn-summary';
+      summarizesUuid: string | null;
+      statusCategory: string | null;
+      statusDetail: string | null;
+      isNoteworthy: boolean;
+      title: string | null;
+      description: string | null;
+      recentAction: string | null;
+      needsAction: boolean;
+      artifactUrls: unknown;
       timestamp: string | null;
       raw: unknown;
     };
@@ -265,9 +370,15 @@ export class JsonlTailer extends EventEmitter {
       }
       // Usage block — Anthropic SDK response shape. Emit once per assistant
       // entry (whether mid-loop or turn-end), client sums for the session.
+      // Section 31 enriches with `speed` (downgrade indicator) + the message's
+      // top-level `diagnostics.cache_miss_reason` (cache-miss warning).
       const usage = message.usage;
       if (usage && typeof usage === 'object') {
         const u = usage as Record<string, unknown>;
+        const diagnostics =
+          message.diagnostics && typeof message.diagnostics === 'object'
+            ? (message.diagnostics as Record<string, unknown>)
+            : null;
         this.emit('event', {
           kind: 'jsonl-usage',
           inputTokens: typeof u.input_tokens === 'number' ? u.input_tokens : 0,
@@ -277,6 +388,11 @@ export class JsonlTailer extends EventEmitter {
           cacheReadTokens:
             typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0,
           model: typeof message.model === 'string' ? (message.model as string) : null,
+          speed: typeof u.speed === 'string' ? (u.speed as string) : null,
+          cacheMissReason:
+            diagnostics && typeof diagnostics.cache_miss_reason === 'string'
+              ? (diagnostics.cache_miss_reason as string)
+              : null,
         } satisfies JsonlEvent);
       }
       // Turn-end fires for any stop_reason that means "model is no longer
@@ -315,13 +431,93 @@ export class JsonlTailer extends EventEmitter {
 
     if (type === 'system') {
       const subtype = typeof entry.subtype === 'string' ? entry.subtype : '';
-      // claude.exe writes init / api_error rows + an ever-growing set of
-      // operational subtypes. We emit every one of them so the chat panel
-      // can surface them. Subtypes we DON'T want as bubbles (init banner is
-      // noise; permission-mode flips are metadata) get filtered web-side.
       if (!subtype) return;
       const level = typeof entry.level === 'string' ? entry.level : 'info';
       const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : null;
+
+      // Section 31 — kept subtypes that warrant distinct rendering shapes also
+      // get their own typed envelope. The generic jsonl-system below still
+      // fires so legacy consumers keep working.
+      if (subtype === 'session_state_changed') {
+        const state = typeof entry.state === 'string' ? entry.state : '';
+        const permissionMode =
+          typeof entry.permissionMode === 'string' ? entry.permissionMode : null;
+        if (state) {
+          this.emit('event', {
+            kind: 'jsonl-session-state',
+            state,
+            permissionMode,
+            timestamp,
+            raw: entry,
+          } satisfies JsonlEvent);
+        }
+      } else if (subtype === 'compact_boundary') {
+        const meta =
+          entry.compactMetadata && typeof entry.compactMetadata === 'object'
+            ? (entry.compactMetadata as Record<string, unknown>)
+            : null;
+        this.emit('event', {
+          kind: 'jsonl-compact',
+          trigger: meta && typeof meta.trigger === 'string' ? (meta.trigger as string) : null,
+          preTokens:
+            meta && typeof meta.preTokens === 'number' ? (meta.preTokens as number) : null,
+          messagesSummarized:
+            meta && typeof meta.messagesSummarized === 'number'
+              ? (meta.messagesSummarized as number)
+              : null,
+          timestamp,
+          raw: entry,
+        } satisfies JsonlEvent);
+      } else if (subtype === 'microcompact_boundary') {
+        const meta =
+          entry.microcompactMetadata && typeof entry.microcompactMetadata === 'object'
+            ? (entry.microcompactMetadata as Record<string, unknown>)
+            : null;
+        this.emit('event', {
+          kind: 'jsonl-microcompact',
+          trigger: meta && typeof meta.trigger === 'string' ? (meta.trigger as string) : null,
+          preTokens:
+            meta && typeof meta.preTokens === 'number' ? (meta.preTokens as number) : null,
+          tokensSaved:
+            meta && typeof meta.tokensSaved === 'number' ? (meta.tokensSaved as number) : null,
+          timestamp,
+          raw: entry,
+        } satisfies JsonlEvent);
+      } else if (subtype === 'turn_duration') {
+        this.emit('event', {
+          kind: 'jsonl-turn-duration',
+          durationMs: typeof entry.durationMs === 'number' ? entry.durationMs : null,
+          budgetTokens: typeof entry.budgetTokens === 'number' ? entry.budgetTokens : null,
+          messageCount: typeof entry.messageCount === 'number' ? entry.messageCount : null,
+          timestamp,
+          raw: entry,
+        } satisfies JsonlEvent);
+      } else if (subtype === 'post_turn_summary') {
+        this.emit('event', {
+          kind: 'jsonl-post-turn-summary',
+          summarizesUuid:
+            typeof entry.summarizes_uuid === 'string' ? (entry.summarizes_uuid as string) : null,
+          statusCategory:
+            typeof entry.status_category === 'string' ? (entry.status_category as string) : null,
+          statusDetail:
+            typeof entry.status_detail === 'string' ? (entry.status_detail as string) : null,
+          isNoteworthy: entry.is_noteworthy === true,
+          title: typeof entry.title === 'string' ? (entry.title as string) : null,
+          description: typeof entry.description === 'string' ? (entry.description as string) : null,
+          recentAction:
+            typeof entry.recent_action === 'string' ? (entry.recent_action as string) : null,
+          needsAction: entry.needs_action === true,
+          artifactUrls: entry.artifact_urls ?? null,
+          timestamp,
+          raw: entry,
+        } satisfies JsonlEvent);
+      }
+
+      // Generic jsonl-system fires for EVERY subtype with the formatter's
+      // best-effort label. The chat panel decides what to render based on
+      // subtype (subtypes with typed envelopes get rendered through those
+      // instead). Per [[hand-user-everything]]: the user must see every
+      // status-line surface, so we don't pre-filter at the tailer.
       this.emit('event', {
         kind: 'jsonl-system',
         subtype,
@@ -333,9 +529,81 @@ export class JsonlTailer extends EventEmitter {
       return;
     }
 
-    // Unknown / metadata types (permission-mode, file-history-snapshot,
-    // attachment, ai-title, last-prompt, …) — drop silently. CC adds shapes
-    // over time; we tolerate the unknown.
+    // Section 31 — top-level metadata types CC writes alongside conversation
+    // rows. Previously dropped at this fall-through; now decoded into typed
+    // envelopes so the web side can drive session title, remote-control
+    // corner indicator, and internal plumbing surfaces.
+    if (type === 'ai-title') {
+      const title = typeof entry.title === 'string' ? (entry.title as string) : '';
+      if (title) {
+        this.emit('event', { kind: 'jsonl-ai-title', title } satisfies JsonlEvent);
+      }
+      return;
+    }
+
+    if (type === 'last-prompt') {
+      this.emit('event', {
+        kind: 'jsonl-last-prompt',
+        uuid: typeof entry.uuid === 'string' ? (entry.uuid as string) : null,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
+    if (type === 'file-history-snapshot') {
+      this.emit('event', {
+        kind: 'jsonl-file-history',
+        snapshotId: typeof entry.snapshotId === 'string' ? (entry.snapshotId as string) : null,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
+    if (type === 'bridge-session') {
+      this.emit('event', {
+        kind: 'jsonl-bridge-session',
+        bridgeSessionId:
+          typeof entry.bridgeSessionId === 'string' ? (entry.bridgeSessionId as string) : null,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
+    if (type === 'tool_progress') {
+      this.emit('event', {
+        kind: 'jsonl-tool-progress',
+        toolUseId: typeof entry.tool_use_id === 'string' ? (entry.tool_use_id as string) : '',
+        toolName: typeof entry.tool_name === 'string' ? (entry.tool_name as string) : '',
+        parentToolUseId:
+          typeof entry.parent_tool_use_id === 'string'
+            ? (entry.parent_tool_use_id as string)
+            : null,
+        elapsedSeconds:
+          typeof entry.elapsed_time_seconds === 'number'
+            ? (entry.elapsed_time_seconds as number)
+            : null,
+        taskId: typeof entry.task_id === 'string' ? (entry.task_id as string) : null,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
+    if (type === 'stream_event') {
+      this.emit('event', {
+        kind: 'jsonl-stream-event',
+        event: entry.event ?? null,
+        parentToolUseId:
+          typeof entry.parent_tool_use_id === 'string'
+            ? (entry.parent_tool_use_id as string)
+            : null,
+        raw: entry,
+      } satisfies JsonlEvent);
+      return;
+    }
+
+    // Cut signals (permission-mode, agent-setting, etc.) + truly unknown
+    // shapes — drop silently. CC adds shapes over time; we tolerate the
+    // unknown without bloating the event surface.
   }
 }
 
@@ -375,6 +643,52 @@ function formatSystemMessage(subtype: string, entry: Record<string, unknown>): s
       return `${head}${statusBit} (attempt ${attempt}/${maxRetries})`;
     }
     return `${head}${statusBit}`;
+  }
+
+  if (subtype === 'api_retry') {
+    // SDK-emitted retry envelope. Carries `attempt`, `max_retries`,
+    // `retry_delay_ms`, `error_status`, `error`. Surface the same shape as
+    // api_error so the chat reads consistently regardless of which path
+    // claude.exe takes.
+    const attempt = typeof entry.attempt === 'number' ? (entry.attempt as number) : null;
+    const maxRetries =
+      typeof entry.max_retries === 'number' ? (entry.max_retries as number) : null;
+    const delayMs =
+      typeof entry.retry_delay_ms === 'number' ? (entry.retry_delay_ms as number) : null;
+    const errStatus =
+      typeof entry.error_status === 'number' ? (entry.error_status as number) : null;
+    const errMsg = typeof entry.error === 'string' ? (entry.error as string) : '';
+    const head = errMsg || 'API retry';
+    const statusBit = errStatus !== null ? ` (HTTP ${errStatus})` : '';
+    if (attempt !== null && maxRetries !== null && delayMs !== null) {
+      const secs = (delayMs / 1000).toFixed(1);
+      return `${head}${statusBit} — retrying in ${secs}s (attempt ${attempt}/${maxRetries})`;
+    }
+    if (attempt !== null && maxRetries !== null) {
+      return `${head}${statusBit} (attempt ${attempt}/${maxRetries})`;
+    }
+    return `${head}${statusBit}`;
+  }
+
+  if (subtype === 'memory_saved') {
+    // CC writes `writtenPaths: string[]` when auto-memory writes files.
+    // Surface as "Saved to memory: <files>" — the user is about to wonder
+    // why their conversation has changed.
+    const written = Array.isArray(entry.writtenPaths) ? (entry.writtenPaths as unknown[]) : [];
+    if (written.length === 0) return 'Saved to memory';
+    if (written.length === 1) return `Saved to memory: ${written[0]}`;
+    return `Saved ${written.length} entries to memory`;
+  }
+
+  if (subtype === 'files_persisted') {
+    // CC writes `files: [{filename, file_id}], failed: [{filename, error}]`.
+    // Surface count + the failure tail if any.
+    const files = Array.isArray(entry.files) ? (entry.files as unknown[]) : [];
+    const failed = Array.isArray(entry.failed) ? (entry.failed as unknown[]) : [];
+    if (failed.length > 0) {
+      return `Wrote ${files.length} file${files.length === 1 ? '' : 's'} (${failed.length} failed)`;
+    }
+    return `Wrote ${files.length} file${files.length === 1 ? '' : 's'}`;
   }
 
   if (subtype === 'init') {
