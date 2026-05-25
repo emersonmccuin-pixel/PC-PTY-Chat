@@ -27,6 +27,7 @@ import type {
   WorkItemType,
   WorkflowRunStatus,
   WorkflowRunTrigger,
+  WorkflowV2,
   WorktreeStatus,
 } from '@pc/domain';
 
@@ -128,6 +129,10 @@ export const workItems = sqliteTable(
      *  from the default kanban + table view; surfaced via the
      *  "See Agent Contracts" toggle. Stored as 0/1 in sqlite. */
     isAgentTask: integer('is_agent_task', { mode: 'boolean' }).notNull().default(false),
+    /** Section 19 — true when this row is a workflow run's root. Each workflow
+     *  node spawns a child WI under it; DAG state lives in `workflow_runs_v2`
+     *  keyed by this id. Hidden from the default kanban like agent tasks. */
+    isWorkflowRoot: integer('is_workflow_root', { mode: 'boolean' }).notNull().default(false),
     /** Throwaway flag — sweeper auto-archives 24h after `complete`. */
     ephemeral: integer('ephemeral', { mode: 'boolean' }).notNull().default(false),
     /** Derived predicate set (the AC predicate language). */
@@ -245,6 +250,93 @@ export const workflowRuns = sqliteTable(
     index('workflow_runs_parent_idx').on(t.parentRunId),
     index('workflow_runs_work_item_idx').on(t.workItemId),
   ],
+);
+
+/**
+ * Section 19 — v2 workflow run sidecar. Coexists with the legacy `workflow_runs`
+ * table above (the old runtime still owns that) until 19.13 cutover renames the
+ * old one to `*_v1_archive`. The v2 run IS a work item (`is_workflow_root`);
+ * node outputs live on child work items, so this row holds only DAG bookkeeping
+ * (per-node state + reject-iteration counts) that isn't derivable from the WIs.
+ * See docs/buildout/workflow-rebuild-port-map.md ("stateless over work items").
+ */
+export const workflowRunsV2 = sqliteTable(
+  'workflow_runs_v2',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    /** Workflow slug (the YAML `id:`). */
+    workflowId: text('workflow_id').notNull(),
+    /** Denormalised for the run viewer. */
+    workflowName: text('workflow_name').notNull(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    /** The `is_workflow_root` work item for this run. */
+    workItemId: text('work_item_id').$type<ULID | null>(),
+    /** Trigger kind that fired this run (`manual` | `stage-on-entry` | …). */
+    trigger: text('trigger').notNull().$type<WorkflowV2.TriggerKind>(),
+    /** stage_id slug when trigger = `stage-on-entry`. */
+    stageId: text('stage_id'),
+    /** Session that fired a manual / orchestrator run. */
+    triggeredBySessionId: text('triggered_by_session_id').$type<ULID | null>(),
+    status: text('status')
+      .notNull()
+      .default('pending')
+      .$type<WorkflowV2.WorkflowRunStatus>(),
+    /** Frozen YAML at dispatch — immune to live edits mid-run. */
+    workflowYamlSnapshot: text('workflow_yaml_snapshot').notNull(),
+    worktreePath: text('worktree_path'),
+    /** DAG execution state: per-node records + per-reject-edge iteration counts. */
+    dagState: text('dag_state', { mode: 'json' })
+      .notNull()
+      .default(sql`'{"nodes":{}}'`)
+      .$type<WorkflowV2.WorkflowDagState>(),
+    /** Trigger payload (`$trigger.*`) — stage-move context, webhook body, etc. */
+    triggerContext: text('trigger_context', { mode: 'json' })
+      .notNull()
+      .default(sql`'{}'`)
+      .$type<Record<string, unknown>>(),
+    metadata: text('metadata', { mode: 'json' })
+      .notNull()
+      .default(sql`'{}'`)
+      .$type<Record<string, unknown>>(),
+    lastReason: text('last_reason'),
+    createdAt: integer('created_at').notNull(),
+    startedAt: integer('started_at'),
+    endedAt: integer('ended_at'),
+    lastActivityAt: integer('last_activity_at'),
+  },
+  (t) => [
+    index('workflow_runs_v2_project_idx').on(t.projectId),
+    index('workflow_runs_v2_status_idx').on(t.status),
+    index('workflow_runs_v2_workflow_idx').on(t.workflowId),
+    index('workflow_runs_v2_work_item_idx').on(t.workItemId),
+  ],
+);
+
+/**
+ * Section 19 — workflow run event log. OBSERVABILITY / AUDIT ONLY. Feeds the
+ * 4e drawer timeline. Resume reads the child work items' terminal states, NOT
+ * this log — it is append-only and never the source of truth for execution.
+ */
+export const workflowRunEvents = sqliteTable(
+  'workflow_run_events',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    runId: text('run_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => workflowRunsV2.id),
+    /** Event type — see `WorkflowV2.WORKFLOW_EVENT_TYPES`. */
+    type: text('type').notNull().$type<WorkflowV2.WorkflowEventType>(),
+    /** Node id the event pertains to (absent for run-level events). */
+    nodeId: text('node_id'),
+    /** Per-event payload (reason, iteration, durationMs, …). */
+    data: text('data', { mode: 'json' }).$type<Record<string, unknown>>(),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('workflow_run_events_run_idx').on(t.runId)],
 );
 
 /** Section 6.6 — activity-panel "Failed recently" region. The 4e Runs tab
