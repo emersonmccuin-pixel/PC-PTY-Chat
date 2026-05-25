@@ -1089,7 +1089,14 @@ export function ChatSurface({
               // System non-error footers stay as inline hint text (not turn cards).
               if (ev.kind === 'system') {
                 const sys = ev as SystemEvent;
-                if (sys.level !== 'error' && !SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
+                // Section 31 — subtypes in SUPPRESSED_SYSTEM_SUBTYPES are
+                // rendered via their typed envelope instead. Drop the system
+                // event entirely so we don't fall through to the ChatTurnCard
+                // wrapper and surface an empty bubble with the subtype label.
+                if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
+                  return null;
+                }
+                if (sys.level !== 'error') {
                   return (
                     <EventBubble
                       key={item.key}
