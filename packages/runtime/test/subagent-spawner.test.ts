@@ -146,7 +146,13 @@ function baseRequest(dataDir: string): SubagentSpawnRequest {
 
 test('createLowLevelSpawn receives LowLevelSpawnInput shaped correctly', () => {
   const dataDir = freshDataDir();
-  interface Captured { agentName: string; worktreePath: string; mode: string }
+  interface Captured {
+    agentName: string;
+    worktreePath: string;
+    mode: string;
+    env: Record<string, string>;
+    ccProviderSessionId: string;
+  }
   const captured: Captured[] = [];
   const mock = makeMockSpawn();
   const timers = makeControllableTimers();
@@ -164,6 +170,8 @@ test('createLowLevelSpawn receives LowLevelSpawnInput shaped correctly', () => {
           agentName: input.podDefinition.name,
           worktreePath: input.worktreePath,
           mode: input.mode,
+          env: input.env as Record<string, string>,
+          ccProviderSessionId: input.ccProviderSessionId,
         });
         return mock;
       },
@@ -176,6 +184,49 @@ test('createLowLevelSpawn receives LowLevelSpawnInput shaped correctly', () => {
   assert.equal(captured[0]!.agentName, 'researcher');
   assert.equal(captured[0]!.mode, 'fresh');
   assert.ok(mock.started, 'start() must be called');
+  cleanup(dataDir);
+});
+
+test('Section 19.14 / D39 — spawn env sets PC_AGENT_SESSION_ID = ccProviderSessionId so pc-rig handshake fires', () => {
+  // Without this env var, packages/mcp/src/server.ts's `oninitialized` POST
+  // to /api/internal/mcp-handshake short-circuits (the handler guards on
+  // PC_PROJECT_ID + PC_AGENT_SESSION_ID being set). Three-signal ready gate
+  // then never gets the handshake signal → hangs the full ready-timeout
+  // window (default 60s) → workflow node fails with `spawn-error: ready
+  // failed`. Section 22 fixed this for the dispatched-agent path (agent-run-
+  // factory sets the var); the workflow-subagent path missed it until the
+  // 19.14 live-fire smoke surfaced the regression.
+  const dataDir = freshDataDir();
+  let capturedEnv: Record<string, string> = {};
+  let capturedCcSessionId = '';
+  const mock = makeMockSpawn();
+  const timers = makeControllableTimers();
+
+  spawnSubagent(
+    {
+      ...baseRequest(dataDir),
+      agentName: 'researcher',
+      extraEnv: { FOO: 'bar' },
+    },
+    {
+      createLowLevelSpawn: (input) => {
+        capturedEnv = input.env as Record<string, string>;
+        capturedCcSessionId = input.ccProviderSessionId;
+        return mock;
+      },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    },
+  );
+
+  assert.ok(capturedCcSessionId, 'ccProviderSessionId minted');
+  assert.equal(
+    capturedEnv.PC_AGENT_SESSION_ID,
+    capturedCcSessionId,
+    'PC_AGENT_SESSION_ID must equal ccProviderSessionId (matches what registerHandshake registers)',
+  );
+  assert.equal(capturedEnv.PC_SESSION_ID, 'sa-test', 'PC_SESSION_ID survives unchanged');
+  assert.equal(capturedEnv.FOO, 'bar', 'extraEnv survives');
   cleanup(dataDir);
 });
 

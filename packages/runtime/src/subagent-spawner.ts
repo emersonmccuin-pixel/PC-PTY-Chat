@@ -252,6 +252,17 @@ export function spawnSubagent(
     ...(process.env as Record<string, string>),
     ...(req.extraEnv ?? {}),
     PC_SESSION_ID: req.pcSessionId,
+    // Section 22's ready-gate requires three signals incl. the MCP handshake.
+    // pc-rig's `server.oninitialized` only POSTs to /api/internal/mcp-handshake
+    // when BOTH `PC_PROJECT_ID` AND `PC_AGENT_SESSION_ID` are set in its env.
+    // Setting this to `ccProviderSessionId` matches the value the spawner
+    // registers in `registerWorkflowSubagentHandshake` (see below), so the
+    // handshake routes back through `notifyWorkflowSubagentHandshake` →
+    // `spawn.notifyMcpHandshake()` → gate opens. Without this, the gate hangs
+    // until the ready-timeout (default 60s) and the workflow node fails with
+    // `spawn-error: ready failed: ready-gate aborted (ready-timeout)`.
+    // Surfaced by the Section 19.14 D39 agent-node live-fire smoke.
+    PC_AGENT_SESSION_ID: ccProviderSessionId,
   };
 
   const llsInput: LowLevelSpawnInput = {
