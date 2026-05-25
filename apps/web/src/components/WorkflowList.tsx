@@ -13,6 +13,7 @@ import { api } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useWorkflowDrawer } from '@/store/workflow-drawer';
 import { CreateWorkflowModal } from './CreateWorkflowModal';
+import { WorkflowBuilderModal } from './WorkflowBuilderModal';
 import { DeleteWorkflowDialog } from './workflows/DeleteWorkflowDialog';
 import { DuplicateWorkflowModal } from './workflows/DuplicateWorkflowModal';
 import { RunNowModal } from './workflows/RunNowModal';
@@ -263,7 +264,7 @@ export function WorkflowList({ project, events, send }: WorkflowListProps) {
       </div>
 
       {createOpen && (
-        <CreateWorkflowModal
+        <WorkflowBuilderModal
           projectId={project.id}
           events={events}
           send={send}

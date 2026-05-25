@@ -832,6 +832,45 @@ export const api = {
     if (!res.ok) throw new Error(`stop workflow-creator → ${res.status}`);
   },
 
+  // ── Workflow-builder (Section 19.9, v2-aware) ─────────────────────────────
+  /** Section 19.9 — start the v2 workflow-builder transient session. Returns
+   *  the initial state + transient sessionId (used to scope `workflow-builder-
+   *  draft` broadcasts to this modal). */
+  startWorkflowBuilder: (projectId: ULID) =>
+    postJson<{ ok: true; state: string; sessionId: string | null }>(
+      `/api/projects/${projectId}/workflow-builder/start`,
+      {},
+    ).then((r) => ({ state: r.state, sessionId: r.sessionId })),
+
+  /** Send a user prompt into the workflow-builder session. */
+  sendWorkflowBuilder: (projectId: ULID, text: string) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-builder/send`, { text }),
+
+  /** Press Escape on the workflow-builder session. */
+  interruptWorkflowBuilder: (projectId: ULID) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-builder/interrupt`, {}),
+
+  /** Kill the workflow-builder session + clear its draft state. Idempotent. */
+  stopWorkflowBuilder: async (projectId: ULID): Promise<void> => {
+    const res = await fetch(`/api/projects/${projectId}/workflow-builder`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`stop workflow-builder → ${res.status}`);
+  },
+
+  /** Push a user-drag draft from the visualizer into the server-side store so
+   *  the next agent turn sees the position changes (sync-model-A). Same
+   *  payload as the MCP-side `pc_save_workflow_draft` write. */
+  saveWorkflowBuilderDraft: (
+    projectId: ULID,
+    sessionId: string,
+    def: unknown,
+  ) =>
+    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-builder/draft`, {
+      sessionId,
+      def,
+    }),
+
   // ── Workflows (4e) ────────────────────────────────────────────────────
   /** Full Workflow def for the drawer's Definition tab + raw YAML text for
    *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. 4h.11a — also returns
