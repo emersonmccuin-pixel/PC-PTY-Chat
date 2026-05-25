@@ -837,33 +837,22 @@ export function ChatSurface({
           <div className="flex flex-col gap-3">
             {renderItems.map((item, idx) => {
               if (item.kind === 'tool-group') {
-                const firstTs = item.calls[0]?.startedAt;
                 return (
-                  <ChatTurnCard
-                    key={item.key}
-                    kind="pm"
-                    ts={firstTs}
-                    sub={`${item.calls.length} tool ${item.calls.length === 1 ? 'call' : 'calls'}`}
-                  >
+                  <ChatTurnCard key={item.key} kind="pm" variant="child">
                     <ToolGroupBubble calls={item.calls} />
                   </ChatTurnCard>
                 );
               }
               if (item.kind === 'edit') {
                 return (
-                  <ChatTurnCard
-                    key={item.key}
-                    kind="pm"
-                    ts={item.call.startedAt}
-                    sub={item.call.tool.toLowerCase()}
-                  >
+                  <ChatTurnCard key={item.key} kind="pm" variant="child">
                     <EditBubble call={item.call} />
                   </ChatTurnCard>
                 );
               }
               if (item.kind === 'workflow-run-group') {
                 return (
-                  <ChatTurnCard key={item.key} kind="pm" sub="workflow run">
+                  <ChatTurnCard key={item.key} kind="pm" variant="child">
                     <WorkflowRunGroupBubble
                       workflowRunId={item.workflowRunId}
                       events={item.events}
@@ -873,11 +862,7 @@ export function ChatSurface({
               }
               if (item.kind === 'agent-dispatch-group') {
                 return (
-                  <ChatTurnCard
-                    key={item.key}
-                    kind="pm"
-                    sub={item.agentName ? `agent · ${item.agentName}` : 'agent dispatch'}
-                  >
+                  <ChatTurnCard key={item.key} kind="pm" variant="child">
                     <AgentDispatchGroupBubble
                       agentRunId={item.agentRunId}
                       agentName={item.agentName}
@@ -925,6 +910,7 @@ export function ChatSurface({
                     kind="pm"
                     ts={askEnv.ts}
                     sub={askEnv.toolName === 'ExitPlanMode' ? 'plan ready' : 'asking'}
+                    status="info"
                   >
                     <AskCard
                       toolName={askEnv.toolName}
@@ -980,12 +966,15 @@ export function ChatSurface({
                 bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
               }
               let sub: string | undefined;
+              let status: ChatTurnStatus | undefined;
               if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
                 sub = formatElapsed(assistantDurationMs);
               } else if (ev.kind === 'approval-required') {
                 sub = 'approval required';
+                status = 'warning';
               } else if (ev.kind === 'subagent-failure') {
                 sub = 'subagent failed';
+                status = 'danger';
               } else if (ev.kind === 'todos') {
                 sub = 'todos';
               } else if (ev.kind === 'task-start') {
@@ -997,6 +986,7 @@ export function ChatSurface({
               } else if (ev.kind === 'system') {
                 const sys = ev as SystemEvent;
                 sub = sys.subtype.replace(/_/g, ' ');
+                if (sys.level === 'error') status = 'danger';
               }
               return (
                 <ChatTurnCard
@@ -1005,6 +995,7 @@ export function ChatSurface({
                   ts={ev.ts}
                   sub={sub}
                   bubbleId={bubbleId}
+                  status={status}
                 >
                   <EventBubble
                     event={ev}
@@ -1064,42 +1055,66 @@ function formatChatTime(ts?: string): string | undefined {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+type ChatTurnStatus = 'warning' | 'info' | 'danger';
+type ChatTurnVariant = 'turn' | 'child';
+
 function ChatTurnCard({
   kind,
   ts,
   sub,
   children,
   bubbleId,
+  status,
+  variant = 'turn',
 }: {
   kind: 'user' | 'pm';
   ts?: string;
   sub?: string;
   children: React.ReactNode;
   bubbleId?: string;
+  status?: ChatTurnStatus;
+  variant?: ChatTurnVariant;
 }) {
+  // Child variant: just the smaller card. No avatar / speaker chrome —
+  // child renderers (tool group, agent dispatch, workflow run, edit) carry
+  // their own header rows.
+  if (variant === 'child') {
+    return (
+      <div className="chat-turn-child" data-bubble-id={bubbleId}>
+        {children}
+      </div>
+    );
+  }
+
   const name = kind === 'user' ? 'You' : 'Claude';
   const avatarText = kind === 'user' ? 'YOU' : 'CC';
   const time = formatChatTime(ts);
   const subParts = [time, sub].filter((x): x is string => Boolean(x));
+
+  const cardClasses = [
+    'chat-turn',
+    kind === 'user' ? 'chat-turn-user' : '',
+    status ? `chat-turn-${status}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div
-      className={`chat-turn${kind === 'user' ? ' chat-turn-user' : ''}`}
-      data-bubble-id={bubbleId}
-    >
-      <div className="chat-turn-head">
-        <div className={`chat-avatar${kind === 'user' ? ' chat-avatar-user' : ''}`}>
-          {avatarText}
-        </div>
-        <div className="chat-turn-meta">
-          <div className={`chat-turn-name${kind === 'user' ? ' chat-turn-name-user' : ''}`}>
+    <div className="chat-turn-row" data-bubble-id={bubbleId}>
+      <div className={`chat-avatar${kind === 'user' ? ' chat-avatar-user' : ''}`}>
+        {avatarText}
+      </div>
+      <div className="chat-turn-col">
+        <div className="chat-turn-speaker">
+          <span className={`chat-turn-name${kind === 'user' ? ' chat-turn-name-user' : ''}`}>
             {name}
-          </div>
+          </span>
           {subParts.length > 0 && (
-            <div className="chat-turn-sub">{subParts.join(' · ')}</div>
+            <span className="chat-turn-sub">{subParts.join(' · ')}</span>
           )}
         </div>
+        <div className={cardClasses}>{children}</div>
       </div>
-      <div>{children}</div>
     </div>
   );
 }

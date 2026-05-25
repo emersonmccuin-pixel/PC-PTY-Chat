@@ -122,6 +122,16 @@
   --fg-hot: #f5ead0;
   --fg-dim: #7a6e5a;
 
+  /* Chat surface palette — Cornered Tab + Wax Seal (Section 29) */
+  --paper: #1a1610;
+  --gold: #d4a64a;
+  --gold-deep: #b8893a;
+  --gold-soft: rgba(212, 166, 74, 0.32);
+  --gold-glow: rgba(212, 166, 74, 0.22);
+  --cream: #f5e8c8;
+  --cream-soft: rgba(245, 232, 200, 0.30);
+  --rule-strong: rgba(245, 232, 200, 0.18);
+
   /* shadcn radius token — collapsed to 0 for Vellum */
   --radius: 0;
 
@@ -528,79 +538,147 @@ button:disabled {
 }
 
 /* ──────────────────────────────────────────────────────────────────
-   Chat surface · LOCKED Glass design (2026-05-24, Section 29)
-   Each turn is a translucent card with a soft white-tinted gradient
-   and 1px white-translucent border. YOU carries a cream gradient.
-   Inside each card: 42px round avatar + name wordmark + sub-line.
+   Chat surface · LOCKED Cornered Tab + Wax Seal (2026-05-25, Section 29)
+   Layout: avatar lives BESIDE the card (flex row).
+     .chat-turn-row → .chat-avatar + .chat-turn-col
+     .chat-turn-col → .chat-turn-speaker + .chat-turn (the card)
+   Cards: cornered tab opening toward the avatar (top-left squared for PM,
+   three corners rounded at 14px). YOU mirrors at 14px 0 14px 14px.
+   2px gold (PM) / cream (YOU) borders on the avatar-side edges; 1px
+   softer elsewhere. Wax-seal avatars: 38px stamps with radial-gradient
+   highlight, layered glow, inset emboss. Status flips reuse the shape.
+   Child cards (tool groups / agent dispatch / workflow run / edit):
+   no avatar, no speaker — 10px radius, 1.5px gold-soft borders.
    ────────────────────────────────────────────────────────────────── */
 
-.chat-turn {
-  padding: 14px 20px;
-  margin: 0 -12px 8px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.01) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 12px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.chat-turn-user {
-  background: linear-gradient(135deg, rgba(245, 232, 200, 0.22) 0%, rgba(245, 232, 200, 0.06) 100%);
-  border-color: rgba(245, 232, 200, 0.30);
-}
-
-.chat-turn-head {
+.chat-turn-row {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 12px;
+  gap: 12px;
+  align-items: flex-start;
 }
 
+.chat-turn-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-turn-speaker {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--foreground);
+  padding: 0 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-turn-name {
+  font-weight: 700;
+  color: var(--gold);
+}
+
+.chat-turn-name-user {
+  color: var(--cream);
+}
+
+.chat-turn-sub {
+  color: var(--fg-dim);
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+}
+
+/* PM turn card — cornered tab opening top-left toward the avatar. */
+.chat-turn {
+  padding: 13px 18px;
+  background: var(--paper);
+  border: 1px solid var(--gold-soft);
+  border-top: 2px solid var(--gold);
+  border-left: 2px solid var(--gold);
+  border-radius: 0 14px 14px 14px;
+}
+
+/* YOU turn card — same row layout but mirrors the corners. */
+.chat-turn-user {
+  background: rgba(245, 232, 200, 0.08);
+  border: 1px solid var(--cream-soft);
+  border-top: 2px solid var(--cream);
+  border-right: 2px solid var(--cream);
+  border-left: 1px solid var(--cream-soft);
+  border-radius: 14px 0 14px 14px;
+}
+
+/* Status-card variants — same cornered-tab shape, color flips on PM side. */
+.chat-turn-warning {
+  background: rgba(216, 166, 74, 0.04);
+  border-color: rgba(216, 166, 74, 0.32);
+  border-top-color: var(--warning);
+  border-left-color: var(--warning);
+}
+
+.chat-turn-info {
+  background: rgba(111, 166, 194, 0.04);
+  border-color: rgba(111, 166, 194, 0.32);
+  border-top-color: var(--info);
+  border-left-color: var(--info);
+}
+
+.chat-turn-danger {
+  background: rgba(184, 90, 90, 0.06);
+  border-color: rgba(184, 90, 90, 0.32);
+  border-top-color: var(--destructive);
+  border-left-color: var(--destructive);
+}
+
+/* Child card — tool / agent / workflow / edit. No avatar, no speaker chrome. */
+.chat-turn-child {
+  padding: 10px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--rule-strong);
+  border-top: 1.5px solid var(--gold-soft);
+  border-left: 1.5px solid var(--gold-soft);
+  border-radius: 0 10px 10px 10px;
+}
+
+/* Wax-seal avatar — PM (gold stamp). */
 .chat-avatar {
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  border: 1px solid var(--primary);
-  background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
-  color: var(--primary);
+  border: 2px solid var(--gold);
+  background:
+    radial-gradient(circle at 36% 28%, rgba(212, 166, 74, 0.55), rgba(212, 166, 74, 0.06)),
+    radial-gradient(circle at 70% 75%, rgba(184, 137, 58, 0.30), transparent 60%);
+  color: var(--gold);
+  box-shadow:
+    0 0 0 1px var(--paper),
+    0 0 8px var(--gold-glow),
+    inset 0 1px 0 rgba(255, 220, 130, 0.20),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  font-size: 0.7rem;
-  letter-spacing: 0.1em;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
   flex-shrink: 0;
   font-family: var(--font-mono);
+  margin-top: 2px;
 }
 
+/* Wax-seal avatar — YOU (cream stamp). */
 .chat-avatar-user {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
-  color: var(--accent);
-}
-
-.chat-turn-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.chat-turn-name {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-weight: 800;
-  color: var(--primary);
-}
-
-.chat-turn-name-user {
-  color: var(--accent);
-}
-
-.chat-turn-sub {
-  font-size: 0.6rem;
-  color: var(--fg-dim);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  border: 2px solid var(--cream);
+  background:
+    radial-gradient(circle at 36% 28%, rgba(245, 232, 200, 0.55), rgba(245, 232, 200, 0.06)),
+    radial-gradient(circle at 70% 75%, rgba(245, 232, 200, 0.20), transparent 60%);
+  color: var(--cream);
+  box-shadow:
+    0 0 0 1px var(--background),
+    0 0 6px rgba(245, 232, 200, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.20);
 }
