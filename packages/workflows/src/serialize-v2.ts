@@ -11,6 +11,17 @@ import { validateWorkflowV2 } from './dag/validate.ts';
 /** Marker written at the top of every v2 workflow file. */
 export const WORKFLOW_V2_VERSION = 2;
 
+/** Cheap check: is this YAML text a v2 workflow (top-level `version: 2`)? Used
+ *  to keep the v1 boot migration from touching v2 files in the shared dir. */
+export function isV2WorkflowText(yamlText: string): boolean {
+  try {
+    const doc = yamlLoad(yamlText);
+    return doc !== null && typeof doc === 'object' && (doc as Record<string, unknown>).version === WORKFLOW_V2_VERSION;
+  } catch {
+    return false;
+  }
+}
+
 /** Serialize a v2 workflow to round-trippable YAML. Fixed key order keeps the
  *  on-disk shape human-readable + diff-friendly. */
 export function serializeWorkflowV2(workflow: WorkflowV2.Workflow): string {

@@ -2857,6 +2857,53 @@ app.post('/api/projects/:projectId/workflow-v2/fire', async (c) => {
   }
 });
 
+// Section 19 — v2 workflow DEFINITIONS store (distinct from runs above).
+// publish: validate → write YAML → registry reload → broadcast. Create or
+// overwrite by id (the builder pod's publish tool calls this).
+app.post('/api/projects/:projectId/workflow-v2/definitions', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ workflow?: unknown }>();
+  const wf = body.workflow as { id?: unknown; name?: unknown; nodes?: unknown } | undefined;
+  if (!wf || typeof wf.id !== 'string' || typeof wf.name !== 'string' || !Array.isArray(wf.nodes)) {
+    return c.json({ ok: false, error: 'workflow must have { id, name, nodes[] }' }, 400);
+  }
+  const graph = validateWorkflowV2(wf as never);
+  if (!graph.ok) {
+    return c.json({ ok: false, error: `invalid workflow: ${graph.errors.join('; ')}`, errors: graph.errors }, 400);
+  }
+  try {
+    const res = runtime.publishV2Workflow(wf as never);
+    return c.json({ ok: true, ...res }, 201);
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+// list: valid + invalid v2 definitions for the Workflows tab.
+app.get('/api/projects/:projectId/workflow-v2/definitions', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const state = runtime.listV2Workflows();
+  return c.json({
+    ok: true,
+    valid: state.valid.map((e) => ({ id: e.workflow.id, name: e.workflow.name, workflow: e.workflow })),
+    invalid: state.invalid.map((e) => ({ fileName: e.fileName, errors: e.errors })),
+  });
+});
+
+// get one by id (the workflow def + raw YAML, for the editor).
+app.get('/api/projects/:projectId/workflow-v2/definitions/:wfId', (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const entry = runtime.workflowV2Registry().findById(c.req.param('wfId'));
+  if (!entry) return c.json({ ok: false, error: 'workflow not found' }, 404);
+  return c.json({ ok: true, workflow: entry.workflow, yamlText: entry.yamlText });
+});
+
 // Section 19.4f — read a v2 run (sidecar state + event log). Project-scoped.
 app.get('/api/projects/:projectId/workflow-v2/runs/:runId', (c) => {
   const id = c.req.param('projectId');

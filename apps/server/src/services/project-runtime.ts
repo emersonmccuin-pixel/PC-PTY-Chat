@@ -22,7 +22,13 @@ import {
   reactivateOrchestratorSession,
 } from '@pc/db';
 import { jsonlPathFor, PtySession } from '@pc/runtime';
-import { WorkflowRegistry } from '@pc/workflows';
+import {
+  WorkflowRegistry,
+  WorkflowV2Registry,
+  serializeWorkflowV2,
+  validateWorkflowV2,
+  type RegistryV2State,
+} from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
@@ -71,6 +77,7 @@ export class ProjectRuntime {
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
+  private registryV2: WorkflowV2Registry | null = null;
   private workItemSvc: WorkItemService | null = null;
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
@@ -141,6 +148,44 @@ export class ProjectRuntime {
       this.registry.reload();
     }
     return this.registry;
+  }
+
+  /** Lazy: v2 workflow registry over the SAME dir as v1. The boot migration
+   *  (run via `workflowRegistry()`) skips `version: 2` files, so it's safe to
+   *  prime the v1 registry first. Both coexist until the 19.13 cutover. */
+  workflowV2Registry(): WorkflowV2Registry {
+    if (!this.registryV2) {
+      const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
+      // Ensure the v1 boot migration has run (it skips v2 files) before we scan.
+      this.workflowRegistry();
+      this.registryV2 = new WorkflowV2Registry(dir);
+      this.registryV2.reload();
+    }
+    return this.registryV2;
+  }
+
+  /** Section 19 — publish (create or overwrite) a v2 workflow definition.
+   *  Validates the graph, writes the YAML to `<folder>/.project-companion/
+   *  workflows/<id>.yaml`, reloads the registry, and broadcasts the change so
+   *  the Workflows tab refreshes. Returns the on-disk path. Throws on invalid
+   *  graph (caller maps to HTTP 400). */
+  publishV2Workflow(workflow: WorkflowV2.Workflow): { id: string; path: string } {
+    const result = validateWorkflowV2(workflow);
+    if (!result.ok) {
+      throw new Error(`invalid workflow: ${result.errors.join('; ')}`);
+    }
+    const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const path = resolve(dir, `${workflow.id}.yaml`);
+    writeFileSync(path, serializeWorkflowV2(workflow), 'utf-8');
+    this.workflowV2Registry().reload();
+    this.opts.broadcast({ type: 'project-workflows-changed', projectId: this.project.id, id: workflow.id });
+    return { id: workflow.id, path };
+  }
+
+  /** Section 19 — current v2 registry state (valid + invalid), reloaded. */
+  listV2Workflows(): RegistryV2State {
+    return this.workflowV2Registry().reload();
   }
 
   /** Section 4h.8 / D80. Runs the boot-time migration on this project's

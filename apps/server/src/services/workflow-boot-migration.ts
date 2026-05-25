@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { migrateWorkflowText } from '@pc/workflows';
+import { migrateWorkflowText, isV2WorkflowText } from '@pc/workflows';
 
 export interface BootMigrationStats {
   /** Files rewritten on disk this run. */
@@ -59,6 +59,11 @@ export function migrateWorkflowsInPlace(dir: string): BootMigrationStats {
         `cannot read workflow file ${full}: ${(err as Error).message}`,
       );
     }
+
+    // Section 19 — v2 workflow files coexist in this dir. They are not the v1
+    // migrator's concern; skip them so it never tries to migrate (or throws on)
+    // the new shape.
+    if (isV2WorkflowText(text)) continue;
 
     const result = migrateWorkflowText(text);
     if (!result.ok) {
