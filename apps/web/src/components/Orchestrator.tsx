@@ -27,6 +27,20 @@ interface OrchestratorProps {
   wsStatus: WsStatus;
 }
 
+/** Section 31.3 — pick a composer placeholder hint from CC's latest
+ *  `session_state_changed` value. Null = no signal seen yet → ChatSurface
+ *  uses its default placeholder. */
+function composerPlaceholderForSessionState(state: string | null): string | undefined {
+  switch (state) {
+    case 'requires_action':
+      return 'Awaiting your answer…';
+    case 'running':
+      return 'Orchestrator thinking… type to queue';
+    default:
+      return undefined;
+  }
+}
+
 export function Orchestrator({ project, events, send, clearWs, wsStatus }: OrchestratorProps) {
   // Viewing a past session? When set, the chat panel renders that session's
   // events.jsonl in read-only mode (composer hidden, "Return to live" button).
@@ -134,6 +148,25 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     }
     return session?.model ?? null;
   }, [events, session?.model]);
+
+  // Section 31.3 — most-recent CC `session_state_changed` value seen in
+  // JSONL. States: `idle` / `running` / `requires_action`. Drives the
+  // composer placeholder hint when the user needs to act. Stays null if the
+  // signal hasn't fired yet — Section 31's firing matrix shows it didn't
+  // fire in 22k rows of 2026-05-25 captures, so we use it ADDITIVELY for
+  // now and keep the legacy hook-based `sessionEnded` scan below as the
+  // disable fallback until we verify the new signal fires reliably in PTY
+  // mode. The buildout's "drop the hook-event scan" step is gated on that
+  // empirical confirmation.
+  const latestSessionState = useMemo<string | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'jsonl') continue;
+      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
+      if (ev?.kind === 'jsonl-session-state') return ev.state;
+    }
+    return null;
+  }, [events]);
 
   // session-end event from CC's SessionEnd hook. The PTY is gone; disable the
   // composer + surface a footer notice. Cleared when a fresh session is active.
@@ -290,6 +323,7 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
       }
       composerHistoryKey={project.slug}
       composerHidden={composerHidden}
+      composerPlaceholder={composerPlaceholderForSessionState(latestSessionState)}
       headerSlot={headerSlot}
       bannerSlot={bannerSlot}
       footerSlot={footerSlot}
