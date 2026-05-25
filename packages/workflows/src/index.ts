@@ -17,3 +17,15 @@ export type {
   MigrationOk,
   MigrationResult,
 } from './typed-migration.ts';
+// Section 19 — v2 DAG executor pure core.
+export {
+  buildTopologicalLayers,
+  computeUpstreams,
+  forwardEdges,
+  findForwardCycle,
+  evaluateCondition,
+  checkTriggerRule,
+  substituteRefs,
+  shellQuote,
+  type RefResolver,
+} from './dag/index.ts';
