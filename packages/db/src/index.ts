@@ -148,6 +148,19 @@ export type {
   PostTurnSummaryRow,
 } from './repos/post-turn-summaries.ts';
 
+// Section 31.11 — statusline snapshot log repo.
+export {
+  getLatestSnapshotForProject,
+  insertStatuslineSnapshot,
+  listLatestSnapshotPerSession,
+  listSnapshotsForProjectSince,
+  listSnapshotsForSession,
+} from './repos/statusline-snapshots.ts';
+export type {
+  InsertStatuslineSnapshotInput,
+  StatuslineSnapshotRow,
+} from './repos/statusline-snapshots.ts';
+
 // Section 25 — agent inbox / delivery repo.
 export {
   enqueueInboxRow,

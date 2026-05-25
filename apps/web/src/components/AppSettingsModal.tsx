@@ -27,11 +27,12 @@ import {
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { PodDetailModal } from './agents/PodDetailModal';
 
-type TabId = 'general' | 'storage' | 'specialists';
+type TabId = 'general' | 'storage' | 'usage' | 'specialists';
 
 const TABS: { id: TabId; label: string; danger?: boolean }[] = [
   { id: 'general', label: 'General' },
   { id: 'storage', label: 'Storage' },
+  { id: 'usage', label: 'Usage' },
   { id: 'specialists', label: 'Specialists', danger: true },
 ];
 
@@ -241,6 +242,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                     onDraftChange={(patch) => setDraft((p) => ({ ...p, ...patch }))}
                   />
                 )}
+                {active === 'usage' && <UsageTab />}
                 {active === 'specialists' && (
                   <SpecialistsTab
                     stockPods={stockPods}
@@ -469,6 +471,138 @@ function StorageTab({
           </div>
         )}
       </FieldRow>
+    </div>
+  );
+}
+
+// ── Usage tab ─────────────────────────────────────────────────────────────
+
+function UsageTab() {
+  const [bucket, setBucket] = useState<'day' | 'week' | 'month'>('day');
+  const [windowDays, setWindowDays] = useState<number>(30);
+  const [rows, setRows] = useState<
+    Array<{ bucket: string; costUsd: number; sessions: number }> | null
+  >(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    api
+      .getUsageAggregate(bucket, windowDays)
+      .then((r) => {
+        if (!cancelled) setRows(r.rows);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setErr(e.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bucket, windowDays]);
+
+  const totalCost = (rows ?? []).reduce((acc, r) => acc + r.costUsd, 0);
+  const totalSessions = (rows ?? []).reduce((acc, r) => acc + r.sessions, 0);
+  const maxCost = (rows ?? []).reduce((m, r) => Math.max(m, r.costUsd), 0);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        Usage data comes from CC's statusline. Cost reflects what the
+        Anthropic API would charge — under a subscription it's an estimate of
+        what you'd pay on metered usage, not a real bill. Sessions counted
+        once each (latest snapshot wins).
+      </div>
+
+      <div className="flex items-end gap-3 text-xs">
+        <label className="flex flex-col gap-1">
+          <span className="text-muted-foreground">Bucket</span>
+          <select
+            value={bucket}
+            onChange={(e) => setBucket(e.target.value as typeof bucket)}
+            className="border border-border bg-background px-2 py-1"
+          >
+            <option value="day">Day</option>
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-muted-foreground">Window</span>
+          <select
+            value={windowDays}
+            onChange={(e) => setWindowDays(Number(e.target.value))}
+            className="border border-border bg-background px-2 py-1"
+          >
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+            <option value={180}>180 days</option>
+            <option value={365}>1 year</option>
+          </select>
+        </label>
+        <div className="ml-auto flex flex-col items-end text-right">
+          <span className="text-muted-foreground">Window total</span>
+          <span className="font-mono text-lg text-foreground">
+            ${totalCost.toFixed(2)}
+          </span>
+          <span className="text-[10px] text-muted-foreground">
+            {totalSessions} session{totalSessions === 1 ? '' : 's'}
+          </span>
+        </div>
+      </div>
+
+      {err && (
+        <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {err}
+        </div>
+      )}
+
+      {loading && (
+        <div className="text-xs text-muted-foreground">Loading…</div>
+      )}
+
+      {!loading && rows !== null && rows.length === 0 && (
+        <div className="border border-dashed border-border bg-muted/20 px-3 py-3 text-xs text-muted-foreground">
+          No usage in this window. PC's statusline hook records data once a
+          chat session reaches CC's status-line refresh path. Start a chat,
+          send a prompt, and the next snapshot will land here.
+        </div>
+      )}
+
+      {rows !== null && rows.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground">
+            <span>Bucket</span>
+            <span>Cost · sessions</span>
+          </div>
+          {rows.map((r) => {
+            const fillPct = maxCost > 0 ? (r.costUsd / maxCost) * 100 : 0;
+            return (
+              <div key={r.bucket} className="flex flex-col gap-0.5">
+                <div className="flex items-center justify-between font-mono text-xs">
+                  <span className="text-foreground/80">{r.bucket}</span>
+                  <span className="text-foreground">
+                    ${r.costUsd.toFixed(2)}{' '}
+                    <span className="text-muted-foreground">· {r.sessions}</span>
+                  </span>
+                </div>
+                <div className="relative h-1.5 w-full overflow-hidden bg-muted">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-primary/60"
+                    style={{ width: `${fillPct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

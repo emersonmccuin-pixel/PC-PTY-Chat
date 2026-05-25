@@ -1081,6 +1081,21 @@ export const api = {
       `/api/projects/${projectId}/statusline`,
     ).then((r) => r.snapshot),
 
+  /** Section 31.11 — usage aggregation across projects. Server bucket-by-day
+   *  / week / month over a window; returns latest-cost-per-session summed
+   *  into each bucket. Account-wide cap data lives on the most-recent
+   *  snapshot — fetch via getStatuslineSnapshot(activeProject). */
+  getUsageAggregate: (
+    bucket: 'day' | 'week' | 'month',
+    windowDays: number,
+  ) =>
+    getJson<{
+      ok: true;
+      bucket: string;
+      windowDays: number;
+      rows: Array<{ bucket: string; costUsd: number; sessions: number }>;
+    }>(`/api/usage/aggregate?bucket=${bucket}&windowDays=${windowDays}`),
+
   /** Section 23 — server returns envelope-shape objects so the client can
    *  demux on `type`. New path: `{type:'jsonl', event}`. Legacy fallback:
    *  `{type:'event', event}` (pre-23 hook-written events.jsonl). */

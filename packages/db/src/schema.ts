@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
   AcceptanceCriteria,
   AgentEffort,
@@ -544,6 +544,45 @@ export {
 // carries rich per-turn metadata (title/description/needs_action/artifact_urls)
 // the buildout deferred placing in UI until a week of real data could inform
 // the call. Land the table now; surface design after.
+// Section 31.11 — statusline snapshot log. Every POST /api/internal/statusline-
+// data writes one row; the in-memory latest-per-project Map drives the live
+// left-rail caps panel, this table drives the Global Settings Usage tab +
+// future aggregations. Many rows per session (debounced ~1×/turn).
+export const statuslineSnapshots = sqliteTable(
+  'statusline_snapshots',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    /** PC session ULID from the spawn env (`PC_SESSION_ID`). */
+    pcSessionId: text('pc_session_id').notNull(),
+    /** CC provider session UUID, when the snapshot carries it. */
+    ccSessionId: text('cc_session_id'),
+    /** Epoch ms when the server received this snapshot. */
+    receivedAt: integer('received_at').notNull(),
+    modelId: text('model_id'),
+    modelDisplayName: text('model_display_name'),
+    /** Account-wide rate limits — may be null until CC has measured them. */
+    fiveHourPct: real('five_hour_pct'),
+    fiveHourResetsAt: text('five_hour_resets_at'),
+    sevenDayPct: real('seven_day_pct'),
+    sevenDayResetsAt: text('seven_day_resets_at'),
+    /** Per-session running totals from CC's cost-tracker. */
+    totalCostUsd: real('total_cost_usd'),
+    totalDurationMs: integer('total_duration_ms'),
+    totalApiDurationMs: integer('total_api_duration_ms'),
+    contextCurrentUsage: integer('context_current_usage'),
+    contextWindowSize: integer('context_window_size'),
+    contextUsedPercentage: real('context_used_percentage'),
+  },
+  (t) => [
+    index('statusline_snapshots_project_idx').on(t.projectId, t.receivedAt),
+    index('statusline_snapshots_session_idx').on(t.pcSessionId, t.receivedAt),
+  ],
+);
+
 export const postTurnSummaries = sqliteTable(
   'post_turn_summaries',
   {
