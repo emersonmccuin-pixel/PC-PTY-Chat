@@ -1598,6 +1598,10 @@ function SystemErrorBubble({ event }: { event: SystemEvent }) {
   );
 }
 
+// Section 32.5 — routine system events render as centered whisper text
+// (dotted border, smaller type, muted) so they fade into the chat scroll
+// instead of competing with speaker turns. Click to expand details inline;
+// errors still get the loud red SystemErrorBubble treatment.
 function SystemFooter({ event }: { event: SystemEvent }) {
   const [open, setOpen] = useState(false);
   const previewRaw = event.message.startsWith(`[${event.subtype}]`)
@@ -1606,26 +1610,38 @@ function SystemFooter({ event }: { event: SystemEvent }) {
   const preview = previewRaw.split('\n')[0] ?? '';
   const hasMore = previewRaw !== preview || event.raw !== undefined;
   return (
-    <div className="self-start max-w-[90%] text-[11px] text-muted-foreground">
+    <div className="self-center max-w-[80%] text-[10px] text-muted-foreground/80">
       <button
         type="button"
         onClick={() => hasMore && setOpen((v) => !v)}
-        className={`flex w-full items-center gap-2 text-left ${hasMore ? 'hover:text-foreground' : 'cursor-default'}`}
+        className={`flex w-full items-center justify-center gap-2 border border-dotted border-border/70 px-3 py-0.5 text-center uppercase tracking-[0.06em] ${
+          hasMore ? 'hover:border-border hover:text-foreground/80' : 'cursor-default'
+        }`}
       >
-        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/80">
+        <span className="text-muted-foreground/70">
           {event.subtype.replace(/_/g, ' ')}
         </span>
-        <span className="min-w-0 flex-1 truncate italic">{preview}</span>
+        {preview && (
+          <>
+            <span className="text-[var(--fg-dim)]">·</span>
+            <span className="min-w-0 truncate normal-case tracking-normal italic text-muted-foreground/80">
+              {preview}
+            </span>
+          </>
+        )}
         {hasMore && (
-          <span className="shrink-0 text-[10px] uppercase tracking-wider underline-offset-2 hover:underline">
-            {open ? 'hide' : 'details'}
-          </span>
+          <>
+            <span className="text-[var(--fg-dim)]">·</span>
+            <span className="shrink-0 text-[var(--fg-dim)] underline-offset-2 hover:underline">
+              {open ? 'hide' : 'details'}
+            </span>
+          </>
         )}
       </button>
       {open && (
-        <div className="mt-1 border-l-2 border-border pl-3">
+        <div className="mt-1 self-center border-l-2 border-border/50 pl-3 text-left normal-case tracking-normal">
           {previewRaw !== preview && (
-            <div className="mb-1.5 whitespace-pre-wrap break-words text-foreground">
+            <div className="mb-1.5 whitespace-pre-wrap break-words text-foreground/90">
               {previewRaw}
             </div>
           )}

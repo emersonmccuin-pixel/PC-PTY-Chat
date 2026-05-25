@@ -28,7 +28,11 @@ const EMPTY_USAGE: UsageTotals = {
 interface OrchestratorTelemetryState {
   model: string | null;
   usage: UsageTotals;
+  /** Section 32.5 — session metadata for the header breadcrumb dropdown. */
+  sessionId: string | null;
+  sessionLabel: string | null;
   set: (next: { model: string | null; usage: UsageTotals }) => void;
+  setSession: (next: { sessionId: string | null; sessionLabel: string | null }) => void;
   clear: () => void;
 }
 
@@ -36,7 +40,16 @@ export const useOrchestratorTelemetry = create<OrchestratorTelemetryState>(
   (set) => ({
     model: null,
     usage: EMPTY_USAGE,
+    sessionId: null,
+    sessionLabel: null,
     set: (next) => set(next),
-    clear: () => set({ model: null, usage: EMPTY_USAGE }),
+    setSession: (next) => set(next),
+    clear: () =>
+      set({
+        model: null,
+        usage: EMPTY_USAGE,
+        sessionId: null,
+        sessionLabel: null,
+      }),
   }),
 );

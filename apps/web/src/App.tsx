@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { api, type GlobalSettings, type Project } from '@/api/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
@@ -21,6 +22,10 @@ export default function App() {
   const activeTab = useActiveCenterTab((s) => s.tab);
   const telemetryModel = useOrchestratorTelemetry((s) => s.model);
   const telemetryUsage = useOrchestratorTelemetry((s) => s.usage);
+  const sessionId = useOrchestratorTelemetry((s) => s.sessionId);
+  const sessionLabel = useOrchestratorTelemetry((s) => s.sessionLabel);
+  const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
+  const sessionBreadcrumbRef = useRef<HTMLButtonElement | null>(null);
 
   // Activity panel open/closed lives in settings_global.activity_panel.
   // `showAllProjects` field still in settings schema (additive — Section 7
@@ -156,6 +161,25 @@ export default function App() {
             <span className="text-foreground">{activeProject.name}</span>
             <span className="text-[var(--fg-dim)]">›</span>
             <span>{tabLabel(activeTab)}</span>
+            {sessionLabel && activeTab === 'orchestrator' && (
+              <>
+                <span className="text-[var(--fg-dim)]">·</span>
+                <button
+                  ref={sessionBreadcrumbRef}
+                  type="button"
+                  onClick={() => setSessionSwitcherOpen((v) => !v)}
+                  className={`inline-flex items-center gap-1 italic hover:text-accent ${
+                    sessionSwitcherOpen ? 'text-accent' : ''
+                  }`}
+                  title="Switch sessions"
+                  aria-expanded={sessionSwitcherOpen}
+                  aria-haspopup="menu"
+                >
+                  <span className="max-w-[260px] truncate">{sessionLabel}</span>
+                  <span className="text-[var(--fg-dim)]">▾</span>
+                </button>
+              </>
+            )}
           </div>
         )}
         <div className="ml-auto flex items-center gap-3 text-[10px] uppercase tracking-[0.04em]">
@@ -239,6 +263,14 @@ export default function App() {
           wsStatus={ws.status}
         />
       </div>
+      {sessionSwitcherOpen && activeProject && (
+        <SessionSwitcher
+          projectId={activeProject.id}
+          activeSessionId={sessionId}
+          anchorEl={sessionBreadcrumbRef.current}
+          onClose={() => setSessionSwitcherOpen(false)}
+        />
+      )}
       {createOpen && (
         <CreateProjectModal
           {...(settings?.projectsFolder ? { projectsFolder: settings.projectsFolder } : {})}

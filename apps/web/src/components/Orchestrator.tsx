@@ -152,13 +152,22 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
 
   // Section 32.4 — publish telemetry into a shared store so App.tsx's
   // slim header can render the same model + token roll-up the StatusBar
-  // shows. Clear on unmount so the header doesn't show stale data when
-  // the user switches to a tab without a chat panel.
+  // shows. Section 32.5 adds session id + label so the breadcrumb can
+  // host the session-switcher dropdown. Clear on unmount so the header
+  // doesn't show stale data when the user switches to a tab without a
+  // chat panel.
   const setTelemetry = useOrchestratorTelemetry((s) => s.set);
+  const setSessionMeta = useOrchestratorTelemetry((s) => s.setSession);
   const clearTelemetry = useOrchestratorTelemetry((s) => s.clear);
   useEffect(() => {
     setTelemetry({ model: liveModel, usage: sessionUsage });
   }, [liveModel, sessionUsage, setTelemetry]);
+  useEffect(() => {
+    setSessionMeta({
+      sessionId: session?.id ?? null,
+      sessionLabel: session?.title?.trim() || (session ? 'Untitled session' : null),
+    });
+  }, [session?.id, session?.title, setSessionMeta]);
   useEffect(() => () => clearTelemetry(), [clearTelemetry]);
 
   // Section 31.3 — most-recent CC `session_state_changed` value seen in
