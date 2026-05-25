@@ -292,4 +292,6 @@ export const WORKFLOW_BUILDER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'passthrough',
   description:
     'Designs v2 workflows through a conversational interview. Opened from the "+ New workflow" modal (or when the user asks the orchestrator to author a workflow). v2-aware: 5 node kinds, $-refs, reject-only kick-back primitive, max_iterations: 3 default.',
+  dispatchGuidance:
+    'NOT orchestrator-dispatched. Opened from the Workflows tab → + New workflow. If the user asks for a new workflow in chat, point them to that surface.',
 };

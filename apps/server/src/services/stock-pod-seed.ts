@@ -553,6 +553,8 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'passthrough',
   description:
     "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Closes via pc_complete_node / pc_node_failed. Can ask the orchestrator or request user approval when needed.",
+  dispatchGuidance:
+    'one-off filesystem investigations, multi-file reading, web lookups, summarising what exists.',
 };
 
 const WRITER_POD_CONTENT: CreateAgentInput = {
@@ -578,6 +580,8 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     "Drafts text — emails, docs, summaries, release notes, prose. Matches the audience's voice. Returns the draft inline; attaches long drafts to the pinned work item.",
+  dispatchGuidance:
+    'drafting text — emails, docs, summaries, release notes, prose. Audience-aware voice.',
 };
 
 const REVIEWER_POD_CONTENT: CreateAgentInput = {
@@ -602,6 +606,8 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     'Critiques a draft / code change / plan / design against explicit criteria. Returns pass | fail | revise plus concrete comments with file:line citations. Flags vague criteria rather than guessing.',
+  dispatchGuidance:
+    'critiquing a draft / code change / plan / design against explicit criteria. Returns pass | fail | revise + comments.',
 };
 
 const PLANNER_POD_CONTENT: CreateAgentInput = {
@@ -625,6 +631,8 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     "Breaks a goal into ordered, concrete, verifiable steps. Surfaces dependencies, risks, and unknowns. Doesn't pad with obvious steps.",
+  dispatchGuidance:
+    'decomposing a goal into ordered concrete steps + dependencies + risks + unknowns. Not strategy; just sequencing.',
 };
 
 const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
@@ -650,6 +658,8 @@ const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'passthrough',
   description:
     'Designs new agent pods through a short conversation. The orchestrator dispatches this for "make me an agent that does X" / new-pod-from-scratch flows.',
+  dispatchGuidance:
+    'NOT orchestrator-dispatched. Opened from the Agents tab → + New agent → Conversational. If the user asks for a new agent in chat, point them to that surface; do not invoke agent-designer yourself.',
 };
 
 const CAISSON_POD_CONTENT: CreateAgentInput = {
@@ -683,6 +693,8 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     "In-app specialist for Project Companion. Answers questions about how PC works (stages, work items, agents, workflows, etc.) and mutates project + global config via the local HTTP API. Always asks for approval before destructive changes.",
+  dispatchGuidance:
+    'product questions about PC ("how do stages work?", "what\'s a workflow?", "how do agents work?") AND config changes (project settings, stages, fields, workflows, CLAUDE.md, global app settings). Approval-gated for destructive ops.',
 };
 
 const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
@@ -710,6 +722,8 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     "Writes or edits code to meet a spec. Matches surrounding conventions, runs typecheck / tests / lint via Bash, only returns on green.",
+  dispatchGuidance:
+    'writing or editing code to meet a spec. Matches surrounding conventions; runs typecheck / tests / lint before returning.',
 };
 
 const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
@@ -733,6 +747,8 @@ const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'chat',
   description:
     'Pulls structured data from unstructured input. Returns JSON matching the supplied schema. Flags ambiguous fields with null rather than guessing.',
+  dispatchGuidance:
+    'pulling structured data from unstructured input. JSON output matching a schema you specify per dispatch.',
 };
 
 const QUICK_TASKS_PM_PROMPT = `You are the **Quick Tasks PM** — the project manager for the pinned Quick Tasks surface. Your job: help the user keep their atomic todos (the "remember to ping Pat," "review John's PTO," "renew the domain Friday" kind of stuff) under control.
@@ -837,6 +853,8 @@ const QUICK_TASKS_PM_POD_CONTENT: CreateAgentInput = {
   outputDestination: 'passthrough',
   description:
     "PM for the pinned Quick Tasks cross-project surface. Triage + execution; not strategic planning. Drives through the list conversationally. Cross-project capture from any orchestrator lands here.",
+  dispatchGuidance:
+    'NOT orchestrator-dispatched. Loaded only as the Quick Tasks project chat target. Cross-project capture uses pc_create_quick_task directly, not this pod.',
 };
 
 /** Ordered list of stock pod content the boot-time seed walks. Researcher

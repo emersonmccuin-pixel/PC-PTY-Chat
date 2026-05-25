@@ -26,6 +26,10 @@ import { getPodForSpawn } from '@pc/db';
 import type { PodMcpServerConfig, ULID } from '@pc/domain';
 import { materializePod, type MaterializedPod, type PodWorkItemContext } from '@pc/runtime';
 import { PC_RIG_TOOL_NAMES } from './pod-tool-catalog.ts';
+import {
+  renderAvailableAgents,
+  renderAvailableTools,
+} from './pod-variable-renderers.ts';
 
 export interface PreparePodSpawnInput {
   /** Agent name — looked up against the pod rows. */
@@ -85,6 +89,19 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
 
   const baseline = readProjectMcpBaseline(input.worktreeDir);
 
+  // Section 36 — pod-prompt variable substitution. Compute lazily: scan the
+  // prompt body for the two known placeholders first so the renderers (which
+  // hit the DB / catalog) only fire when actually referenced. Prompt bodies
+  // without `{{AVAILABLE_*}}` skip both renders.
+  const promptBody = bundle.agent.prompt;
+  const variables: Record<string, string> = {};
+  if (promptBody.includes('{{AVAILABLE_AGENTS}}')) {
+    variables.AVAILABLE_AGENTS = renderAvailableAgents(input.projectId ?? null);
+  }
+  if (promptBody.includes('{{AVAILABLE_TOOLS}}')) {
+    variables.AVAILABLE_TOOLS = renderAvailableTools(bundle.agent.tools);
+  }
+
   const materialised: MaterializedPod = materializePod({
     bundle,
     worktreeDir: input.worktreeDir,
@@ -93,6 +110,7 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
     mcpToolCatalog: { 'pc-rig': PC_RIG_TOOL_NAMES },
     filterMcpToReferencedTools: input.filterMcpToReferencedTools ?? false,
     workItem: input.workItem,
+    ...(Object.keys(variables).length > 0 ? { variables } : {}),
   });
 
   return {
