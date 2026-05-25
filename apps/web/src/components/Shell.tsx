@@ -33,8 +33,9 @@ import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
-// Section 32.1 — TabBar lives at the Shell level now (full-width topbar)
-// instead of inside Center. Center renders tab content only.
+// Section 32.1 — TabBar lifted to a topbar but spanning the full width
+// confused users. Refinement (Session 31) puts the tab strip back above the
+// Center column only; rail + activity panel keep their own headers.
 
 interface ShellProps {
   projects: Project[];
@@ -91,7 +92,6 @@ export function Shell({
 
   return (
     <div className="flex h-full flex-col">
-      {activeProject && <ShellTabBar />}
       <Group
         orientation="horizontal"
         id="pc-shell-v3"
@@ -164,14 +164,6 @@ export function Shell({
   );
 }
 
-// Thin wrapper that subscribes to the tab store at Shell-level so the
-// topbar re-renders on switch without forwarding extra props.
-function ShellTabBar() {
-  const tab = useActiveCenterTab((s) => s.tab);
-  const setTab = useActiveCenterTab((s) => s.setTab);
-  return <TabBar value={tab} onChange={setTab} />;
-}
-
 // 28.5 — single mount above tab content so any surface (Activity Panel,
 // AgentDispatchGroupBubble in chat, future surfaces) can open the modal
 // via the useAgentTranscript store. Derives the displayed AgentRunRecord
@@ -228,6 +220,7 @@ function Center({
   onProjectDeleted: (projectId: string) => void;
 }) {
   const tab = useActiveCenterTab((s) => s.tab);
+  const setTab = useActiveCenterTab((s) => s.setTab);
 
   if (!activeProject) {
     return <EmptyState projectCount={projectCount} onCreateProject={onCreateProject} />;
@@ -235,6 +228,7 @@ function Center({
 
   return (
     <div className="flex h-full flex-col bg-background">
+      <TabBar value={tab} onChange={setTab} />
       <div className="flex-1 overflow-hidden">
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />
