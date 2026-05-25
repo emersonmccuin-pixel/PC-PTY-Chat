@@ -612,6 +612,13 @@ export const api = {
       `/api/projects/${projectId}/work-items/${wiId}/attachments/${aId}`,
     ).then((r) => r.attachment),
 
+  /** Section 1.5 — fetch attachment by id without a work-item path component.
+   *  Used by rich-link previews (URL = `pc://attachment/<aId>` only). */
+  getAttachmentById: (projectId: ULID, aId: ULID) =>
+    getJson<{ ok: true; attachment: Attachment }>(
+      `/api/projects/${projectId}/attachments/${aId}`,
+    ).then((r) => r.attachment),
+
   deleteAttachment: async (projectId: ULID, wiId: ULID, aId: ULID): Promise<void> => {
     const res = await fetch(
       `/api/projects/${projectId}/work-items/${wiId}/attachments/${aId}`,

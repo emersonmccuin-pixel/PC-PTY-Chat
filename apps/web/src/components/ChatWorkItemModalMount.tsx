@@ -1,0 +1,121 @@
+// Section 1.5.6 — Shell-level WorkItemDetailModal mount driven by the chat
+// rich-link click store. Fetches the project's work items lazily (only when
+// the store transitions to a non-null id) and forwards to WorkItemDetailModal.
+//
+// Distinct from KanbanBoard's local modal; both can technically be open at
+// once but the user has to actively click in both places to trigger it.
+
+import { useEffect, useState } from 'react';
+
+import { api, type Project, type WorkItem } from '@/api/client';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useChatWorkItemModal } from '@/store/chat-work-item-modal';
+import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
+
+interface ChatWorkItemModalMountProps {
+  project: Project;
+  events: WsEnvelope[];
+}
+
+export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMountProps) {
+  const workItemId = useChatWorkItemModal((s) => s.workItemId);
+  const open = useChatWorkItemModal((s) => s.open);
+  const close = useChatWorkItemModal((s) => s.close);
+  const [items, setItems] = useState<WorkItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch full list when the modal becomes active (modal needs siblings for
+  // "+ New child" + parent breadcrumb context).
+  useEffect(() => {
+    if (!workItemId) {
+      setItems(null);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .workItems(project.id)
+      .then((list) => {
+        if (!cancelled) setItems(list);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workItemId, project.id]);
+
+  // Live refresh on work-items-changed envelopes while modal is open.
+  useEffect(() => {
+    if (!workItemId || events.length === 0) return;
+    const last = events[events.length - 1];
+    if (last?.type !== 'work-items-changed') return;
+    api
+      .workItems(project.id)
+      .then(setItems)
+      .catch(() => {});
+  }, [events, workItemId, project.id]);
+
+  if (!workItemId) return null;
+
+  if (error) {
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80">
+        <div className="border border-destructive bg-card px-4 py-3 text-xs">
+          <div className="mb-2 text-destructive">Failed to load work item</div>
+          <div className="mb-3 text-muted-foreground">{error}</div>
+          <button
+            type="button"
+            className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            onClick={close}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!items) {
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80">
+        <div className="text-xs italic text-muted-foreground">Loading…</div>
+      </div>
+    );
+  }
+
+  const item = items.find((i) => i.id === workItemId);
+  if (!item) {
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80">
+        <div className="border border-border bg-card px-4 py-3 text-xs">
+          <div className="mb-2 text-muted-foreground">Work item not found</div>
+          <button
+            type="button"
+            className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            onClick={close}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <WorkItemDetailModal
+      workItem={item}
+      project={project}
+      items={items}
+      events={events}
+      onClose={close}
+      onSwitchItem={(id) => open(id)}
+      onItemCreated={(wi) =>
+        setItems((prev) =>
+          prev && !prev.some((p) => p.id === wi.id) ? [...prev, wi] : prev,
+        )
+      }
+    />
+  );
+}

@@ -789,3 +789,11 @@ button:disabled {
   border-bottom: 1px dashed var(--warning);
   padding-bottom: 1px;
 }
+
+.pc-rich-link-preview {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+}
+

@@ -1,0 +1,32 @@
+// Walks the project's WS envelope stream and evicts matching rich-link cache
+// entries on:
+//   - `work-items-changed`     → invalidateByWorkItemId(workItem.id)
+//   - `attachment-changed`     → invalidateByAttachmentId(attachment.id)
+//
+// Mount once at App / Shell level alongside the WS subscription.
+
+import { useEffect, useRef } from 'react';
+
+import type { WsEnvelope } from '@/hooks/use-project-ws';
+import {
+  invalidateByAttachmentId,
+  invalidateByWorkItemId,
+} from '@/hooks/use-rich-link-data';
+
+export function useRichLinkInvalidator(events: WsEnvelope[]): void {
+  const lastIdx = useRef(0);
+  useEffect(() => {
+    for (let i = lastIdx.current; i < events.length; i++) {
+      const env = events[i];
+      if (!env || typeof env !== 'object') continue;
+      if (env.type === 'work-items-changed') {
+        const wi = (env as { workItem?: { id?: string } }).workItem;
+        if (wi?.id) invalidateByWorkItemId(wi.id);
+      } else if (env.type === 'attachment-changed') {
+        const att = (env as { attachment?: { id?: string } }).attachment;
+        if (att?.id) invalidateByAttachmentId(att.id);
+      }
+    }
+    lastIdx.current = events.length;
+  }, [events]);
+}

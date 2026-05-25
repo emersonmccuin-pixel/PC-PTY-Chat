@@ -1751,6 +1751,24 @@ app.get('/api/projects/:projectId/work-items/:wiId/attachments/:aId', (c) => {
   }
 });
 
+/** Section 1.5 — fetch attachment by id alone (rich-link URLs don't carry a
+ *  work-item id, only the attachment id). Project-scoped through the same
+ *  service guard as the work-item-scoped route above. */
+app.get('/api/projects/:projectId/attachments/:aId', (c) => {
+  const id = c.req.param('projectId');
+  const aId = c.req.param('aId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  try {
+    return c.json({ ok: true, attachment: runtime.attachmentService().get(aId) });
+  } catch (err) {
+    if (err instanceof AttachmentNotInProjectError) {
+      return c.json({ ok: false, error: err.message }, 404);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
+});
+
 /** Hard-delete an attachment. */
 app.delete('/api/projects/:projectId/work-items/:wiId/attachments/:aId', (c) => {
   const id = c.req.param('projectId');

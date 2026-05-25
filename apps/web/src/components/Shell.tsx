@@ -25,7 +25,10 @@ import { FilesViewer } from './FilesViewer';
 import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
 import { Orchestrator } from './Orchestrator';
+import { AttachmentLightboxMount } from './AttachmentLightbox';
+import { ChatWorkItemModalMount } from './ChatWorkItemModalMount';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
+import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
@@ -151,6 +154,11 @@ export function Shell({
             events={wsEvents}
           />
         )}
+        {activeProject && (
+          <ChatWorkItemModalMount project={activeProject} events={wsEvents} />
+        )}
+        {activeProject && <AttachmentLightboxMount projectId={activeProject.id} />}
+        <RichLinkPreviewCard />
       </Group>
     </div>
   );

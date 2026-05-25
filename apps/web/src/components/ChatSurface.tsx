@@ -39,7 +39,7 @@ import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { AskCard } from '@/components/AskCard';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
-import { RichLink } from '@/components/RichLink';
+import { LiveRichLink } from '@/components/LiveRichLink';
 import { ExternalLink } from '@/components/ExternalLink';
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
@@ -1221,9 +1221,9 @@ function EventBubble({
 }: EventBubbleProps) {
   switch (event.kind) {
     case 'user':
-      return <UserBubble event={event as UserEvent} />;
+      return <UserBubble event={event as UserEvent} projectId={projectId} />;
     case 'assistant':
-      return <AssistantBubble event={event as AssistantEvent} />;
+      return <AssistantBubble event={event as AssistantEvent} projectId={projectId} />;
     case 'tool-start':
     case 'tool-end':
       return null;
@@ -1686,7 +1686,7 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
 
 // ── User bubble ──────────────────────────────────────────────────────────
 
-function UserBubble({ event }: { event: UserEvent }) {
+function UserBubble({ event, projectId }: { event: UserEvent; projectId: string }) {
   const parts = useMemo(() => {
     const all = parseUserText(event.text ?? '');
     return all.filter((p) => p.kind !== 'workflow-event' && p.kind !== 'agent-event');
@@ -1720,7 +1720,7 @@ function UserBubble({ event }: { event: UserEvent }) {
         ) : (
           <div key={idx} className="group relative text-sm text-foreground">
             <div className="whitespace-pre-wrap break-words">
-              {g.parts.map((part, j) => renderInlinePart(part, j)) || '(empty prompt)'}
+              {g.parts.map((part, j) => renderInlinePart(part, j, projectId)) || '(empty prompt)'}
             </div>
             <CopyButton text={g.parts.map((p) => p.text).join('')} />
           </div>
@@ -1730,40 +1730,60 @@ function UserBubble({ event }: { event: UserEvent }) {
   );
 }
 
-// Custom anchor renderer for react-markdown — routes pc:// to RichLink and
-// http(s):// to ExternalLink. Other hrefs pass through as bare <a>.
-function MarkdownAnchor({ href, children }: { href?: string; children?: React.ReactNode }) {
-  if (!href) return <span>{children}</span>;
-  if (href.startsWith('pc://')) {
-    const m = href.match(/^pc:\/\/([\w-]+)\/(.+)$/);
-    if (m) {
-      const kind = m[1] as 'work-item' | 'file' | 'attachment' | 'inbox';
-      if (kind === 'work-item' || kind === 'file' || kind === 'attachment' || kind === 'inbox') {
-        const ref = decodeURIComponent(m[2] ?? '');
-        const text = typeof children === 'string' ? children : '';
-        return <RichLink kind={kind} ref={ref} text={text || ref} url={href}>{children}</RichLink>;
+// Factory for react-markdown's anchor renderer. ProjectId is closed-over so
+// hover handlers can route to the preview store. Routes pc:// to RichLink,
+// http(s):// to ExternalLink, anything else to a bare anchor.
+function makeMarkdownAnchor(projectId: string) {
+  return function MarkdownAnchor({
+    href,
+    children,
+  }: {
+    href?: string;
+    children?: React.ReactNode;
+  }) {
+    if (!href) return <span>{children}</span>;
+    if (href.startsWith('pc://')) {
+      const m = href.match(/^pc:\/\/([\w-]+)\/(.+)$/);
+      if (m) {
+        const kind = m[1] as 'work-item' | 'file' | 'attachment' | 'inbox';
+        if (kind === 'work-item' || kind === 'file' || kind === 'attachment' || kind === 'inbox') {
+          const ref = decodeURIComponent(m[2] ?? '');
+          const text = typeof children === 'string' ? children : '';
+          return (
+            <LiveRichLink
+              kind={kind}
+              ref={ref}
+              text={text || ref}
+              url={href}
+              projectId={projectId}
+            >
+              {children}
+            </LiveRichLink>
+          );
+        }
       }
     }
-  }
-  if (href.startsWith('http://') || href.startsWith('https://')) {
-    return (
-      <ExternalLink href={href} insecure={href.startsWith('http://')}>
-        {children}
-      </ExternalLink>
-    );
-  }
-  return <a href={href}>{children}</a>;
+    if (href.startsWith('http://') || href.startsWith('https://')) {
+      return (
+        <ExternalLink href={href} insecure={href.startsWith('http://')}>
+          {children}
+        </ExternalLink>
+      );
+    }
+    return <a href={href}>{children}</a>;
+  };
 }
 
-function renderInlinePart(part: UserPart, key: number) {
+function renderInlinePart(part: UserPart, key: number, projectId: string) {
   if (part.kind === 'rich-link' && part.richLinkKind && part.richLinkRef && part.url) {
     return (
-      <RichLink
+      <LiveRichLink
         key={key}
         kind={part.richLinkKind}
         ref={part.richLinkRef}
         text={part.linkText ?? part.text}
         url={part.url}
+        projectId={projectId}
       />
     );
   }
@@ -1782,7 +1802,7 @@ function renderInlinePart(part: UserPart, key: number) {
 
 // ── Assistant bubble ─────────────────────────────────────────────────────
 
-function AssistantBubble({ event }: { event: AssistantEvent }) {
+function AssistantBubble({ event, projectId }: { event: AssistantEvent; projectId: string }) {
   const text = event.text ?? '';
   if (!text) {
     return (
@@ -1793,12 +1813,13 @@ function AssistantBubble({ event }: { event: AssistantEvent }) {
       </div>
     );
   }
+  const Anchor = useMemo(() => makeMarkdownAnchor(projectId), [projectId]);
   return (
     <div className="group relative text-sm text-foreground">
       <div className="markdown-body">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkBreaks]}
-          components={{ a: MarkdownAnchor }}
+          components={{ a: Anchor }}
         >
           {text}
         </ReactMarkdown>
