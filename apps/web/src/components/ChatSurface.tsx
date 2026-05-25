@@ -38,6 +38,9 @@ import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { AskCard } from '@/components/AskCard';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
+import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
+import { RichLink } from '@/components/RichLink';
+import { ExternalLink } from '@/components/ExternalLink';
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
 // + task-end cards; TodoWrite + TaskCreate/Update → todos snapshot card).
@@ -620,78 +623,6 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
   }
   flush();
   return items;
-}
-
-// ── Channel-block parser ─────────────────────────────────────────────────
-
-interface UserPart {
-  kind: 'text' | 'channel' | 'workflow-event' | 'agent-event';
-  text: string;
-  source?: string;
-  workflowEventKind?: string;
-  workflowRunId?: string;
-  agentEventKind?: string;
-  agentRunId?: string;
-  agentName?: string;
-}
-
-const CHANNEL_RE = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/g;
-const WORKFLOW_EVENT_HEADER_RE = /^\[pc:workflow-event\s+kind=([\w-]+)/;
-const WORKFLOW_RUN_ID_RE = /\[workflowRunId:\s*([A-Za-z0-9_-]+)\]/;
-const AGENT_EVENT_HEADER_RE = /^\[pc:agent-event\s+kind=([\w-]+)/;
-const AGENT_RUN_ID_RE = /\[runId:\s*([A-Za-z0-9_-]+)\]/;
-const AGENT_NAME_RE = /\[agentName:\s*([\w-]+)\]/;
-
-function parseUserText(text: string): UserPart[] {
-  if (!text) return [{ kind: 'text', text: '' }];
-  const parts: UserPart[] = [];
-  let last = 0;
-  let sawChannel = false;
-  for (const m of text.matchAll(CHANNEL_RE)) {
-    sawChannel = true;
-    const idx = m.index ?? 0;
-    if (idx > last) {
-      const slice = text.slice(last, idx).trim();
-      if (slice) parts.push({ kind: 'text', text: slice });
-    }
-    const attrs = m[1] ?? '';
-    const body = (m[2] ?? '').trim();
-    last = idx + m[0].length;
-    const wfMatch = body.match(WORKFLOW_EVENT_HEADER_RE);
-    if (wfMatch) {
-      const runMatch = body.match(WORKFLOW_RUN_ID_RE);
-      const part: UserPart = {
-        kind: 'workflow-event',
-        text: body,
-        workflowEventKind: wfMatch[1],
-      };
-      if (runMatch?.[1]) part.workflowRunId = runMatch[1];
-      parts.push(part);
-      continue;
-    }
-    const agMatch = body.match(AGENT_EVENT_HEADER_RE);
-    if (agMatch) {
-      const runMatch = body.match(AGENT_RUN_ID_RE);
-      const nameMatch = body.match(AGENT_NAME_RE);
-      const part: UserPart = {
-        kind: 'agent-event',
-        text: body,
-        agentEventKind: agMatch[1],
-      };
-      if (runMatch?.[1]) part.agentRunId = runMatch[1];
-      if (nameMatch?.[1]) part.agentName = nameMatch[1];
-      parts.push(part);
-      continue;
-    }
-    const sourceMatch = attrs.match(/source\s*=\s*"([^"]+)"/);
-    parts.push({ kind: 'channel', text: body, source: sourceMatch?.[1] ?? 'channel' });
-  }
-  if (last < text.length) {
-    const tail = text.slice(last).trim();
-    if (tail) parts.push({ kind: 'text', text: tail });
-  }
-  if (parts.length === 0 && !sawChannel) parts.push({ kind: 'text', text });
-  return parts;
 }
 
 // ── Approval response (POST to per-project endpoint) ──────────────────────
@@ -1761,30 +1692,92 @@ function UserBubble({ event }: { event: UserEvent }) {
     return all.filter((p) => p.kind !== 'workflow-event' && p.kind !== 'agent-event');
   }, [event.text]);
   if (parts.length === 0) return null;
+  // Group consecutive non-channel parts (text + rich-link + external-link)
+  // into one block so links render inline with their surrounding text.
+  const groups: Array<{ kind: 'channel'; part: UserPart } | { kind: 'inline'; parts: UserPart[] }> = [];
+  for (const p of parts) {
+    if (p.kind === 'channel') {
+      groups.push({ kind: 'channel', part: p });
+    } else {
+      const last = groups[groups.length - 1];
+      if (last && last.kind === 'inline') last.parts.push(p);
+      else groups.push({ kind: 'inline', parts: [p] });
+    }
+  }
   return (
     <>
-      {parts.map((part, idx) =>
-        part.kind === 'channel' ? (
+      {groups.map((g, idx) =>
+        g.kind === 'channel' ? (
           <div key={idx} className="group relative text-sm">
             <div className="mb-1 text-[10px] uppercase tracking-wider text-warning">
-              channel · {part.source}
+              channel · {g.part.source}
             </div>
             <div className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
-              {part.text || '(empty body)'}
+              {g.part.text || '(empty body)'}
             </div>
-            <CopyButton text={part.text} />
+            <CopyButton text={g.part.text} />
           </div>
         ) : (
           <div key={idx} className="group relative text-sm text-foreground">
             <div className="whitespace-pre-wrap break-words">
-              {part.text || '(empty prompt)'}
+              {g.parts.map((part, j) => renderInlinePart(part, j)) || '(empty prompt)'}
             </div>
-            <CopyButton text={part.text} />
+            <CopyButton text={g.parts.map((p) => p.text).join('')} />
           </div>
         ),
       )}
     </>
   );
+}
+
+// Custom anchor renderer for react-markdown — routes pc:// to RichLink and
+// http(s):// to ExternalLink. Other hrefs pass through as bare <a>.
+function MarkdownAnchor({ href, children }: { href?: string; children?: React.ReactNode }) {
+  if (!href) return <span>{children}</span>;
+  if (href.startsWith('pc://')) {
+    const m = href.match(/^pc:\/\/([\w-]+)\/(.+)$/);
+    if (m) {
+      const kind = m[1] as 'work-item' | 'file' | 'attachment' | 'inbox';
+      if (kind === 'work-item' || kind === 'file' || kind === 'attachment' || kind === 'inbox') {
+        const ref = decodeURIComponent(m[2] ?? '');
+        const text = typeof children === 'string' ? children : '';
+        return <RichLink kind={kind} ref={ref} text={text || ref} url={href}>{children}</RichLink>;
+      }
+    }
+  }
+  if (href.startsWith('http://') || href.startsWith('https://')) {
+    return (
+      <ExternalLink href={href} insecure={href.startsWith('http://')}>
+        {children}
+      </ExternalLink>
+    );
+  }
+  return <a href={href}>{children}</a>;
+}
+
+function renderInlinePart(part: UserPart, key: number) {
+  if (part.kind === 'rich-link' && part.richLinkKind && part.richLinkRef && part.url) {
+    return (
+      <RichLink
+        key={key}
+        kind={part.richLinkKind}
+        ref={part.richLinkRef}
+        text={part.linkText ?? part.text}
+        url={part.url}
+      />
+    );
+  }
+  if (part.kind === 'external-link' && part.url) {
+    return (
+      <ExternalLink
+        key={key}
+        href={part.url}
+        text={part.linkText ?? part.text}
+        insecure={part.externalInsecure}
+      />
+    );
+  }
+  return <span key={key}>{part.text}</span>;
 }
 
 // ── Assistant bubble ─────────────────────────────────────────────────────
@@ -1803,7 +1796,12 @@ function AssistantBubble({ event }: { event: AssistantEvent }) {
   return (
     <div className="group relative text-sm text-foreground">
       <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkBreaks]}
+          components={{ a: MarkdownAnchor }}
+        >
+          {text}
+        </ReactMarkdown>
       </div>
       <CopyButton text={text} />
     </div>
