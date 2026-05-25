@@ -27,6 +27,7 @@ import { Orchestrator } from './Orchestrator';
 import { AttachmentLightboxMount } from './AttachmentLightbox';
 import { ChatWorkItemModalMount } from './ChatWorkItemModalMount';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
+import { RemoteControlCorner } from './RemoteControlCorner';
 import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
@@ -207,7 +208,7 @@ function Center({
   return (
     <div className="flex h-full flex-col bg-background">
       <TabBar value={tab} onChange={setTab} />
-      <div className="flex-1 overflow-hidden">
+      <div className="relative flex-1 overflow-hidden">
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />
         ) : tab === 'orchestrator' ? (
@@ -232,6 +233,7 @@ function Center({
             onProjectDeleted={onProjectDeleted}
           />
         ) : null}
+        <RemoteControlCorner events={wsEvents} />
       </div>
     </div>
   );

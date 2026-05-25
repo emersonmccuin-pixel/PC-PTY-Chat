@@ -114,6 +114,13 @@
   --info: #f0d080;
   --info-foreground: #080604;
 
+  /* Section 31.10 — remote-control corner indicator. Tech-green is
+     intentionally outside the Vellum palette to signal "active session"
+     state distinctly from the moss-green --success / gold-dominant theme. */
+  --tech-green: #5fe88f;
+  --tech-green-soft: rgba(95, 232, 143, 0.32);
+  --tech-green-glow: rgba(95, 232, 143, 0.18);
+
   /* Surface elevation — flat washes on background, no gradients */
   --surface-1: #14100a;
   --surface-2: #1f1810;
@@ -802,5 +809,51 @@ button:disabled {
   border: 1px solid var(--border);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
+}
+
+/* Section 31.10 — remote-control corner indicator (lower-right of Center).
+   Per pc-firehose-mockup.html. Click-to-open URL when /remote-control is
+   active; hidden otherwise. */
+.pc-remote-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px 5px 8px;
+  background: rgba(8, 14, 10, 0.85);
+  border: 1px solid var(--tech-green-soft);
+  border-radius: 3px;
+  box-shadow: 0 0 12px var(--tech-green-glow);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--tech-green);
+  letter-spacing: 0.06em;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+.pc-remote-indicator:hover {
+  background: rgba(8, 14, 10, 0.95);
+  box-shadow: 0 0 18px var(--tech-green-glow);
+}
+.pc-remote-indicator:disabled {
+  cursor: default;
+}
+.pc-remote-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tech-green);
+  box-shadow: 0 0 6px var(--tech-green);
+  animation: pc-remote-pulse 1.6s ease-in-out infinite;
+}
+.pc-remote-label {
+  text-transform: uppercase;
+}
+.pc-remote-id {
+  color: rgba(95, 232, 143, 0.62);
+  font-size: 9px;
+}
+@keyframes pc-remote-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px var(--tech-green); }
+  50% { opacity: 0.5; box-shadow: 0 0 12px var(--tech-green); }
 }
 
