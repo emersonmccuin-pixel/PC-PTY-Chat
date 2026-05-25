@@ -289,6 +289,9 @@ export function WorkItemDetailModal({
       >
         <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">
+            {/* Section 35 — callsign chip; click-to-copy. NULL on agent
+                contracts so this block stays absent for those. */}
+            {baseline.callsign && <CallsignChip callsign={baseline.callsign} />}
             <input
               type="text"
               value={draft.title}
@@ -436,6 +439,36 @@ export function WorkItemDetailModal({
         </footer>
       </div>
     </div>
+  );
+}
+
+/** Section 35 — callsign chip rendered above the title in the modal header.
+ *  Click copies the callsign string to the clipboard with a transient
+ *  "copied!" tooltip so the user can paste it into a chat or doc. NULL on
+ *  agent contracts, so the parent skips rendering this entirely. */
+function CallsignChip({ callsign }: { callsign: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard
+      .writeText(callsign)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {
+        /* clipboard may be denied in non-secure contexts; silently no-op */
+      });
+  };
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title={copied ? 'Copied!' : 'Copy callsign'}
+      className="mb-1 inline-flex items-center gap-1 border border-border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      <span>{callsign}</span>
+      {copied && <span className="text-success">✓</span>}
+    </button>
   );
 }
 

@@ -89,6 +89,9 @@ export interface WorkItem {
   // web only consumes `isAgentTask` today (26.7 visibility toggle). Other
   // fields land here when their UI consumer arrives.
   isAgentTask: boolean;
+  /** Section 35 — display-alias short code (e.g. `pc-2`, `pc-2.1`). NULL on
+   *  agent contracts (they don't burn the user-visible number space). */
+  callsign: string | null;
 }
 
 export type FieldSchemaType = 'text' | 'number' | 'boolean' | 'enum' | 'date';

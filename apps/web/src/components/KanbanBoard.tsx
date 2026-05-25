@@ -590,35 +590,44 @@ function CardContent({ item, childCount }: { item: WorkItem; childCount: number 
   const glyph = STATUS_GLYPH[status];
   const typeChip = TYPE_CHIP[item.type ?? 'task'];
   return (
-    <div className="flex items-start gap-2">
-      <span className="line-clamp-2 min-w-0 flex-1 break-words">{item.title}</span>
-      <div className="flex shrink-0 items-center gap-1">
-        {item.type && item.type !== 'task' && (
-          <span
-            className={'border px-1 text-[10px] leading-tight ' + typeChip.className}
-            title={typeChip.label}
-            aria-label={typeChip.label}
-          >
-            <span aria-hidden="true">{typeChip.icon}</span> {typeChip.label}
-          </span>
-        )}
-        {childCount > 0 && (
-          <span
-            className="border border-border px-1 text-[10px] text-muted-foreground"
-            title={`${childCount} child${childCount === 1 ? '' : 'ren'}`}
-          >
-            ↳ {childCount}
-          </span>
-        )}
-        {glyph && (
-          <span
-            className={'text-sm leading-none ' + glyph.className}
-            title={item.statusReason ?? status}
-            aria-label={status}
-          >
-            {glyph.glyph}
-          </span>
-        )}
+    <div className="flex flex-col gap-0.5">
+      {/* Section 35 — uppercase callsign label sits above the title; agent
+          contracts render no label since they don't have a callsign. */}
+      {item.callsign && (
+        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          {item.callsign}
+        </span>
+      )}
+      <div className="flex items-start gap-2">
+        <span className="line-clamp-2 min-w-0 flex-1 break-words">{item.title}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          {item.type && item.type !== 'task' && (
+            <span
+              className={'border px-1 text-[10px] leading-tight ' + typeChip.className}
+              title={typeChip.label}
+              aria-label={typeChip.label}
+            >
+              <span aria-hidden="true">{typeChip.icon}</span> {typeChip.label}
+            </span>
+          )}
+          {childCount > 0 && (
+            <span
+              className="border border-border px-1 text-[10px] text-muted-foreground"
+              title={`${childCount} child${childCount === 1 ? '' : 'ren'}`}
+            >
+              ↳ {childCount}
+            </span>
+          )}
+          {glyph && (
+            <span
+              className={'text-sm leading-none ' + glyph.className}
+              title={item.statusReason ?? status}
+              aria-label={status}
+            >
+              {glyph.glyph}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

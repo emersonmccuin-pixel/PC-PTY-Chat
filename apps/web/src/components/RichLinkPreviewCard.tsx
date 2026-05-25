@@ -132,6 +132,13 @@ function WorkItemPreview({ workItem }: { workItem: WorkItem }) {
   const type = workItem.type ?? 'task';
   return (
     <div className="px-3 py-2 text-xs">
+      {/* Section 35 — callsign header line above the title; NULL on agent
+          contracts (skipped). */}
+      {workItem.callsign && (
+        <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          {workItem.callsign}
+        </div>
+      )}
       <div className="mb-1 truncate text-sm font-medium text-foreground">
         {workItem.title}
       </div>
