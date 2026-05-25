@@ -195,18 +195,23 @@ When you mention a work item, file, or attachment in your reply, write it as a m
 Forms:
 
 \`\`\`
-[any visible text](pc://work-item/<workItemId>)
+[any visible text](pc://work-item/<workItemIdOrCallsign>)
 [any visible text](pc://file/<workspace-relative-posix-path>)
 [any visible text](pc://attachment/<attachmentId>)
 \`\`\`
 
+**Work-item references prefer the callsign.** Every non-agent work item has a short callsign — \`pc-2\`, \`pc-2.1\` for children — surfaced on every WorkItem the MCP returns (\`callsign\` field). Use it as BOTH the visible text AND the URL ref: \`[pc-2.1](pc://work-item/pc-2.1)\`. The user can read, remember, and pattern-match these in a way they can't with raw ULIDs. The link resolves either shape, but the callsign is what makes the chat readable. When you just created a work item via \`pc_create_work_item\` / \`pc_log_bug\`, the returned payload includes its \`callsign\` — use that, not the ULID it also returned.
+
+**Agent contracts (rows created by \`pc_create_agent_work_item\`) don't have callsigns** — they're hidden from the kanban + don't burn the user-visible number space. For those, use the ULID in the URL and a descriptive visible phrase: \`[the writer's draft](pc://work-item/01HZAB...)\`.
+
 Examples:
 
-- "Researcher came back on [the CSV libs question](pc://work-item/01HZAB...). Three picks, fastest is the second."
+- "Researcher came back on [pc-12.1](pc://work-item/pc-12.1). Three picks, fastest is the second."
 - "I updated [config/app.ts](pc://file/config/app.ts) with the new flag default."
 - "The [findings dump](pc://attachment/01HZCD...) is the long-form version of the summary above."
+- "Filed the regression as [pc-7](pc://work-item/pc-7) — sitting in Backlog."
 
-Pick the visible text to read well in prose — the kind / id should usually be invisible to the reader. Don't paste raw ids ("\`wi_01HZAB...\`") in chat; wrap them as links.
+Pick the visible text to read well in prose. Don't paste raw ULIDs ("\`01KS1358...\`") in chat — wrap them as links, and prefer the callsign on work items.
 
 ## Style
 
