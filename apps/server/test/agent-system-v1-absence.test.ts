@@ -37,8 +37,11 @@ const SOURCE_FILES = TRACKED_FILES.filter((f) => {
   return true;
 });
 
-// Removed v1 modules + tools + MCP names. Add to this list when a future phase
-// retires another v1 hold-over.
+// Removed v1 modules + tools + MCP names + renamed agent-system v2 holdovers.
+// Add to this list when a future phase retires another v1 hold-over. Note: this
+// is specifically the AGENT-SYSTEM v2 surface (Section 25 Phase E rename).
+// Section 19's workflow rebuild legitimately uses `V2` suffixes (WorkflowV2,
+// fireV2Workflow, WorkflowV2Registry, etc.) — those are NOT in scope here.
 const DEAD_SYMBOLS = [
   // v1 module file basenames.
   'agent-run-manager.ts',
@@ -66,6 +69,11 @@ const DEAD_SYMBOLS = [
   'InstructionDepositRow',
   'PcCheckInInput',
   'PcCheckInResult',
+  // Renamed agent-system v2 class / URL / resource names (Phase E).
+  'JsonlTailerV2',
+  'agent-pending-asks-v2',
+  '/agents/v2/',
+  '/agent-runs/v2/',
 ];
 
 test('v1 agent-system symbols and modules stay deleted', () => {
@@ -97,44 +105,8 @@ test('v1 agent-system symbols and modules stay deleted', () => {
   }
 });
 
-test('no source file imports or references the v2 / V2 suffix', () => {
-  // After Phase E the canonical names drop their `V2` suffix everywhere.
-  // This test fires if any new code reintroduces `V2`-style names.
-  const SUFFIX_PATTERNS = [
-    /\bagent-(runs|inbox|v2)\.test\.ts/, // old test filenames
-    /\b[A-Z][A-Za-z]+V2(Input|Result|Options|Deps)?\b/, // type names ending in V2
-    /\b[a-z][a-zA-Z]+V2\(/, // function calls ending in V2
-    /from\s+['"][^'"]*\/v2\/[a-z-]+\.ts['"]/, // import paths through /v2/
-  ];
-
-  const offenders: Array<{ pattern: string; file: string; line: number; text: string }> = [];
-  for (const file of SOURCE_FILES) {
-    const abs = join(REPO_ROOT, file);
-    let content;
-    try {
-      content = readFileSync(abs, 'utf-8');
-    } catch {
-      continue;
-    }
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Quick reject — only test lines containing `V2` or `/v2/`.
-      if (!/V2|\/v2\//.test(line)) continue;
-      for (const re of SUFFIX_PATTERNS) {
-        if (re.test(line)) {
-          offenders.push({ pattern: String(re), file, line: i + 1, text: line.trim() });
-          break;
-        }
-      }
-    }
-  }
-  if (offenders.length > 0) {
-    const rendered = offenders
-      .slice(0, 25)
-      .map((o) => `  ${o.file}:${o.line} — ${o.text}`)
-      .join('\n');
-    const more = offenders.length > 25 ? `\n  …and ${offenders.length - 25} more` : '';
-    assert.fail(`Phase E rename incomplete — V2 / v2 suffixes still present:\n${rendered}${more}`);
-  }
-});
+// NOTE: an earlier "no V2 / v2 suffix anywhere" regex sweep was retired here
+// once Section 19 (workflow rebuild) began introducing `WorkflowV2`,
+// `fireV2Workflow`, etc. — those are intentional. The Phase-E agent-system
+// rename is still enforced by DEAD_SYMBOLS above, which now includes the
+// renamed agent-system V2 class / URL / resource names.

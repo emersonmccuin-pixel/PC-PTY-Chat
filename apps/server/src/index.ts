@@ -1500,9 +1500,11 @@ app.post('/api/projects/:projectId/work-items/move', async (c) => {
     resolvedStage = match.id;
   }
   try {
-    const workItem = await runtime
-      .workflowRuntime()
-      .moveWorkItem(wiId, resolvedStage, notes || null);
+    const workItem = await runtime.moveAndFireV2({
+      id: wiId,
+      toStage: resolvedStage,
+      notes: notes || null,
+    });
     broadcastTo(id as ULID, { type: 'work-items-changed', change: 'moved', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
@@ -1850,13 +1852,13 @@ app.post('/api/projects/:projectId/work-items/:wiId/move', async (c) => {
   const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
   if (!stageId) return c.json({ ok: false, error: 'stageId required' }, 400);
   try {
-    const moveArgs: Parameters<ReturnType<typeof runtime.workflowRuntime>['moveAndFire']>[0] = {
+    const moveArgs: Parameters<typeof runtime.moveAndFireV2>[0] = {
       id: wiId,
       toStage: stageId,
       expectedVersion: body.version,
     };
     if (body.position !== undefined) moveArgs.position = body.position;
-    const workItem = await runtime.workflowRuntime().moveAndFire(moveArgs);
+    const workItem = await runtime.moveAndFireV2(moveArgs);
     return c.json({ ok: true, workItem });
   } catch (err) {
     if (err instanceof WorkItemVersionConflictError) {

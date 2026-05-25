@@ -25,6 +25,7 @@ import { jsonlPathFor, PtySession } from '@pc/runtime';
 import {
   WorkflowRegistry,
   WorkflowV2Registry,
+  selectStageEntryWorkflows,
   serializeWorkflowV2,
   validateWorkflowV2,
   type RegistryV2State,
@@ -263,6 +264,51 @@ export class ProjectRuntime {
       console.error(`[dag-run] run ${res.runId} failed:`, err.message);
     });
     return { runId: res.runId, rootWorkItemId: res.rootWorkItemId };
+  }
+
+  /** Section 19.7-live — wraps v1 `moveAndFire` with v2 stage-on-entry firing.
+   *  Reads `fromStageId` BEFORE the v1 move, commits the move through v1 (which
+   *  also fires the legacy on_enter trigger if matched), then evaluates v2
+   *  workflows whose `stage-on-entry` trigger matches this move and fires each.
+   *
+   *  v1 errors (ambiguity / version conflict / lock) propagate — the card stays
+   *  put and v2 never sees the move. v2 firing errors are logged, not thrown:
+   *  the move already succeeded and a misconfigured v2 workflow shouldn't
+   *  retro-fail the move. */
+  async moveAndFireV2(args: {
+    id: string;
+    toStage: string;
+    expectedVersion?: number;
+    position?: number;
+    notes?: string | null;
+  }): ReturnType<WorkflowRuntime['moveAndFire']> {
+    const pre = getWorkItem(args.id as ULID);
+    const fromStageId = pre?.stageId ?? null;
+
+    const moved = await this.workflowRuntime().moveAndFire(args);
+
+    if (fromStageId !== args.toStage) {
+      const stages = (this.project.stages ?? []).map((s) => ({
+        id: s.id,
+        ...(s.order !== undefined ? { order: s.order } : {}),
+      }));
+      const matches = selectStageEntryWorkflows(this.workflowV2Registry().listValid(), stages, {
+        fromStageId,
+        toStageId: args.toStage,
+      });
+      for (const workflow of matches) {
+        try {
+          await this.fireV2Workflow(workflow, { kind: 'stage-on-entry', stage: args.toStage });
+        } catch (err) {
+          console.error(
+            `[project-runtime] v2 fire failed (workflow=${workflow.id} stage=${args.toStage}):`,
+            (err as Error).message,
+          );
+        }
+      }
+    }
+
+    return moved;
   }
 
   /** Apply an orchestrator/human review decision to a paused v2 run. */
