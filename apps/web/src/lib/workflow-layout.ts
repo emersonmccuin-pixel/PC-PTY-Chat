@@ -55,8 +55,16 @@ export interface LayoutResult {
 }
 
 /** Auto-layout the workflow. Returns positions in graph-local coordinates
- *  (top-left = 0,0). The React component owns the pan/zoom transform. */
+ *  (top-left = 0,0). The React component owns the pan/zoom transform.
+ *
+ *  Honors per-node `position` overrides when ALL nodes have one (manual
+ *  authoring took over). Mixed mode (some positions set, others not) falls
+ *  back to full auto-layout — elkjs doesn't reliably partially-fix nodes in
+ *  the `layered` algorithm, so v1 picks one of the two regimes cleanly. */
 export async function layoutWorkflow(wf: WorkflowV2.Workflow): Promise<LayoutResult> {
+  const allManual = wf.nodes.length > 0 && wf.nodes.every((n) => n.position !== undefined);
+  if (allManual) return layoutFromManualPositions(wf);
+
   const elkNodes: ElkNode[] = wf.nodes.map((n) => ({
     id: n.id,
     width: NODE_WIDTH,
@@ -137,6 +145,83 @@ export async function layoutWorkflow(wf: WorkflowV2.Workflow): Promise<LayoutRes
     width: result.width ?? 0,
     height: result.height ?? 0,
   };
+}
+
+/** When every node carries `position`, skip elkjs and route edges as simple
+ *  straight lines bottom-of-source → top-of-target. The user has taken over;
+ *  the visualizer's job is to render their positions faithfully, not relayout
+ *  on every drag. Reject back-edges route from EAST side → target NORTH. */
+function layoutFromManualPositions(wf: WorkflowV2.Workflow): LayoutResult {
+  const nodes: LayoutNode[] = wf.nodes.map((n) => ({
+    id: n.id,
+    x: n.position!.x,
+    y: n.position!.y,
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
+  }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+
+  const edges: LayoutEdge[] = [];
+  for (const n of wf.nodes) {
+    const src = byId.get(n.id)!;
+    for (const next of n.next ?? []) {
+      const tgt = byId.get(next);
+      if (!tgt) continue;
+      edges.push({
+        id: `e:${n.id}->${next}`,
+        source: n.id,
+        target: next,
+        kind: 'forward',
+        points: straightVerticalEdge(src, tgt),
+      });
+    }
+    if (WorkflowV2.isReviewNode(n) && n.reject) {
+      const tgt = byId.get(n.reject.back_to);
+      if (!tgt) continue;
+      edges.push({
+        id: `r:${n.id}->${n.reject.back_to}`,
+        source: n.id,
+        target: n.reject.back_to,
+        kind: 'reject',
+        points: rejectSideEdge(src, tgt),
+      });
+    }
+  }
+
+  const width = Math.max(0, ...nodes.map((n) => n.x + n.width));
+  const height = Math.max(0, ...nodes.map((n) => n.y + n.height));
+  return { nodes, edges, width, height };
+}
+
+function straightVerticalEdge(src: LayoutNode, tgt: LayoutNode): LayoutEdgePoint[] {
+  const sx = src.x + src.width / 2;
+  const sy = src.y + src.height;
+  const tx = tgt.x + tgt.width / 2;
+  const ty = tgt.y;
+  // Orthogonal: vertical, horizontal at mid, vertical.
+  const midY = sy + Math.max(20, (ty - sy) / 2);
+  return [
+    { x: sx, y: sy },
+    { x: sx, y: midY },
+    { x: tx, y: midY },
+    { x: tx, y: ty },
+  ];
+}
+
+function rejectSideEdge(src: LayoutNode, tgt: LayoutNode): LayoutEdgePoint[] {
+  const sx = src.x + src.width;
+  const sy = src.y + src.height / 2;
+  const tx = tgt.x + tgt.width / 2;
+  const ty = tgt.y;
+  // Loop out to the right, up, then in to the top of target.
+  const outX = sx + 40;
+  return [
+    { x: sx, y: sy },
+    { x: outX, y: sy },
+    { x: outX, y: ty - 30 },
+    { x: tx, y: ty - 30 },
+    { x: tx, y: ty },
+  ];
 }
 
 function portsForNode(n: WorkflowV2.WorkflowNode): NonNullable<ElkNode['ports']> {

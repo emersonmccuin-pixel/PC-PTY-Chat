@@ -138,6 +138,11 @@ export interface WorkflowNodeBase {
    *  ceiling (no JSONL activity). Default idle 5 min / wall-clock 2 h for agent
    *  nodes; applied by the executor, not stored when unset. */
   timeout?: number;
+  /** Visualizer-layer position override. Persisted so user drags survive a
+   *  reload and the agent-author can read positions between turns
+   *  (sync-model-A, Section 19 lock 8). When absent, the visualizer falls back
+   *  to the auto-layout (elkjs). Presentational only — the executor ignores it. */
+  position?: { x: number; y: number };
 }
 
 // ---------------------------------------------------------------------------
