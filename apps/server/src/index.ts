@@ -408,7 +408,6 @@ function attachPtyHandlers(
     broadcastTo(projectId, { type: 'turn-end' });
   });
   session.on('event', (event: unknown) => {
-    maybeSetSessionTitle(projectId, event);
     broadcastTo(projectId, { type: 'event', event });
   });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
@@ -420,9 +419,14 @@ function attachPtyHandlers(
     // row carries rich per-turn metadata; we log every one to the DB. Surface
     // design is deferred per the buildout — collect data first.
     maybePersistPostTurnSummary(projectId, event);
-    // Section 31.9 — CC's `ai-title` envelope is the canonical session-name
-    // source. Fires repeatedly as the title is refined; persist + broadcast
-    // every update so the rail row + chat title bar stay live.
+    // Section 31.9 — first-prompt heuristic + CC's `ai-title` envelope both
+    // resolve the session-name surface. Heuristic fires on the first
+    // `jsonl-user` and sticks; ai-title (when it fires) overwrites with the
+    // refining model-generated name. Empirically, ai-title NEVER fires under
+    // `--agent <name>` spawns (the entire orchestrator + every PM pod), so
+    // the heuristic is the only path that lands a title for PC sessions.
+    // See docs/session-log.md (2026-05-25 Session 36) for the bisect.
+    maybeSetSessionTitle(projectId, event);
     maybeApplyAiTitle(projectId, event);
   });
   session.on('jsonl-path-resolved', (jsonlPath: string) => {
@@ -441,9 +445,18 @@ function attachPtyHandlers(
 }
 
 /**
- * If the active session has no title and the event is the first user prompt,
- * derive a title from the prompt text and broadcast the updated session so
- * the UI's chat header re-renders.
+ * Listens on the `jsonl-event` channel for the first `jsonl-user` envelope of
+ * a session and derives a title from its text. Idempotent once a title is set
+ * — every subsequent `jsonl-user` is a no-op until `ai-title` (which doesn't
+ * fire under `--agent`) overwrites.
+ *
+ * Wiring history:
+ *   - pre-Section-23: read from PtySession's `event` channel (hook-driven user
+ *     events). Hooks stopped emitting user events when 23 made JSONL canonical.
+ *   - Section 31.9: deferred to CC's `ai-title` envelope. Worked only for
+ *     non-`--agent` spawns — i.e. NOT the orchestrator or any PM pod.
+ *   - Current: consumes the tailer's `jsonl-user` envelope. Same heuristic,
+ *     live channel.
  *
  * Uses `session-title-updated` (NOT `session-changed`): the client treats
  * `session-changed` as a hard checkpoint that wipes the chat event buffer
@@ -456,7 +469,7 @@ function attachPtyHandlers(
 function maybeSetSessionTitle(projectId: ULID, event: unknown): void {
   if (!event || typeof event !== 'object') return;
   const ev = event as { kind?: string; text?: string };
-  if (ev.kind !== 'user' || typeof ev.text !== 'string') return;
+  if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
   const active = getActiveOrchestratorSession(projectId);
   if (!active || active.title) return;
   const title = deriveTitleFromText(ev.text);
@@ -487,13 +500,21 @@ function maybeApplyAiTitle(projectId: ULID, event: unknown): void {
   if (updated) broadcastTo(projectId, { type: 'session-title-updated', session: updated });
 }
 
-/** First non-empty line, collapsed whitespace, truncated to ~60 chars. */
+/** First non-empty line, collapsed whitespace, truncated to ~60 chars. Skips
+ *  CC's `<local-command-caveat>` / `<command-name>` / `<command-message>` /
+ *  `<command-args>` wrapper lines so titles capture the user's actual prompt
+ *  rather than the meta envelope. */
 function deriveTitleFromText(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  const firstLine = trimmed.split(/\r?\n/, 1)[0]!.replace(/\s+/g, ' ').trim();
-  if (firstLine.length <= 60) return firstLine;
-  return firstLine.slice(0, 57).trimEnd() + '…';
+  const lines = text.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('<')) continue;
+    const collapsed = line.replace(/\s+/g, ' ').trim();
+    if (!collapsed) continue;
+    return collapsed.length <= 60 ? collapsed : collapsed.slice(0, 57).trimEnd() + '…';
+  }
+  return '';
 }
 
 /**
