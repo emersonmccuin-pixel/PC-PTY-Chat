@@ -29,6 +29,9 @@ import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 
+// Section 32.1 — TabBar lives at the Shell level now (full-width topbar)
+// instead of inside Center. Center renders tab content only.
+
 interface ShellProps {
   projects: Project[];
   activityPanelOpen: boolean;
@@ -69,62 +72,73 @@ export function Shell({
   }, [activityPanelOpen, activityRef]);
 
   return (
-    <Group
-      orientation="horizontal"
-      id="pc-shell-v3"
-      className="h-full"
-    >
-      <Panel id="rail" defaultSize={240} minSize={240} maxSize={240}>
-        <LeftRail
-          projects={projects}
-          activeProject={activeProject}
-          events={wsEvents}
-          onCreateProject={onCreateProject}
-          onProjectDeleted={onProjectDeleted}
-          onProjectReorder={onProjectReorder}
-        />
-      </Panel>
-      <Separator className="w-px bg-border" />
-      <Panel id="center" defaultSize="70%" minSize="30%">
-        <Center
-          activeProject={activeProject}
-          projectCount={projects.length}
-          wsEvents={wsEvents}
-          wsSend={wsSend}
-          wsClear={wsClear}
-          wsStatus={wsStatus}
-          onCreateProject={onCreateProject}
-          onProjectUpdated={onProjectUpdated}
-          onProjectDeleted={onProjectDeleted}
-        />
-      </Panel>
-      <Separator className="w-px bg-border" />
-      <Panel
-        id="activity"
-        panelRef={activityRef}
-        defaultSize={240}
-        minSize={240}
-        maxSize={240}
-        collapsible
-        collapsedSize={0}
+    <div className="flex h-full flex-col">
+      {activeProject && <ShellTabBar />}
+      <Group
+        orientation="horizontal"
+        id="pc-shell-v3"
+        className="flex-1 min-h-0"
       >
-        <ActivityPanel
-          project={activeProject}
-          events={wsEvents}
-          onClose={() => onToggleActivityPanelOpen(false)}
-        />
-      </Panel>
-      {activeProject && (
-        <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
-      )}
-      {activeProject && (
-        <AgentTranscriptModalMount
-          project={activeProject}
-          events={wsEvents}
-        />
-      )}
-    </Group>
+        <Panel id="rail" defaultSize={240} minSize={240} maxSize={240}>
+          <LeftRail
+            projects={projects}
+            activeProject={activeProject}
+            events={wsEvents}
+            onCreateProject={onCreateProject}
+            onProjectDeleted={onProjectDeleted}
+            onProjectReorder={onProjectReorder}
+          />
+        </Panel>
+        <Separator className="w-px bg-border" />
+        <Panel id="center" defaultSize="70%" minSize="30%">
+          <Center
+            activeProject={activeProject}
+            projectCount={projects.length}
+            wsEvents={wsEvents}
+            wsSend={wsSend}
+            wsClear={wsClear}
+            wsStatus={wsStatus}
+            onCreateProject={onCreateProject}
+            onProjectUpdated={onProjectUpdated}
+            onProjectDeleted={onProjectDeleted}
+          />
+        </Panel>
+        <Separator className="w-px bg-border" />
+        <Panel
+          id="activity"
+          panelRef={activityRef}
+          defaultSize={240}
+          minSize={240}
+          maxSize={240}
+          collapsible
+          collapsedSize={0}
+        >
+          <ActivityPanel
+            project={activeProject}
+            events={wsEvents}
+            onClose={() => onToggleActivityPanelOpen(false)}
+          />
+        </Panel>
+        {activeProject && (
+          <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
+        )}
+        {activeProject && (
+          <AgentTranscriptModalMount
+            project={activeProject}
+            events={wsEvents}
+          />
+        )}
+      </Group>
+    </div>
   );
+}
+
+// Thin wrapper that subscribes to the tab store at Shell-level so the
+// topbar re-renders on switch without forwarding extra props.
+function ShellTabBar() {
+  const tab = useActiveCenterTab((s) => s.tab);
+  const setTab = useActiveCenterTab((s) => s.setTab);
+  return <TabBar value={tab} onChange={setTab} />;
 }
 
 // 28.5 — single mount above tab content so any surface (Activity Panel,
@@ -183,7 +197,6 @@ function Center({
   onProjectDeleted: (projectId: string) => void;
 }) {
   const tab = useActiveCenterTab((s) => s.tab);
-  const setTab = useActiveCenterTab((s) => s.setTab);
 
   if (!activeProject) {
     return <EmptyState projectCount={projectCount} onCreateProject={onCreateProject} />;
@@ -191,7 +204,6 @@ function Center({
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <TabBar value={tab} onChange={setTab} />
       <div className="flex-1 overflow-hidden">
         {tab === 'work-items' ? (
           <KanbanBoard project={activeProject} events={wsEvents} />

@@ -4,7 +4,9 @@ import { api, type GlobalSettings, type Project } from '@/api/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { Shell } from '@/components/Shell';
+import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
+import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 
 export default function App() {
@@ -15,6 +17,7 @@ export default function App() {
   const [restartRequired, setRestartRequired] = useState(false);
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
+  const activeTab = useActiveCenterTab((s) => s.tab);
 
   // Activity panel open/closed lives in settings_global.activity_panel.
   // `showAllProjects` field still in settings schema (additive — Section 7
@@ -131,15 +134,28 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="grid grid-cols-3 items-center border-b border-border bg-card px-3 py-2">
-        <div className="flex items-center justify-self-start">
-          <img src="/icon.svg" alt="" className="h-10 w-10" />
-          <span className="-ml-1 text-sm font-semibold tracking-wide text-foreground">caisson</span>
+      {/* Section 32.1 — slim 32px header. Brand on the left; breadcrumb
+          (project › current tab) takes the middle; right-side keeps the
+          gear + activity toggle (the toggle moves to the gutter itself in
+          pass 32.3). */}
+      <header
+        className="flex items-center gap-3 border-b border-border bg-card px-3 text-xs"
+        style={{ height: 32 }}
+      >
+        <div className="flex items-center gap-1.5">
+          <img src="/icon.svg" alt="" className="h-5 w-5" />
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
+            caisson
+          </span>
         </div>
-        <div className="text-center text-2xl font-semibold tracking-tight text-foreground">
-          {activeProject?.name ?? ''}
-        </div>
-        <div className="flex items-center gap-2 justify-self-end">
+        {activeProject && (
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="text-foreground">{activeProject.name}</span>
+            <span className="text-[var(--fg-dim)]">›</span>
+            <span>{tabLabel(activeTab)}</span>
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => setSettingsOpen(true)}
             disabled={!settings}
