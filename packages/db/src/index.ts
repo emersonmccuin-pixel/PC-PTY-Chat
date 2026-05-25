@@ -69,6 +69,10 @@ export {
   persistRun,
 } from './repos/workflow-runs.ts';
 export type { CreateRunInput } from './repos/workflow-runs.ts';
+// Section 19 — v2 run sidecar + event-log repo. Namespaced to avoid
+// createRun/getRun collisions with the legacy repo above. Access as
+// workflowRunsV2Repo.createRun(...), .appendEvent(...), etc.
+export * as workflowRunsV2Repo from './repos/workflow-runs-v2.ts';
 
 export {
   getActiveWorktreeByName,
