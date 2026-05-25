@@ -4,10 +4,12 @@
 //   3. Workflow human-review inbox (pushed to bottom via mt-auto)
 //   4. Failed recently (collapsed, 7-day window, very bottom)
 //
-// Orchestrator status was removed — chat-side indicators in <Orchestrator>
-// cover the same signal and made the card duplicative.
+// Section 32.3 — when collapsed, renders a 36px badge gutter instead of
+// hiding the panel. Auto-swells when "waiting on you" or "failed recently"
+// transitions from 0 → non-zero (running counts don't auto-swell — they
+// resolve themselves).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AgentRunRecord, Project, WorkflowRun } from '@/api/client';
 import { api } from '@/api/client';
@@ -29,6 +31,8 @@ interface PendingApproval {
 interface ActivityPanelProps {
   project: Project | null;
   events: WsEnvelope[];
+  expanded: boolean;
+  onExpand: () => void;
   onClose: () => void;
 }
 
@@ -38,7 +42,13 @@ const ACTIVE_STATUSES = new Set<WorkflowRun['status']>([
   'paused',
 ]);
 
-export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) {
+export function ActivityPanel({
+  project,
+  events,
+  expanded,
+  onExpand,
+  onClose,
+}: ActivityPanelProps) {
   // Single 5s tick so elapsed-time strings re-render without per-card timers.
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -83,6 +93,40 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
         }),
     [runs, sevenDaysAgoMs, dismissedRunIds],
   );
+  // Section 32.3 — auto-swell on first non-zero "waiting on you" or
+  // "failed". Running counts don't auto-swell (they resolve themselves).
+  const waitingCount = pausedRuns.length;
+  const failedCount = recentFailedRuns.length;
+  const prevWaiting = useRef(waitingCount);
+  const prevFailed = useRef(failedCount);
+  useEffect(() => {
+    if (expanded) {
+      prevWaiting.current = waitingCount;
+      prevFailed.current = failedCount;
+      return;
+    }
+    if (
+      (waitingCount > 0 && prevWaiting.current === 0) ||
+      (failedCount > 0 && prevFailed.current === 0)
+    ) {
+      onExpand();
+    }
+    prevWaiting.current = waitingCount;
+    prevFailed.current = failedCount;
+  }, [waitingCount, failedCount, expanded, onExpand]);
+
+  if (!expanded) {
+    return (
+      <ActivityGutter
+        agentsCount={agentRuns.length}
+        workflowsCount={activeRuns.length}
+        waitingCount={waitingCount}
+        failedCount={failedCount}
+        onExpand={onExpand}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col border-l border-border bg-card">
       <Header onClose={onClose} />
@@ -119,6 +163,74 @@ export function ActivityPanel({ project, events, onClose }: ActivityPanelProps) 
         </div>
       )}
     </div>
+  );
+}
+
+function ActivityGutter({
+  agentsCount,
+  workflowsCount,
+  waitingCount,
+  failedCount,
+  onExpand,
+}: {
+  agentsCount: number;
+  workflowsCount: number;
+  waitingCount: number;
+  failedCount: number;
+  onExpand: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      title="Expand activity panel"
+      className="flex h-full w-full flex-col items-center gap-3 border-l border-border bg-card py-3 hover:bg-muted/40"
+    >
+      <span
+        className="text-[9px] uppercase tracking-[0.18em] text-muted-foreground"
+        style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}
+      >
+        activity
+      </span>
+      <GutterBadge label="Running agents" count={agentsCount} tone="muted" />
+      <GutterBadge label="Running workflows" count={workflowsCount} tone="muted" />
+      <GutterBadge
+        label="Waiting on you"
+        count={waitingCount}
+        tone={waitingCount > 0 ? 'warning' : 'muted'}
+      />
+      <GutterBadge
+        label="Failed recently"
+        count={failedCount}
+        tone={failedCount > 0 ? 'danger' : 'muted'}
+      />
+      <span className="mt-auto text-xs text-[var(--fg-dim)]">«</span>
+    </button>
+  );
+}
+
+function GutterBadge({
+  label,
+  count,
+  tone,
+}: {
+  label: string;
+  count: number;
+  tone: 'muted' | 'warning' | 'danger';
+}) {
+  const cls =
+    tone === 'warning'
+      ? 'border-warning text-warning bg-[rgba(216,166,74,0.10)]'
+      : tone === 'danger'
+        ? 'border-destructive text-destructive bg-[rgba(199,74,58,0.10)]'
+        : 'border-border text-[var(--fg-dim)]';
+  return (
+    <span
+      title={`${label} · ${count}`}
+      className={`inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-full border px-1 text-[11px] ${cls}`}
+    >
+      {count}
+    </span>
   );
 }
 

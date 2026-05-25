@@ -129,14 +129,16 @@ export function Shell({
           id="activity"
           panelRef={activityRef}
           defaultSize={240}
-          minSize={240}
+          minSize={36}
           maxSize={240}
           collapsible
-          collapsedSize={0}
+          collapsedSize={36}
         >
           <ActivityPanel
             project={activeProject}
             events={wsEvents}
+            expanded={activityPanelOpen}
+            onExpand={() => onToggleActivityPanelOpen(true)}
             onClose={() => onToggleActivityPanelOpen(false)}
           />
         </Panel>
