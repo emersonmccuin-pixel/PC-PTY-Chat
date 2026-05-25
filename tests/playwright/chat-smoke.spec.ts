@@ -66,11 +66,16 @@ async function createSmokeProject(req: APIRequestContext): Promise<ProjectShape>
   return project;
 }
 
-/** WS pill text — `ws: open` once the project WebSocket is connected. */
+/** Wait for the project WebSocket to connect.
+ *  Section 22.4 — switched from a brittle title-prefix + text regex to the
+ *  stable [data-ws-status] attribute on the pill. The visible label/title
+ *  changes with theme; the attribute is contractual. */
 async function waitForWsOpen(page: Page): Promise<void> {
-  await expect(page.locator('span[title^="WS:"]')).toHaveText(/ws: open/, {
-    timeout: 15_000,
-  });
+  await expect(page.locator('[data-testid="ws-pill"]')).toHaveAttribute(
+    'data-ws-status',
+    'open',
+    { timeout: 15_000 },
+  );
 }
 
 /**
@@ -88,14 +93,16 @@ async function sendChat(page: Page, text: string): Promise<void> {
   await sendBtn.click();
 }
 
-/** Count user bubbles by counting the "You" role label divs. */
+/** Count user / assistant bubbles via the stable [data-role] attribute on
+ *  the chat-turn row. Section 22.4 — replaces a text-class selector that
+ *  rotted when the role label moved into a `chat-turn-name` span and no
+ *  longer matched `div.text-[10px].uppercase`. */
 async function userBubbleCount(page: Page): Promise<number> {
-  // RoleLabel renders <div class="… text-[10px] uppercase tracking-wider …">You</div>
-  return await page.locator('div.text-\\[10px\\].uppercase').filter({ hasText: /^You$/ }).count();
+  return await page.locator('[data-role="user"]').count();
 }
 
 async function assistantBubbleCount(page: Page): Promise<number> {
-  return await page.locator('div.text-\\[10px\\].uppercase').filter({ hasText: /^Claude$/ }).count();
+  return await page.locator('[data-role="assistant"]').count();
 }
 
 test.describe.serial('Chat smoke (0g)', () => {
@@ -246,8 +253,19 @@ test.describe.serial('Chat smoke (0g)', () => {
 
   // ───────────────────────────────────────────────────────────────────────
   // Test 4 — past-session view doesn't pollute the live view
+  //
+  // Section 22.4 — SKIPPED. The rail's `Sessions` tab and the past-session
+  // "Return to live" view this test exercised were both reworked. Section
+  // 5++ replaced the past-session-view flow with resume-in-place (click a
+  // past session row → re-activates it as the live session, no "Return to
+  // live" affordance). The regression this test guarded (past-session
+  // events leaking into the live view) is now a different surface — the
+  // resumed-session replay against an already-open WS — and needs a
+  // rewrite against the new flow before it can guard meaningfully.
+  // TRACKER carry-over: rewrite as a resume-replay test that asserts the
+  // live view's bubble counts are correct after a same-id resume.
   // ───────────────────────────────────────────────────────────────────────
-  test('4. past-session view does not leak into live', async () => {
+  test.skip('4. past-session view does not leak into live (needs rewrite for Section 5++ resume flow)', async () => {
     test.setTimeout(90_000);
     // + New session in Test 3 minted a fresh PtySession. Give it boot time
     // before we eventually send "ping" in the live view.

@@ -1183,7 +1183,11 @@ function ChatTurnCard({
     .join(' ');
 
   return (
-    <div className="chat-turn-row" data-bubble-id={bubbleId}>
+    <div
+      className="chat-turn-row"
+      data-bubble-id={bubbleId}
+      data-role={kind === 'user' ? 'user' : 'assistant'}
+    >
       <div className={`chat-avatar${kind === 'user' ? ' chat-avatar-user' : ''}`}>
         {avatarText}
       </div>

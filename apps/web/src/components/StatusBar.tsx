@@ -104,7 +104,12 @@ export function StatusBar({ projectId, projectName, wsStatus }: StatusBarProps) 
 
         <span className="text-[var(--fg-dim)]">│</span>
 
-        <span className="flex items-center gap-1.5" title={WS_PILL[wsStatus].title}>
+        <span
+          className="flex items-center gap-1.5"
+          title={WS_PILL[wsStatus].title}
+          data-testid="ws-pill"
+          data-ws-status={wsStatus}
+        >
           <span
             className={`inline-block h-1.5 w-1.5 rounded-full ${WS_PILL[wsStatus].dot}`}
             aria-hidden

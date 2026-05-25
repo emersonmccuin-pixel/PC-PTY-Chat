@@ -12,7 +12,7 @@ test('snapshot: rail widths + layout', async ({ page }) => {
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('http://127.0.0.1:5173/');
-  await expect(page.getByText('PROJECT COMPANION')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 10_000 });
 
   // Let any HMR / hydration settle.
   await page.waitForTimeout(500);

@@ -119,7 +119,10 @@ export async function waitForRail(page: Page, name: string): Promise<void> {
 
 export async function gotoShell(page: Page): Promise<void> {
   await page.goto('/');
-  await expect(page.locator('text=PROJECT COMPANION')).toBeVisible({
+  // Section 22.4 — wait on the stable shell testid, not brand text. The
+  // brand string changes across themes ("PROJECT COMPANION" → "caisson");
+  // the testid is contractual.
+  await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({
     timeout: 10_000,
   });
 }

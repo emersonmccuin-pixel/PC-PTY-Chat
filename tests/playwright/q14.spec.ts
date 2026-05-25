@@ -268,7 +268,7 @@ test.describe('E. Project switching', () => {
     await gotoShell(page);
     await selectProject(page, 'Q14 Project C');
     await page.reload();
-    await expect(page.locator('text=PROJECT COMPANION')).toBeVisible();
+    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible();
     // The rail button for Project C should have the active styling — we just
     // assert tabs render + the persisted localStorage value holds the slug.
     await expect(page.locator('button[aria-label="Project settings"]')).toBeVisible();
@@ -431,7 +431,7 @@ test.describe('G. Channel events', () => {
     await expect(page.locator('text=Q14-PROJECT-C').first()).toBeAttached();
     // Persist across reload.
     await page.reload();
-    await expect(page.locator('text=PROJECT COMPANION')).toBeVisible();
+    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible();
     // The "All" button should still have the active background class.
     const allBtn = page.locator('button:has-text("All")').first();
     const cls = await allBtn.getAttribute('class');
@@ -721,7 +721,7 @@ test.describe('K. Activity panel persistence', () => {
     const s = await getSettings(request);
     expect(s.activityPanel.open).toBe(false);
     await page.reload();
-    await expect(page.locator('text=PROJECT COMPANION')).toBeVisible();
+    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible();
     const s2 = await getSettings(request);
     expect(s2.activityPanel.open).toBe(false);
   });
@@ -764,7 +764,7 @@ test.describe('M. Prod URL smoke', () => {
     await page.goto(`${HONO}/`);
     const status = await page.evaluate(() => document.readyState);
     expect(['interactive', 'complete']).toContain(status);
-    const title = page.locator('text=PROJECT COMPANION');
+    const title = page.locator('[data-testid="app-shell"]');
     // Hono only serves apps/web/dist/ — if not built yet, the request 404s.
     if (!(await title.isVisible().catch(() => false))) {
       test.skip(true, 'Prod bundle not built — pnpm --filter @pc/web build first.');

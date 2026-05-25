@@ -161,14 +161,20 @@ export default function App() {
 
   if (projects === null) {
     return (
-      <div className="grid h-full place-items-center bg-background text-muted-foreground">
+      <div
+        data-testid="app-loading"
+        className="grid h-full place-items-center bg-background text-muted-foreground"
+      >
         Loading…
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col bg-background text-foreground">
+    <div
+      data-testid="app-shell"
+      className="flex h-full flex-col bg-background text-foreground"
+    >
       {/* Section 32.1 — slim 32px header. Brand-block (192px) mirrors the
           rail width so the breadcrumb starts at the same x as the center
           column. Right-side keeps the gear + activity toggle. */}
