@@ -170,6 +170,9 @@ export function ProjectRail({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
+      <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wider text-muted-foreground">
+        Projects
+      </div>
       {projects.length > 0 && (
         <div className="border-b border-border px-2 py-1.5">
           <input
