@@ -1281,6 +1281,25 @@ server.oninitialized = () => {
   req.end();
 };
 
+// Section 35 — work-item-returning tools append this hint to their result so
+// the orchestrator gets a contextual reminder to render callsigns / file paths
+// as `pc://` markdown links right next to the data it's about to surface.
+// The pod prompt covers the rule globally; this is the tighter coupling for
+// the moment the model is most likely to forget (rendering a fresh list).
+const RICH_LINK_HINT =
+  '[system formatting reminder] When you mention any of these in your reply, ' +
+  'wrap as markdown links: `[<callsign>](pc://work-item/<callsign>)` for work ' +
+  'items (use the callsign string, not the ULID), `[<path>](pc://file/<path>)` ' +
+  'for files, `[<name>](pc://attachment/<id>)` for attachments. The user can ' +
+  'hover + click these pills. Bare text and backticks are unclickable — never ' +
+  'use them for these refs. Applies in lists too: every reference in every row.';
+
+function withRichLinkHint(
+  text: string,
+): { content: { type: 'text'; text: string }[] } {
+  return { content: [{ type: 'text', text }, { type: 'text', text: RICH_LINK_HINT }] };
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOLS as unknown as typeof TOOLS,
 }));
@@ -1360,7 +1379,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ...(bodyText ? { body: bodyText } : {}),
         });
         if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
+          return withRichLinkHint(res.body);
         }
         return {
           content: [{ type: 'text', text: `pc_create_work_item failed (${res.status}): ${res.body}` }],
@@ -1406,7 +1425,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           payload,
         );
         if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
+          return withRichLinkHint(res.body);
         }
         return {
           content: [
@@ -1563,12 +1582,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             isError: true,
           };
         }
-        const parsed = JSON.parse(res.body) as { ok?: boolean; workItem?: { id?: string; title?: string } };
+        const parsed = JSON.parse(res.body) as { ok?: boolean; workItem?: { id?: string; title?: string; callsign?: string | null } };
         const id = parsed.workItem?.id ?? '?';
+        const callsign = parsed.workItem?.callsign ?? null;
         const tagSuffix = taggedProjectId ? `, tagged ${taggedProjectId}` : ', untagged';
-        return {
-          content: [{ type: 'text', text: `Added to Quick Tasks (id: ${id}${tagSuffix}). Title: ${title}` }],
-        };
+        const idDisplay = callsign ? `${callsign} (${id})` : id;
+        return withRichLinkHint(
+          `Added to Quick Tasks (id: ${idDisplay}${tagSuffix}). Title: ${title}`,
+        );
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_create_quick_task failed: ${(err as Error).message}` }],
@@ -1592,7 +1613,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             isError: true,
           };
         }
-        return { content: [{ type: 'text', text: res.body }] };
+        return withRichLinkHint(res.body);
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_quick_tasks failed: ${(err as Error).message}` }],
@@ -1619,7 +1640,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             isError: true,
           };
         }
-        return { content: [{ type: 'text', text: res.body }] };
+        return withRichLinkHint(res.body);
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_quick_tasks_for_project failed: ${(err as Error).message}` }],
@@ -1719,16 +1740,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             isError: true,
           };
         }
-        const parsed = JSON.parse(createRes.body) as { ok?: boolean; workItem?: { id?: string } };
+        const parsed = JSON.parse(createRes.body) as { ok?: boolean; workItem?: { id?: string; callsign?: string | null } };
         const newId = parsed.workItem?.id ?? '?';
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Bug filed in ${target.name ?? targetId} (id: ${newId}, stage: ${intakeStage}). Body: ${prefix}`,
-            },
-          ],
-        };
+        const callsign = parsed.workItem?.callsign ?? null;
+        const idDisplay = callsign ? `${callsign} (${newId})` : newId;
+        return withRichLinkHint(
+          `Bug filed in ${target.name ?? targetId} (id: ${idDisplay}, stage: ${intakeStage}). Body: ${prefix}`,
+        );
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_log_bug failed: ${(err as Error).message}` }],
@@ -2578,7 +2596,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const suffix = `work-items/${encodeURIComponent(id)}${includeArchived ? '?includeArchived=1' : ''}`;
         const res = await getServer(projectPath(suffix));
         if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
+          return withRichLinkHint(res.body);
         }
         return {
           content: [{ type: 'text', text: `pc_get_work_item failed (${res.status}): ${res.body}` }],
@@ -2606,7 +2624,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const res = await getServer(projectPath(suffix));
         if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
+          return withRichLinkHint(res.body);
         }
         return {
           content: [

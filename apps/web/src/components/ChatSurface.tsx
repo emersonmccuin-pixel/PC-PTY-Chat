@@ -1822,6 +1822,12 @@ function AssistantBubble({ event, projectId }: { event: AssistantEvent; projectI
       <div className="markdown-body">
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkBreaks]}
+          // react-markdown v10's default urlTransform drops unknown schemes
+          // (http / https / mailto / tel only). pc:// gets stripped, so the
+          // custom anchor renderer below never sees the href and the rich-
+          // link never materialises. Pass through any pc:// + the safe
+          // defaults; everything else falls back to react-markdown's behavior.
+          urlTransform={passthroughPcUrlTransform}
           components={{ a: Anchor }}
         >
           {text}
@@ -1830,6 +1836,35 @@ function AssistantBubble({ event, projectId }: { event: AssistantEvent; projectI
       <CopyButton text={text} />
     </div>
   );
+}
+
+/** react-markdown's default `urlTransform` drops unknown schemes. We need
+ *  pc:// links to reach the custom anchor renderer; defer the rest to the
+ *  default behavior (which strips javascript: and similar XSS vectors). */
+function passthroughPcUrlTransform(url: string): string {
+  if (url.startsWith('pc://')) return url;
+  return defaultUrlTransform(url);
+}
+
+// react-markdown v10's exported default urlTransform — re-implemented inline
+// so we don't depend on it. Mirrors the upstream behavior: allow http(s),
+// mailto, tel, irc(s), and a few other safe schemes; strip everything else.
+const SAFE_PROTOCOL = /^(?:https?|mailto|tel|ircs?|news|gopher|nntp|feed|fax|ldap[is]?):/i;
+function defaultUrlTransform(url: string): string {
+  const colon = url.indexOf(':');
+  if (colon === -1) return url;
+  const question = url.indexOf('?');
+  const hash = url.indexOf('#');
+  const slash = url.indexOf('/');
+  if (
+    (slash !== -1 && colon > slash) ||
+    (question !== -1 && colon > question) ||
+    (hash !== -1 && colon > hash)
+  ) {
+    return url;
+  }
+  if (SAFE_PROTOCOL.test(url)) return url;
+  return '';
 }
 
 // ── Tool-calls group ─────────────────────────────────────────────────────
