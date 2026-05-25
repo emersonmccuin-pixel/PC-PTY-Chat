@@ -82,7 +82,7 @@ export function Shell({
         id="pc-shell-v3"
         className="flex-1 min-h-0"
       >
-        <Panel id="rail" defaultSize={240} minSize={240} maxSize={240}>
+        <Panel id="rail" defaultSize={192} minSize={192} maxSize={192}>
           <LeftRail
             projects={projects}
             activeProject={activeProject}
