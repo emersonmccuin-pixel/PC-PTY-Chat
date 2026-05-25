@@ -110,9 +110,9 @@ export function Shell({
         <Panel
           id="activity"
           panelRef={activityRef}
-          defaultSize={240}
-          minSize={36}
-          maxSize={240}
+          defaultSize={192}
+          minSize={192}
+          maxSize={192}
           collapsible
           collapsedSize={36}
         >
