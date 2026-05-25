@@ -17,6 +17,7 @@ import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { useAgentTranscript } from '@/store/agent-transcript';
+import { useRailMode } from '@/store/rail-mode';
 import { ActivityPanel } from './ActivityPanel';
 import { AgentsList } from './AgentsList';
 import { AgentTranscriptModal } from './AgentTranscriptModal';
@@ -60,8 +61,16 @@ export function Shell({
   wsStatus,
 }: ShellProps) {
   const activityRef = usePanelRef();
+  const railRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const activeProject = projects.find((p) => p.slug === activeSlug) ?? null;
+
+  // Section 32.2 — rail width follows rail content. Compact tiles (56px) by
+  // default; expand to 240px when in Sessions or when the Files tab is active
+  // (Files reuses the rail as a file-tree, per 5+P.C).
+  const railMode = useRailMode((s) => s.mode);
+  const centerTab = useActiveCenterTab((s) => s.tab);
+  const railWidth = centerTab === 'files' || railMode === 'sessions' ? 240 : 56;
 
   useEffect(() => {
     const panel = activityRef.current;
@@ -71,6 +80,12 @@ export function Shell({
     else if (!activityPanelOpen && !collapsed) panel.collapse();
   }, [activityPanelOpen, activityRef]);
 
+  useEffect(() => {
+    const panel = railRef.current;
+    if (!panel) return;
+    panel.resize(railWidth);
+  }, [railWidth, railRef]);
+
   return (
     <div className="flex h-full flex-col">
       {activeProject && <ShellTabBar />}
@@ -79,7 +94,13 @@ export function Shell({
         id="pc-shell-v3"
         className="flex-1 min-h-0"
       >
-        <Panel id="rail" defaultSize={240} minSize={240} maxSize={240}>
+        <Panel
+          id="rail"
+          panelRef={railRef}
+          defaultSize={56}
+          minSize={56}
+          maxSize={240}
+        >
           <LeftRail
             projects={projects}
             activeProject={activeProject}

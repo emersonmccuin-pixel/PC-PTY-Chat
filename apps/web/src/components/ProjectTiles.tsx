@@ -1,10 +1,10 @@
-// Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
-// Source: apps/web/src/components/ProjectRail.tsx
-// Adapted for Project Companion: no inline create-project form here — the
-// "+ New project" button bubbles up via `onCreateProject` so the create flow
-// (folder picker + probe + POST /api/projects) lives in a top-level modal
-// shared with future affordances (Q5). Active-slug comes from a zustand
-// store, not props. Right-click context menu built out per D86 (5.4).
+// ProjectTiles — Section 32.2 compact rail view. Wax-stamp tiles for each
+// project, click to activate, right-click for the same context menu as the
+// full-width rail. Drag-reorder preserved.
+//
+// Sits at 56px wide and renders icon-only. The full-width project list still
+// exists (ProjectRail) for the sessions / files expanded-rail modes; this
+// component is the default rail content.
 
 import { useEffect, useMemo, useState } from 'react';
 
@@ -16,11 +16,12 @@ import {
   SoftDeleteProjectModal,
 } from './ProjectDangerModals';
 
-interface ProjectRailProps {
+interface ProjectTilesProps {
   projects: Project[];
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
+  onOpenSessions: () => void;
 }
 
 interface MenuPos {
@@ -33,42 +34,36 @@ type DangerModal =
   | { kind: 'soft-delete'; project: Project }
   | { kind: 'delete-files'; project: Project };
 
-export function ProjectRail({
+function initials(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9]/g, '');
+  return cleaned.slice(0, 2).toUpperCase() || '··';
+}
+
+export function ProjectTiles({
   projects,
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
-}: ProjectRailProps) {
+  onOpenSessions,
+}: ProjectTilesProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const setTab = useActiveCenterTab((s) => s.setTab);
   const [menu, setMenu] = useState<MenuPos | null>(null);
   const [danger, setDanger] = useState<DangerModal | null>(null);
   const [filesNote, setFilesNote] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
-  // 5+.4 (D87) — drag state. `draggingId` is the source row; `dragOverId` +
-  // `dragOverPos` drive the insertion-line indicator. Drag is disabled while
-  // the filter input has text — reorder semantics on a partial view get weird
-  // fast, and the filter is a transient lookup tool anyway.
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragOverPos, setDragOverPos] = useState<'before' | 'after'>('before');
 
-  // 5+.3 (D89): rail-local, transient, name-only substring filter.
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return projects;
-    return projects.filter((p) => p.name.toLowerCase().includes(q));
-  }, [projects, filter]);
+  const dragEnabled = projects.length > 1;
 
-  const dragEnabled = filter.trim() === '' && projects.length > 1;
+  const sortedProjects = useMemo(() => projects, [projects]);
 
   useEffect(() => {
     if (!menu) return;
     const dismiss = () => setMenu(null);
     const onKey = (e: KeyboardEvent) => {
-      // Only Escape dismisses — typing in the filter input or anywhere else
-      // shouldn't close the menu.
       if (e.key === 'Escape') setMenu(null);
     };
     window.addEventListener('click', dismiss);
@@ -81,7 +76,6 @@ export function ProjectRail({
     };
   }, [menu]);
 
-  // Auto-clear the "Removed: …" toast after a short window.
   useEffect(() => {
     if (!filesNote) return;
     const t = setTimeout(() => setFilesNote(null), 4_000);
@@ -99,7 +93,6 @@ export function ProjectRail({
     try {
       await api.revealProject(project.id);
     } catch (err) {
-      console.error('[pc] revealProject failed', err);
       alert(`Couldn't open the folder: ${(err as Error).message}`);
     }
   }
@@ -109,7 +102,6 @@ export function ProjectRail({
     try {
       await navigator.clipboard.writeText(project.folderPath);
     } catch (err) {
-      console.error('[pc] clipboard write failed', err);
       alert(`Couldn't copy: ${(err as Error).message}`);
     }
   }
@@ -119,27 +111,14 @@ export function ProjectRail({
     try {
       await api.startNewSession(project.id);
     } catch (err) {
-      console.error('[pc] startNewSession failed', err);
       alert(`Couldn't start a new session: ${(err as Error).message}`);
     }
-  }
-
-  function openSoftDelete(project: Project) {
-    setMenu(null);
-    setDanger({ kind: 'soft-delete', project });
-  }
-
-  function openDeleteFiles(project: Project) {
-    setMenu(null);
-    setFilesNote(null);
-    setDanger({ kind: 'delete-files', project });
   }
 
   function handleDragStart(e: React.DragEvent, project: Project) {
     if (!dragEnabled) return;
     setDraggingId(project.id);
     e.dataTransfer.effectAllowed = 'move';
-    // Firefox needs payload set for drag to start at all.
     e.dataTransfer.setData('text/plain', project.id);
   }
 
@@ -167,8 +146,6 @@ export function ProjectRail({
     const next = projects.slice();
     const [moved] = next.splice(srcIdx, 1);
     if (!moved) return;
-    // Account for the gap left by the splice when inserting after an earlier
-    // index — without this the move ends up off by one to the right.
     const adjusted = srcIdx < insertAt ? insertAt - 1 : insertAt;
     next.splice(adjusted, 0, moved);
     onProjectReorder(next.map((p) => p.id));
@@ -181,33 +158,25 @@ export function ProjectRail({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
-      {projects.length > 0 && (
-        <div className="border-b border-border px-2 py-1.5">
-          <input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter projects…"
-            className="w-full px-2 py-1 text-xs"
-          />
-        </div>
-      )}
-      <div className="flex-1 overflow-y-auto">
-        {projects.length === 0 ? (
-          <div className="px-3 py-3 text-xs text-muted-foreground">No projects yet.</div>
-        ) : filtered.length === 0 ? (
-          <div className="px-3 py-3 text-xs text-muted-foreground">No matches.</div>
+      <div className="px-1 pt-3 pb-1 text-center text-[8px] uppercase tracking-[0.12em] text-[var(--fg-dim)]">
+        proj
+      </div>
+      <div className="flex flex-1 flex-col items-center gap-1.5 overflow-y-auto px-1 py-2">
+        {sortedProjects.length === 0 ? (
+          <div className="px-2 py-2 text-center text-[10px] text-muted-foreground">
+            None yet
+          </div>
         ) : (
-          filtered.map((p) => {
+          sortedProjects.map((p) => {
             const isActive = p.slug === activeSlug;
             const isDragging = draggingId === p.id;
             const isOver = dragOverId === p.id;
             const showLineBefore = isOver && dragOverPos === 'before';
             const showLineAfter = isOver && dragOverPos === 'after';
             return (
-              <div key={p.id} className="relative">
+              <div key={p.id} className="relative w-full">
                 {showLineBefore && (
-                  <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-0.5 bg-primary" />
+                  <div className="pointer-events-none absolute left-1 right-1 top-0 z-10 h-0.5 bg-primary" />
                 )}
                 <button
                   draggable={dragEnabled}
@@ -218,44 +187,44 @@ export function ProjectRail({
                   onClick={() => setActiveSlug(p.slug)}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    // stopPropagation so the SAME contextmenu doesn't bubble to
-                    // the window-level dismiss listener attached by the useEffect
-                    // below — React 18 commits + runs the effect fast enough that
-                    // the listener was live before bubbling finished, opening and
-                    // immediately closing the menu (5+.1 regression hunt).
                     e.stopPropagation();
                     setMenu({ project: p, x: e.clientX, y: e.clientY });
                   }}
-                  title={p.folderPath}
+                  title={p.name}
                   className={
-                    'block w-full truncate px-3 py-1.5 text-left text-base hover:bg-muted ' +
-                    (isActive
-                      ? 'border-l-2 border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary '
-                      : 'border-l-2 border-transparent text-foreground/80 ') +
-                    (isDragging ? 'opacity-40 ' : '') +
-                    (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
+                    'pc-project-tile mx-auto block ' +
+                    (isActive ? 'pc-project-tile-active' : 'pc-project-tile-inactive') +
+                    (isDragging ? ' opacity-40' : '') +
+                    (dragEnabled ? ' cursor-grab active:cursor-grabbing' : '')
                   }
                 >
-                  {p.name}
+                  {initials(p.name)}
                 </button>
                 {showLineAfter && (
-                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary" />
+                  <div className="pointer-events-none absolute bottom-0 left-1 right-1 z-10 h-0.5 bg-primary" />
                 )}
               </div>
             );
           })
         )}
-      </div>
-      <div className="border-t border-border p-2">
         <button
           onClick={onCreateProject}
-          className="w-full px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="New project"
+          aria-label="New project"
+          className="pc-project-tile pc-project-tile-new mx-auto mt-2"
         >
-          + New project
+          +
         </button>
       </div>
+      <button
+        onClick={onOpenSessions}
+        title="Browse sessions for the active project"
+        className="border-t border-border px-1 py-2 text-center text-[9px] uppercase tracking-[0.08em] text-[var(--fg-dim)] hover:text-accent"
+      >
+        sessions
+      </button>
       {filesNote && (
-        <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
+        <div className="border-t border-border bg-success/10 px-2 py-1 text-[10px] text-success">
           {filesNote}
         </div>
       )}
@@ -283,10 +252,23 @@ export function ProjectRail({
             New session
           </MenuItem>
           <div className="my-1 border-t border-border" />
-          <MenuItem onClick={() => openSoftDelete(menu.project)} variant="danger">
+          <MenuItem
+            onClick={() => {
+              setMenu(null);
+              setDanger({ kind: 'soft-delete', project: menu.project });
+            }}
+            variant="danger"
+          >
             Archive…
           </MenuItem>
-          <MenuItem onClick={() => openDeleteFiles(menu.project)} variant="danger">
+          <MenuItem
+            onClick={() => {
+              setMenu(null);
+              setFilesNote(null);
+              setDanger({ kind: 'delete-files', project: menu.project });
+            }}
+            variant="danger"
+          >
             Delete files…
           </MenuItem>
         </div>
