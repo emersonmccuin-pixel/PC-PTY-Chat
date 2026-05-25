@@ -6,9 +6,10 @@
 // env vars / cleanup hook the caller folds into PtySession's `mcpConfigPath`
 // + `extraEnv`.
 //
-// v1 = global-only pod resolution (matches `getPodForSpawn`'s contract).
-// 17c will overlay project-scoped rows at the repo layer; this helper does
-// not need to change.
+// Pod resolution is project-first-then-global as of Section 22.1
+// (codebase-review stabilization, 2026-05-25). Callers that have a projectId
+// MUST pass it so a project-scoped pod with the same name wins; callers that
+// don't (genuinely global-only contexts) can omit it for the legacy lookup.
 //
 // 17a.5 wires this into the workflow runtime's subagent dispatch path. The
 // orchestrator path stays on the existing `--append-system-prompt-file` flow
@@ -22,13 +23,18 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getPodForSpawn } from '@pc/db';
-import type { PodMcpServerConfig } from '@pc/domain';
+import type { PodMcpServerConfig, ULID } from '@pc/domain';
 import { materializePod, type MaterializedPod, type PodWorkItemContext } from '@pc/runtime';
 import { PC_RIG_TOOL_NAMES } from './pod-tool-catalog.ts';
 
 export interface PreparePodSpawnInput {
-  /** Agent name — looked up against the live global pod rows. */
+  /** Agent name — looked up against the pod rows. */
   agentName: string;
+  /** Project context for the dispatch. When set, a project-scoped pod with
+   *  this name wins over the same-name global pod. Omit only when the
+   *  dispatch is genuinely project-agnostic (no such call site exists in
+   *  production today — all spawns happen within a project). */
+  projectId?: ULID | null;
   /** Worktree root — `.claude/agents/<name>.md` lands under here. */
   worktreeDir: string;
   /** Per-spawn scratch dir — temp `mcp.json` lands here. Caller owns the dir
@@ -61,13 +67,20 @@ export interface PodSpawnPrep {
   /** Tear-down hook — removes the materialised .md + mcp.json. Caller invokes
    *  on spawn-handle resolution (success or failure). Tolerant of repeat calls. */
   cleanup(): void;
+  /** Which scope `getPodForSpawn` actually resolved. Lets the caller pin
+   *  downstream queries (e.g. `computePodRevision`) to the row we used —
+   *  same-name project-scope pod can shadow a global. */
+  podScope: 'global' | 'project';
+  /** The project the resolved pod belongs to (when `podScope === 'project'`).
+   *  Null for globals. */
+  podProjectId: ULID | null;
 }
 
 /** Resolves the pod for `agentName` and materialises it. Returns `null` when
  *  no live global pod row exists for that name — caller falls back to the
  *  existing flat-file + project-`.mcp.json` path. */
 export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | null {
-  const bundle = getPodForSpawn(input.agentName);
+  const bundle = getPodForSpawn(input.agentName, input.projectId);
   if (!bundle) return null;
 
   const baseline = readProjectMcpBaseline(input.worktreeDir);
@@ -86,6 +99,8 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
     mcpConfigPath: materialised.mcpConfigPath,
     extraEnv: materialised.envVars,
     cleanup: materialised.cleanup,
+    podScope: bundle.agent.scope,
+    podProjectId: bundle.agent.projectId ?? null,
   };
 }
 

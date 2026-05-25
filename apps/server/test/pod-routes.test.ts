@@ -656,6 +656,80 @@ test('mcp servers add + delete + invalid config rejected', async () => {
   assert.equal(del.status, 200);
 });
 
+// --- Section 22.2: child rows inherit agent.scope/projectId ---------------
+
+test('22.2: project pod knowledge/secret/mcp create lands as project-scoped + bundle returns them', async () => {
+  const { app } = freshApp();
+  const projectId = '01TESTPROJECTFORSCOPE0001';
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'project-child-scope',
+    scope: 'project',
+    projectId,
+  });
+  assert.equal(create.status, 201);
+  const pod = create.data.pod as { id: string; scope: string; projectId: string };
+  assert.equal(pod.scope, 'project');
+  assert.equal(pod.projectId, projectId);
+  const id = pod.id;
+
+  // Add one of each child resource.
+  const k = await fetchJson(app, 'POST', `/api/agents/pods/${id}/knowledge`, {
+    name: 'proj-doc',
+    content: 'project knowledge',
+  });
+  assert.equal(k.status, 201);
+
+  const s = await fetchJson(app, 'POST', `/api/agents/pods/${id}/secrets`, {
+    envVarName: 'PROJ_TOKEN',
+    valuePlaintext: 'tok',
+  });
+  assert.equal(s.status, 201);
+
+  const m = await fetchJson(app, 'POST', `/api/agents/pods/${id}/mcp-servers`, {
+    name: 'proj-srv',
+    config: { command: 'node', args: ['s.mjs'] },
+  });
+  assert.equal(m.status, 201);
+
+  // Bundle read (which filters children by agent.scope/projectId) must
+  // surface every entry we just created. Before the fix these would land as
+  // 'global' rows and be invisible to the bundle read.
+  const bundle = await fetchJson(app, 'GET', `/api/agents/pods/${id}`);
+  assert.equal(bundle.status, 200);
+  const knowledge = bundle.data.knowledge as { name: string; scope: string; projectId: string }[];
+  assert.equal(knowledge.length, 1);
+  assert.equal(knowledge[0].name, 'proj-doc');
+  assert.equal(knowledge[0].scope, 'project');
+  assert.equal(knowledge[0].projectId, projectId);
+
+  const secrets = bundle.data.secrets as { envVarName: string }[];
+  assert.equal(secrets.length, 1);
+  assert.equal(secrets[0].envVarName, 'PROJ_TOKEN');
+
+  const mcpServers = bundle.data.mcpServers as { name: string; scope: string; projectId: string }[];
+  assert.equal(mcpServers.length, 1);
+  assert.equal(mcpServers[0].name, 'proj-srv');
+  assert.equal(mcpServers[0].scope, 'project');
+  assert.equal(mcpServers[0].projectId, projectId);
+});
+
+test('22.2: global pod child rows still land as global', async () => {
+  // Regression guard for the other half of the contract.
+  const { app } = freshApp();
+  const create = await fetchJson(app, 'POST', '/api/agents/pods', {
+    name: 'global-child-scope',
+  });
+  const id = (create.data.pod as { id: string }).id;
+  await fetchJson(app, 'POST', `/api/agents/pods/${id}/knowledge`, {
+    name: 'g-doc',
+    content: 'global doc',
+  });
+  const bundle = await fetchJson(app, 'GET', `/api/agents/pods/${id}`);
+  const knowledge = bundle.data.knowledge as { scope: string; projectId: string | null }[];
+  assert.equal(knowledge[0].scope, 'global');
+  assert.equal(knowledge[0].projectId, null);
+});
+
 // --- audit listing ---------------------------------------------------------
 
 test('audit listing supports actor + field + limit filters', async () => {

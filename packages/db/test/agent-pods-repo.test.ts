@@ -365,31 +365,101 @@ test('getPodForSpawn returns null when no live global agent matches', () => {
   assert.equal(getPodForSpawn('does-not-exist'), null);
 });
 
-test('getPodForSpawn (v1) ignores project-scoped content even if projectId given', () => {
-  // v1 contract: global-only resolution. Project rows exist (forward-compat
-  // for 17c) but are NOT included in the bundle yet. Guard against accidental
-  // overlay-by-default.
+test('getPodForSpawn: project-scoped pod with same name wins over global', () => {
+  // Section 22.1 — stabilization fix. The dispatch resolver now prefers a
+  // project-scoped pod with the requested name; same-name global is only
+  // the fallback. Without this, project pods are invisible at spawn time.
   const projectId = newId() as ULID;
-  const a = createAgent(
+  const globalA = createAgent(
     {
-      name: 'v1-only',
+      name: 'shared-name',
       scope: 'global',
-      prompt: 'global prompt',
+      prompt: 'global version',
     },
     U,
   );
-  // Project-scoped row on the same agent — should be ignored by v1.
   createKnowledge(
+    { agentId: globalA.id, scope: 'global', name: 'global-doc', content: 'global content' },
+    U,
+  );
+  const projectA = createAgent(
     {
-      agentId: a.id,
+      name: 'shared-name',
       scope: 'project',
       projectId,
-      name: 'project-only-doc',
-      content: 'should not appear',
+      prompt: 'project override',
     },
     U,
   );
-  const bundle = getPodForSpawn('v1-only', projectId);
+  createKnowledge(
+    {
+      agentId: projectA.id,
+      scope: 'project',
+      projectId,
+      name: 'project-doc',
+      content: 'project content',
+    },
+    U,
+  );
+  createSecret(
+    {
+      agentId: projectA.id,
+      scope: 'project',
+      projectId,
+      envVarName: 'PROJECT_SECRET',
+      valuePlaintext: 'pv',
+    },
+    U,
+  );
+  createMcpServer(
+    {
+      agentId: projectA.id,
+      scope: 'project',
+      projectId,
+      name: 'project-srv',
+      config: { command: 'node', args: ['p.mjs'] },
+    },
+    U,
+  );
+
+  const bundle = getPodForSpawn('shared-name', projectId);
   assert.ok(bundle);
-  assert.equal(bundle.knowledge.length, 0);
+  assert.equal(bundle.agent.id, projectA.id, 'project pod must win over same-name global');
+  assert.equal(bundle.agent.prompt, 'project override');
+  assert.equal(bundle.knowledge.length, 1);
+  assert.equal(bundle.knowledge[0].name, 'project-doc');
+  assert.equal(bundle.secrets.length, 1);
+  assert.equal(bundle.secrets[0].envVarName, 'PROJECT_SECRET');
+  assert.equal(bundle.mcpServers.length, 1);
+  assert.equal(bundle.mcpServers[0].name, 'project-srv');
+});
+
+test('getPodForSpawn: falls back to global when no project pod exists', () => {
+  const projectId = newId() as ULID;
+  createAgent(
+    { name: 'global-only-fallback', scope: 'global', prompt: 'global only' },
+    U,
+  );
+  // No project-scoped row created.
+  const bundle = getPodForSpawn('global-only-fallback', projectId);
+  assert.ok(bundle);
+  assert.equal(bundle.agent.scope, 'global');
+  assert.equal(bundle.agent.prompt, 'global only');
+});
+
+test('getPodForSpawn: returns null when neither project nor global pod exists', () => {
+  const projectId = newId() as ULID;
+  assert.equal(getPodForSpawn('nope', projectId), null);
+  assert.equal(getPodForSpawn('nope'), null);
+});
+
+test('getPodForSpawn: omitting projectId keeps the global-only path', () => {
+  // Project-scoped pod with this name exists but caller didn't pass projectId
+  // — must not be resolved (no project context to scope to).
+  const projectId = newId() as ULID;
+  createAgent(
+    { name: 'project-no-global', scope: 'project', projectId, prompt: 'p' },
+    U,
+  );
+  assert.equal(getPodForSpawn('project-no-global'), null);
 });

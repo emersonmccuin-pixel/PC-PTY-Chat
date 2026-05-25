@@ -1028,19 +1028,45 @@ export function deleteMcpServer(id: ULID, audit: AuditInput): boolean {
 
 // --- pod bundle -------------------------------------------------------------
 
+/** Resolve a pod for dispatch: prefer a project-scoped row for this project,
+ *  fall back to a live global row with the same name. Returns null when
+ *  neither exists.
+ *
+ *  Section 22.1 — the 2026-05-25 codebase review found this was the
+ *  load-bearing place where project-scoped pods became invisible at spawn.
+ *  Stabilization pass switched it from "global only" to "project wins". */
+export function resolveAgentForDispatch(
+  name: string,
+  projectId?: ULID | null,
+): PodAgentRow | null {
+  if (projectId) {
+    const project = getAgentByName({ name, scope: 'project', projectId });
+    if (project) return project;
+  }
+  return getAgentByName({ name, scope: 'global' });
+}
+
 /** Read the full pod the materialiser (17a.3) needs to render `.md` +
  *  `mcp.json` + env vars at spawn time.
  *
- *  v1 = global-only. Resolution looks up the live global agent by `name`
- *  and returns its global-scope content rows. `projectId` is accepted for
- *  forward-compat — 17c will overlay the project rows onto the global ones
- *  (concatenate knowledge; project wins per env-var-name + per server-name).
+ *  Resolution: project-scoped row for this project wins, then live global
+ *  row. Content rows are read with the resolved agent's own scope — a
+ *  project pod's bundle carries that project's knowledge / secrets / mcp
+ *  rows; a global pod's bundle carries the global ones.
  *
- *  Returns null when no live global agent with that name exists.
+ *  Returns null when neither a project nor a global row with `name` exists.
  */
-export function getPodForSpawn(name: string, _projectId?: ULID): PodSpawnBundle | null {
-  const agent = getAgentByName({ name, scope: 'global' });
+export function getPodForSpawn(name: string, projectId?: ULID | null): PodSpawnBundle | null {
+  const agent = resolveAgentForDispatch(name, projectId);
   if (!agent) return null;
+  if (agent.scope === 'project' && agent.projectId) {
+    return {
+      agent,
+      knowledge: listKnowledge({ agentId: agent.id, projectId: agent.projectId }),
+      secrets: listSecrets({ agentId: agent.id, projectId: agent.projectId }),
+      mcpServers: listMcpServers({ agentId: agent.id, projectId: agent.projectId }),
+    };
+  }
   return {
     agent,
     knowledge: listKnowledge({ agentId: agent.id, scope: 'global' }),

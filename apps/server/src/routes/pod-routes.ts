@@ -591,10 +591,15 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     if (!name) return c.json({ ok: false, error: 'name required' }, 400);
     let row: PodKnowledgeRow;
     try {
+      // Section 22.2 — child rows inherit the agent's scope + projectId.
+      // Hard-coding 'global' here meant project pods could not host project-
+      // scoped knowledge through the route (bundle reads filter by scope, so
+      // the entries appeared to save but never landed in the spawn bundle).
       row = createKnowledge(
         {
           agentId: id,
-          scope: 'global',
+          scope: agent.scope,
+          projectId: agent.projectId ?? null,
           name,
           ...(body.kind !== undefined ? { kind: asKnowledgeKind(body.kind) } : {}),
           content: typeof body.content === 'string' ? body.content : '',
@@ -700,8 +705,16 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     }
     let row: PodSecretRow;
     try {
+      // Section 22.2 — secrets inherit agent.scope/projectId. See knowledge
+      // route above for the rationale.
       row = createSecret(
-        { agentId: id, scope: 'global', envVarName, valuePlaintext },
+        {
+          agentId: id,
+          scope: agent.scope,
+          projectId: agent.projectId ?? null,
+          envVarName,
+          valuePlaintext,
+        },
         auditFromBody(body, 'user', 'ui-create-secret'),
       );
     } catch (err) {
@@ -746,8 +759,15 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     let row: PodMcpServerRow;
     try {
       const config = asMcpConfig(body.config);
+      // Section 22.2 — mcp servers inherit agent.scope/projectId. See above.
       row = createMcpServer(
-        { agentId: id, scope: 'global', name, config },
+        {
+          agentId: id,
+          scope: agent.scope,
+          projectId: agent.projectId ?? null,
+          name,
+          config,
+        },
         auditFromBody(body, 'user', 'ui-create-mcp'),
       );
     } catch (err) {

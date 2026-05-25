@@ -265,6 +265,7 @@ export class ProjectRuntime {
     try {
       const prep = preparePodSpawn({
         agentName: pmAgentName,
+        projectId: this.project.id,
         worktreeDir: this.project.folderPath,
         scratchDir: sessionDir,
       });
@@ -457,6 +458,7 @@ export class ProjectRuntime {
 
     const prep = preparePodSpawn({
       agentName: 'agent-designer',
+      projectId: this.project.id,
       worktreeDir: this.project.folderPath,
       scratchDir: sessionDir,
       filterMcpToReferencedTools: false,

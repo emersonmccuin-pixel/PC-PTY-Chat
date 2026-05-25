@@ -103,6 +103,7 @@ export {
   listMcpServers,
   listSecrets,
   promoteAgentToGlobal,
+  resolveAgentForDispatch,
   restoreAgent,
   softDeleteAgent,
   updateAgent,

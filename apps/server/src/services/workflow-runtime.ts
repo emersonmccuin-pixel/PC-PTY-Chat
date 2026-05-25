@@ -2001,6 +2001,7 @@ export class WorkflowRuntime {
     try {
       podPrep = preparePodSpawn({
         agentName: resolvedAgent,
+        projectId: this.projectId,
         worktreeDir,
         scratchDir: sessionDataDir,
         filterMcpToReferencedTools: true,

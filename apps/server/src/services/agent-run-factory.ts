@@ -35,7 +35,7 @@ import { resolve } from 'node:path';
 
 import {
   computePodRevision,
-  getAgentByName,
+  resolveAgentForDispatch,
   getProjectById,
   getWorkItem,
   insertAgentRunRow,
@@ -213,8 +213,9 @@ export function dispatchFreshAgent(
 
   // Fail fast on unknown agent — pre-row-insert so the orchestrator can
   // distinguish "you asked for a nonexistent pod" from "the pod ran and
-  // failed."
-  const podRow = getAgentByName({ name: input.agentName, scope: 'global' });
+  // failed." Resolution prefers a project-scoped pod with this name, falls
+  // back to global. (Section 22.1 — stabilization fix.)
+  const podRow = resolveAgentForDispatch(input.agentName, input.projectId);
   if (!podRow) {
     return {
       ok: false,
@@ -267,6 +268,7 @@ export function dispatchFreshAgent(
   try {
     podPrep = preparePodSpawn({
       agentName: input.agentName,
+      projectId: input.projectId,
       worktreeDir: input.worktreeDir,
       scratchDir,
       filterMcpToReferencedTools: true,
@@ -290,9 +292,13 @@ export function dispatchFreshAgent(
     };
   }
 
+  // Pod-revision must match the row we actually resolved — when the dispatch
+  // resolved a project-scoped pod, the revision query must scope to that
+  // project too. (Section 22.1 fix: previously always passed null → drift if a
+  // project pod was edited.)
   const podRevisionAtDispatch = computePodRevision({
     podName: input.agentName,
-    projectId: null,
+    projectId: podPrep.podScope === 'project' ? podPrep.podProjectId : null,
   });
 
   // When a contract WI is supplied, store it on the agent_runs row's
@@ -420,6 +426,7 @@ export function dispatchContinueAgent(
   try {
     podPrep = preparePodSpawn({
       agentName: plan.plan.podName,
+      projectId: input.projectId,
       worktreeDir: input.worktreeDir,
       scratchDir,
       filterMcpToReferencedTools: true,
