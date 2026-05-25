@@ -178,15 +178,14 @@ export default function App() {
             ref={brandButtonRef}
             type="button"
             onClick={() => setBrandMenuOpen((v) => !v)}
-            className={`flex h-full w-full items-center gap-1.5 px-3 text-left hover:bg-muted/50 ${
+            className={`flex h-full w-full items-center gap-2 px-3 text-left hover:bg-muted/50 ${
               brandMenuOpen ? 'bg-muted/50' : ''
             }`}
             aria-haspopup="menu"
             aria-expanded={brandMenuOpen}
             title="App menu"
           >
-            <img src="/icon.svg" alt="" className="h-5 w-5" />
-            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
+            <span className="text-sm font-bold uppercase tracking-[0.14em] text-primary">
               caisson
             </span>
             <span className="text-[10px] text-[var(--fg-dim)]">▾</span>
