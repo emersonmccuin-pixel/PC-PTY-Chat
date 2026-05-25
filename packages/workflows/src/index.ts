@@ -2,6 +2,15 @@ export { validateWorkflow, parseWorkflowText } from './validator.ts';
 export type { ValidationError, ValidationResult } from './validator.ts';
 export { serializeWorkflow } from './serializer.ts';
 export { WorkflowRegistry } from './registry.ts';
+// Section 19 — v2 workflow store (serialize/parse + registry).
+export { serializeWorkflowV2, parseWorkflowV2Text, WORKFLOW_V2_VERSION } from './serialize-v2.ts';
+export type { ParseV2Result } from './serialize-v2.ts';
+export { WorkflowV2Registry } from './registry-v2.ts';
+export type {
+  ValidWorkflowV2Entry,
+  InvalidWorkflowV2Entry,
+  RegistryV2State,
+} from './registry-v2.ts';
 export type {
   InvalidWorkflowEntry,
   RegistryState,
