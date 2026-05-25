@@ -218,6 +218,17 @@ export interface TurnFooterEvent extends ChatEventBase {
   model?: string | null;
 }
 
+/** Section 31 — long-running tool progress. Doesn't render as a standalone
+ *  bubble; the synthesizer enriches the matching ToolCall by toolUseId and
+ *  the tool-group child card shows live elapsed time. */
+export interface ToolProgressEvent extends ChatEventBase {
+  kind: 'tool-progress';
+  toolUseId: string;
+  toolName: string;
+  elapsedSeconds: number | null;
+  taskId: string | null;
+}
+
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
@@ -238,6 +249,7 @@ export type ChatEvent =
   | CompactBoundaryEvent
   | MicrocompactEvent
   | TurnFooterEvent
+  | ToolProgressEvent
   | (ChatEventBase & Record<string, unknown>);
 
 // ── JSONL event shapes (Section 0) ────────────────────────────────────────

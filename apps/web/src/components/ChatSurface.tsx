@@ -89,6 +89,12 @@ interface ToolCall {
   startedAt: string;
   ended: boolean;
   stableId: number;
+  /** Section 31.5 — most-recent `tool_progress` elapsed seconds for this
+   *  tool's in-flight execution. Null until a progress event arrives. */
+  progressElapsedSeconds: number | null;
+  /** Section 31.5 — most-recent `tool_progress` task_id, if any (CC tags
+   *  background-task tool calls with one). */
+  progressTaskId: string | null;
 }
 
 interface ToolGroupItem {
@@ -365,6 +371,20 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
           model: ev.model,
         },
       };
+    case 'jsonl-tool-progress':
+      // Section 31.5 — synthesizer matches by toolUseId and enriches the
+      // existing ToolCall in-place (no standalone render item lands).
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: {
+          kind: 'tool-progress',
+          toolUseId: ev.toolUseId,
+          toolName: ev.toolName,
+          elapsedSeconds: ev.elapsedSeconds,
+          taskId: ev.taskId,
+        },
+      };
     // Section 31 — Internal-only envelopes (no chat surface today).
     case 'jsonl-ai-title':
     case 'jsonl-last-prompt':
@@ -372,7 +392,6 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
     case 'jsonl-bridge-session':
     case 'jsonl-turn-duration':
     case 'jsonl-post-turn-summary':
-    case 'jsonl-tool-progress':
     case 'jsonl-stream-event':
       return null;
     case 'jsonl-sidechain':
@@ -427,12 +446,51 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
         startedAt: t.ts ?? `${stableId}`,
         ended: false,
         stableId,
+        progressElapsedSeconds: null,
+        progressTaskId: null,
       };
       if (HIGHLIGHT_TOOLS.has(t.tool)) {
         flush();
         items.push({ kind: 'edit', key: `edit-${stableId}`, call });
       } else {
         buffer.push(call);
+      }
+      continue;
+    }
+    // Section 31.5 — `tool-progress` enriches the matching in-flight tool
+    // call (by toolUseId) with elapsed seconds. Doesn't create a new render
+    // item; the tool-group child card picks up the change.
+    if (ev.kind === 'tool-progress') {
+      const tp = ev as { toolUseId: string; elapsedSeconds: number | null; taskId: string | null };
+      const apply = (c: ToolCall) => {
+        c.progressElapsedSeconds = tp.elapsedSeconds;
+        c.progressTaskId = tp.taskId;
+      };
+      let matched = false;
+      for (const c of buffer) {
+        if (!c.ended && c.toolUseId === tp.toolUseId) { apply(c); matched = true; break; }
+      }
+      if (!matched) {
+        for (let j = items.length - 1; j >= 0; j--) {
+          const it = items[j]!;
+          if (it.kind === 'edit') {
+            if (!it.call.ended && it.call.toolUseId === tp.toolUseId) {
+              apply(it.call);
+              matched = true;
+              break;
+            }
+          } else if (it.kind === 'tool-group') {
+            for (let k = it.calls.length - 1; k >= 0; k--) {
+              const c = it.calls[k]!;
+              if (!c.ended && c.toolUseId === tp.toolUseId) {
+                apply(c);
+                matched = true;
+                break;
+              }
+            }
+            if (matched) break;
+          }
+        }
       }
       continue;
     }
@@ -484,6 +542,8 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
           startedAt: t.ts ?? `${stableId}`,
           ended: true,
           stableId,
+          progressElapsedSeconds: null,
+          progressTaskId: null,
         });
       }
       continue;
@@ -1945,12 +2005,26 @@ function ToolCallRow({
         <span className="font-medium text-foreground">{call.tool}</span>
         {summary && <span className="truncate font-mono text-[11px] text-muted-foreground">{summary}</span>}
         {!call.ended && (
-          <span className="ml-auto text-[10px] italic text-warning">running…</span>
+          <span className="ml-auto flex items-baseline gap-1.5 text-[10px] italic text-warning">
+            running…
+            {typeof call.progressElapsedSeconds === 'number' && (
+              <span className="not-italic font-mono text-muted-foreground">
+                · {formatElapsedSeconds(call.progressElapsedSeconds)}
+              </span>
+            )}
+          </span>
         )}
       </button>
       {open && <ToolCallDetails call={call} />}
     </div>
   );
+}
+
+function formatElapsedSeconds(s: number): string {
+  if (s < 60) return `${s.toFixed(0)}s`;
+  const m = Math.floor(s / 60);
+  const r = Math.floor(s % 60);
+  return `${m}m${r.toString().padStart(2, '0')}s`;
 }
 
 function ToolSubgroup({
