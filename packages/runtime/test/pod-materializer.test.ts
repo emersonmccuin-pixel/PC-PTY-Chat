@@ -19,6 +19,7 @@ import {
   materializePod,
   renderAgentMd,
   renderMcpConfig,
+  substituteVariables,
 } from '../src/pod-materializer.ts';
 import type {
   PodAgentRow,
@@ -511,6 +512,97 @@ test('materializePod emits no knowledge footer when knowledge is empty', () => {
     const md = readFileSync(result.agentMdPath, 'utf8');
     assert.ok(!md.includes('## Knowledge available'));
     assert.ok(!md.includes('pc_knowledge_read'));
+  } finally {
+    dirs.cleanup();
+  }
+});
+
+// --- Section 36 — prompt variable substitution -----------------------------
+
+test('substituteVariables replaces a known {{KEY}} with its value', () => {
+  const out = substituteVariables('Hello {{NAME}}, welcome.', { NAME: 'world' });
+  assert.equal(out, 'Hello world, welcome.');
+});
+
+test('substituteVariables replaces multiple occurrences', () => {
+  const out = substituteVariables(
+    '{{A}} and {{B}} and {{A}} again.',
+    { A: 'apple', B: 'banana' },
+  );
+  assert.equal(out, 'apple and banana and apple again.');
+});
+
+test('substituteVariables leaves unknown variables intact (loud surface, never silent strip)', () => {
+  const out = substituteVariables(
+    'Known {{NAME}}, unknown {{UNDEFINED_VAR}}.',
+    { NAME: 'pc' },
+  );
+  assert.equal(out, 'Known pc, unknown {{UNDEFINED_VAR}}.');
+});
+
+test('substituteVariables is a no-op when variables is undefined', () => {
+  const out = substituteVariables('Plain text {{VAR}} no map.', undefined);
+  assert.equal(out, 'Plain text {{VAR}} no map.');
+});
+
+test('substituteVariables only matches uppercase-underscore-digit keys (avoids prose collisions)', () => {
+  // Lowercase / mixed-case / spaces inside should NOT match — these often
+  // appear in prose ({{ some thing }} style) and substituting them would be
+  // surprising. Only ALL-CAPS canonical keys are treated as variables.
+  const out = substituteVariables(
+    '{{lowercase}} stays. {{Mixed_Case}} stays. {{ UPPER_BUT_SPACED }} stays. {{UPPER_OK}} replaced.',
+    { UPPER_OK: 'X', lowercase: 'should-not-apply', Mixed_Case: 'should-not-apply' },
+  );
+  assert.equal(
+    out,
+    '{{lowercase}} stays. {{Mixed_Case}} stays. {{ UPPER_BUT_SPACED }} stays. X replaced.',
+  );
+});
+
+test('substituteVariables works with multiline values (e.g. rendered AVAILABLE_AGENTS block)', () => {
+  const block = '### researcher (stock)\nReads.\n\n### writer (stock)\nDrafts.';
+  const out = substituteVariables('Roster:\n\n{{AVAILABLE_AGENTS}}\n\nEnd.', {
+    AVAILABLE_AGENTS: block,
+  });
+  assert.equal(out, `Roster:\n\n${block}\n\nEnd.`);
+});
+
+test('renderAgentMd substitutes variables in the prompt body', () => {
+  const md = renderAgentMd(
+    makeAgent({ prompt: 'You can dispatch:\n\n{{AVAILABLE_AGENTS}}\n\nGo.' }),
+    ['Read'],
+    [],
+    undefined,
+    { AVAILABLE_AGENTS: '### researcher (stock)\nReads files.' },
+  );
+  assert.ok(md.includes('### researcher (stock)\nReads files.'));
+  assert.ok(!md.includes('{{AVAILABLE_AGENTS}}'));
+});
+
+test('renderAgentMd leaves the body unchanged when no variables map is passed', () => {
+  const md = renderAgentMd(
+    makeAgent({ prompt: 'Use {{UNKNOWN}} as-is.' }),
+    ['Read'],
+  );
+  assert.ok(md.includes('Use {{UNKNOWN}} as-is.'));
+});
+
+test('materializePod threads opts.variables through to the rendered .md', () => {
+  const dirs = freshDirs();
+  try {
+    const bundle = makeBundle({
+      agent: makeAgent({ prompt: 'Tools you have:\n\n{{AVAILABLE_TOOLS}}' }),
+    });
+    const result = materializePod({
+      bundle,
+      worktreeDir: dirs.worktree,
+      scratchDir: dirs.scratch,
+      variables: { AVAILABLE_TOOLS: '- `Read` — read files\n- `Glob` — list files' },
+    });
+    const md = readFileSync(result.agentMdPath, 'utf8');
+    assert.ok(md.includes('- `Read` — read files'));
+    assert.ok(md.includes('- `Glob` — list files'));
+    assert.ok(!md.includes('{{AVAILABLE_TOOLS}}'));
   } finally {
     dirs.cleanup();
   }

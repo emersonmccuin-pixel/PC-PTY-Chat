@@ -1,0 +1,70 @@
+// Section 36 — Pod-prompt variable renderers.
+//
+// The pod materializer (packages/runtime/src/pod-materializer.ts) substitutes
+// `{{KEY}}` placeholders in agent prompts when the caller supplies a
+// `variables: Record<string, string>` map. The runtime package stays
+// decoupled from @pc/db; this server-side module computes the rendered
+// values from live DB state and returns plain strings the materializer
+// substitutes verbatim.
+//
+// Two canonical variables ship in 36.3:
+//
+//   - `AVAILABLE_AGENTS` — the dispatching pod's view of every live agent it
+//     could dispatch to. Stock first, then user-created; alphabetical within
+//     each section. Each entry carries name + origin tag + description + the
+//     orchestrator-facing `dispatch_guidance` hint (when non-null).
+//
+//   - `AVAILABLE_TOOLS` — a one-line-per-tool quick-reference using the
+//     @pc/domain tool-catalog descriptions. Caller passes the expanded tool
+//     list (post-wildcard, post-mergeRequiredAgentTools).
+//
+// These exist for the orchestrator prompt (36.4); other pods don't enumerate
+// agents or tools in their prompts. Add new variables here as the need
+// arises — one variable per use case, no general-purpose templating.
+
+import { listAgents } from '@pc/db';
+import { descriptionOf, type ULID } from '@pc/domain';
+
+/** Format the full agent roster the orchestrator (or any other pod opting in
+ *  via `{{AVAILABLE_AGENTS}}`) can dispatch to. Stock pods first, then
+ *  user-created; alphabetical within each group. Returns an empty string when
+ *  no agents are live (rare — implies the seed didn't run). */
+export function renderAvailableAgents(projectId: ULID | null | undefined): string {
+  const rows = projectId
+    ? listAgents({ projectId, includeGlobals: true })
+    : listAgents({ scope: 'global' });
+  if (rows.length === 0) return '';
+
+  // Sort: stock first (alpha), then user-created (alpha).
+  const sorted = [...rows].sort((a, b) => {
+    if (a.origin !== b.origin) return a.origin === 'stock' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const blocks: string[] = [];
+  for (const r of sorted) {
+    const header = `### ${r.name} (${r.origin})`;
+    const desc = r.description.trim() || '_(no description)_';
+    const lines: string[] = [header, desc];
+    if (r.dispatchGuidance && r.dispatchGuidance.trim() !== '') {
+      lines.push(`*Dispatch for:* ${r.dispatchGuidance.trim()}`);
+    }
+    blocks.push(lines.join('\n'));
+  }
+  return blocks.join('\n\n');
+}
+
+/** Format the expanded tool list as a one-line-per-tool quick reference.
+ *  Uses @pc/domain's tool catalog for descriptions; tools not in the catalog
+ *  appear with no description line. Order matches the input list (callers
+ *  typically pass the expanded post-wildcard tools, which preserves the
+ *  materializer's ordering convention). */
+export function renderAvailableTools(tools: readonly string[]): string {
+  if (tools.length === 0) return '';
+  const lines: string[] = [];
+  for (const t of tools) {
+    const desc = descriptionOf(t);
+    lines.push(desc ? `- \`${t}\` — ${desc}` : `- \`${t}\``);
+  }
+  return lines.join('\n');
+}

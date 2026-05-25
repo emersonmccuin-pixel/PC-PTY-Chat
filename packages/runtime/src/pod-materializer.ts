@@ -73,6 +73,14 @@ export interface MaterializePodOptions {
    *  `workItemId` via `pc_get_work_item` as its first action, plus the
    *  `expected_output` JSON below. Section 26.4 contract. */
   workItem?: PodWorkItemContext;
+  /** Section 36 — prompt variable substitution. Keys are the bare variable
+   *  names (e.g. `'AVAILABLE_AGENTS'`); the materializer replaces every
+   *  `{{KEY}}` occurrence in the prompt body with the supplied string before
+   *  writing the .md. Unknown variables are LEFT INTACT (loud surface in the
+   *  rendered prompt — never silently stripped). Caller computes the values
+   *  (DB access lives in the server layer, not in the runtime package).
+   *  No-op when omitted. */
+  variables?: Record<string, string>;
 }
 
 export interface MaterializedPod {
@@ -104,7 +112,13 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   mkdirSync(dirname(agentMdPath), { recursive: true });
   writeFileSync(
     agentMdPath,
-    renderAgentMd(bundle.agent, expandedTools, bundle.knowledge, opts.workItem),
+    renderAgentMd(
+      bundle.agent,
+      expandedTools,
+      bundle.knowledge,
+      opts.workItem,
+      opts.variables,
+    ),
     'utf8',
   );
 
@@ -151,6 +165,7 @@ export function renderAgentMd(
   tools: readonly string[],
   knowledge: readonly PodKnowledgeRow[] = [],
   workItem?: PodWorkItemContext,
+  variables?: Record<string, string>,
 ): string {
   const fm: string[] = ['---', `name: ${agent.name}`];
   if (agent.description.trim() !== '') fm.push(`description: ${agent.description}`);
@@ -159,11 +174,27 @@ export function renderAgentMd(
   if (agent.effort) fm.push(`effort: ${agent.effort}`);
   if (agent.maxTurns !== null) fm.push(`maxTurns: ${agent.maxTurns}`);
   fm.push('---');
-  const body = agent.prompt.trim();
+  const body = substituteVariables(agent.prompt.trim(), variables);
   const assignment = workItem ? renderAssignment(workItem) : '';
   const canReadKnowledge = tools.includes(KNOWLEDGE_READ_TOOL);
   const footer = canReadKnowledge ? renderKnowledgeFooter(agent.id, knowledge) : '';
   return `${fm.join('\n')}\n\n${body}${assignment}${footer}\n`;
+}
+
+/** Section 36 — replace every `{{KEY}}` in `body` with `variables[KEY]` when
+ *  the key is defined. Unknown variables are LEFT INTACT (never silently
+ *  stripped) so the orchestrator sees the unresolved placeholder in chat and
+ *  the user notices. Matches uppercase + underscore + digits — narrow enough
+ *  to avoid colliding with conversational `{{...}}` use in prose. */
+export function substituteVariables(
+  body: string,
+  variables: Record<string, string> | undefined,
+): string {
+  if (!variables) return body;
+  return body.replace(/\{\{([A-Z_][A-Z0-9_]*)\}\}/g, (match, key: string) => {
+    const value = variables[key];
+    return value !== undefined ? value : match;
+  });
 }
 
 /** "## Your assignment" section appended to the agent body when the dispatch
