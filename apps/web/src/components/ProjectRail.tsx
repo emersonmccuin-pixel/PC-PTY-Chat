@@ -347,7 +347,7 @@ function MenuItem({
       role="menuitem"
       onClick={onClick}
       className={
-        'block w-full px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+        'block w-full px-3 py-1.5 text-left text-xs hover:bg-muted ' +
         (variant === 'danger' ? 'text-destructive' : '')
       }
     >
