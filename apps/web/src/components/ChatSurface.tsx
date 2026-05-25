@@ -2726,28 +2726,15 @@ function Composer({
 
   const historyLen = historyRef.current.length;
 
-  // Section 32.4 — cockpit toolbar. Slash chip inserts "/" into the
-  // textarea (CC's slash commands are PTY-native; the chip is a hint of
-  // "the / world exists here"). Model chip is read-only display; future
-  // passes can wire it to a picker. Right-side hint surfaces the ↑/↓
-  // prompt-history affordance that was previously invisible.
-  function insertSlash() {
-    setText((prev) => (prev.startsWith('/') ? prev : `/${prev}`));
-    textareaRef.current?.focus();
-  }
+  // Section 32.4 — cockpit toolbar. Right-side hint surfaces the ↑/↓
+  // prompt-history affordance that was previously invisible. The slash-
+  // commands chip shipped in 32.4 was removed — PC doesn't expose any
+  // slash commands of its own today; CC's PTY-native ones are usable
+  // directly without a UI affordance hinting at them.
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
-        <button
-          type="button"
-          onClick={insertSlash}
-          title="Insert / to start a slash command (claude-code handles it)"
-          className="inline-flex items-center gap-1.5 border border-border px-2 py-0.5 hover:border-cream-soft hover:text-accent"
-        >
-          <span>/ commands</span>
-        </button>
-        <span className="text-[var(--fg-dim)]">·</span>
         <span
           className="inline-flex items-center gap-1.5 text-[var(--fg-dim)]"
           title="↑/↓ in the textarea walks your prompt history for this project"
