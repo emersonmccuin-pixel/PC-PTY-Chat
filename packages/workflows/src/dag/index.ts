@@ -4,6 +4,12 @@
 export { buildTopologicalLayers, computeUpstreams, forwardEdges, findForwardCycle } from './topo.ts';
 export { evaluateCondition, checkTriggerRule } from './when.ts';
 export { validateWorkflowV2, type ValidationResult } from './validate.ts';
+export {
+  isForwardStageMove,
+  firesOnStageEntry,
+  selectStageEntryWorkflows,
+  type StageMove,
+} from './triggers.ts';
 export { substituteRefs, shellQuote, type RefResolver } from './refs.ts';
 export {
   initDagState,

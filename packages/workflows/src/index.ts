@@ -28,6 +28,10 @@ export {
   validateWorkflowV2,
   // aliased — v1 `validator.ts` also exports a `ValidationResult` (culled in 19.12).
   type ValidationResult as WorkflowV2ValidationResult,
+  isForwardStageMove,
+  firesOnStageEntry,
+  selectStageEntryWorkflows,
+  type StageMove,
   substituteRefs,
   shellQuote,
   type RefResolver,
