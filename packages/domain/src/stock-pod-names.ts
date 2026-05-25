@@ -19,6 +19,7 @@ export const STOCK_POD_NAME_LIST = [
   'planner',
   'extractor',
   'agent-designer',
+  'quick-tasks-pm',
 ] as const;
 
 export type StockPodName = (typeof STOCK_POD_NAME_LIST)[number];
@@ -28,7 +29,11 @@ export type StockPodName = (typeof STOCK_POD_NAME_LIST)[number];
 export const STOCK_POD_NAMES: ReadonlySet<string> = new Set(STOCK_POD_NAME_LIST);
 
 /** Stock pods the orchestrator can dispatch — everyone except orchestrator
- *  itself, which can't dispatch to itself. Used by the agent-listing path. */
+ *  itself (can't dispatch to itself) and `quick-tasks-pm` (the PM for the
+ *  Quick Tasks special project, not a worker — only ever loaded as the
+ *  spawn target for that project's chat). */
 export const DISPATCHABLE_STOCK_PODS: ReadonlySet<string> = new Set(
-  STOCK_POD_NAME_LIST.filter((name) => name !== 'orchestrator'),
+  STOCK_POD_NAME_LIST.filter(
+    (name) => name !== 'orchestrator' && name !== 'quick-tasks-pm',
+  ),
 );
