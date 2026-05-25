@@ -75,6 +75,11 @@ export interface WorkItem {
   assignedAgentRunId: ULID | null;
   /** Worktree path for code-writer / file-producing agents. */
   worktreePath: string | null;
+  /** Section 34 — soft pointer for Quick Tasks that "belong to" another
+   *  project (e.g. "ping Pat about Q3 budget" tagged to HR Ops). Nullable;
+   *  app-level lookups treat dangling tags as untagged. Only meaningful on
+   *  rows whose `projectId` is the Quick Tasks project. */
+  taggedProjectId: ULID | null;
 }
 
 /** Append-only event log written by mutation paths in the repo + by the

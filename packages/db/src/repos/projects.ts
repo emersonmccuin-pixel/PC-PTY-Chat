@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import type { Project, ProjectSettings, Stage, ULID } from '@pc/domain';
+import type { Project, ProjectKind, ProjectSettings, Stage, ULID } from '@pc/domain';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
@@ -16,6 +16,9 @@ export interface CreateProjectInput {
   folderPath: string;
   gitRemote?: string | null;
   settings?: Record<string, unknown>;
+  /** Section 34 — defaults to `'standard'`. The boot-time Quick Tasks seed
+   *  is the only caller that passes `'quick-tasks'`. */
+  kind?: ProjectKind;
 }
 
 interface ProjectRow {
@@ -26,6 +29,7 @@ interface ProjectRow {
   stages: Stage[];
   folderPath: string;
   gitRemote: string | null;
+  kind: ProjectKind;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -40,6 +44,7 @@ function toDomain(row: ProjectRow): Project {
     folderPath: row.folderPath,
     gitRemote: row.gitRemote,
     settings: withProjectSettingsDefaults(row.settings as Partial<ProjectSettings>),
+    kind: row.kind ?? 'standard',
   };
 }
 
@@ -84,6 +89,7 @@ export function createProject(input: CreateProjectInput): Project {
   const now = Date.now();
   const id = input.id ?? newId();
   const gitRemote = input.gitRemote ?? null;
+  const kind: ProjectKind = input.kind ?? 'standard';
   // 5+.4 (D87) — new projects land at the bottom of the rail. Soft-deleted
   // rows still count toward `max(position)` so the position space stays gap-
   // free across the lifetime of a project (cheaper than re-compacting on
@@ -104,6 +110,7 @@ export function createProject(input: CreateProjectInput): Project {
       gitRemote,
       settings: input.settings ?? {},
       position,
+      kind,
       createdAt: now,
       updatedAt: now,
     })
@@ -116,7 +123,20 @@ export function createProject(input: CreateProjectInput): Project {
     folderPath: input.folderPath,
     gitRemote,
     settings: withProjectSettingsDefaults(input.settings as Partial<ProjectSettings> | undefined),
+    kind,
   };
+}
+
+/** Section 34 — return the single live Quick Tasks project, or null if the
+ *  seed hasn't run yet. `ensureQuickTasksProject` in the server-side service
+ *  is the canonical write path. */
+export function findQuickTasksProject(): Project | null {
+  const row = getDb()
+    .select()
+    .from(projects)
+    .where(and(eq(projects.kind, 'quick-tasks'), isNull(projects.deletedAt)))
+    .get() as ProjectRow | undefined;
+  return row ? toDomain(row) : null;
 }
 
 /** 5+.4 (D87) — drag-reorder. Rewrites the `position` column for the given

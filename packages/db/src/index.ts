@@ -5,6 +5,7 @@ export { runMigrations } from './migrate.ts';
 
 export {
   createProject,
+  findQuickTasksProject,
   getProjectById,
   getProjectBySlug,
   listProjects,

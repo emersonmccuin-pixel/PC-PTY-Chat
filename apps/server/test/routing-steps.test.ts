@@ -57,6 +57,7 @@ const EMPTY_CONTRACT = {
   verificationNotes: null,
   assignedAgentRunId: null,
   worktreePath: null,
+  taggedProjectId: null,
 } as const;
 
 /** Test-only: adapt the legacy regex substituter to the post-4h.9
@@ -542,6 +543,7 @@ test('runUpdateWorkItemStep: Section 27 — toFlag resolves to flagged stage', a
     verificationNotes: null,
     assignedAgentRunId: null,
     worktreePath: null,
+    taggedProjectId: null,
   } as WorkItem;
   const { svc, patchCalls } = mkFakeWorkItemService({ existing });
   const node: UpdateWorkItemNode = {

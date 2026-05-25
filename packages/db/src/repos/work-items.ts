@@ -51,6 +51,7 @@ interface WorkItemRow {
   verificationNotes: string | null;
   assignedAgentRunId: ULID | null;
   worktreePath: string | null;
+  taggedProjectId: ULID | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -83,6 +84,7 @@ function toDomain(row: WorkItemRow): WorkItem {
     verificationNotes: row.verificationNotes,
     assignedAgentRunId: row.assignedAgentRunId,
     worktreePath: row.worktreePath,
+    taggedProjectId: row.taggedProjectId,
   };
 }
 
@@ -107,6 +109,9 @@ export interface CreateWorkItemInput {
   verificationNotes?: string | null;
   assignedAgentRunId?: ULID | null;
   worktreePath?: string | null;
+  /** Section 34 — soft pointer to a project the Quick Task "belongs to". Only
+   *  meaningful when `projectId` is the Quick Tasks project. */
+  taggedProjectId?: ULID | null;
 }
 
 export function listWorkItems(projectId: ULID): WorkItem[] {
@@ -177,6 +182,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     verificationNotes: input.verificationNotes ?? null,
     assignedAgentRunId: input.assignedAgentRunId ?? null,
     worktreePath: input.worktreePath ?? null,
+    taggedProjectId: input.taggedProjectId ?? null,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,

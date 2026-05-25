@@ -111,6 +111,7 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
+import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
@@ -236,6 +237,34 @@ function broadcastAll(msg: unknown): void {
   }
 }
 
+const projectScaffold = new ProjectScaffold({
+  trunkPath: ROOT,
+  templatesDir: TEMPLATES,
+  dataDir: DATA,
+  serverPort: PORT,
+  channelPort: CHANNEL_PORT,
+});
+
+// Section 34.1 — Quick Tasks pinned cross-project surface. Idempotent
+// boot-time seed creates the row + scaffolded folder once; no-ops thereafter.
+// MUST run before `projectRegistry.loadAll()` so the runtime picks it up
+// like any other project.
+{
+  try {
+    const result = await ensureQuickTasksProject({
+      dataDir: DATA,
+      scaffold: projectScaffold,
+    });
+    if (result.action === 'created') {
+      console.log(
+        `[pc] Quick Tasks project seeded (id=${result.projectId}, folder=${result.folderPath})`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[pc] Quick Tasks seed failed: ${(err as Error).message}`);
+  }
+}
+
 const projectRegistry = new ProjectRegistry({
   dataDir: DATA,
   templatesDir: TEMPLATES,
@@ -245,13 +274,6 @@ const projectRegistry = new ProjectRegistry({
 });
 projectRegistry.loadAll();
 
-const projectScaffold = new ProjectScaffold({
-  trunkPath: ROOT,
-  templatesDir: TEMPLATES,
-  dataDir: DATA,
-  serverPort: PORT,
-  channelPort: CHANNEL_PORT,
-});
 const projectCreate = new ProjectCreate(projectScaffold, projectRegistry);
 
 // Multiplexed channel server on :8788. Per-project channel-stdio children

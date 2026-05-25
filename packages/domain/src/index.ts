@@ -48,9 +48,11 @@ export type {
   ValidateFieldsOptions,
 } from './field-schema.ts';
 export { validateFields } from './field-schema.ts';
-export type { Project, ProjectSettings, Stage } from './project.ts';
+export type { Project, ProjectKind, ProjectSettings, Stage } from './project.ts';
 export {
+  PROJECT_KINDS,
   defaultProjectSettings,
+  isQuickTasksKind,
   postMoveStatusForStage,
   resolveCancelledHidden,
   withProjectSettingsDefaults,

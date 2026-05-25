@@ -77,6 +77,9 @@ export interface CreateWorkItemServiceInput {
   verificationNotes?: string | null;
   assignedAgentRunId?: ULID | null;
   worktreePath?: string | null;
+  /** Section 34 — soft project tag for Quick Tasks rows. Ignored on standard
+   *  projects' work items. */
+  taggedProjectId?: ULID | null;
 }
 
 export interface PatchWorkItemServiceInput {
@@ -202,6 +205,7 @@ export class WorkItemService {
         ? { assignedAgentRunId: input.assignedAgentRunId }
         : {}),
       ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
+      ...(input.taggedProjectId !== undefined ? { taggedProjectId: input.taggedProjectId } : {}),
     });
     this.opts.broadcast({ type: 'work-items-changed', change: 'created', workItem });
     return workItem;
