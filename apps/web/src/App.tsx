@@ -144,20 +144,23 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      {/* Section 32.1 — slim 32px header. Brand on the left; breadcrumb
-          (project › current tab) takes the middle; right-side keeps the
-          gear + activity toggle (the toggle moves to the gutter itself in
-          pass 32.3). */}
+      {/* Section 32.1 — slim 32px header. Brand-block (192px) mirrors the
+          rail width so the breadcrumb starts at the same x as the center
+          column. Right-side keeps the gear + activity toggle. */}
       <header
-        className="flex items-center gap-3 border-b border-border bg-card px-3 text-xs"
+        className="flex items-center border-b border-border bg-card text-xs"
         style={{ height: 32 }}
       >
-        <div className="flex items-center gap-1.5">
+        <div
+          className="flex shrink-0 items-center gap-1.5 px-3"
+          style={{ width: 192 }}
+        >
           <img src="/icon.svg" alt="" className="h-5 w-5" />
           <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
             caisson
           </span>
         </div>
+        <div className="flex flex-1 items-center gap-3 pr-3">
         {activeProject && (
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="text-foreground">{activeProject.name}</span>
@@ -235,6 +238,7 @@ export default function App() {
           >
             {activityPanelOpen ? '▸' : '◂'}
           </button>
+        </div>
         </div>
       </header>
       {restartRequired && (
