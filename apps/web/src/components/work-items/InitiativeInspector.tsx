@@ -15,6 +15,7 @@ import remarkGfm from 'remark-gfm';
 import {
   api,
   WorkItemConflictError,
+  type Attachment,
   type Project,
   type Stage,
   type WorkItem,
@@ -22,6 +23,7 @@ import {
   type WorkItemType,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useAttachmentLightbox } from '@/store/attachment-lightbox';
 import { CreateWorkItemModal } from './CreateWorkItemModal';
 
 type InspectorTab = 'brief' | 'children' | 'documents' | 'activity';
@@ -146,6 +148,12 @@ export function InitiativeInspector({
             workItem={workItem}
             events={events}
           />
+        ) : tab === 'documents' ? (
+          <DocumentsTab
+            project={project}
+            workItem={workItem}
+            events={events}
+          />
         ) : (
           <ComingSoonPane tab={tab} />
         )}
@@ -214,18 +222,10 @@ function InspectorTabButton({
   );
 }
 
-function ComingSoonPane({ tab }: { tab: InspectorTab }) {
-  // Only Documents (37.11) is unimplemented at this point; Activity wired in 37.12.
-  if (tab !== 'documents') return null;
-  return (
-    <div className="grid h-full place-items-center text-muted-foreground">
-      <div className="text-center">
-        <div className="text-[11px] uppercase tracking-[0.12em] text-[var(--fg-dim)]">
-          Documents · coming in 37.11
-        </div>
-      </div>
-    </div>
-  );
+function ComingSoonPane(_props: { tab: InspectorTab }) {
+  // All four inspector tabs are wired as of 37.11. Kept as a defensive
+  // fallback for any future tab kind that lands ahead of its implementation.
+  return null;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -864,4 +864,237 @@ function groupByDay(rows: ActivityRow[]): { label: string; rows: ActivityRow[] }
 function dayKey(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Documents tab (37.11 — flat v1)
+//
+// Lists existing attachments. No folders yet (the 37.10 schema lands when
+// the workflow cull closes; this tab gets folder navigation in a follow-up).
+// No upload UI — the create-attachment surface isn't exposed in the API
+// today; attachments arrive via agents / MCP tools / chat drag-drop. This
+// tab is the read + filter + click-to-preview surface.
+
+type DocTypeFilter = 'all' | 'docs' | 'images' | 'data' | 'links';
+type DocCreatorFilter = 'all' | 'ai' | 'you';
+
+function DocumentsTab({
+  project,
+  workItem,
+  events,
+}: {
+  project: Project;
+  workItem: WorkItem;
+  events: WsEnvelope[];
+}) {
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<DocTypeFilter>('all');
+  const [creatorFilter, setCreatorFilter] = useState<DocCreatorFilter>('all');
+  const openLightbox = useAttachmentLightbox((s) => s.open);
+
+  const refetch = useCallback(() => {
+    api
+      .listAttachments(project.id, workItem.id)
+      .then(setAttachments)
+      .catch(() => {
+        /* swallow — empty list is the safe fallback */
+      });
+  }, [project.id, workItem.id]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (last?.type === 'attachment-changed' && last.workItemId === workItem.id) {
+      refetch();
+    }
+  }, [events, workItem.id, refetch]);
+
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return attachments.filter((a) => {
+      if (needle && !a.name.toLowerCase().includes(needle)) return false;
+      if (typeFilter !== 'all' && classifyType(a) !== typeFilter) return false;
+      if (creatorFilter !== 'all' && classifyCreator(a) !== creatorFilter) return false;
+      return true;
+    });
+  }, [attachments, search, typeFilter, creatorFilter]);
+
+  return (
+    <div className="mx-auto max-w-[1000px] px-7 py-6 pb-16">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          placeholder="Search documents…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-64 px-2.5 py-1 text-[12px]"
+        />
+        <DocFilterChip
+          label="All"
+          active={typeFilter === 'all'}
+          onClick={() => setTypeFilter('all')}
+        />
+        <DocFilterChip
+          label="📄 Docs"
+          active={typeFilter === 'docs'}
+          onClick={() => setTypeFilter('docs')}
+        />
+        <DocFilterChip
+          label="🖼 Images"
+          active={typeFilter === 'images'}
+          onClick={() => setTypeFilter('images')}
+        />
+        <DocFilterChip
+          label="📊 Data"
+          active={typeFilter === 'data'}
+          onClick={() => setTypeFilter('data')}
+        />
+        <DocFilterChip
+          label="🔗 Links"
+          active={typeFilter === 'links'}
+          onClick={() => setTypeFilter('links')}
+        />
+        <span className="w-2" />
+        <DocFilterChip
+          label="By AI"
+          active={creatorFilter === 'ai'}
+          onClick={() =>
+            setCreatorFilter(creatorFilter === 'ai' ? 'all' : 'ai')
+          }
+        />
+        <DocFilterChip
+          label="By you"
+          active={creatorFilter === 'you'}
+          onClick={() =>
+            setCreatorFilter(creatorFilter === 'you' ? 'all' : 'you')
+          }
+        />
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="border border-dashed border-border/30 px-4 py-10 text-center text-sm text-muted-foreground">
+          {attachments.length === 0
+            ? 'No documents on this initiative yet. Agents attach things here when they generate reports, decks, or research.'
+            : 'No documents match the current filters.'}
+        </div>
+      ) : (
+        <div className="border border-border/30 bg-card">
+          {filtered.map((a) => {
+            const icon = typeIcon(a);
+            const creator = classifyCreator(a);
+            const creatorLabel = creator === 'ai' ? agentLabel(a) : 'you';
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => openLightbox(a.id)}
+                className="grid w-full grid-cols-[28px_1fr_130px_90px_90px] items-center gap-3 border-b border-border/30 px-3 py-2 text-left text-[12px] last:border-b-0 hover:bg-primary/[0.04]"
+              >
+                <span className="text-center text-[15px]">{icon}</span>
+                <span className="truncate text-foreground">{a.name}</span>
+                <span
+                  className={`truncate text-[10px] ${
+                    creator === 'ai' ? 'text-accent' : 'text-muted-foreground'
+                  }`}
+                >
+                  {creatorLabel}
+                </span>
+                <span className="text-[10px] text-[var(--fg-dim)]">{a.kind}</span>
+                <span className="text-right text-[10px] text-[var(--fg-dim)]">
+                  {formatRelative(a.createdAt)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-4 text-[10px] text-[var(--fg-dim)]">
+        Folder organisation + upload land in a follow-up (folders schema
+        deferred to 37.10).
+      </div>
+    </div>
+  );
+
+  function agentLabel(a: Attachment): string {
+    if (a.runId) return `run ${a.runId.slice(-8)}`;
+    if (a.createdBySessionId) return 'orchestrator';
+    return 'unknown';
+  }
+}
+
+function DocFilterChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`border px-2 py-0.5 text-[10px] ${
+        active
+          ? 'border-primary bg-primary/10 text-primary'
+          : 'border-border/40 text-muted-foreground hover:border-border hover:text-accent'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function classifyType(a: Attachment): DocTypeFilter {
+  const kind = (a.kind || '').toLowerCase();
+  if (
+    kind === 'link' ||
+    kind === 'url' ||
+    a.name.startsWith('http://') ||
+    a.name.startsWith('https://')
+  ) {
+    return 'links';
+  }
+  if (
+    kind.includes('image') ||
+    kind === 'png' ||
+    kind === 'jpg' ||
+    kind === 'jpeg' ||
+    kind === 'gif' ||
+    kind === 'webp'
+  ) {
+    return 'images';
+  }
+  if (kind === 'json' || kind === 'csv' || kind === 'yaml' || kind === 'yml') {
+    return 'data';
+  }
+  return 'docs';
+}
+
+function classifyCreator(a: Attachment): DocCreatorFilter {
+  if (a.runId || a.createdBySessionId) return 'ai';
+  return 'you';
+}
+
+function typeIcon(a: Attachment): string {
+  const t = classifyType(a);
+  switch (t) {
+    case 'images':
+      return '🖼';
+    case 'data':
+      return '📊';
+    case 'links':
+      return '🔗';
+    case 'docs':
+      return '📄';
+    case 'all':
+      return '📎';
+  }
 }
