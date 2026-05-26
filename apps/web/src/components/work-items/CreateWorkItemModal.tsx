@@ -30,6 +30,10 @@ const TYPE_LABELS: Record<WorkItemType, string> = {
 interface CreateWorkItemModalProps {
   project: Project;
   stageId: string;
+  /** Section 37.9 — when set, the new card lands as a sub-task of this work
+   *  item. The Add task button in InitiativeInspector's Children tab passes
+   *  the inspected item's id here. */
+  parentId?: string | null;
   prefillTitle?: string;
   /** Seeded field errors when the modal opens from a failed inline create. */
   initialFieldErrors?: Record<string, string>;
@@ -40,6 +44,7 @@ interface CreateWorkItemModalProps {
 export function CreateWorkItemModal({
   project,
   stageId,
+  parentId,
   prefillTitle = '',
   initialFieldErrors,
   onClose,
@@ -108,6 +113,7 @@ export function CreateWorkItemModal({
         ...(body.length > 0 ? { body } : {}),
         ...(type !== 'task' ? { type } : {}),
         ...(Object.keys(fields).length > 0 ? { fields } : {}),
+        ...(parentId ? { parentId } : {}),
       });
       onCreated(r.workItem);
       onClose();

@@ -59,9 +59,11 @@ export function WorkItemsPage({ project, events }: WorkItemsPageProps) {
           <InitiativeInspector
             project={project}
             workItem={inspectedItem}
+            events={events}
             backLabel={labelForSubTab(returnTab)}
             onBack={closeInspector}
             onWorkItemPatched={(next) => setInspectedItem(next)}
+            onNavigate={(next) => setInspectedItem(next)}
           />
         ) : tab === 'kanban' ? (
           <KanbanBoard project={project} events={events} />

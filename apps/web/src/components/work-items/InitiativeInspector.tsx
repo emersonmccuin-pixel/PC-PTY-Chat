@@ -7,7 +7,7 @@
 // is presentational + handles inline editing of the body via the existing
 // PATCH /work-items/:id endpoint.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -18,26 +18,35 @@ import {
   type Project,
   type Stage,
   type WorkItem,
+  type WorkItemStatus,
+  type WorkItemType,
 } from '@/api/client';
+import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { CreateWorkItemModal } from './CreateWorkItemModal';
 
 type InspectorTab = 'brief' | 'children' | 'documents' | 'activity';
 
 interface Props {
   project: Project;
   workItem: WorkItem;
+  events: WsEnvelope[];
   /** Where the user came from — drives the back-breadcrumb label. */
   backLabel: string;
   onBack: () => void;
   /** Called after a successful body edit so the parent can update its list. */
   onWorkItemPatched: (next: WorkItem) => void;
+  /** Click a child in the Children tab → replaces the inspected item. */
+  onNavigate: (next: WorkItem) => void;
 }
 
 export function InitiativeInspector({
   project,
   workItem,
+  events,
   backLabel,
   onBack,
   onWorkItemPatched,
+  onNavigate,
 }: Props) {
   const [tab, setTab] = useState<InspectorTab>('brief');
   // Reset to Brief whenever we switch which item is being inspected.
@@ -124,6 +133,13 @@ export function InitiativeInspector({
             workItem={workItem}
             onPatched={onWorkItemPatched}
           />
+        ) : tab === 'children' ? (
+          <ChildrenTab
+            project={project}
+            parent={workItem}
+            events={events}
+            onNavigate={onNavigate}
+          />
         ) : (
           <ComingSoonPane tab={tab} />
         )}
@@ -193,15 +209,231 @@ function InspectorTabButton({
 }
 
 function ComingSoonPane({ tab }: { tab: InspectorTab }) {
-  const phase = tab === 'children' ? '37.9' : tab === 'documents' ? '37.11' : '37.12';
-  const label =
-    tab === 'children' ? 'Children' : tab === 'documents' ? 'Documents' : 'Activity';
+  const phase = tab === 'documents' ? '37.11' : '37.12';
+  const label = tab === 'documents' ? 'Documents' : 'Activity';
   return (
     <div className="grid h-full place-items-center text-muted-foreground">
       <div className="text-center">
         <div className="text-[11px] uppercase tracking-[0.12em] text-[var(--fg-dim)]">
           {label} · coming in {phase}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Children tab (37.9)
+
+const STATUS_GROUP_ORDER: WorkItemStatus[] = [
+  'in-progress',
+  'blocked',
+  'failed',
+  'pending',
+  'complete',
+  'archived',
+];
+
+const STATUS_GROUP_LABEL: Record<WorkItemStatus, string> = {
+  'in-progress': 'In progress',
+  blocked: 'Blocked',
+  failed: 'Failed',
+  pending: 'Open',
+  complete: 'Done',
+  archived: 'Archived',
+};
+
+const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: string }>> = {
+  'in-progress': { glyph: '⟳', className: 'text-warning' },
+  blocked: { glyph: '⚠', className: 'text-destructive' },
+  failed: { glyph: '⚠', className: 'text-destructive' },
+  complete: { glyph: '✓', className: 'text-success' },
+  pending: { glyph: '▢', className: 'text-[var(--fg-dim)]' },
+  archived: { glyph: '▢', className: 'text-[var(--fg-dim)]' },
+};
+
+const TYPE_CHIP: Record<
+  WorkItemType,
+  { label: string; icon: string; className: string }
+> = {
+  task: { label: 'Task', icon: '▢', className: 'border-border text-muted-foreground' },
+  bug: {
+    label: 'Bug',
+    icon: '🐛',
+    className: 'border-destructive/40 bg-destructive/15 text-destructive',
+  },
+  feature: {
+    label: 'Feature',
+    icon: '✨',
+    className: 'border-success/40 bg-success/15 text-success',
+  },
+  spike: {
+    label: 'Spike',
+    icon: '⚡',
+    className: 'border-primary/40 bg-primary/15 text-primary',
+  },
+};
+
+function ChildrenTab({
+  project,
+  parent,
+  events,
+  onNavigate,
+}: {
+  project: Project;
+  parent: WorkItem;
+  events: WsEnvelope[];
+  onNavigate: (wi: WorkItem) => void;
+}) {
+  const [items, setItems] = useState<WorkItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  const refetch = useCallback(() => {
+    api
+      .workItems(project.id)
+      .then(setItems)
+      .catch((e) => setError((e as Error).message));
+  }, [project.id]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  // Live refresh on server-broadcast changes.
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (last?.type === 'work-items-changed') refetch();
+  }, [events, refetch]);
+
+  const children = useMemo(
+    () => items.filter((i) => i.parentId === parent.id),
+    [items, parent.id],
+  );
+
+  const grouped = useMemo(() => {
+    const byStatus = new Map<WorkItemStatus, WorkItem[]>();
+    for (const status of STATUS_GROUP_ORDER) byStatus.set(status, []);
+    for (const wi of children) {
+      const bucket = byStatus.get(wi.status);
+      if (bucket) bucket.push(wi);
+    }
+    for (const bucket of byStatus.values()) {
+      bucket.sort((a, b) => a.position - b.position);
+    }
+    return byStatus;
+  }, [children]);
+
+  const totalDone = grouped.get('complete')?.length ?? 0;
+  const totalCount = children.length;
+
+  return (
+    <div className="mx-auto max-w-[1000px] px-7 py-6 pb-16">
+      <div className="mb-4 flex items-center justify-between text-[11px] uppercase tracking-[0.06em] text-[var(--fg-dim)]">
+        <span>
+          {totalCount === 0
+            ? 'No children yet.'
+            : `${totalDone} of ${totalCount} done`}
+        </span>
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          className="border border-primary px-3 py-1 text-[10px] text-primary hover:bg-primary/10"
+        >
+          + Add task
+        </button>
+      </div>
+
+      {children.length === 0 ? (
+        <div className="border border-dashed border-border/30 px-4 py-10 text-center text-sm text-muted-foreground">
+          Nothing here yet. Add a sub-task or let the orchestrator break this
+          initiative down.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {STATUS_GROUP_ORDER.map((status) => {
+            const bucket = grouped.get(status) ?? [];
+            if (bucket.length === 0) return null;
+            return (
+              <ChildGroup
+                key={status}
+                status={status}
+                items={bucket}
+                onClickItem={onNavigate}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+          {error}
+        </div>
+      )}
+
+      {createOpen && (
+        <CreateWorkItemModal
+          project={project}
+          stageId={parent.stageId}
+          parentId={parent.id}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(wi) => {
+            setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]));
+            setCreateOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChildGroup({
+  status,
+  items,
+  onClickItem,
+}: {
+  status: WorkItemStatus;
+  items: WorkItem[];
+  onClickItem: (wi: WorkItem) => void;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between border border-b-0 border-border/30 bg-[var(--surface-2)] px-3 py-1.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+        <span>{STATUS_GROUP_LABEL[status]}</span>
+        <span className="text-[var(--fg-dim)]">{items.length}</span>
+      </div>
+      <div className="border border-border/30 bg-card">
+        {items.map((wi) => {
+          const glyph = STATUS_GLYPH[wi.status];
+          const type = TYPE_CHIP[wi.type];
+          return (
+            <button
+              key={wi.id}
+              type="button"
+              onClick={() => onClickItem(wi)}
+              className="grid w-full grid-cols-[24px_1fr_auto_auto_auto] items-center gap-3 border-b border-border/30 px-3 py-2 text-left text-[12px] last:border-b-0 hover:bg-primary/[0.04]"
+            >
+              <span className={`text-center text-[14px] ${glyph?.className ?? ''}`}>
+                {glyph?.glyph ?? '▢'}
+              </span>
+              <span className="text-foreground">{wi.title}</span>
+              <span
+                className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.05em] ${type.className}`}
+              >
+                <span>{type.icon}</span>
+                <span>{type.label}</span>
+              </span>
+              <span className="text-[10px] text-[var(--fg-dim)]">
+                {wi.callsign ?? ''}
+              </span>
+              <span className="text-[10px] text-[var(--fg-dim)]">
+                {formatRelative(wi.updatedAt)}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
