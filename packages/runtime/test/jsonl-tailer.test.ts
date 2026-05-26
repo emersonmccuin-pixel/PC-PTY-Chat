@@ -601,7 +601,7 @@ test('getCursor() reflects total complete lines consumed', () => {
   assert.equal(tailer.getCursor(), 2);
 });
 
-test('appended lines after start() are picked up by the watcher', async () => {
+test('appended lines after start() are picked up by the poller', async () => {
   const f = freshFile([
     { type: 'user', message: { role: 'user', content: 'first' } },
   ]);
@@ -611,7 +611,7 @@ test('appended lines after start() are picked up by the watcher', async () => {
   tailer.start();
   assert.equal(events.length, 1);
 
-  // Append a second line; the watchFile poll should pick it up.
+  // Append a second line; the poll loop should pick it up.
   appendFileSync(
     f,
     JSON.stringify({ type: 'user', message: { role: 'user', content: 'second' } }) + '\n',

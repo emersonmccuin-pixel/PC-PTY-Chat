@@ -35,7 +35,7 @@
 // contract as v1: point at a file path, listen for events.
 
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, unwatchFile, watchFile } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 export type AgentRunJsonlEventKind =
   | 'jsonl-user'
@@ -105,7 +105,7 @@ export interface JsonlTailerOptionsForAgentRun {
   /** Skip this many leading lines on first read. Used to resume past a
    *  persisted cursor after server restart. Defaults to 0 (process all). */
   startLine?: number;
-  /** Poll interval ms for the underlying watchFile. Defaults to 200. */
+  /** Poll interval ms for the read loop. Defaults to 200. */
   pollIntervalMs?: number;
 }
 
@@ -144,7 +144,7 @@ export class AgentRunJsonlTailer extends EventEmitter {
   private filePath: string;
   private cursor: number;
   private pollIntervalMs: number;
-  private watcher: (() => void) | null = null;
+  private poller: ReturnType<typeof setInterval> | null = null;
   private loop: LoopState = freshLoopState();
   private startedOnce = false;
 
@@ -158,28 +158,28 @@ export class AgentRunJsonlTailer extends EventEmitter {
   /** Begin tailing. The initial drain (any pre-existing lines past the
    *  cursor) is deferred to a setImmediate tick so the caller has a
    *  chance to attach listeners between `new AgentRunJsonlTailer(...)` and
-   *  the first event. Subsequent polls fire on file mtime changes via
-   *  watchFile. Idempotent — calling twice does nothing. */
+   *  the first event. Subsequent polls read the file directly instead of
+   *  depending on platform mtime/change notifications. Idempotent — calling
+   *  twice does nothing. */
   start(): void {
-    if (this.watcher) return;
-    if (this.startedOnce && this.watcher === null) {
+    if (this.poller) return;
+    if (this.startedOnce && this.poller === null) {
       // start() was called once, then stop()ped, now restart — re-arm.
     }
     this.startedOnce = true;
-    const listener = () => this.readTail();
-    watchFile(this.filePath, { interval: this.pollIntervalMs }, listener);
-    this.watcher = () => unwatchFile(this.filePath, listener);
+    this.poller = setInterval(() => this.readTail(), this.pollIntervalMs);
+    this.poller.unref?.();
     // setImmediate so listeners attached AFTER `new ...()` but BEFORE the
     // next tick still see the initial drain. Section 15 lesson:
     // [[constructor-emit-before-listeners-wired]].
     setImmediate(() => this.readTail());
   }
 
-  /** Release the watcher. Safe to call multiple times. */
+  /** Release the poller. Safe to call multiple times. */
   stop(): void {
-    if (!this.watcher) return;
-    this.watcher();
-    this.watcher = null;
+    if (!this.poller) return;
+    clearInterval(this.poller);
+    this.poller = null;
   }
 
   /** Current line count consumed. Persist this to resume past a restart. */

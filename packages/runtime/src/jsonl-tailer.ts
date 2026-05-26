@@ -14,7 +14,7 @@
 // JSONL file and reading the emitted events.
 
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, unwatchFile, watchFile } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 export type JsonlEvent =
   | { kind: 'jsonl-user'; text: string }
@@ -172,7 +172,7 @@ export interface JsonlTailerOptions {
   /** Skip this many leading lines on first read. Used to resume past a
    *  persisted cursor after server restart. Defaults to 0 (process all). */
   startLine?: number;
-  /** Poll interval ms for the underlying watchFile. Defaults to 200. */
+  /** Poll interval ms for the read loop. Defaults to 200. */
   pollIntervalMs?: number;
 }
 
@@ -186,7 +186,7 @@ export class JsonlTailer extends EventEmitter {
   private filePath: string;
   private cursor: number;
   private pollIntervalMs: number;
-  private watcher: (() => void) | null = null;
+  private poller: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: JsonlTailerOptions) {
     super();
@@ -198,20 +198,19 @@ export class JsonlTailer extends EventEmitter {
   /** Begin tailing. Reads any current tail past the cursor immediately, then
    *  polls. Idempotent — calling twice does nothing. */
   start(): void {
-    if (this.watcher) return;
-    const listener = () => this.readTail();
-    watchFile(this.filePath, { interval: this.pollIntervalMs }, listener);
-    this.watcher = () => unwatchFile(this.filePath, listener);
-    // Initial read — watchFile only fires on subsequent stat changes, so we
-    // need to drain any already-present content past the cursor.
+    if (this.poller) return;
+    this.poller = setInterval(() => this.readTail(), this.pollIntervalMs);
+    this.poller.unref?.();
+    // Initial read — the poller only fires on the next interval, so drain any
+    // already-present content past the cursor before returning.
     this.readTail();
   }
 
-  /** Release the watcher. Safe to call multiple times. */
+  /** Release the poller. Safe to call multiple times. */
   stop(): void {
-    if (!this.watcher) return;
-    this.watcher();
-    this.watcher = null;
+    if (!this.poller) return;
+    clearInterval(this.poller);
+    this.poller = null;
   }
 
   /** Current line count consumed. Persist this to resume past a restart. */
