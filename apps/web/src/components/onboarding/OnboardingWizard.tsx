@@ -13,16 +13,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, type PreflightReport } from '@/api/client';
+import { FolderBrowserModal } from '@/components/FolderBrowserModal';
 
-type StepId = 'welcome' | 'claude' | 'git' | 'auth' | 'done';
+type StepId = 'welcome' | 'claude' | 'git' | 'auth' | 'projects' | 'done';
 
-const STEP_ORDER: StepId[] = ['welcome', 'claude', 'git', 'auth', 'done'];
+const STEP_ORDER: StepId[] = ['welcome', 'claude', 'git', 'auth', 'projects', 'done'];
 
 const STEP_TITLES: Record<StepId, string> = {
   welcome: 'Welcome',
   claude: 'Claude Code',
   git: 'Git',
   auth: 'Sign in',
+  projects: 'Projects folder',
   done: 'All set',
 };
 
@@ -30,6 +32,10 @@ interface OnboardingWizardProps {
   /** Dev sim mode — fake preflight + fake actions so the flow walks on a box
    *  that already has everything. */
   simMode: boolean;
+  /** Current default parent dir for new projects (GlobalSettings.projectsFolder). */
+  initialProjectsFolder: string;
+  /** Persist a new projects folder (App PATCHes settings + updates its state). */
+  onProjectsFolderChange: (path: string) => void;
   /** Finish: persist the marker + drop into Create-your-first-project. */
   onComplete: () => void;
   /** Skip-for-now escape hatch: persist the marker, close, leave a banner if a
@@ -62,7 +68,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWizardProps) {
+export function OnboardingWizard({
+  simMode,
+  initialProjectsFolder,
+  onProjectsFolderChange,
+  onComplete,
+  onSkip,
+}: OnboardingWizardProps) {
   const [preflight, setPreflight] = useState<PreflightReport | null>(
     simMode ? freshMachinePreflight() : null,
   );
@@ -71,6 +83,8 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [projectsFolder, setProjectsFolder] = useState(initialProjectsFolder);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const simPreflight = useRef<PreflightReport>(freshMachinePreflight());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -124,11 +138,13 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
           return gitOk;
         case 'auth':
           return authOk;
+        case 'projects':
+          return projectsFolder.trim().length > 0;
         case 'done':
           return false;
       }
     },
-    [claudeOk, gitOk, authOk, step],
+    [claudeOk, gitOk, authOk, projectsFolder, step],
   );
 
   // ── Install / auth actions ───────────────────────────────────────────────
@@ -192,7 +208,12 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
     try {
       if (simMode) {
         await delay(800);
-        setLoginUrl('https://claude.com/cai/oauth/authorize?simulated=1');
+        // Harmless placeholder — the real flow opens Claude's actual OAuth URL
+        // (printed by `claude auth login`, complete with client_id). Never
+        // point sim at a real claude.com URL: it 400s ("missing client_id").
+        setLoginUrl(
+          'data:text/html,<body style="font-family:sans-serif;background:%230a0a0a;color:%23f5e8c8;padding:3rem"><h2>Simulated sign-in</h2><p>In the real setup, this opens Claude%27s actual sign-in page.</p></body>',
+        );
         await delay(1400);
         simPreflight.current.auth = { status: 'authed', note: 'Simulated sign-in.' };
         setPreflight({ ...simPreflight.current });
@@ -245,6 +266,12 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
     const idx = STEP_ORDER.indexOf(step);
     const next = STEP_ORDER[idx + 1];
     if (next) setStep(next);
+  }
+
+  function handleSelectProjectsFolder(path: string) {
+    setProjectsFolder(path);
+    setFolderPickerOpen(false);
+    onProjectsFolderChange(path);
   }
 
   const hardDepsMissing = !claudeOk || !gitOk;
@@ -348,6 +375,14 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
                 />
               )}
 
+              {step === 'projects' && (
+                <ProjectsFolderStep
+                  folder={projectsFolder}
+                  onChoose={() => setFolderPickerOpen(true)}
+                  onNext={goNext}
+                />
+              )}
+
               {step === 'done' && (
                 <DoneStep
                   softDeps={preflight.soft}
@@ -373,6 +408,14 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
           )}
         </section>
       </div>
+
+      {folderPickerOpen && (
+        <FolderBrowserModal
+          initialPath={projectsFolder || undefined}
+          onCancel={() => setFolderPickerOpen(false)}
+          onSelect={handleSelectProjectsFolder}
+        />
+      )}
     </div>
   );
 }
@@ -540,6 +583,43 @@ function AuthStep({
             </SecondaryButton>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ProjectsFolderStep({
+  folder,
+  onChoose,
+  onNext,
+}: {
+  folder: string;
+  onChoose: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col">
+      <h1 className="text-2xl font-semibold tracking-tight">Where should your projects live?</h1>
+      <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted-foreground">
+        Caisson keeps each project in its own folder under one parent directory.
+        Pick where that should be — you can change it later in settings, and make
+        a new folder right from the picker.
+      </p>
+
+      <div className="mt-6 max-w-xl">
+        <span className="text-xs uppercase tracking-wide text-[var(--fg-dim)]">Projects folder</span>
+        <div className="mt-1 flex items-center gap-3">
+          <code className="flex-1 truncate border border-border bg-muted/40 px-3 py-2 font-mono text-sm">
+            {folder || 'Not set'}
+          </code>
+          <SecondaryButton onClick={onChoose}>Choose folder…</SecondaryButton>
+        </div>
+      </div>
+
+      <div className="mt-auto pt-6">
+        <PrimaryButton onClick={onNext} disabled={!folder.trim()}>
+          Continue
+        </PrimaryButton>
       </div>
     </div>
   );

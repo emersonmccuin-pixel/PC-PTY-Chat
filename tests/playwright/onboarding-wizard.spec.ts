@@ -32,6 +32,11 @@ test.describe('Section 10 Phase 2 — onboarding wizard', () => {
     await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 6000 });
     await page.getByRole('button', { name: 'Continue' }).click();
 
+    // Projects-folder step (has a default → Continue is enabled).
+    await expect(page.getByRole('heading', { name: 'Where should your projects live?' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Choose folder…' })).toBeVisible();
+    await page.getByRole('button', { name: 'Continue' }).click();
+
     // Done.
     await expect(page.getByRole('heading', { name: "You're all set" })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create your first project' })).toBeEnabled();

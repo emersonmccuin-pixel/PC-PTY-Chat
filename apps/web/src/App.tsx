@@ -183,6 +183,16 @@ export default function App() {
     }
   }, [onboardingSimMode]);
 
+  // Onboarding "projects folder" step persists GlobalSettings.projectsFolder so
+  // the first Create-Project (and all future ones) default to it. Real setting,
+  // so we persist even in sim mode (the picker browses the real filesystem).
+  const handleProjectsFolderChange = useCallback((path: string) => {
+    void api
+      .patchSettings({ projectsFolder: path })
+      .then((r) => setSettings(r.settings))
+      .catch(() => {});
+  }, []);
+
   const skipOnboarding = useCallback(
     (hardDepsMissing: boolean) => {
       setWizardDismissed(true);
@@ -217,6 +227,8 @@ export default function App() {
     return (
       <OnboardingWizard
         simMode={onboardingSimMode}
+        initialProjectsFolder={settings?.projectsFolder ?? ''}
+        onProjectsFolderChange={handleProjectsFolderChange}
         onComplete={finishOnboarding}
         onSkip={skipOnboarding}
       />
