@@ -23,7 +23,9 @@ import {
   type WorkItemType,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
+import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAttachmentLightbox } from '@/store/attachment-lightbox';
+import { useChatComposerPrefill } from '@/store/chat-composer-prefill';
 import { CreateWorkItemModal } from './CreateWorkItemModal';
 
 type InspectorTab = 'brief' | 'children' | 'documents' | 'activity';
@@ -59,6 +61,17 @@ export function InitiativeInspector({
     [project.stages, workItem.stageId],
   );
   const phaseLabel = derivePhaseLabel(stage, workItem);
+  const pushPrefill = useChatComposerPrefill((s) => s.push);
+  const setCenterTab = useActiveCenterTab((s) => s.setTab);
+
+  const chatAboutThis = useCallback(() => {
+    // Pre-fill format: `[About: <title>] ` — the bracketed prefix is a
+    // soft Option-C step (Section 37). v1 doesn't require the orchestrator
+    // to parse it; future Section 37 (or true Option C) could lean on it
+    // as a structured context marker.
+    pushPrefill(`[About: ${workItem.title}] `);
+    setCenterTab('orchestrator');
+  }, [pushPrefill, setCenterTab, workItem.title]);
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -103,7 +116,7 @@ export function InitiativeInspector({
           <HeaderButton title="Archive (coming in 37.15)" disabled>
             Archive
           </HeaderButton>
-          <HeaderButton primary title="Chat about this (coming in 37.13)" disabled>
+          <HeaderButton primary onClick={chatAboutThis} title="Open the orchestrator chat with this initiative pre-filled in the composer">
             Chat about this →
           </HeaderButton>
         </div>

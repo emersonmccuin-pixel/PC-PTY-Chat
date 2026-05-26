@@ -36,6 +36,7 @@ import type {
   WsStatus,
 } from '@/hooks/use-project-ws';
 import { useAgentTranscript } from '@/store/agent-transcript';
+import { useChatComposerPrefill } from '@/store/chat-composer-prefill';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { AskCard } from '@/components/AskCard';
@@ -43,7 +44,6 @@ import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
 import { LiveRichLink } from '@/components/LiveRichLink';
 import { ExternalLink } from '@/components/ExternalLink';
-import { RemoteControlCorner } from '@/components/RemoteControlCorner';
 
 // Tools that have their own dedicated bubble surface (Task/Agent → task-start
 // + task-end cards; TodoWrite + TaskCreate/Update → todos snapshot card).
@@ -1150,7 +1150,6 @@ export function ChatSurface({
             ↓ Jump to recent
           </button>
         )}
-        <RemoteControlCorner events={events} />
       </div>
       {bannerSlot}
       {!composerHidden && (
@@ -2897,6 +2896,25 @@ function Composer({
   const COMPOSER_MIN_PX = 56;
   const COMPOSER_MAX_PX = 200;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Section 37.13 — absorb pending prefill (e.g. from the InitiativeInspector's
+  // "Chat about this →" button). Fires when seq advances; consumes the pending
+  // text into the local state, focuses, and parks the cursor at the end.
+  const prefillSeq = useChatComposerPrefill((s) => s.seq);
+  const consumePrefill = useChatComposerPrefill((s) => s.consume);
+  useEffect(() => {
+    const pending = consumePrefill();
+    if (pending === null) return;
+    setText(pending);
+    // Defer focus so the textarea actually exists + the new text has landed.
+    setTimeout(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(pending.length, pending.length);
+    }, 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillSeq]);
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
