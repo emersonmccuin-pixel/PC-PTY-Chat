@@ -9,8 +9,8 @@ import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useWorkItemsView } from '@/store/work-items-view';
 import { KanbanBoard } from '../KanbanBoard';
 import { DashboardPlaceholder } from './DashboardPlaceholder';
-import { TablePlaceholder } from './TablePlaceholder';
 import { WorkItemsSubTabs } from './WorkItemsSubTabs';
+import { WorkItemsTable } from './WorkItemsTable';
 
 interface WorkItemsPageProps {
   project: Project;
@@ -26,7 +26,7 @@ export function WorkItemsPage({ project, events }: WorkItemsPageProps) {
         {tab === 'kanban' ? (
           <KanbanBoard project={project} events={events} />
         ) : tab === 'table' ? (
-          <TablePlaceholder />
+          <WorkItemsTable project={project} events={events} />
         ) : (
           <DashboardPlaceholder />
         )}
