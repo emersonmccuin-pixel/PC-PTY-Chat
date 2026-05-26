@@ -33,6 +33,7 @@ const {
   countWorkItemsInStage,
   reassignStage,
   appendWorkItemHistory,
+  updateWorkItemFields,
   WorkItemVersionConflictError,
 } = await import('../src/index.ts');
 import type { Stage, ULID } from '@pc/domain';
@@ -519,4 +520,78 @@ test('listWorkItems: surfaces contract fields on every row', () => {
   assert.equal(plain.verificationTier, null);
   assert.equal(agent.isAgentTask, true);
   assert.equal(agent.verificationTier, 'orchestrator-review');
+});
+
+test('updateWorkItemFields promotes body + title onto their columns (F#3)', () => {
+  // Pre-F#3 behaviour: agent calls `pc_update_work_item({ fields: { body }})`
+  // and the body lands in `fields.body`, never on `wi.body`. Workflow ref
+  // resolvers + body_contains AC predicates both read `wi.body`, so they
+  // silently saw the original task descriptor instead of the agent's report.
+  // Post-fix: body + title are extracted from the fields payload and applied
+  // to their real columns; other keys flow through as before.
+  const p = createProject({
+    slug: 'f3-promote',
+    name: 'F3 Promote',
+    stages,
+    folderPath: tmpDir,
+  });
+  const projectId = p.id as ULID;
+  const wi = createWorkItem({
+    projectId,
+    stageId: 'backlog',
+    title: 'original-title',
+    body: 'task descriptor goes here',
+  });
+
+  const after = updateWorkItemFields(wi.id, {
+    body: 'agent report content',
+    title: 'renamed by agent',
+    summary: 'three-line summary',
+    score: 7,
+  });
+  assert.ok(after);
+  assert.equal(after.body, 'agent report content');
+  assert.equal(after.title, 'renamed by agent');
+  // body + title are removed from the fields blob (they live on columns now)
+  assert.equal((after.fields as Record<string, unknown>).body, undefined);
+  assert.equal((after.fields as Record<string, unknown>).title, undefined);
+  // other keys still merge into fields as before
+  assert.equal((after.fields as Record<string, unknown>).summary, 'three-line summary');
+  assert.equal((after.fields as Record<string, unknown>).score, 7);
+  // history entry records the full original payload for audit
+  const last = after.history.at(-1)!;
+  assert.equal(last.kind, 'update');
+  assert.equal((last.fields as Record<string, unknown>).body, 'agent report content');
+  assert.equal((last.fields as Record<string, unknown>).title, 'renamed by agent');
+});
+
+test('updateWorkItemFields ignores empty / wrong-typed body+title (F#3)', () => {
+  // Empty title is no-op (don't blank the column); non-string body/title falls
+  // through to the fields-merge path (as if the orchestrator was setting a
+  // custom field that happens to be called body/title — preserving the legacy
+  // shape rather than silently dropping the value).
+  const p = createProject({
+    slug: 'f3-empty',
+    name: 'F3 Empty',
+    stages,
+    folderPath: tmpDir,
+  });
+  const projectId = p.id as ULID;
+  const wi = createWorkItem({
+    projectId,
+    stageId: 'backlog',
+    title: 'keep-me',
+    body: 'keep-body',
+  });
+
+  const after = updateWorkItemFields(wi.id, {
+    title: '   ', // whitespace-only → ignored
+    body: { custom: 'object' }, // non-string → ignored (falls through to fields)
+    rating: 5,
+  });
+  assert.ok(after);
+  assert.equal(after.title, 'keep-me'); // unchanged
+  assert.equal(after.body, 'keep-body'); // unchanged
+  assert.deepEqual((after.fields as Record<string, unknown>).body, { custom: 'object' });
+  assert.equal((after.fields as Record<string, unknown>).rating, 5);
 });

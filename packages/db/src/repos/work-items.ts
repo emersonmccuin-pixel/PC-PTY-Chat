@@ -348,10 +348,39 @@ export function moveWorkItemStage(
   return toDomain(updated);
 }
 
-/** Merge field updates and append an 'update' history entry. */
+/** Merge field updates and append an 'update' history entry.
+ *
+ *  `body` and `title` are real columns on the work item — when the caller
+ *  passes them through this fields-merge endpoint (the path agents take when
+ *  they call `pc_update_work_item` to write their report), promote them onto
+ *  their columns rather than burying them in the `fields` JSON blob. Pre-F#3
+ *  behaviour was to stuff them under `fields.body` / `fields.title`, leaving
+ *  `wi.body` frozen as the original task descriptor. That silently broke
+ *  workflow `$node.output` refs (which read `wi.body`) and `body_contains` AC
+ *  predicates (which also read `wi.body`). The history entry still records the
+ *  caller's exact payload so audit trails stay intact. */
 export function updateWorkItemFields(id: ULID, fields: Record<string, unknown>): WorkItem | null {
   const row = getRowById(id);
   if (!row) return null;
+
+  // Split off column-shaped string body/title; non-string payloads (or empty
+  // titles) flow through into the fields blob unchanged so callers that
+  // legitimately store custom keys called "body"/"title" don't lose data.
+  const mergedFields: Record<string, unknown> = { ...row.fields };
+  let bodyColumn: string | null = null;
+  let titleColumn: string | null = null;
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === 'body' && typeof value === 'string') {
+      bodyColumn = value;
+      continue;
+    }
+    if (key === 'title' && typeof value === 'string' && value.trim() !== '') {
+      titleColumn = value;
+      continue;
+    }
+    mergedFields[key] = value;
+  }
+
   const entry: WorkItemHistoryEntry = {
     ts: new Date().toISOString(),
     kind: 'update',
@@ -359,7 +388,9 @@ export function updateWorkItemFields(id: ULID, fields: Record<string, unknown>):
   };
   const updated: WorkItemRow = {
     ...row,
-    fields: { ...row.fields, ...fields },
+    ...(bodyColumn !== null ? { body: bodyColumn } : {}),
+    ...(titleColumn !== null ? { title: titleColumn } : {}),
+    fields: mergedFields,
     history: [...row.history, entry],
     version: row.version + 1,
     updatedAt: Date.now(),
