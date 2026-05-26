@@ -680,6 +680,53 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'pc_fire_workflow',
+    description:
+      'Fire a workflow by slug (the `id:` field, e.g. "triage") or DB ULID. Resolves the row, dispatches through the v2 executor, and returns the runId + rootWorkItemId. Use this when the user explicitly names a workflow ("run the triage workflow"). Trigger defaults to `{ kind: "manual" }`. Returns { ok: true, runId, rootWorkItemId } on success; 400 on disabled / invalid rows; 404 on unknown slug. PC_PROJECT_ID env is the implicit project scope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: {
+          type: 'string',
+          description: 'workflow slug (preferred — the `id:` field in the YAML) or DB ULID',
+        },
+        trigger: {
+          type: 'object',
+          description: 'optional trigger payload. Defaults to { kind: "manual" }. For stage-on-entry, supply { kind: "stage-on-entry", stage: "<stageId>" } — but typically you fire manually.',
+        },
+      },
+      required: ['workflow'],
+    },
+  },
+  {
+    name: 'pc_complete_node',
+    description:
+      'Submit an orchestrator-review decision for a workflow run paused at a review node. Use when a `kind=orchestrator-review` envelope lands in chat with `{ workflowRunId, nodeId }` and you have judged the artifact. `decision: "approve"` resumes the run; `decision: "reject"` kicks back upstream (the reject loop re-fires the prior agent with your `notes` as feedback, up to `max_iterations`). Returns { ok: true, status: <new run status> } or 404 if the run / node is unknown / no longer paused. PC_PROJECT_ID env is the implicit project scope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowRunId: {
+          type: 'string',
+          description: 'the run id from the orchestrator-review envelope',
+        },
+        nodeId: {
+          type: 'string',
+          description: 'the review node id from the envelope',
+        },
+        decision: {
+          type: 'string',
+          enum: ['approve', 'reject'],
+          description: 'approve resumes; reject kicks back upstream with notes as feedback',
+        },
+        notes: {
+          type: 'string',
+          description: 'optional — required in practice for reject so the upstream agent has feedback',
+        },
+      },
+      required: ['workflowRunId', 'nodeId', 'decision'],
+    },
+  },
+  {
     name: 'pc_list_field_schemas',
     description:
       'List the project\'s custom work-item field schemas. Use this BEFORE authoring a create-work-item / update-work-item step that sets `fields`, so the keys are real (not invented). Returns { ok: true, schemas: [{ key, label, type, options?, required, ... }, ...] }. The `key` is what goes into the step\'s `fields` object. No arguments; PC_PROJECT_ID env is the implicit scope.',
@@ -2844,6 +2891,119 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_workflows failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_fire_workflow': {
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_fire_workflow: PC_PROJECT_ID env not set' },
+          ],
+          isError: true,
+        };
+      }
+      const workflow = typeof args.workflow === 'string' ? args.workflow.trim() : '';
+      if (!workflow) {
+        return {
+          content: [{ type: 'text', text: 'pc_fire_workflow: `workflow` (slug or id) required' }],
+          isError: true,
+        };
+      }
+      try {
+        // Resolve slug → DB id if needed. ULIDs are ~26 chars Crockford base32;
+        // slugs are kebab-case. The DB endpoint takes the row id, not the slug.
+        const looksLikeUlid = /^[0-9A-HJKMNP-TV-Z]{26}$/.test(workflow);
+        let rowId = workflow;
+        if (!looksLikeUlid) {
+          const listRes = await getServer(
+            `/api/workflows?projectId=${encodeURIComponent(PROJECT_ID)}`,
+          );
+          if (listRes.status < 200 || listRes.status >= 300) {
+            return {
+              content: [
+                { type: 'text', text: `pc_fire_workflow: list failed (${listRes.status}): ${listRes.body}` },
+              ],
+              isError: true,
+            };
+          }
+          const parsed = JSON.parse(listRes.body) as {
+            workflows?: Array<{ id: string; slug: string }>;
+          };
+          const match = (parsed.workflows ?? []).find((w) => w.slug === workflow);
+          if (!match) {
+            return {
+              content: [
+                { type: 'text', text: `pc_fire_workflow: no workflow with slug "${workflow}" in this project` },
+              ],
+              isError: true,
+            };
+          }
+          rowId = match.id;
+        }
+        const trigger =
+          args.trigger && typeof args.trigger === 'object'
+            ? args.trigger
+            : { kind: 'manual' };
+        const body: Record<string, unknown> = { trigger, projectId: PROJECT_ID };
+        const res = await postServer(`/api/workflows/${encodeURIComponent(rowId)}/fire`, body);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_fire_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_fire_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_complete_node': {
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_complete_node: PC_PROJECT_ID env not set' },
+          ],
+          isError: true,
+        };
+      }
+      const runId = typeof args.workflowRunId === 'string' ? args.workflowRunId.trim() : '';
+      const nodeId = typeof args.nodeId === 'string' ? args.nodeId.trim() : '';
+      const decision = args.decision;
+      if (!runId || !nodeId || (decision !== 'approve' && decision !== 'reject')) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_complete_node: require { workflowRunId, nodeId, decision: "approve"|"reject", notes? }',
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        const body: Record<string, unknown> = { runId, nodeId, decision };
+        if (typeof args.notes === 'string' && args.notes.trim()) body.notes = args.notes;
+        const res = await postServer(
+          projectPath('workflow-v2/review'),
+          body,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_complete_node failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_complete_node failed: ${(err as Error).message}` }],
           isError: true,
         };
       }
