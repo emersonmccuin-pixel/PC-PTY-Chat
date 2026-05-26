@@ -348,6 +348,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
               onToggleDisabled={() => void onToggleDisabled(selectedRow)}
               onPromote={() => void onPromote(selectedRow)}
               onDelete={() => void onDelete(selectedRow, false)}
+              onSaved={refetch}
             />
           ) : (
             <EmptyDetail onAdd={() => setCreateOpen(true)} />
@@ -527,6 +528,7 @@ function DetailPane({
   onToggleDisabled,
   onPromote,
   onDelete,
+  onSaved,
 }: {
   project: Project;
   row: WorkflowRow;
@@ -542,6 +544,7 @@ function DetailPane({
   onToggleDisabled: () => void;
   onPromote: () => void;
   onDelete: () => void;
+  onSaved: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const triggers = parsedTriggers(row);
@@ -674,7 +677,7 @@ function DetailPane({
             setSelectedRunId={setSelectedRunId}
           />
         )}
-        {tab === 'yaml' && <YamlTab row={row} />}
+        {tab === 'yaml' && <YamlTab row={row} onSaved={onSaved} />}
       </div>
     </div>
   );
@@ -953,7 +956,7 @@ function RunInlineDetail({
   );
 }
 
-function YamlTab({ row }: { row: WorkflowRow }) {
+function YamlTab({ row, onSaved }: { row: WorkflowRow; onSaved: () => void }) {
   // Local draft layered on top of the server's `row.yaml`. The textarea is the
   // editor; Save → PUT /api/workflows/:id with `{ yaml }`; server re-parses +
   // re-validates + reconciles `parsedDefinition` + bumps `yamlHash`. On
@@ -1017,6 +1020,12 @@ function YamlTab({ row }: { row: WorkflowRow }) {
       if (updated.status === 'invalid') {
         setError(updated.parseError ?? 'Workflow is invalid.');
       }
+      // Belt-and-suspenders: WS `workflow-changed` envelope is the primary
+      // refresh path, but if the WS reconnects between Save firing and the
+      // envelope arriving, the list-level row stays stale. A direct refetch
+      // here keeps the rail + detail header in lockstep with the persisted
+      // row regardless of WS reliability.
+      onSaved();
     } catch (e) {
       setError((e as Error).message);
     } finally {
