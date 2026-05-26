@@ -122,7 +122,13 @@ export function markAwaitingReview(state: State, nodeId: string): State {
 export function settleNode(
   state: State,
   nodeId: string,
-  outcome: { state: 'completed' | 'failed' | 'skipped'; workItemId?: string; error?: string },
+  outcome: {
+    state: 'completed' | 'failed' | 'skipped';
+    workItemId?: string;
+    error?: string;
+    /** Captured stdout for bash/script nodes — feeds `$nodeId.output` refs. */
+    output?: string;
+  },
   at = Date.now()
 ): State {
   const next = clone(state);
@@ -131,6 +137,7 @@ export function settleNode(
     state: outcome.state,
     ...(outcome.workItemId ? { workItemId: outcome.workItemId } : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.output !== undefined ? { output: outcome.output } : {}),
     endedAt: at,
   };
   return next;

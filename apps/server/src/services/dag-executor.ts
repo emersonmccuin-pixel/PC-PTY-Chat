@@ -43,6 +43,8 @@ export interface NodeOutcome {
   state: 'completed' | 'failed';
   workItemId?: ULID;
   error?: string;
+  /** Captured stdout for bash/script nodes — feeds `$nodeId.output` refs (F#1). */
+  output?: string;
 }
 
 /** Live surfaces the executor needs. apps/server supplies the real impls; tests

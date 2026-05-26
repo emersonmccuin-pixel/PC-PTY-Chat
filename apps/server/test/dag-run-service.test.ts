@@ -188,3 +188,39 @@ test('bash node runs via exec; failure fails the run', async () => {
   const status = await res.done;
   assert.equal(status, 'failed');
 });
+
+test('bash node stdout feeds $nodeId.output in a downstream agent task (F#1)', async () => {
+  // Pre-F#1: bash nodes had no workItemId, the resolver returned '' for
+  // `$bash.output`, and downstream tasks rendered with empty substitutions.
+  // Post-fix: captured stdout lives on `state.nodes[bash].output` and resolves.
+  const opts: DagRunServiceOptions = {
+    ...optsBase,
+    spawner: fakeSpawner,
+    verify: passVerify,
+    exec: async () => ({ ok: true, stdout: 'count=42' }),
+  };
+  const res = await fireDagWorkflow(
+    {
+      id: 'wf',
+      name: 'Bash→Agent',
+      triggers: [{ kind: 'manual' }],
+      worktree: 'none',
+      nodes: [
+        { kind: 'bash', id: 'count', bash: 'wc -l foo.txt', next: ['summarize'] } as WorkflowV2.WorkflowNode,
+        agent('summarize', 'upstream said: $count.output'),
+      ],
+    },
+    { kind: 'manual' },
+    opts
+  );
+  const status = await res.done;
+  assert.equal(status, 'completed');
+
+  // sidecar persisted the captured stdout on the bash node record
+  const run = workflowRunsV2Repo.getRun(res.runId)!;
+  assert.equal(run.dagState.nodes.count!.output, 'count=42');
+
+  // downstream agent's child WI was created with the substituted task body
+  const summarizeCreated = createdBodies.find((w) => w.title.endsWith('· summarize'))!;
+  assert.match(summarizeCreated.body, /upstream said: count=42/);
+});

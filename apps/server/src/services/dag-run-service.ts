@@ -29,7 +29,18 @@ export type CommandExec = (
   kind: 'bash' | 'node' | 'python',
   code: string,
   opts: { cwd: string; timeout?: number }
-) => Promise<{ ok: boolean; error?: string }>;
+) => Promise<{ ok: boolean; error?: string; stdout?: string }>;
+
+/** Per-node stdout cap stored in the DAG state. Plenty for typical
+ *  `echo`/`git status`/`jq` outputs; trims giant logs that would otherwise
+ *  bloat the workflow_runs_v2.dagState JSON column. */
+const STDOUT_CAP_BYTES = 16 * 1024;
+
+function truncateStdout(s: string): string {
+  if (s.length <= STDOUT_CAP_BYTES) return s;
+  return s.slice(0, STDOUT_CAP_BYTES) + `\n…[truncated, ${String(s.length - STDOUT_CAP_BYTES)} more bytes]`;
+}
+
 export type ChannelPoster = (body: string, source: string) => Promise<void>;
 
 export interface DagRunServiceOptions {
@@ -56,14 +67,15 @@ const liveExec: CommandExec = async (kind, code, { cwd, timeout }) => {
   const [cmd, args]: [string, string[]] =
     kind === 'bash' ? ['bash', ['-c', code]] : kind === 'node' ? ['node', ['-e', code]] : ['python', ['-c', code]];
   try {
-    await execFileAsync(cmd, args, {
+    const { stdout } = await execFileAsync(cmd, args, {
       cwd,
       timeout,
       killSignal: 'SIGKILL', // hard-kill on timeout (PC improvement over Archon's soft abort)
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
+      encoding: 'utf8',
     });
-    return { ok: true };
+    return { ok: true, stdout: truncateStdout(String(stdout).replace(/\r?\n$/, '')) };
   } catch (err) {
     const e = err as Error & { killed?: boolean };
     const reason = e.killed && timeout !== undefined ? `timeout (${String(timeout)}ms exceeded)` : e.message;
@@ -108,7 +120,14 @@ export function makeExecutorDeps(
   const resolveRef =
     (state: WorkflowV2.WorkflowDagState): RefResolver =>
     (nodeId, field) => {
-      const wiId = state.nodes[nodeId]?.workItemId;
+      const rec = state.nodes[nodeId];
+      // Bash/script nodes have no work item — they expose captured stdout via
+      // `rec.output` (F#1). Field-form refs on a bash node have nothing to read
+      // beyond bare output, so they resolve to empty.
+      if (rec?.workItemId === undefined && rec?.output !== undefined) {
+        return field ? '' : rec.output;
+      }
+      const wiId = rec?.workItemId;
       if (!wiId) return '';
       const wi = getWorkItem(wiId as ULID);
       if (!wi) return '';
@@ -200,14 +219,11 @@ export function makeExecutorDeps(
     ctx: DagNodeContext
   ): Promise<NodeOutcome> => {
     const cwd = run.worktreePath ?? opts.workspaceDir;
-    if (node.kind === 'bash') {
-      const code = render(node.bash, ctx, true);
-      const r = await exec('bash', code, { cwd, ...(node.timeout !== undefined ? { timeout: node.timeout } : {}) });
-      return r.ok ? { state: 'completed' } : { state: 'failed', ...(r.error ? { error: r.error } : {}) };
-    }
-    const code = render(node.script, ctx);
-    const r = await exec(node.runtime, code, { cwd, ...(node.timeout !== undefined ? { timeout: node.timeout } : {}) });
-    return r.ok ? { state: 'completed' } : { state: 'failed', ...(r.error ? { error: r.error } : {}) };
+    const kind: 'bash' | 'node' | 'python' = node.kind === 'bash' ? 'bash' : node.runtime;
+    const code = node.kind === 'bash' ? render(node.bash, ctx, true) : render(node.script, ctx);
+    const r = await exec(kind, code, { cwd, ...(node.timeout !== undefined ? { timeout: node.timeout } : {}) });
+    if (!r.ok) return { state: 'failed', ...(r.error ? { error: r.error } : {}) };
+    return { state: 'completed', ...(r.stdout !== undefined ? { output: r.stdout } : {}) };
   };
 
   const requestReview = async (

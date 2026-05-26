@@ -219,3 +219,13 @@ test('tick simulation: code → test (parallel-safe) → review approve → done
   assert.deepEqual(order, ['code', 'test', 'done']);
   assert.equal(computeRunStatus(w, s), 'completed');
 });
+
+test('settleNode persists captured stdout on the node record (F#1)', () => {
+  // Bash/script nodes have no workItemId — their captured stdout is the only
+  // value source for `$nodeId.output` refs. settleNode must round-trip the
+  // `output` field so the resolver can read it on later ticks.
+  const w = wf([agent('a')]);
+  const s = settleNode(initDagState(w), 'a', { state: 'completed', output: 'lines=42' });
+  assert.equal(s.nodes.a!.state, 'completed');
+  assert.equal(s.nodes.a!.output, 'lines=42');
+});

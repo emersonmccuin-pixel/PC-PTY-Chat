@@ -281,6 +281,10 @@ export interface NodeRunRecord {
   iteration?: number;
   /** Reason when `state` is `failed`. */
   error?: string;
+  /** Captured stdout for bash/script nodes (truncated). Lets `$nodeId.output`
+   *  refs resolve to a real value instead of empty string — see F#1. Agent
+   *  nodes resolve via `workItemId` → child work-item body and don't use this. */
+  output?: string;
   startedAt?: number;
   endedAt?: number;
 }
