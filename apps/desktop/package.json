@@ -2,18 +2,34 @@
   "name": "@pc/desktop",
   "version": "0.0.0",
   "private": true,
-  "description": "Electron shell for Project Companion (Windows-first distribution).",
+  "description": "Electron shell for Caisson (Windows-first distribution).",
   "main": "dist/main.js",
   "scripts": {
     "build:main": "node esbuild.config.mjs",
     "dev": "pnpm build:main && cross-env PC_DESKTOP_DEV=1 electron .",
+    "stage": "node scripts/stage-resources.mjs",
+    "rebuild:native": "node scripts/rebuild-native.mjs",
+    "prepackage": "pnpm build:main && pnpm --filter @pc/web build && pnpm --filter @pc/server build && pnpm stage && pnpm rebuild:native",
+    "dist:dir": "pnpm prepackage && electron-builder --dir",
+    "dist": "pnpm prepackage && electron-builder --win nsis",
     "typecheck": "tsc --noEmit"
+  },
+  "build": {
+    "appId": "com.projectcompanion.app",
+    "productName": "Caisson",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json"],
+    "extraResources": [{ "from": "staging/pcserver", "to": "pcserver" }],
+    "asar": true,
+    "afterPack": "scripts/after-pack.cjs",
+    "win": { "target": "nsis" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
     "@types/node": "^22.10.2",
     "cross-env": "^10.1.0",
-    "electron": "^42.2.0",
+    "electron": "^35.0.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.21.5",
     "typescript": "^5.7.2"

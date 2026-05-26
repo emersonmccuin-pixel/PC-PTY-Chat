@@ -9,10 +9,14 @@ import { settingsGlobal } from './schema.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** Apply pending migrations, then ensure the settings_global singleton row exists. */
-export function runMigrations(): void {
+/** Apply pending migrations, then ensure the settings_global singleton row exists.
+ *
+ *  `migrationsFolder` defaults to the package-relative `drizzle/` dir (dev/tsx).
+ *  In a packaged/bundled build `__dirname` points inside the bundle, so the
+ *  server passes an explicit ROOT-relative path to the staged copy. */
+export function runMigrations(migrationsFolder = join(__dirname, '..', 'drizzle')): void {
   const db = getDb();
-  migrate(db, { migrationsFolder: join(__dirname, '..', 'drizzle') });
+  migrate(db, { migrationsFolder });
   seedGlobalSettings();
 }
 

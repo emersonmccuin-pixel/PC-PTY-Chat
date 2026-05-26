@@ -146,7 +146,9 @@ const TEMPLATES = resolve(ROOT, 'templates');
 const PORT = Number(process.env.PORT ?? 4040);
 const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 
-runMigrations();
+// ROOT-relative so the staged `drizzle/` is found in a packaged build (where
+// migrate.ts's __dirname points inside the bundle). Dev resolves to the trunk.
+runMigrations(resolve(ROOT, 'packages', 'db', 'drizzle'));
 
 // Section 10 Phase 0 — push the configured claude.exe override (if any) into
 // the runtime resolver so every spawn honors GlobalSettings.claudeExe. Null =
