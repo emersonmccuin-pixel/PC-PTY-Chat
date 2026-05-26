@@ -365,7 +365,7 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
       // Don't synthesize an empty assistant bubble for that; the jsonlBusy
       // derivation (which reads the raw envelope, not the normalized one)
       // still clears the thinking indicator correctly.
-      if (!ev.text && ev.stopReason !== 'end_turn') return null;
+      if (!ev.text) return null;
       return {
         projectId: env.projectId,
         type: 'event',
