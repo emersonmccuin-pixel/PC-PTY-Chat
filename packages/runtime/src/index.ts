@@ -62,6 +62,8 @@ export {
   setConfiguredClaudeExe,
 } from './claude-resolver.ts';
 export type { ClaudeBinarySource, ClaudeResolution, ResolveOptions } from './claude-resolver.ts';
+export { resolveNodeLauncher } from './node-launcher.ts';
+export type { NodeLauncher } from './node-launcher.ts';
 
 export {
   collapseAnsiToWhitespace,

@@ -20,7 +20,7 @@ import type {
   WorkItemType,
 } from '@pc/domain';
 import { isWorkItemType, withSettingsDefaults } from '@pc/domain';
-import { setConfiguredClaudeExe } from '@pc/runtime';
+import { resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
 import {
   parseTypedWorkflowDef,
   parseWorkflowText,
@@ -121,7 +121,7 @@ import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.t
 import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
-import { rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
+import { applyNodeLauncherToProjects, rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { recordAgentInvoke } from './services/agent-audit.ts';
 import { checkInvokeDepth } from './services/invoke-depth.ts';
 
@@ -211,6 +211,17 @@ setConfiguredClaudeExe(readSettings().claudeExe);
   if (result.rewritten.length > 0) {
     console.log(
       `[pc] rewrote pc-rig MCP command to bundle in ${result.rewritten.length} project(s): ${result.rewritten.join(', ')}`,
+    );
+  }
+  // Section 10 Phase 1.4 — re-point the PC node servers at the current
+  // runtime's launcher. Under tsx dev this is a no-op (command already
+  // `node`); in a packaged Electron app it rewrites to the app binary +
+  // ELECTRON_RUN_AS_NODE so MCP children spawn with no system `node` on PATH.
+  // Also self-heals stale absolute launcher paths after an auto-update.
+  const launcherResult = applyNodeLauncherToProjects(folderPaths, resolveNodeLauncher());
+  if (launcherResult.rewritten.length > 0) {
+    console.log(
+      `[pc] applied node launcher to .mcp.json in ${launcherResult.rewritten.length} project(s): ${launcherResult.rewritten.join(', ')}`,
     );
   }
 }

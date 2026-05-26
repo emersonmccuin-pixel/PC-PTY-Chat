@@ -24,6 +24,8 @@
 
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { resolveNodeLauncher } from '@pc/runtime';
+import { applyNodeLauncherToProjects } from './mcp-config-rewrite.ts';
 
 export interface ProjectScaffoldDeps {
   /** Absolute trunk root (`<pc-repo>/`). Substituted into `{{PC_TRUNK_PATH}}`. */
@@ -107,6 +109,11 @@ export class ProjectScaffold {
       resolve(target.folderPath, '.mcp.json'),
       tokens,
     );
+    // Section 10 Phase 1.4 — the template bakes `"command": "node"`; rewrite
+    // the PC node servers to the current runtime's launcher (no-op under tsx
+    // dev; app-binary + ELECTRON_RUN_AS_NODE in a packaged build). Reuses the
+    // boot-time pass so scaffold + boot stay byte-identical.
+    applyNodeLauncherToProjects([target.folderPath], resolveNodeLauncher());
     this.writeFromTemplate(
       resolve(this.deps.templatesDir, '.claude', 'settings.template.json'),
       resolve(target.folderPath, '.claude', 'settings.json'),
