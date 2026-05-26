@@ -64,6 +64,17 @@ export interface GlobalSettings {
    */
   claudeExe: string | null;
   /**
+   * Section 33 — override for which Claude account/profile PC talks to, by
+   * pointing `CLAUDE_CONFIG_DIR` at a chosen config dir. `null` = inherit the
+   * shell env that launched the server (the historical, invisible default).
+   * Non-null = the server forces `process.env.CLAUDE_CONFIG_DIR` to this on
+   * boot and on every settings PATCH, so each CC spawn AND every JSONL path
+   * (chat replay, retention sweep, Usage aggregation) resolves against the
+   * chosen profile. Applies to NEW chat sessions only — existing sessions stay
+   * bound to whatever dir they spawned under.
+   */
+  claudeConfigDir: string | null;
+  /**
    * Section 10 Phase 2 — ISO timestamp of when the first-run onboarding wizard
    * was completed (or skipped). `null` = never completed → the wizard gate
    * shows on app boot. Once set, the gate stays out of the way. The dev
@@ -104,6 +115,20 @@ export interface GlobalSettings {
 export const FONT_SCALE_MIN = 0.85;
 export const FONT_SCALE_MAX = 1.5;
 
+/** Section 33 — given the stored `claudeConfigDir` override and the value
+ *  `CLAUDE_CONFIG_DIR` held when the server launched, return what
+ *  `process.env.CLAUDE_CONFIG_DIR` should be set to. `undefined` means the var
+ *  should be unset entirely. A non-null override wins; otherwise fall back to
+ *  the captured shell value (which may itself be `undefined`). Pure so the
+ *  "clearing the override restores the shell default, not the last override"
+ *  rule is unit-testable away from `process.env`. */
+export function resolveClaudeConfigDirEnv(
+  override: string | null,
+  shellValue: string | undefined,
+): string | undefined {
+  return override ? override : shellValue;
+}
+
 /** Defaults for a fresh settings_global row. The DB seeder calls this with
  *  the launch-time data dir and home dir so domain stays I/O-free. */
 export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalSettings {
@@ -111,6 +136,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     dataDir,
     telemetryOptIn: false,
     claudeExe: null,
+    claudeConfigDir: null,
     onboardingCompletedAt: null,
     projectsFolder: joinPath(homeDir, 'Projects'),
     activityPanel: {
@@ -180,6 +206,7 @@ export function withSettingsDefaults(
     dataDir: stored.dataDir ?? defaults.dataDir,
     telemetryOptIn: stored.telemetryOptIn ?? defaults.telemetryOptIn,
     claudeExe: stored.claudeExe ?? defaults.claudeExe,
+    claudeConfigDir: stored.claudeConfigDir ?? defaults.claudeConfigDir,
     onboardingCompletedAt: stored.onboardingCompletedAt ?? defaults.onboardingCompletedAt,
     projectsFolder: stored.projectsFolder ?? defaults.projectsFolder,
     activityPanel: {

@@ -126,6 +126,7 @@ export {
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
   normalizeJsonlRetention,
+  resolveClaudeConfigDirEnv,
   withSettingsDefaults,
 } from './settings.ts';
 export type { Worktree, WorktreeStatus } from './worktree.ts';
