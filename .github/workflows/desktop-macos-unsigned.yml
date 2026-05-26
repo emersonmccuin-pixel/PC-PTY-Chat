@@ -72,8 +72,8 @@ jobs:
           path: |
             apps/desktop/release/*-unsigned.dmg
             apps/desktop/release/*-unsigned.zip
-            apps/desktop/release/*.blockmap
-            apps/desktop/release/*.yml
+            apps/desktop/release/*-unsigned.dmg.blockmap
+            apps/desktop/release/*-unsigned.zip.blockmap
           if-no-files-found: error
           retention-days: 14
 
