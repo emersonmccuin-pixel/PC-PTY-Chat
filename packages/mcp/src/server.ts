@@ -246,7 +246,7 @@ export const TOOLS = [
   {
     name: 'pc_log_bug',
     description:
-      "File a bug in the user's PC-PTY-Chat dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
+      "File a bug in the user's Caisson dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -302,70 +302,13 @@ export const TOOLS = [
       required: ['id', 'fields'],
     },
   },
-  {
-    name: 'pc_complete_node',
-    description:
-      'Close a single workflow node as successful. The orchestrator delegated you via Task with a prompt carrying [workflowRunId: <id>] and [nodeId: <id>] tokens — pass both verbatim. `output` is whatever payload your node should publish; later nodes reference it as `$<this-node-id>.output[.field]`. The runtime re-ticks the workflow on success so downstream nodes fire. Returns { ok: true } on success or { ok: false, error } if the run or node id is unknown / already closed.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workflowRunId: {
-          type: 'string',
-          description: 'opaque id from the channel prompt (look for "[workflowRunId: <id>]")',
-        },
-        nodeId: {
-          type: 'string',
-          description: 'opaque id from the channel prompt (look for "[nodeId: <id>]")',
-        },
-        output: {
-          type: 'object',
-          description: 'Output payload to publish under this node id.',
-          additionalProperties: true,
-        },
-      },
-      required: ['workflowRunId', 'nodeId', 'output'],
-    },
-  },
-  {
-    name: 'pc_node_failed',
-    description:
-      'Close a single workflow node as failed. Pass workflowRunId + nodeId from the channel prompt tokens, plus a short reason string. The runtime re-ticks; downstream nodes with trigger_rule "all_success" become unreachable and get skipped. Use this when you cannot produce the contracted output — e.g. the input was malformed, the worktree is missing required files, etc.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workflowRunId: {
-          type: 'string',
-          description: 'opaque id from the channel prompt (look for "[workflowRunId: <id>]")',
-        },
-        nodeId: {
-          type: 'string',
-          description: 'opaque id from the channel prompt (look for "[nodeId: <id>]")',
-        },
-        reason: {
-          type: 'string',
-          description: 'one-line failure reason — shown in the UI on the failed run.',
-        },
-      },
-      required: ['workflowRunId', 'nodeId', 'reason'],
-    },
-  },
-  {
-    name: 'pc_run_workflow',
-    description:
-      'Start a fresh run of a callable workflow. `name` is the workflow id (matches the workflow file basename + the workflow YAML\'s `id:` field). `input` is an optional object passed through to the run as `run.inputs`. The workflow must declare `triggers.callable: true`. The run executes in its own `run-<short>` worktree (siblings of the workspace). Returns the new WorkflowRun or { ok: false, error } when the workflow is unknown, ambiguous, invalid, or not callable.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'workflow id (matches the file basename)' },
-        input: {
-          type: 'object',
-          description: 'optional inputs object — referenceable in the workflow as $inputs.<key> once that substitution lands; passes through to run.inputs today.',
-          additionalProperties: true,
-        },
-      },
-      required: ['name'],
-    },
-  },
+  // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow` removed.
+  // v2 workflow runtime owns node completion / failure internally via the
+  // JSONL turn-end + Stop hook contract; the orchestrator-review pause is
+  // resolved via `POST /api/projects/:id/workflow-v2/review` (no MCP tool
+  // yet — 19.17b's orchestrator-pod overhaul re-adds a review-decision tool
+  // matching the new shape). Run-by-name is reintroduced in 19.17b as part
+  // of the orchestrator's repointed workflow toolset.
   {
     name: 'pc_create_agent',
     description:
@@ -669,7 +612,7 @@ export const TOOLS = [
   {
     name: 'pc_edit_workflow',
     description:
-      'Edit an EXISTING project-scoped workflow YAML in place. Companion to `pc_create_workflow`; same `def` shape (typed workflow object). Server runs the same validator + serializer the create path uses — comments + key order survive on round-trip — then writes to `<project>/.project-companion/workflows/<def.id>.yaml` and broadcasts project-workflows-changed. 400 if `def.id` does not match the URL workflow id (renames are a duplicate + delete operation, not an edit). 400 on validation errors with per-path messages. Use this when the workflow-creator session opened in edit mode (initial user message includes `[edit-mode workflowId="..."]`); use `pc_create_workflow` otherwise.',
+      'Edit an EXISTING project-scoped workflow YAML in place. Pair with `pc_create_workflow`; same `def` shape (typed workflow object). Server runs the same validator + serializer the create path uses — comments + key order survive on round-trip — then writes to `<project>/.project-companion/workflows/<def.id>.yaml` and broadcasts project-workflows-changed. 400 if `def.id` does not match the URL workflow id (renames are a duplicate + delete operation, not an edit). 400 on validation errors with per-path messages. Use this when the workflow-creator session opened in edit mode (initial user message includes `[edit-mode workflowId="..."]`); use `pc_create_workflow` otherwise.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -687,22 +630,9 @@ export const TOOLS = [
       required: ['workflowId', 'def'],
     },
   },
-  {
-    name: 'pc_update_workflow_draft',
-    description:
-      'Push an in-progress draft of the workflow currently being authored. Use this after each meaningful structural change during the conversational interview so the user can see the workflow forming in the visualizer. The draft is NOT written to disk — only `pc_create_workflow` does that. Server keys the draft by the transient PC_SESSION_ID env var (already set by the host); draft state clears automatically when the workflow-creator session ends. 400 on validation errors so you can self-correct mid-interview.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        def: {
-          type: 'object',
-          description: 'in-progress typed workflow object',
-          additionalProperties: true,
-        },
-      },
-      required: ['def'],
-    },
-  },
+  // 19.17 — `pc_update_workflow_draft` removed. The v1 workflow-creator
+  // session it backed was deleted in 19.12; the v2 builder uses
+  // `pc_save_workflow_draft` (below) keyed by PC_SESSION_ID instead.
   {
     name: 'pc_save_workflow_draft',
     description:
@@ -728,7 +658,7 @@ export const TOOLS = [
   {
     name: 'pc_get_stages',
     description:
-      'Section 19.9 — list the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a v2 workflow (`stage-on-entry` trigger). Returns { ok: true, stages: [{ id, name, order }, ...] }. Stage `id` is what goes into `triggers[].stage` — never use the name. (Equivalent to `pc_list_stages`; kept under the locked Section 19 name.)',
+      'Section 19.9 — list the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a v2 workflow (`stage-on-entry` trigger). Returns { ok: true, stages: [{ id, name, order, isDone?, isCancelled?, isNew? }, ...] }. Stage `id` is what goes into `triggers[].stage` — never use the name. Use the flags for semantic roles. (Equivalent to `pc_list_stages`; kept under the locked Section 19 name.)',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -765,7 +695,7 @@ export const TOOLS = [
   {
     name: 'pc_list_stages',
     description:
-      'List the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a workflow (or which stage a create/update-work-item step should target). Returns { ok: true, stages: [{ id, name, order }, ...] }. Stage `id` is what goes into `triggers.on_enter.stage_id` — never use the name. No arguments; PC_PROJECT_ID env is the implicit scope.',
+      'List the project\'s stages live from the server. Use this BEFORE asking the user which stage should trigger a workflow (or which stage a create/update-work-item step should target). Returns { ok: true, stages: [{ id, name, order, isDone?, isCancelled?, isNew? }, ...] }. Stage `id` is what goes into `triggers.on_enter.stage_id` — never use the name. Use `isDone` / `isCancelled` / `isNew` for semantic stage roles instead of guessing from labels. No arguments; PC_PROJECT_ID env is the implicit scope.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -991,7 +921,7 @@ export const TOOLS = [
 /** Section 36 — fully-qualified slugs consumed by apps/server's
  *  `mcp__pc-rig__*` wildcard expansion. Derived from TOOLS so the two can
  *  never drift; the previous hand-maintained flat array (and its drift test)
- *  are deleted. The `mcp__pc-rig__` prefix is the MCP server name PC scaffolds
+ *  are deleted. The `mcp__pc-rig__` prefix is the MCP server name Caisson scaffolds
  *  into every project's .mcp.json — keep it in sync if the server gets
  *  renamed. */
 export const PC_RIG_TOOL_NAMES: readonly string[] = TOOLS.map(
@@ -1001,6 +931,37 @@ export const PC_RIG_TOOL_NAMES: readonly string[] = TOOLS.map(
 function projectPath(suffix: string): string {
   if (!PROJECT_ID) throw new Error('PC_PROJECT_ID is required for project-scoped calls');
   return `/api/projects/${PROJECT_ID}/${suffix.replace(/^\//, '')}`;
+}
+
+interface McpStage {
+  id: string;
+  name: string;
+  order: number;
+  isDone?: boolean;
+  isCancelled?: boolean;
+  isNew?: boolean;
+}
+
+interface ProjectStagesResponse {
+  stages?: McpStage[];
+}
+
+function stageForMcp(s: McpStage): {
+  id: string;
+  name: string;
+  order: number;
+  isDone?: true;
+  isCancelled?: true;
+  isNew?: true;
+} {
+  return {
+    id: s.id,
+    name: s.name,
+    order: s.order,
+    ...(s.isDone === true ? { isDone: true } : {}),
+    ...(s.isCancelled === true ? { isCancelled: true } : {}),
+    ...(s.isNew === true ? { isNew: true } : {}),
+  };
 }
 
 /** Project a ResolvedAgent (web-UI-shaped) down to a slim listing entry.
@@ -1885,94 +1846,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    case 'pc_complete_node': {
-      const workflowRunId = typeof args.workflowRunId === 'string' ? args.workflowRunId : '';
-      const nodeId = typeof args.nodeId === 'string' ? args.nodeId : '';
-      const output = args.output && typeof args.output === 'object' ? args.output : null;
-      if (!workflowRunId || !nodeId || !output) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_complete_node: workflowRunId, nodeId, and output required' },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer(projectPath('workflow/node-complete'), {
-          workflowRunId,
-          nodeId,
-          output,
-        });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_complete_node failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_complete_node failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_node_failed': {
-      const workflowRunId = typeof args.workflowRunId === 'string' ? args.workflowRunId : '';
-      const nodeId = typeof args.nodeId === 'string' ? args.nodeId : '';
-      const reason = typeof args.reason === 'string' ? args.reason : '';
-      if (!workflowRunId || !nodeId || !reason) {
-        return {
-          content: [
-            { type: 'text', text: 'pc_node_failed: workflowRunId, nodeId, and reason required' },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer(projectPath('workflow/node-failed'), {
-          workflowRunId,
-          nodeId,
-          reason,
-        });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_node_failed failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_node_failed failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_run_workflow': {
-      const name = typeof args.name === 'string' ? args.name : '';
-      const input = args.input && typeof args.input === 'object' ? args.input : undefined;
-      if (!name) {
-        return { content: [{ type: 'text', text: 'pc_run_workflow: name required' }], isError: true };
-      }
-      try {
-        const res = await postServer(projectPath('workflow/run'), { name, input });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_run_workflow failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_run_workflow failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow` cases
+    // removed. See the tool-definition site above for the rationale. Any
+    // residual orchestrator-pod prompt still naming these tools surfaces a
+    // generic "tool not found" — caught by 19.17b's prompt overhaul.
 
     case 'pc_destroy_worktree': {
       const target = typeof args.target === 'string' ? args.target : '';
@@ -2755,44 +2632,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    case 'pc_update_workflow_draft': {
-      const def = args.def && typeof args.def === 'object' ? args.def : null;
-      if (!def) {
-        return {
-          content: [{ type: 'text', text: 'pc_update_workflow_draft: def required' }],
-          isError: true,
-        };
-      }
-      const sessionId = process.env.PC_SESSION_ID ?? '';
-      if (!sessionId) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'pc_update_workflow_draft: PC_SESSION_ID env not set (transient workflow-creator session is the only valid caller)',
-            },
-          ],
-          isError: true,
-        };
-      }
-      try {
-        const res = await postServer(projectPath('workflow-creator/draft'), { sessionId, def });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_update_workflow_draft failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [
-            { type: 'text', text: `pc_update_workflow_draft failed: ${(err as Error).message}` },
-          ],
-          isError: true,
-        };
-      }
-    }
+    // 19.17 — `pc_update_workflow_draft` case removed; v2 builder uses
+    // `pc_save_workflow_draft` (below) instead.
 
     case 'pc_save_workflow_draft': {
       const def = args.def && typeof args.def === 'object' ? args.def : null;
@@ -2874,8 +2715,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const res = await getServer(`/api/projects/${PROJECT_ID}`);
         if (res.status >= 200 && res.status < 300) {
           try {
-            const project = JSON.parse(res.body) as { stages?: Array<{ id: string; name: string; order: number }> };
-            const stages = (project.stages ?? []).map((s) => ({ id: s.id, name: s.name, order: s.order }));
+            const project = JSON.parse(res.body) as ProjectStagesResponse;
+            const stages = (project.stages ?? []).map(stageForMcp);
             return { content: [{ type: 'text', text: JSON.stringify({ ok: true, stages }) }] };
           } catch {
             return { content: [{ type: 'text', text: `pc_get_stages parse error: ${res.body.slice(0, 200)}` }], isError: true };
@@ -2894,6 +2735,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_publish_workflow': {
+      // 19.17 — DB-backed publish. The route layer's create+update are
+      // separate verbs (POST creates, PUT updates by ULID id); slug is the
+      // author-readable handle the workflow-builder agent has. Resolve
+      // slug → row id via GET, then PUT if found or POST if not.
       const def = args.def && typeof args.def === 'object' ? args.def : null;
       if (!def) {
         return {
@@ -2901,8 +2746,65 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           isError: true,
         };
       }
+      const defObj = def as { id?: unknown };
+      const slug = typeof defObj.id === 'string' ? defObj.id : '';
+      if (!slug) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_publish_workflow: def.id (slug) required' },
+          ],
+          isError: true,
+        };
+      }
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_publish_workflow: PC_PROJECT_ID env not set — workflow publish requires a project scope.',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
-        const res = await postServer(projectPath('workflow-v2/definitions'), { workflow: def });
+        const listRes = await getServer(
+          `/api/workflows?projectId=${encodeURIComponent(PROJECT_ID)}`,
+        );
+        let existingId: string | null = null;
+        if (listRes.status >= 200 && listRes.status < 300) {
+          try {
+            const parsed = JSON.parse(listRes.body) as {
+              workflows?: Array<{
+                id: string;
+                slug: string;
+                scope: 'project' | 'global';
+              }>;
+            };
+            const match = (parsed.workflows ?? []).find(
+              (w) => w.slug === slug && w.scope === 'project',
+            );
+            if (match) existingId = match.id;
+          } catch {
+            /* fall through to POST */
+          }
+        }
+        const payload: Record<string, unknown> = {
+          def,
+          actor: 'orchestrator',
+          reason: 'mcp-publish',
+        };
+        let res;
+        if (existingId) {
+          res = await putServer(
+            `/api/workflows/${encodeURIComponent(existingId)}`,
+            payload,
+          );
+        } else {
+          payload.projectId = PROJECT_ID;
+          payload.scope = 'project';
+          res = await postServer('/api/workflows', payload);
+        }
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -2953,8 +2855,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const res = await getServer(`/api/projects/${PROJECT_ID}`);
         if (res.status >= 200 && res.status < 300) {
           try {
-            const project = JSON.parse(res.body) as { stages?: Array<{ id: string; name: string; order: number }> };
-            const stages = (project.stages ?? []).map((s) => ({ id: s.id, name: s.name, order: s.order }));
+            const project = JSON.parse(res.body) as ProjectStagesResponse;
+            const stages = (project.stages ?? []).map(stageForMcp);
             return { content: [{ type: 'text', text: JSON.stringify({ ok: true, stages }) }] };
           } catch {
             return { content: [{ type: 'text', text: `pc_list_stages parse error: ${res.body.slice(0, 200)}` }], isError: true };
@@ -2999,8 +2901,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'pc_list_workflows': {
+      // 19.17 — repointed at the DB-backed `/api/workflows?projectId=...`
+      // surface (the legacy v1 `/projects/:id/workflows` path was deleted
+      // in 19.12). Returns project-scoped rows plus globals visible to
+      // this project.
+      if (!PROJECT_ID) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_list_workflows: PC_PROJECT_ID env not set',
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
-        const res = await getServer(projectPath('workflows'));
+        const res = await getServer(
+          `/api/workflows?projectId=${encodeURIComponent(PROJECT_ID)}`,
+        );
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -3403,7 +3322,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 // pod-tool-catalog re-exports PC_RIG_TOOL_NAMES) can import this module
 // without booting an MCP server and pinning the event loop. The mcp build
 // (`scripts/build.mjs`) produces dist/server.mjs which IS the entry point —
-// import.meta.url matches process.argv[1]'s file URL there. When PC's server
+// import.meta.url matches process.argv[1]'s file URL there. When Caisson's server
 // imports `@pc/mcp` from a test or runtime context, the comparison fails and
 // the side effects stay parked.
 const ENTRY_URL = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';

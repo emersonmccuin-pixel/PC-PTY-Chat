@@ -195,24 +195,11 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: 'Bind the current dispatch to a specific card.',
     source: 'pc-rig',
   },
-  {
-    slug: 'mcp__pc-rig__pc_complete_node',
-    label: 'Complete a workflow node',
-    description: 'Report structured output from a workflow node.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_node_failed',
-    label: 'Report workflow node failure',
-    description: 'Report a workflow node failure with a reason.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_run_workflow',
-    label: 'Run a workflow',
-    description: 'Trigger a workflow by id.',
-    source: 'pc-rig',
-  },
+  // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow`,
+  // `pc_update_workflow_draft` removed. Their handlers were repointed to
+  // dead v1 routes in 19.12; 19.17 prunes the catalog entries so the
+  // generated allowlist no longer advertises them. v2 equivalents land
+  // under 19.17b's orchestrator-prompt overhaul.
   {
     slug: 'mcp__pc-rig__pc_create_workflow',
     label: 'Create a workflow',
@@ -223,12 +210,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     slug: 'mcp__pc-rig__pc_edit_workflow',
     label: 'Edit a workflow',
     description: "Modify a workflow's YAML (id-immutable).",
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_update_workflow_draft',
-    label: 'Update a workflow draft',
-    description: 'Save in-progress workflow-creator state.',
     source: 'pc-rig',
   },
   {
