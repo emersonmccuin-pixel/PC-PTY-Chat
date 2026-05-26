@@ -178,6 +178,8 @@ test('happy path: queued → spawning → running → completed on turn-end', as
   assert.equal(t.status, 'completed');
   assert.equal(t.result, 'all done');
   assert.equal(run.getState(), 'completed');
+  assert.equal(stub.killed, true);
+  assert.equal(stub.killCount, 1);
   assert.deepEqual(states, ['spawning', 'running', 'completed']);
 });
 
@@ -479,6 +481,7 @@ test('cancel after terminal is a no-op', async () => {
   // No throw, no state change.
   run.cancel();
   assert.equal(run.getState(), 'completed');
+  assert.equal(stub.killCount, 1);
 });
 
 test('getRecord captures terminalAt / readyAt / runningAt timestamps', async () => {

@@ -569,12 +569,10 @@ export class ProjectRuntime {
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
-    try { this.workflowBuilder?.kill(); } catch { /* best-effort */ }
-    try { this.workflowBuilderPrep?.cleanup(); } catch { /* best-effort */ }
+    this.endAgentDesigner();
+    this.endWorkflowBuilder();
+    this.endSetupWizard();
     this.pty = null;
-    this.workflowBuilder = null;
-    this.workflowBuilderPrep = null;
-    this.workflowBuilderSessionId = null;
     this.worktreesSvc = null;
     this.workItemSvc = null;
     this.attachmentSvc = null;

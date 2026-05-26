@@ -444,6 +444,16 @@ export class AgentRun extends EventEmitter {
     this.setState(next);
     // Release the cap-slot. Idempotent — release / abort both safe here.
     this.ticket.release();
+    // Terminal means this dispatched worker is done. CC returns to a prompt
+    // after a normal turn-end, so explicitly kill the PTY here too; otherwise
+    // completed agents can leave idle node.exe/claude.exe children behind.
+    if (this.spawn) {
+      try {
+        this.spawn.kill();
+      } catch {
+        /* already dead */
+      }
+    }
     this.emit('terminal', {
       status: next,
       cause,

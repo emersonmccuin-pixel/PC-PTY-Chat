@@ -14,7 +14,24 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 
-const exec = promisify(execFile);
+const _exec = promisify(execFile);
+
+/** Thin wrapper: re-throws with stderr appended so callers see the real git
+ *  error instead of the generic "Command failed: git ..." envelope. */
+async function exec(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string },
+): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await _exec(cmd, args, opts) as { stdout: string; stderr: string };
+  } catch (err) {
+    const e = err as Error & { stderr?: string };
+    const detail = e.stderr?.trim();
+    if (detail) throw new Error(`${e.message}: ${detail}`);
+    throw err;
+  }
+}
 
 export interface WorktreeEntry {
   /** Absolute path on disk. */
