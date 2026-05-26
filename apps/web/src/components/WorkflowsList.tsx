@@ -107,12 +107,16 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     return { projectRows: proj, globalRows: glob };
   }, [workflows]);
 
-  // Auto-select on first load / when the current selection vanishes.
+  // Auto-select on first load / when the current selection vanishes. Skip
+  // when a nav directive is pending — otherwise auto-select races the
+  // nav-consume effect and clobbers it with the first row on remount (the
+  // ActivityPanel → Workflows handoff symptom).
   useEffect(() => {
     if (selectedId && workflows.some((w) => w.id === selectedId)) return;
+    if (navSlug) return;
     const first = projectRows[0] ?? globalRows[0] ?? null;
     setSelectedId(first ? first.id : null);
-  }, [workflows, selectedId, projectRows, globalRows]);
+  }, [workflows, selectedId, projectRows, globalRows, navSlug]);
 
   // Centralised rail-click handler: switching workflows drops the selected
   // run (runs are per-workflow). Done as a handler, NOT a useEffect keyed on
