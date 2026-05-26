@@ -11,14 +11,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { OrchestratorSession, Project, ULID, WorkflowV2 } from '@pc/domain';
-import { isQuickTasksKind } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID, WorkflowV2, WorkItem } from '@pc/domain';
+import { isQuickTasksKind, postMoveStatusForStage } from '@pc/domain';
 import type { ReviewDecision } from '@pc/workflows';
 import {
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
   getOrchestratorSession,
+  moveWorkItemStage,
   reactivateOrchestratorSession,
 } from '@pc/db';
 import { jsonlPathFor, PtySession } from '@pc/runtime';
@@ -267,26 +268,47 @@ export class ProjectRuntime {
     return { runId: res.runId, rootWorkItemId: res.rootWorkItemId };
   }
 
-  /** Section 19.7-live — wraps v1 `moveAndFire` with v2 stage-on-entry firing.
-   *  Reads `fromStageId` BEFORE the v1 move, commits the move through v1 (which
-   *  also fires the legacy on_enter trigger if matched), then evaluates v2
-   *  workflows whose `stage-on-entry` trigger matches this move and fires each.
+  /** Section 19.12 — pure stage-move + v2 stage-on-entry firing. Reads
+   *  `fromStageId` before the move, commits the move (version-checked when
+   *  `expectedVersion` is supplied, legacy otherwise), then evaluates v2
+   *  workflows whose `stage-on-entry` trigger matches and fires each.
    *
-   *  v1 errors (ambiguity / version conflict / lock) propagate — the card stays
-   *  put and v2 never sees the move. v2 firing errors are logged, not thrown:
-   *  the move already succeeded and a misconfigured v2 workflow shouldn't
-   *  retro-fail the move. */
+   *  Move errors (unknown stage, version conflict) propagate — the card stays
+   *  put. v2 firing errors are logged, not thrown: the move already succeeded
+   *  and a misconfigured v2 workflow shouldn't retro-fail the move.
+   *
+   *  v1's on_enter trigger + lock-on-fire + worktree-ensure semantics are
+   *  gone — v2 attaches the run to a `WorkItem` via the runtime's own
+   *  attach-to-work-item node instead. */
   async moveAndFireV2(args: {
     id: string;
     toStage: string;
     expectedVersion?: number;
     position?: number;
     notes?: string | null;
-  }): ReturnType<WorkflowRuntime['moveAndFire']> {
+  }): Promise<WorkItem> {
     const pre = getWorkItem(args.id as ULID);
-    const fromStageId = pre?.stageId ?? null;
+    if (!pre) throw new Error(`unknown work item: ${args.id}`);
+    const fromStageId = pre.stageId ?? null;
+    const destStage = this.project.stages.find((s) => s.id === args.toStage);
+    if (!destStage) throw new Error(`unknown stage: ${args.toStage}`);
 
-    const moved = await this.workflowRuntime().moveAndFire(args);
+    let moved: WorkItem;
+    if (args.expectedVersion !== undefined) {
+      const input: { expectedVersion: number; stageId: string; position?: number } = {
+        expectedVersion: args.expectedVersion,
+        stageId: args.toStage,
+      };
+      if (args.position !== undefined) input.position = args.position;
+      moved = this.workItemService().move(args.id as ULID, input, args.notes ?? undefined);
+    } else {
+      // Legacy path (no expectedVersion) — MCP `pc_move_work_item` lands here.
+      const targetStatus = postMoveStatusForStage(destStage);
+      const out = moveWorkItemStage(args.id as ULID, args.toStage, targetStatus, args.notes ?? null);
+      if (!out) throw new Error(`unknown work item: ${args.id}`);
+      moved = out;
+      this.opts.broadcast({ type: 'work-items-changed', change: 'moved', workItem: moved });
+    }
 
     if (fromStageId !== args.toStage) {
       const stages = (this.project.stages ?? []).map((s) => ({

@@ -34,6 +34,7 @@ import {
   listFailedRunDismissalsForProject,
   listOrchestratorSessionsForProject,
   listProjects,
+  listWorkItems as dbListWorkItems,
   newId,
   reassignStage,
   reconcileOrphanedRunningRuns,
@@ -46,6 +47,7 @@ import {
   softDeleteProject,
   updateProjectMeta,
   updateProjectStages,
+  updateWorkItemFields as dbUpdateWorkItemFields,
   insertStatuslineSnapshot,
   listLatestSnapshotPerSession,
   getLatestSnapshotForProject,
@@ -429,9 +431,10 @@ function attachPtyHandlers(
   session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
   session.on('state', (state: string) => broadcastTo(projectId, { type: 'state', state }));
   session.on('turn-end', () => {
-    runtime.workflowRuntime().onTurnEnd().catch((err) => {
-      console.error('[pc] onTurnEnd failed:', (err as Error).message);
-    });
+    // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
+    // marked still-running across an orchestrator turn boundary). v2 DAG
+    // runs are self-contained with their own idle + wall-clock timeouts.
+    void runtime;
     broadcastTo(projectId, { type: 'turn-end' });
   });
   session.on('event', (event: unknown) => {
@@ -698,6 +701,12 @@ app.patch('/api/settings', async (c) => {
           ? current.claudeExe
           : typeof body.claudeExe === 'string' && body.claudeExe.trim()
             ? body.claudeExe.trim()
+            : null,
+      onboardingCompletedAt:
+        body.onboardingCompletedAt === undefined
+          ? current.onboardingCompletedAt
+          : typeof body.onboardingCompletedAt === 'string' && body.onboardingCompletedAt.trim()
+            ? body.onboardingCompletedAt.trim()
             : null,
       projectsFolder:
         typeof body.projectsFolder === 'string' && body.projectsFolder.trim()
@@ -1101,7 +1110,9 @@ app.get('/api/projects/:projectId', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json(runtime.workflowRuntime().readProject());
+  const project = getProjectById(runtime.project.id);
+  if (!project) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
+  return c.json(project);
 });
 
 /** Active orchestrator session for the project (the one the chat is bound to).
@@ -1478,7 +1489,7 @@ app.get('/api/projects/:projectId/work-items', (c) => {
     q.cursor !== undefined ||
     q.limit !== undefined;
   if (!hasFilters) {
-    return c.json(runtime.workflowRuntime().readWorkItems());
+    return c.json({ workItems: dbListWorkItems(runtime.project.id) });
   }
   const listOpts: {
     stage?: string;
@@ -1570,7 +1581,9 @@ app.post('/api/projects/:projectId/work-items/update', async (c) => {
   const fields = body.fields && typeof body.fields === 'object' ? body.fields : null;
   if (!wiId || !fields) return c.json({ ok: false, error: 'id and fields required' }, 400);
   try {
-    const workItem = runtime.workflowRuntime().updateWorkItem(wiId, fields);
+    const workItem = dbUpdateWorkItemFields(wiId as ULID, fields);
+    if (!workItem) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+    void runtime;
     broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });
     return c.json({ ok: true, workItem });
   } catch (err) {
