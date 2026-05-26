@@ -12,9 +12,16 @@ const LABEL: Record<WorkItemsSubTab, string> = {
   table: 'Table',
 };
 
-export function WorkItemsSubTabs() {
+interface Props {
+  /** Parent can intercept sub-tab changes (e.g. WorkItemsPage clears the
+   *  inspector overlay before delegating to the store setter). */
+  onBeforeChange?: (next: WorkItemsSubTab) => void;
+}
+
+export function WorkItemsSubTabs({ onBeforeChange }: Props = {}) {
   const value = useWorkItemsView((s) => s.activeSubTab);
   const setValue = useWorkItemsView((s) => s.setActiveSubTab);
+  const change = onBeforeChange ?? setValue;
   return (
     <div
       className="flex items-stretch gap-1 border-b border-border/30 bg-[var(--surface-1)] px-5"
@@ -26,7 +33,7 @@ export function WorkItemsSubTabs() {
           <button
             key={t}
             type="button"
-            onClick={() => setValue(t)}
+            onClick={() => change(t)}
             className={`inline-flex items-center px-3.5 text-[11px] uppercase tracking-[0.08em] transition-colors ${
               active
                 ? 'text-primary'

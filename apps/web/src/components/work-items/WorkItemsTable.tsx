@@ -18,6 +18,9 @@ import { applyFiltersAndSort } from './filter-sort';
 interface Props {
   project: Project;
   events: WsEnvelope[];
+  /** Section 37.8 — when provided, row clicks open the InitiativeInspector
+   *  instead of the legacy WorkItemDetailModal. */
+  onOpenInspector?: (workItem: WorkItem) => void;
 }
 
 const STATUS_LABEL: Record<WorkItemStatus, string> = {
@@ -70,7 +73,7 @@ const COLUMNS: { key: string; label: string; sortBy?: SortBy; widthClass: string
   { key: 'updated', label: 'Updated', sortBy: 'activity', widthClass: 'w-[110px]' },
 ];
 
-export function WorkItemsTable({ project, events }: Props) {
+export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -180,7 +183,10 @@ export function WorkItemsTable({ project, events }: Props) {
               return (
                 <tr
                   key={wi.id}
-                  onClick={() => setOpenItemId(wi.id)}
+                  onClick={() => {
+                    if (onOpenInspector) onOpenInspector(wi);
+                    else setOpenItemId(wi.id);
+                  }}
                   className="cursor-pointer border-b border-border/30 hover:bg-primary/[0.04]"
                 >
                   <td className="px-3 py-2">
