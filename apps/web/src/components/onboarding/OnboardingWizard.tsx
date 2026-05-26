@@ -520,7 +520,7 @@ function AuthStep({
             href={loginUrl}
             target="_blank"
             rel="noreferrer"
-            className="inline-block bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-block !bg-primary px-4 py-2 text-sm font-medium !text-primary-foreground hover:!bg-primary/90"
           >
             Open the sign-in page
           </a>
@@ -600,7 +600,7 @@ function PrimaryButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+      className="!bg-primary px-4 py-2 text-sm font-medium !text-primary-foreground hover:!bg-primary/90 disabled:opacity-50"
     >
       {children}
     </button>
