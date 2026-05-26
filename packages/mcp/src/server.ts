@@ -12,7 +12,7 @@ import {
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // packages/mcp/src/server.ts → trunk root is three levels up. Used as the
@@ -3398,8 +3398,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 });
 
-writeStatus();
-const heartbeatTimer = setInterval(heartbeat, 2000);
-heartbeatTimer.unref?.();
+// Section 36 — guard the stdio-attach + heartbeat behind an "am I the entry
+// point?" check so consumers that only need the TOOLS array (apps/server's
+// pod-tool-catalog re-exports PC_RIG_TOOL_NAMES) can import this module
+// without booting an MCP server and pinning the event loop. The mcp build
+// (`scripts/build.mjs`) produces dist/server.mjs which IS the entry point —
+// import.meta.url matches process.argv[1]'s file URL there. When PC's server
+// imports `@pc/mcp` from a test or runtime context, the comparison fails and
+// the side effects stay parked.
+const ENTRY_URL = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
+if (import.meta.url === ENTRY_URL) {
+  writeStatus();
+  const heartbeatTimer = setInterval(heartbeat, 2000);
+  heartbeatTimer.unref?.();
 
-await server.connect(new StdioServerTransport());
+  await server.connect(new StdioServerTransport());
+}
