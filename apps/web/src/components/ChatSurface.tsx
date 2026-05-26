@@ -786,6 +786,10 @@ interface ChatSurfaceProps {
   composerPlaceholder?: string;
   /** User-facing reason when the composer is disabled but still visible. */
   composerDisabledReason?: string;
+  /** Server-derived queueable runtime state (busy/spawning/respawning). */
+  composerQueueing?: boolean;
+  /** Server-derived send button label. */
+  composerSendLabel?: string;
   /** Optional content above the chat scroller (session title row, agent label, etc.). */
   headerSlot?: ReactNode;
   /** Optional content between scroller and composer (e.g. session-ended notice). */
@@ -815,6 +819,8 @@ export function ChatSurface({
   composerDisabled,
   composerPlaceholder,
   composerDisabledReason,
+  composerQueueing,
+  composerSendLabel,
   headerSlot,
   bannerSlot,
   footerSlot,
@@ -1172,6 +1178,7 @@ export function ChatSurface({
     (text: string): boolean => {
       const clientMessageId = createClientMessageId();
       const ok = onSend(text, clientMessageId);
+      const queueOptimistically = composerQueueing || isThinking;
       if (ok) {
         setPendingPrompts((prev) => [
           ...prev,
@@ -1182,10 +1189,10 @@ export function ChatSurface({
             eventFloor: eventsRef.current.length,
             status: 'sending',
             expectsAck: wsStatus !== undefined,
-            queued: isThinking,
+            queued: queueOptimistically,
           },
         ]);
-        if (isThinking) {
+        if (queueOptimistically) {
           setQueuedPrompts((prev) => [
             ...prev,
             {
@@ -1200,12 +1207,13 @@ export function ChatSurface({
       }
       return ok;
     },
-    [onSend, isThinking, wsStatus],
+    [onSend, composerQueueing, isThinking, wsStatus],
   );
   const visibleQueuedPrompts =
     durableQueueItems.length > 0 ? durableQueueItems : queuedPrompts;
-  const composerSendLabel =
-    isThinking || visibleQueuedPrompts.length > 0 ? 'Queue ↵' : 'Send ↵';
+  const resolvedComposerSendLabel =
+    composerSendLabel ??
+    (isThinking || visibleQueuedPrompts.length > 0 ? 'Queue ↵' : 'Send ↵');
 
   const handleCancelQueueItem = useCallback(
     async (item: ComposerQueueItem): Promise<boolean> => {
@@ -1518,7 +1526,7 @@ export function ChatSurface({
           disabled={composerDisabled}
           placeholder={composerPlaceholder}
           disabledReason={composerDisabledReason}
-          sendLabel={composerSendLabel}
+          sendLabel={resolvedComposerSendLabel}
         />
       )}
       {footerSlot}

@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   api,
+  type OrchestratorRuntimeHealth,
+  type OrchestratorRuntimeSnapshot,
   type OrchestratorSession,
   type Project,
   type SessionTransitionResponse,
@@ -43,6 +45,104 @@ function composerPlaceholderForSessionState(state: string | null): string | unde
       return 'Orchestrator thinking… type to queue';
     default:
       return undefined;
+  }
+}
+
+type ComposerAvailability =
+  | { mode: 'live'; sendLabel: 'Send ↵'; placeholder?: string }
+  | { mode: 'queueing'; sendLabel: 'Queue ↵'; reason: 'busy' | 'spawning' | 'respawning'; placeholder: string }
+  | { mode: 'reconnecting'; disabled: true; reason: string; placeholder: string }
+  | { mode: 'inaccessible'; disabled: true; reason: string; placeholder: string };
+
+function legacyHealthFromPtyState(state: string | null): OrchestratorRuntimeHealth | null {
+  switch (state) {
+    case 'spawning':
+      return 'spawning';
+    case 'ready':
+      return 'ready';
+    case 'thinking':
+      return 'busy';
+    case 'exited':
+      return 'exited';
+    default:
+      return null;
+  }
+}
+
+function composerAvailabilityFor(input: {
+  wsStatus: WsStatus;
+  health: OrchestratorRuntimeHealth | null;
+  latestSessionState: string | null;
+  failureReason: string | null;
+}): ComposerAvailability {
+  if (input.wsStatus !== 'open') {
+    return {
+      mode: 'reconnecting',
+      disabled: true,
+      reason: input.wsStatus === 'connecting'
+        ? 'Reconnecting to local app'
+        : 'Local app connection unavailable',
+      placeholder: 'Reconnecting to the local app...',
+    };
+  }
+
+  switch (input.health) {
+    case 'busy':
+      return {
+        mode: 'queueing',
+        reason: 'busy',
+        sendLabel: 'Queue ↵',
+        placeholder:
+          composerPlaceholderForSessionState(input.latestSessionState) ??
+          'Orchestrator thinking... type to queue',
+      };
+    case 'spawning':
+      return {
+        mode: 'queueing',
+        reason: 'spawning',
+        sendLabel: 'Queue ↵',
+        placeholder: 'Claude is starting... type to queue',
+      };
+    case 'respawning':
+      return {
+        mode: 'queueing',
+        reason: 'respawning',
+        sendLabel: 'Queue ↵',
+        placeholder: 'Claude is restarting... type to queue',
+      };
+    case 'failed_resume':
+      return {
+        mode: 'inaccessible',
+        disabled: true,
+        reason: input.failureReason ?? 'Claude resume failed',
+        placeholder: 'Claude resume failed',
+      };
+    case 'provider_missing':
+      return {
+        mode: 'inaccessible',
+        disabled: true,
+        reason: input.failureReason ?? 'History available; Claude resume transcript missing',
+        placeholder: 'Claude resume transcript unavailable',
+      };
+    case 'exited':
+      return {
+        mode: 'live',
+        sendLabel: 'Send ↵',
+        placeholder: 'Claude disconnected... send to restart',
+      };
+    case 'not_spawned':
+      return {
+        mode: 'live',
+        sendLabel: 'Send ↵',
+        placeholder: 'Message the orchestrator to start Claude...',
+      };
+    case 'ready':
+    case null:
+      return {
+        mode: 'live',
+        sendLabel: 'Send ↵',
+        placeholder: composerPlaceholderForSessionState(input.latestSessionState),
+      };
   }
 }
 
@@ -102,6 +202,8 @@ export function Orchestrator({
   // Active session. Fetched once per project, then patched live from WS
   // session-changed (new-session / resume) + session-title-updated.
   const [session, setSession] = useState<OrchestratorSession | null>(null);
+  const [runtimeSnapshot, setRuntimeSnapshot] =
+    useState<OrchestratorRuntimeSnapshot | null>(null);
   useEffect(() => {
     let cancelled = false;
     api
@@ -115,10 +217,32 @@ export function Orchestrator({
     };
   }, [project.id]);
   useEffect(() => {
+    let cancelled = false;
+    setRuntimeSnapshot(null);
+    api
+      .getOrchestratorRuntime(project.id)
+      .then((runtime) => {
+        if (!cancelled) setRuntimeSnapshot(runtime);
+      })
+      .catch((err) => console.error('[pc] getOrchestratorRuntime', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id]);
+  useEffect(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.type === 'session-changed' || e.type === 'session-title-updated') {
         setSession((e as WsEnvelope & { session: OrchestratorSession }).session);
+        break;
+      }
+    }
+  }, [events]);
+  useEffect(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.type === 'runtime-state') {
+        setRuntimeSnapshot(e as WsEnvelope & OrchestratorRuntimeSnapshot);
         break;
       }
     }
@@ -296,19 +420,29 @@ export function Orchestrator({
   );
 
   const composerHidden = isViewingPast || sessionEnded;
-  const composerDisabled = !composerHidden && wsStatus !== 'open';
-  const composerDisabledReason = composerDisabled
-    ? wsStatus === 'connecting'
-      ? 'Reconnecting to local app'
-      : 'Local app connection unavailable'
-    : undefined;
-  const composerPlaceholder = composerDisabled
-    ? 'Reconnecting to the local app...'
-    : latestRuntimeState === 'spawning'
-      ? 'Claude is starting... type to queue'
-      : latestRuntimeState === 'exited'
-        ? 'Claude disconnected... send to restart'
-        : composerPlaceholderForSessionState(latestSessionState);
+  const runtimeHealth =
+    runtimeSnapshot?.health ?? legacyHealthFromPtyState(latestRuntimeState);
+  const composerAvailability = composerAvailabilityFor({
+    wsStatus,
+    health: runtimeHealth,
+    latestSessionState,
+    failureReason: runtimeSnapshot?.failureReason ?? null,
+  });
+  const composerDisabled =
+    !composerHidden &&
+    (composerAvailability.mode === 'reconnecting' ||
+      composerAvailability.mode === 'inaccessible');
+  const composerDisabledReason =
+    composerAvailability.mode === 'reconnecting' ||
+    composerAvailability.mode === 'inaccessible'
+      ? composerAvailability.reason
+      : undefined;
+  const composerPlaceholder = composerAvailability.placeholder;
+  const composerQueueing = composerAvailability.mode === 'queueing';
+  const composerSendLabel =
+    composerAvailability.mode === 'live' || composerAvailability.mode === 'queueing'
+      ? composerAvailability.sendLabel
+      : 'Send ↵';
 
   const headerSlot = (
     <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
@@ -372,6 +506,7 @@ export function Orchestrator({
       projectId={project.id}
       projectName={project.name}
       wsStatus={wsStatus}
+      runtimeHealth={runtimeHealth}
     />
   );
 
@@ -402,6 +537,8 @@ export function Orchestrator({
       composerDisabled={composerDisabled}
       composerPlaceholder={composerPlaceholder}
       composerDisabledReason={composerDisabledReason}
+      composerQueueing={composerQueueing}
+      composerSendLabel={composerSendLabel}
       headerSlot={headerSlot}
       bannerSlot={bannerSlot}
       footerSlot={footerSlot}

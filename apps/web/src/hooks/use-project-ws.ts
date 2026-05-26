@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type {
+  OrchestratorRuntimeSnapshot,
   Project,
   SessionReplayItem,
   SessionTransitionKind,
@@ -61,6 +62,10 @@ export interface SendQueueSnapshotEnvelope extends WsEnvelope {
   type: 'send-queue-snapshot';
   sessionId: string;
   items: SendQueueItem[];
+}
+
+export interface RuntimeStateEnvelope extends WsEnvelope, OrchestratorRuntimeSnapshot {
+  type: 'runtime-state';
 }
 
 export interface SessionReplayEnvelope extends WsEnvelope {
@@ -671,11 +676,15 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           }
           setEvents((prev) => {
             const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
+            const latestRuntime = [...prev]
+              .reverse()
+              .find((candidate) => candidate.type === 'runtime-state');
             const latestSessionChanged = [...prev]
               .reverse()
               .find((candidate) => candidate.type === 'session-changed');
             const checkpoints = [
               ...(latestState ? [latestState] : []),
+              ...(latestRuntime ? [latestRuntime] : []),
               ...(latestSessionChanged ? [latestSessionChanged] : []),
             ];
             const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);
@@ -740,8 +749,12 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
 
       setEvents((prev) => {
         const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
+        const latestRuntime = [...prev]
+          .reverse()
+          .find((candidate) => candidate.type === 'runtime-state');
         const checkpoints = [
           ...(transition.transition === 'resume-session' && latestState ? [latestState] : []),
+          ...(transition.transition === 'resume-session' && latestRuntime ? [latestRuntime] : []),
           checkpoint,
         ];
         const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);

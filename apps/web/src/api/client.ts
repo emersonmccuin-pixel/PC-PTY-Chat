@@ -509,6 +509,36 @@ export interface OrchestratorSendQueueItem {
   failureReason: string | null;
 }
 
+export type OrchestratorRuntimeHealth =
+  | 'not_spawned'
+  | 'spawning'
+  | 'ready'
+  | 'busy'
+  | 'exited'
+  | 'respawning'
+  | 'failed_resume'
+  | 'provider_missing';
+
+export interface OrchestratorRuntimeSnapshot {
+  type: 'runtime-state';
+  sessionId: ULID | null;
+  provider: 'claude';
+  providerSessionId: string | null;
+  health: OrchestratorRuntimeHealth;
+  ptyState: string | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+  lastExitAt: number | null;
+  lastActivityAt: number | null;
+  failureReason: string | null;
+  rawJsonlPath: string | null;
+  rawJsonlExists: boolean;
+  replayPath: string | null;
+  replayExists: boolean;
+  replayLineCount: number;
+  queue: OrchestratorSendQueueItem[];
+}
+
 export const api = {
   listProjects: () =>
     getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
@@ -1183,6 +1213,11 @@ export const api = {
     getJson<{ ok: true; session: OrchestratorSession | null }>(
       `/api/projects/${projectId}/session`,
     ).then((r) => r.session),
+
+  getOrchestratorRuntime: (projectId: ULID) =>
+    getJson<{ ok: true; runtime: OrchestratorRuntimeSnapshot }>(
+      `/api/projects/${projectId}/orchestrator/runtime`,
+    ).then((r) => r.runtime),
 
   startNewSession: (projectId: ULID) =>
     postJson<{ ok: true } & SessionTransitionResponse>(

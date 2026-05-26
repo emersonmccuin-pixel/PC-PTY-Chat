@@ -19,7 +19,12 @@ import type {
   WorkItemType,
 } from '@pc/domain';
 import { isWorkItemType, resolveClaudeConfigDirEnv, withSettingsDefaults } from '@pc/domain';
-import { claudeConfigDir, resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
+import {
+  claudeConfigDir,
+  jsonlPathFor,
+  resolveNodeLauncher,
+  setConfiguredClaudeExe,
+} from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
@@ -75,6 +80,10 @@ import {
   loadSessionReplayEnvelopes,
   type ReplayEnvelope,
 } from './services/session-replay.ts';
+import {
+  deriveRuntimeHealth,
+  type RuntimeHealth,
+} from './services/orchestrator-runtime-health.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
 import { installClaude, installGit } from './services/onboarding-install.ts';
@@ -321,6 +330,42 @@ interface PublicSendQueueItem {
   failureReason: string | null;
 }
 
+interface RuntimeFailureState {
+  health: 'failed_resume' | 'provider_missing';
+  reason: string;
+  at: number;
+}
+
+interface RuntimeLifecycleState {
+  lastActivityAt: number | null;
+  lastExitAt: number | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+  failure: RuntimeFailureState | null;
+}
+
+interface PublicRuntimeSnapshot {
+  type: 'runtime-state';
+  sessionId: ULID | null;
+  provider: 'claude';
+  providerSessionId: string | null;
+  health: RuntimeHealth;
+  ptyState: string | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+  lastExitAt: number | null;
+  lastActivityAt: number | null;
+  failureReason: string | null;
+  rawJsonlPath: string | null;
+  rawJsonlExists: boolean;
+  replayPath: string | null;
+  replayExists: boolean;
+  replayLineCount: number;
+  queue: PublicSendQueueItem[];
+}
+
+const runtimeLifecycle = new Map<ULID, RuntimeLifecycleState>();
+
 function publicSendQueueItem(row: OrchestratorSendQueueRow): PublicSendQueueItem {
   return {
     id: row.id,
@@ -332,6 +377,109 @@ function publicSendQueueItem(row: OrchestratorSendQueueRow): PublicSendQueueItem
     deliveryAttempts: row.deliveryAttempts,
     failureReason: row.failureReason,
   };
+}
+
+function runtimeLifecycleFor(projectId: ULID): RuntimeLifecycleState {
+  let state = runtimeLifecycle.get(projectId);
+  if (!state) {
+    state = {
+      lastActivityAt: null,
+      lastExitAt: null,
+      exitCode: null,
+      exitSignal: null,
+      failure: null,
+    };
+    runtimeLifecycle.set(projectId, state);
+  }
+  return state;
+}
+
+function noteRuntimeActivity(projectId: ULID): void {
+  runtimeLifecycleFor(projectId).lastActivityAt = Date.now();
+}
+
+function clearRuntimeFailure(projectId: ULID): void {
+  runtimeLifecycleFor(projectId).failure = null;
+}
+
+function noteRuntimeFailure(projectId: ULID, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  runtimeLifecycleFor(projectId).failure = {
+    health: classifyRuntimeFailure(message),
+    reason: message,
+    at: Date.now(),
+  };
+}
+
+function classifyRuntimeFailure(message: string): RuntimeFailureState['health'] {
+  return /no transcript|conversation found|provider session|jsonl|transcript/i.test(message)
+    ? 'provider_missing'
+    : 'failed_resume';
+}
+
+function noteRuntimeExit(
+  projectId: ULID,
+  code: number | undefined,
+  signal: string | undefined,
+): void {
+  const state = runtimeLifecycleFor(projectId);
+  const now = Date.now();
+  state.lastActivityAt = now;
+  state.lastExitAt = now;
+  state.exitCode = code ?? null;
+  state.exitSignal = signal ?? null;
+}
+
+function countJsonlLines(filePath: string): number {
+  try {
+    return readFileSync(filePath, 'utf-8').split('\n').filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
+function runtimeSnapshotPayload(
+  projectId: ULID,
+  runtime: ProjectRuntime,
+): PublicRuntimeSnapshot {
+  const active = getActiveOrchestratorSession(projectId);
+  const lifecycle = runtimeLifecycleFor(projectId);
+  const ptyState = runtime.orchestratorPtyState();
+  const health = deriveRuntimeHealth({
+    ptyState,
+    lastExitAt: lifecycle.lastExitAt,
+    failureHealth: lifecycle.failure?.health ?? null,
+  });
+  const rawJsonlPath = active?.jsonlPath
+    ?? (active?.providerSessionId ? jsonlPathFor(runtime.folderPath, active.providerSessionId) : null);
+  const replayPath = active ? resolve(runtime.sessionDataPath(active.id), 'jsonl-events.jsonl') : null;
+  const replayExists = replayPath ? existsSync(replayPath) : false;
+
+  return {
+    type: 'runtime-state',
+    sessionId: active?.id ?? null,
+    provider: 'claude',
+    providerSessionId: active?.providerSessionId ?? null,
+    health,
+    ptyState,
+    exitCode: lifecycle.exitCode,
+    exitSignal: lifecycle.exitSignal,
+    lastExitAt: lifecycle.lastExitAt,
+    lastActivityAt: lifecycle.lastActivityAt ?? active?.startedAt ?? null,
+    failureReason: lifecycle.failure?.reason ?? null,
+    rawJsonlPath,
+    rawJsonlExists: rawJsonlPath ? existsSync(rawJsonlPath) : false,
+    replayPath,
+    replayExists,
+    replayLineCount: replayExists && replayPath ? countJsonlLines(replayPath) : 0,
+    queue: active
+      ? listVisibleOrchestratorSendsForSession(active.id).map(publicSendQueueItem)
+      : [],
+  };
+}
+
+function broadcastRuntimeSnapshot(projectId: ULID, runtime: ProjectRuntime): void {
+  broadcastTo(projectId, runtimeSnapshotPayload(projectId, runtime));
 }
 
 function sendQueueSnapshotPayload(sessionId: ULID): {
@@ -348,6 +496,8 @@ function sendQueueSnapshotPayload(sessionId: ULID): {
 
 function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {
   broadcastTo(projectId, sendQueueSnapshotPayload(sessionId));
+  const runtime = resolveProject(projectId);
+  if (runtime) broadcastRuntimeSnapshot(projectId, runtime);
 }
 
 function queuedStatusForState(
@@ -396,6 +546,24 @@ function maybeAdvanceSendQueueConfirmation(
   if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
   const observed = markNextDeliveredOrchestratorSendObservedInJsonl(sessionId, ev.text);
   if (observed) broadcastSendQueueSnapshot(projectId, sessionId);
+}
+
+function ensureOrchestratorPty(
+  projectId: ULID,
+  runtime: ProjectRuntime,
+): ReturnType<ProjectRuntime['ensurePty']> {
+  try {
+    const pty = runtime.ensurePty();
+    clearRuntimeFailure(projectId);
+    noteRuntimeActivity(projectId);
+    attachPtyHandlers(projectId, runtime, pty);
+    broadcastRuntimeSnapshot(projectId, runtime);
+    return pty;
+  } catch (err) {
+    noteRuntimeFailure(projectId, err);
+    broadcastRuntimeSnapshot(projectId, runtime);
+    throw err;
+  }
 }
 
 const projectScaffold = new ProjectScaffold({
@@ -558,26 +726,37 @@ function attachPtyHandlers(
   const flag = session as unknown as { __pcHandlersAttached?: boolean };
   if (flag.__pcHandlersAttached) return;
   const attachedSessionId = getActiveOrchestratorSession(projectId)?.id ?? null;
-  session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
+  session.on('raw', (text: string) => {
+    noteRuntimeActivity(projectId);
+    broadcastTo(projectId, { type: 'raw', text });
+  });
   session.on('state', (state: string) => {
+    noteRuntimeActivity(projectId);
     broadcastTo(projectId, { type: 'state', state });
+    broadcastRuntimeSnapshot(projectId, runtime);
     if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
   });
   session.on('turn-end', () => {
     // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
     // marked still-running across an orchestrator turn boundary). v2 DAG
     // runs are self-contained with their own idle + wall-clock timeouts.
+    noteRuntimeActivity(projectId);
     broadcastTo(projectId, { type: 'turn-end' });
+    broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('event', (event: unknown) => {
+    noteRuntimeActivity(projectId);
     broadcastTo(projectId, { type: 'event', event });
+    broadcastRuntimeSnapshot(projectId, runtime);
   });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
   // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
   // so the chat panel can merge them without ambiguity.
   session.on('jsonl-event', (event: unknown) => {
+    noteRuntimeActivity(projectId);
     broadcastTo(projectId, { type: 'jsonl', event });
     maybeAdvanceSendQueueConfirmation(projectId, attachedSessionId, event);
+    broadcastRuntimeSnapshot(projectId, runtime);
     // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
     // row carries rich per-turn metadata; we log every one to the DB. Surface
     // design is deferred per the buildout — collect data first.
@@ -595,13 +774,17 @@ function attachPtyHandlers(
   session.on('jsonl-path-resolved', (jsonlPath: string) => {
     const active = getActiveOrchestratorSession(projectId);
     if (active) setOrchestratorSessionJsonlPath(active.id, jsonlPath);
+    noteRuntimeActivity(projectId);
+    broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('jsonl-cursor-tick', (_path: string, cursor: number) => {
     const active = getActiveOrchestratorSession(projectId);
     if (active) setOrchestratorSessionJsonlCursor(active.id, cursor);
   });
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
+    noteRuntimeExit(projectId, code, signal);
     broadcastTo(projectId, { type: 'exit', code, signal });
+    broadcastRuntimeSnapshot(projectId, runtime);
     console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
   });
   flag.__pcHandlersAttached = true;
@@ -1321,8 +1504,7 @@ registerPodRoutes(app, {
       const restarted = runtime.restartIfOrchestratorPod(podName);
       if (!restarted) continue;
       try {
-        const pty = runtime.ensurePty();
-        attachPtyHandlers(runtime.project.id, runtime, pty);
+        ensureOrchestratorPty(runtime.project.id, runtime);
         // No replayActiveSessionEvents — chat history already in the UI;
         // the user sees a brief reconnect blip + the next prompt-turn
         // reflects the new orchestrator identity.
@@ -1396,6 +1578,16 @@ app.get('/api/projects/:projectId/session', (c) => {
   return c.json({ ok: true, session });
 });
 
+/** Current orchestrator runtime snapshot. This endpoint is intentionally
+ *  no-spawn: it reports whether Claude is live, busy, exited, respawnable, or
+ *  inaccessible without creating a child process as a side effect. */
+app.get('/api/projects/:projectId/orchestrator/runtime', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  return c.json({ ok: true, runtime: runtimeSnapshotPayload(id, runtime) });
+});
+
 /** Full history of orchestrator sessions for the project (most recent first).
  *  Feeds the "previous sessions" rail tab. */
 app.get('/api/projects/:projectId/sessions', (c) => {
@@ -1429,8 +1621,14 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
     broadcastSendQueueSnapshot(id, previous.id);
   }
   const session = runtime.startNewSession();
-  const pty = runtime.ensurePty();
-  attachPtyHandlers(id, runtime, pty);
+  try {
+    ensureOrchestratorPty(id, runtime);
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to start Claude',
+    }, 409);
+  }
   const replay = loadSessionReplay(runtime, session.id);
   // Tell every subscriber to clear its local chat state; the next replay will
   // be empty (we just wiped events.jsonl) so the panel starts blank.
@@ -1460,8 +1658,14 @@ app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
     cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by resume');
     broadcastSendQueueSnapshot(id, previous.id);
   }
-  const pty = runtime.ensurePty();
-  attachPtyHandlers(id, runtime, pty);
+  try {
+    ensureOrchestratorPty(id, runtime);
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to resume Claude',
+    }, 409);
+  }
   const replay = loadSessionReplay(runtime, session.id);
   broadcastTo(id, { type: 'session-changed', transition: 'resume-session', session });
   broadcastSessionReplay(id, session.id, replay);
@@ -1515,8 +1719,7 @@ app.post('/api/projects/:projectId/send-queue/:sendId/retry', (c) => {
   let live = runtime.ptySession();
   if (!live) {
     try {
-      live = runtime.ensurePty();
-      attachPtyHandlers(id, runtime, live);
+      live = ensureOrchestratorPty(id, runtime);
     } catch (err) {
       return c.json({
         ok: false,
@@ -3567,12 +3770,26 @@ wss.on('connection', (ws, req) => {
   const detachSubscriber = wsHub.subscribe(projectId, ws);
 
   // Spawn the PtySession on first subscriber. Bind event forwarders.
-  const session = runtime.ensurePty();
-  attachPtyHandlers(projectId, runtime, session);
+  let session: ReturnType<ProjectRuntime['ensurePty']>;
+  try {
+    session = ensureOrchestratorPty(projectId, runtime);
+  } catch (err) {
+    try {
+      ws.send(JSON.stringify({
+        projectId,
+        ...runtimeSnapshotPayload(projectId, runtime),
+      }));
+      ws.close(1011, err instanceof Error ? err.message : 'Failed to start Claude');
+    } catch {
+      /* best effort */
+    }
+    return;
+  }
 
   // P14: tag direct-to-client sends with projectId, same as broadcastTo does
   // for fan-out paths. Keeps the envelope contract uniform.
   ws.send(JSON.stringify({ projectId, type: 'state', state: session.getState() }));
+  ws.send(JSON.stringify({ projectId, ...runtimeSnapshotPayload(projectId, runtime) }));
 
   // Section 23 — replay the active session's normalized event log so a
   // reloaded tab doesn't lose its chat panel. Sources from PC-owned
@@ -3637,8 +3854,7 @@ wss.on('connection', (ws, req) => {
         let live = runtime.ptySession();
         if (!live) {
           try {
-            live = runtime.ensurePty();
-            attachPtyHandlers(projectId, runtime, live);
+            live = ensureOrchestratorPty(projectId, runtime);
           } catch (err) {
             sendAck(msg.clientMessageId, {
               ok: false,

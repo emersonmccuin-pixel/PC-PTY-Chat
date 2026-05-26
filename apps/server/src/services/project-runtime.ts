@@ -24,6 +24,7 @@ import {
   workflowsRepo,
 } from '@pc/db';
 import { claudeConfigDirFromJsonlPath, jsonlPathFor, PtySession } from '@pc/runtime';
+import type { SessionState } from '@pc/runtime';
 import { selectStageEntryWorkflows } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
@@ -465,6 +466,11 @@ export class ProjectRuntime {
   /** Returns the live PtySession if one is spawned; otherwise null. */
   ptySession(): PtySession | null {
     return this.pty && this.pty.getState() !== 'exited' ? this.pty : null;
+  }
+
+  /** Returns the current orchestrator PTY state without spawning a process. */
+  orchestratorPtyState(): SessionState | null {
+    return this.pty ? this.pty.getState() : null;
   }
 
   /** Returns the active orchestrator session row, if any. */

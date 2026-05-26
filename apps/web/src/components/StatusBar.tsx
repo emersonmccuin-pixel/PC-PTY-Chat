@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '@/api/client';
+import type { OrchestratorRuntimeHealth } from '@/api/client';
 import type { WsStatus } from '@/hooks/use-project-ws';
 
 // Re-export so other call sites still importing { UsageTotals } from this
@@ -24,6 +25,7 @@ interface StatusBarProps {
   projectId: string | null;
   projectName: string | null;
   wsStatus: WsStatus;
+  runtimeHealth?: OrchestratorRuntimeHealth | null;
 }
 
 const WS_PILL: Record<WsStatus, { dot: string; label: string; title: string }> = {
@@ -33,11 +35,55 @@ const WS_PILL: Record<WsStatus, { dot: string; label: string; title: string }> =
   idle: { dot: 'bg-zinc-500', label: '—', title: 'No project selected' },
 };
 
-export function StatusBar({ projectId, wsStatus }: StatusBarProps) {
+const RUNTIME_PILL: Record<OrchestratorRuntimeHealth, { dot: string; label: string; title: string }> = {
+  not_spawned: {
+    dot: 'bg-zinc-500',
+    label: 'idle',
+    title: 'Claude runtime has not spawned',
+  },
+  spawning: {
+    dot: 'bg-amber-500',
+    label: 'starting',
+    title: 'Claude runtime is starting',
+  },
+  ready: {
+    dot: 'bg-emerald-500',
+    label: 'ready',
+    title: 'Claude runtime is ready',
+  },
+  busy: {
+    dot: 'bg-sky-500',
+    label: 'busy',
+    title: 'Claude runtime is processing a turn; new prompts will queue',
+  },
+  exited: {
+    dot: 'bg-zinc-500',
+    label: 'exited',
+    title: 'Claude runtime exited; the durable session can resume on send',
+  },
+  respawning: {
+    dot: 'bg-amber-500',
+    label: 'restart',
+    title: 'Claude runtime is restarting',
+  },
+  failed_resume: {
+    dot: 'bg-red-500',
+    label: 'failed',
+    title: 'Claude runtime resume failed',
+  },
+  provider_missing: {
+    dot: 'bg-red-500',
+    label: 'missing',
+    title: 'Claude provider transcript is unavailable',
+  },
+};
+
+export function StatusBar({ projectId, wsStatus, runtimeHealth }: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [showMcp, setShowMcp] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
+  const runtimePill = runtimeHealth ? RUNTIME_PILL[runtimeHealth] : null;
 
   useEffect(() => {
     if (!projectId) {
@@ -101,6 +147,26 @@ export function StatusBar({ projectId, wsStatus }: StatusBarProps) {
                 : 'offline'}
           </span>
         </button>
+
+        <span className="text-[var(--fg-dim)]">│</span>
+
+        <span
+          className="flex items-center gap-1.5"
+          title={runtimePill?.title ?? 'Claude runtime status unavailable'}
+          data-testid="runtime-pill"
+          data-runtime-health={runtimeHealth ?? 'unknown'}
+        >
+          <span
+            className={`inline-block h-1.5 w-1.5 rounded-full ${
+              runtimePill?.dot ?? 'bg-zinc-500'
+            }`}
+            aria-hidden
+          />
+          <span className="text-foreground/50">runtime</span>
+          <span className="tabular-nums text-foreground">
+            {runtimePill?.label ?? 'unknown'}
+          </span>
+        </span>
 
         <span className="text-[var(--fg-dim)]">│</span>
 
