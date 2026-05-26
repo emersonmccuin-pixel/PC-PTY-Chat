@@ -208,7 +208,13 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     }
   }
 
-  async function onDelete(row: WorkflowRow, cancel: boolean) {
+  async function onDelete(row: WorkflowRow, cancel: boolean, skipConfirm = false) {
+    if (!skipConfirm) {
+      const ok = window.confirm(
+        `Delete "${row.name}"?\n\nThis removes the workflow from ${row.scope === 'global' ? 'the global pool (every project loses access)' : 'this project'}. The action is reversible — the row is archived, not destroyed.`,
+      );
+      if (!ok) return;
+    }
     setActionErr(null);
     try {
       await api.deleteWorkflowRow(row.id, { cancel });
@@ -221,7 +227,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
           `${row.name} has ${err.inFlight ?? 'some'} in-flight run(s). Cancel them and delete?`,
         );
         if (proceed) {
-          await onDelete(row, true);
+          await onDelete(row, true, true);
           return;
         }
       }
