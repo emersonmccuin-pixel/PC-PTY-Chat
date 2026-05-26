@@ -30,7 +30,6 @@ import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
-import { WorkflowDrawer } from './workflows/WorkflowDrawer';
 import { WorkflowV2RunViewerMount } from './WorkflowV2RunViewer';
 
 // Section 32.1 — TabBar lifted to a topbar but spanning the full width
@@ -124,9 +123,6 @@ export function Shell({
             onExpand={() => onToggleActivityPanelOpen(true)}
           />
         </Panel>
-        {activeProject && (
-          <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
-        )}
         {activeProject && (
           <WorkflowV2RunViewerMount projectId={activeProject.id} events={wsEvents} />
         )}
