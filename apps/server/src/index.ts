@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -16,18 +16,11 @@ import type {
   PendingAskKind,
   PendingAskOption,
   ULID,
-  Workflow,
   WorkItemType,
 } from '@pc/domain';
 import { isWorkItemType, withSettingsDefaults } from '@pc/domain';
 import { resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
-import {
-  parseTypedWorkflowDef,
-  parseWorkflowText,
-  serializeWorkflow,
-  validateWorkflow,
-  validateWorkflowV2,
-} from '@pc/workflows';
+import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
   getActiveOrchestratorSession,
@@ -1275,85 +1268,6 @@ app.delete('/api/projects/:projectId/agent-designer', (c) => {
   return c.json({ ok: true });
 });
 
-// ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────────
-//
-// Mirror of the agent-creator wiring above. One-off PtySession per project
-// for the conversational "+ New workflow" modal. Layers
-// `workflow-creator-prompt.md` on top of CC's default system prompt; same
-// project cwd as the orchestrator so `.mcp.json` (pc-rig) is wired in.
-//
-// WS envelopes (distinct from the orchestrator + agent-creator streams):
-//   { type: 'workflow-creator-state', state }
-//   { type: 'workflow-creator-event', event }       — legacy hook events
-//   { type: 'workflow-creator-jsonl', event }       — JSONL tailer events
-//   { type: 'workflow-creator-exit', code, signal }
-//   { type: 'workflow-creator-draft', sessionId, def } — broadcast by the
-//     /workflow-creator/draft POST handler when pc_update_workflow_draft fires
-
-function attachWorkflowCreatorHandlers(
-  projectId: ULID,
-  session: ReturnType<ProjectRuntime['startWorkflowCreator']>,
-): void {
-  const flag = session as unknown as { __pcWorkflowCreatorAttached?: boolean };
-  if (flag.__pcWorkflowCreatorAttached) return;
-  session.on('state', (state: string) =>
-    broadcastTo(projectId, { type: 'workflow-creator-state', state }),
-  );
-  session.on('event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'workflow-creator-event', event }),
-  );
-  session.on('jsonl-event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'workflow-creator-jsonl', event }),
-  );
-  session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    broadcastTo(projectId, { type: 'workflow-creator-exit', code, signal });
-  });
-  flag.__pcWorkflowCreatorAttached = true;
-}
-
-app.post('/api/projects/:projectId/workflow-creator/start', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const session = runtime.startWorkflowCreator();
-  attachWorkflowCreatorHandlers(id, session);
-  return c.json({
-    ok: true,
-    state: session.getState(),
-    sessionId: runtime.workflowCreatorSession(),
-  });
-});
-
-app.post('/api/projects/:projectId/workflow-creator/send', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const session = runtime.workflowCreatorPty();
-  if (!session) return c.json({ ok: false, error: 'no workflow-creator session' }, 409);
-  const body = await c.req.json<{ text?: string }>();
-  if (typeof body.text !== 'string' || body.text === '') {
-    return c.json({ ok: false, error: 'text required' }, 400);
-  }
-  session.send(body.text);
-  return c.json({ ok: true });
-});
-
-app.post('/api/projects/:projectId/workflow-creator/interrupt', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  runtime.workflowCreatorPty()?.interrupt();
-  return c.json({ ok: true });
-});
-
-app.delete('/api/projects/:projectId/workflow-creator', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  runtime.endWorkflowCreator();
-  return c.json({ ok: true });
-});
-
 // ── Workflow-builder transient session (Section 19.9, v2-aware) ────────────
 //
 // Mirror of agent-designer wiring. Spawns CC with `--agent workflow-builder`
@@ -2256,454 +2170,10 @@ app.put('/api/projects/:projectId/field-schemas', async (c) => {
   }
 });
 
-app.get('/api/projects/:projectId/workflows', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const state = runtime.workflowRegistry().reload();
-  return c.json({
-    valid: state.valid.map((e) => ({
-      id: e.workflow.id,
-      stageId: e.workflow.triggers?.on_enter?.stage_id ?? null,
-      callable: e.workflow.triggers?.callable === true,
-      // 4f / D62 + D67. UI reads these to drive the disabled-row visual +
-      // the Run-now / manual-fire shape. Defaults preserve today's behavior
-      // (disabled=false; attached defaults to 'optional' when absent).
-      disabled: e.workflow.disabled === true,
-      attachedToWorkItem: e.workflow.attached_to_work_item ?? 'optional',
-      fileName: e.fileName,
-    })),
-    invalid: state.invalid.map((e) => ({
-      fileName: e.fileName,
-      partialStageId: e.partialStageId ?? null,
-      errors: e.errors,
-    })),
-  });
-});
-
-// 4e.4 / D51. Per-workflow detail. Returns the full Workflow def so the
-// drawer's Definition tab can render the read-only graph viewer without a
-// separate "list with full defs" inflated payload. 404 on unknown id (parse
-// failures stay invisible here — the list endpoint already surfaces them
-// under `invalid[]`).
-app.get('/api/projects/:projectId/workflows/:wfId', (c) => {
-  const id = c.req.param('projectId');
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const state = runtime.workflowRegistry().reload();
-  const entry = state.valid.find((e) => e.workflow.id === wfId);
-  if (!entry) return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  // 4f.2 — also return the raw YAML text on disk so the edit modal's
-  // raw-YAML tab (D61 PM escape hatch) can render exactly what's saved,
-  // comments + key order intact. Best-effort read; falls back to an empty
-  // string if the file vanished between reload + read.
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const filePath = resolve(dir, entry.fileName);
-  let yamlText = '';
-  try {
-    yamlText = readFileSync(filePath, 'utf-8');
-  } catch {
-    /* best-effort */
-  }
-  // 4h.11a — typed edges accompany the workflow def so the graph viewer can
-  // walk structured wires instead of regex-parsing legacy strings.
-  return c.json({
-    ok: true,
-    workflow: entry.workflow,
-    edges: entry.edges,
-    fileName: entry.fileName,
-    yamlText,
-  });
-});
-
-/** 4b.1: create a new project-scoped workflow YAML from a typed `def`. Mirrors
- *  the agent-creation path. `def` is the same shape parseWorkflowText would
- *  produce, minus the post-parse `kind:` discriminator (which never appears
- *  on disk). Server validates against the workflow parser, serializes via
- *  serializeWorkflow, writes to `<project>/.project-companion/workflows/<id>.yaml`,
- *  and broadcasts `project-workflows-changed`. 409 on id collision; 400 on
- *  validation errors. */
-app.post('/api/projects/:projectId/workflows', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const payload = await c.req.json<{ def?: unknown }>();
-  if (!payload.def || typeof payload.def !== 'object') {
-    return c.json({ ok: false, error: 'def required' }, 400);
-  }
-  const rawDef = payload.def as Record<string, unknown>;
-  const wfId = typeof rawDef.id === 'string' ? rawDef.id : '';
-  if (!wfId) {
-    return c.json({ ok: false, error: 'def.id required' }, 400);
-  }
-
-  const validation = validateWorkflow(rawDef, { expectedId: wfId });
-  if (!validation.ok || !validation.workflow) {
-    return c.json(
-      { ok: false, error: 'invalid workflow', errors: validation.errors },
-      400,
-    );
-  }
-
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const filePath = resolve(dir, `${wfId}.yaml`);
-  if (existsSync(filePath)) {
-    return c.json(
-      { ok: false, error: `workflow already exists: ${wfId}` },
-      409,
-    );
-  }
-
-  try {
-    mkdirSync(dir, { recursive: true });
-    const yamlText = serializeWorkflow(validation.workflow);
-    writeFileSync(filePath, yamlText, 'utf-8');
-    broadcastTo(id, { type: 'project-workflows-changed', change: 'created', id: wfId });
-    return c.json(
-      {
-        ok: true,
-        workflow: { id: wfId, fileName: `${wfId}.yaml`, path: filePath },
-      },
-      201,
-    );
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 4f.1 / D61. Edit an existing workflow in place. Reuses the create-time
- *  validator + serializer. Rejects an id rename (use duplicate + delete
- *  instead). Same shape rules as create: 400 on shape errors, 404 when the
- *  target file doesn't exist. WS broadcast carries `change: 'updated'` so
- *  the disabled/enable toggle (PUT with body.disabled flipped) and content
- *  edits all surface through the same envelope. */
-app.put('/api/projects/:projectId/workflows/:wfId', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-
-  // 4f.2 / D61. Accepts either `def` (typed path, used by conversational
-  // edits + lifecycle toggles like disable/enable) or `yamlText` (PM
-  // escape hatch — the raw-YAML tab). yamlText is parsed via parseWorkflowText
-  // so it goes through the same validator; round-trip preserves comments +
-  // key order via the serializer.
-  const payload = await c.req.json<{ def?: unknown; yamlText?: string }>();
-
-  let rawDef: Record<string, unknown> | null = null;
-  if (typeof payload.yamlText === 'string') {
-    const parsed = parseWorkflowText(payload.yamlText, { expectedId: wfId });
-    if (!parsed.ok || !parsed.workflow) {
-      return c.json(
-        { ok: false, error: 'invalid workflow', errors: parsed.errors },
-        400,
-      );
-    }
-    rawDef = parsed.workflow as unknown as Record<string, unknown>;
-  } else if (payload.def && typeof payload.def === 'object') {
-    rawDef = payload.def as Record<string, unknown>;
-  } else {
-    return c.json({ ok: false, error: 'def or yamlText required' }, 400);
-  }
-
-  if (typeof rawDef.id !== 'string' || rawDef.id !== wfId) {
-    return c.json(
-      {
-        ok: false,
-        error: `def.id must match URL workflow id (${wfId}); rename via duplicate + delete`,
-      },
-      400,
-    );
-  }
-
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const filePath = resolve(dir, `${wfId}.yaml`);
-  if (!existsSync(filePath)) {
-    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  }
-
-  const validation = validateWorkflow(rawDef, { expectedId: wfId });
-  if (!validation.ok || !validation.workflow) {
-    return c.json(
-      { ok: false, error: 'invalid workflow', errors: validation.errors },
-      400,
-    );
-  }
-
-  try {
-    const yamlText = serializeWorkflow(validation.workflow);
-    writeFileSync(filePath, yamlText, 'utf-8');
-    // The `change` value lets clients distinguish a content edit from a
-    // pure disable/enable flip. Use the persisted disabled flag (not the
-    // request body) so a save that flips `disabled` is identified faithfully.
-    const change =
-      validation.workflow.disabled === true ? 'disabled' : 'updated';
-    broadcastTo(id, { type: 'project-workflows-changed', change, id: wfId });
-    return c.json({
-      ok: true,
-      workflow: { id: wfId, fileName: `${wfId}.yaml`, path: filePath },
-    });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 4f.1 / D60. Delete a workflow YAML. Blocks on in-flight runs (returns 409
- *  with the run-id list); use the cancel-runs-and-delete endpoint to force
- *  through. Historical `workflow_runs` rows stay — they're orphan-by-
- *  workflowId after delete but still reachable from 4e's drawer by runId. */
-app.delete('/api/projects/:projectId/workflows/:wfId', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const filePath = resolve(dir, `${wfId}.yaml`);
-  if (!existsSync(filePath)) {
-    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  }
-
-  const inFlight = runtime.workflowRuntime().inFlightRunsForWorkflow(wfId);
-  if (inFlight.length > 0) {
-    return c.json(
-      {
-        ok: false,
-        error: `workflow has ${inFlight.length} in-flight run(s); cancel them first`,
-        inFlightRunIds: inFlight.map((r) => r.id),
-      },
-      409,
-    );
-  }
-
-  try {
-    rmSync(filePath);
-    broadcastTo(id, { type: 'project-workflows-changed', change: 'deleted', id: wfId });
-    return c.json({ ok: true });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 4f.1 / D60. Cancel-then-delete escape for the in-flight-runs guard.
- *  Walks every in-flight run for this workflow, marks each cancelled with
- *  the supplied reason (defaults to "workflow deleted"), then removes the
- *  YAML. 404 when the workflow file is missing. */
-app.post('/api/projects/:projectId/workflows/:wfId/cancel-runs-and-delete', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-
-  const body = await c.req
-    .json<{ reason?: string }>()
-    .catch(() => ({}) as { reason?: string });
-  const reason =
-    typeof body.reason === 'string' && body.reason.trim()
-      ? body.reason.trim()
-      : 'workflow deleted';
-
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const filePath = resolve(dir, `${wfId}.yaml`);
-  if (!existsSync(filePath)) {
-    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  }
-
-  const wfRuntime = runtime.workflowRuntime();
-  const inFlight = wfRuntime.inFlightRunsForWorkflow(wfId);
-  for (const run of inFlight) {
-    await wfRuntime.cancelRunExternal(run.id, reason);
-  }
-
-  try {
-    rmSync(filePath);
-    broadcastTo(id, { type: 'project-workflows-changed', change: 'deleted', id: wfId });
-    return c.json({ ok: true, cancelledRunIds: inFlight.map((r) => r.id) });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 4f.1 / D63. Duplicate a workflow YAML. New id required; defaults to
- *  `<source>-copy[-N]` if absent. Duplicate is force-disabled so the user
- *  doesn't accidentally fire two near-identical workflows on the same
- *  trigger. Triggers block is preserved as-is — user reviews + adjusts via
- *  the edit modal. 409 on newId collision; 404 on missing source. */
-app.post('/api/projects/:projectId/workflows/:wfId/duplicate', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-
-  const body = await c.req
-    .json<{ newId?: string }>()
-    .catch(() => ({}) as { newId?: string });
-
-  const dir = resolve(runtime.folderPath, '.project-companion', 'workflows');
-  const srcPath = resolve(dir, `${wfId}.yaml`);
-  if (!existsSync(srcPath)) {
-    return c.json({ ok: false, error: `unknown workflow: ${wfId}` }, 404);
-  }
-
-  // Default new id walks `<src>-copy`, `<src>-copy-2`, `<src>-copy-3`, …
-  let newId = typeof body.newId === 'string' && body.newId.trim() ? body.newId.trim() : '';
-  if (!newId) {
-    newId = `${wfId}-copy`;
-    let n = 2;
-    while (existsSync(resolve(dir, `${newId}.yaml`))) {
-      newId = `${wfId}-copy-${n++}`;
-    }
-  }
-  const newPath = resolve(dir, `${newId}.yaml`);
-  if (existsSync(newPath)) {
-    return c.json({ ok: false, error: `workflow already exists: ${newId}` }, 409);
-  }
-
-  let srcText = '';
-  try {
-    srcText = readFileSync(srcPath, 'utf-8');
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-
-  // Parse + mutate + validate with the new id; serialize round-trip-stable.
-  const parsed = parseWorkflowText(srcText, { expectedId: wfId });
-  if (!parsed.ok || !parsed.workflow) {
-    return c.json(
-      {
-        ok: false,
-        error: `source workflow is invalid; cannot duplicate. Errors: ${parsed.errors
-          .map((e) => `${e.path}: ${e.message}`)
-          .join('; ')}`,
-      },
-      400,
-    );
-  }
-  const cloned: Workflow = { ...parsed.workflow, id: newId, disabled: true };
-  const reValidation = validateWorkflow(cloned, { expectedId: newId });
-  if (!reValidation.ok || !reValidation.workflow) {
-    return c.json(
-      {
-        ok: false,
-        error: 'cloned workflow failed validation',
-        errors: reValidation.errors,
-      },
-      400,
-    );
-  }
-
-  try {
-    writeFileSync(newPath, serializeWorkflow(reValidation.workflow), 'utf-8');
-    broadcastTo(id, { type: 'project-workflows-changed', change: 'duplicated', id: newId });
-    return c.json(
-      {
-        ok: true,
-        workflow: { id: newId, fileName: `${newId}.yaml`, path: newPath },
-      },
-      201,
-    );
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 4f.3 / D64. Manual fire from the WorkflowList "Run now" menu. Body:
- *  `{ workItemId?, inputs? }`. The runtime enforces D62 (no disabled),
- *  D67/D71 (Work Contract attached_to_work_item), and the card-lock guard
- *  (matches drag-fire). 4xx error shapes:
- *    - 404 → unknown project / unknown workflow id / ambiguous id
- *    - 409 → workflow disabled / work item locked
- *    - 400 → Work Contract mismatch (required without card, forbidden with)
- *  Returns `{ runId }` on success — the web side opens the run-detail view. */
-app.post('/api/projects/:projectId/workflows/:wfId/fire', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const wfId = c.req.param('wfId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-
-  const body = await c.req
-    .json<{ workItemId?: string; inputs?: Record<string, unknown> }>()
-    .catch(() => ({}) as { workItemId?: string; inputs?: Record<string, unknown> });
-
-  const workItemId =
-    typeof body.workItemId === 'string' && body.workItemId.trim()
-      ? body.workItemId.trim()
-      : undefined;
-  const inputs =
-    body.inputs && typeof body.inputs === 'object' && !Array.isArray(body.inputs)
-      ? body.inputs
-      : undefined;
-
-  try {
-    const run = await runtime.workflowRuntime().fireManually({
-      workflowId: wfId,
-      ...(workItemId ? { workItemId } : {}),
-      ...(inputs ? { inputs } : {}),
-    });
-    return c.json({ ok: true, runId: run.id });
-  } catch (err) {
-    const msg = (err as Error).message;
-    // Map runtime error shapes to HTTP codes the modal can surface cleanly.
-    if (/^unknown workflow:|^no valid workflow|^ambiguous workflow id/.test(msg)) {
-      return c.json({ ok: false, error: msg }, 404);
-    }
-    if (/ is disabled$| is locked: workflow in progress$/.test(msg)) {
-      return c.json({ ok: false, error: msg }, 409);
-    }
-    if (
-      / requires a work item to run$| cannot be attached to a work item$|^unknown work item:/.test(
-        msg,
-      )
-    ) {
-      return c.json({ ok: false, error: msg }, 400);
-    }
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-/** 4b.1: stash an in-progress draft from the workflow-creator interview.
- *  Does NOT write to disk — only the final `pc_create_workflow` does that.
- *  Broadcasts `workflow-creator-draft` so the modal's visualizer re-renders. */
-app.post('/api/projects/:projectId/workflow-creator/draft', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const payload = await c.req.json<{ sessionId?: string; def?: unknown }>();
-  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
-  if (!sessionId) {
-    return c.json({ ok: false, error: 'sessionId required' }, 400);
-  }
-  if (!payload.def || typeof payload.def !== 'object') {
-    return c.json({ ok: false, error: 'def required' }, 400);
-  }
-  const rawDef = payload.def as Record<string, unknown>;
-  const wfId = typeof rawDef.id === 'string' && rawDef.id ? rawDef.id : '';
-  if (!wfId) {
-    return c.json({ ok: false, error: 'def.id required' }, 400);
-  }
-  // Validate so the visualizer never receives a broken draft. Errors flow
-  // back through the tool-call result so the model self-corrects mid-chat.
-  //
-  // 4h.11a — typed-edge extraction piggy-backs on the legacy validation pass.
-  // Drafts pass through iff the legacy validator accepts the structural shape
-  // (preserves pre-4h authoring tolerance for mid-interview partial drafts);
-  // typed edges are populated when the typed-validator additionally passes,
-  // empty otherwise (so the visualizer renders sockets-without-wires, not a
-  // blanket rejection mid-conversation).
-  const validation = parseTypedWorkflowDef(rawDef, { expectedId: wfId });
-  if (!validation.workflow) {
-    return c.json(
-      { ok: false, error: 'invalid workflow draft', errors: validation.errors },
-      400,
-    );
-  }
-  const def: Workflow = validation.workflow;
-  const edges = validation.edges ?? {};
-  runtime.setWorkflowCreatorDraft(sessionId, def);
-  broadcastTo(id, { type: 'workflow-creator-draft', sessionId, def, edges });
-  return c.json({ ok: true });
-});
+// 19.12 — v1 workflows CRUD removed. The v2 surface lives at
+// `/api/projects/:projectId/workflow-v2/definitions` (list/get/publish) and
+// `/workflow-v2/fire`. The workflow-builder draft endpoints below replace the
+// pre-19 workflow-creator/draft path.
 
 /** Section 19.9 — stash an in-progress v2 workflow-builder draft.
  *  Does NOT write to disk — only `pc_publish_workflow` does that.
@@ -2747,56 +2217,11 @@ app.get('/api/projects/:projectId/workflow-builder/draft/:sessionId', (c) => {
   return c.json({ ok: true, def: def ?? null });
 });
 
-app.get('/api/projects/:projectId/workflow-runs', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const runs = runtime.workflowRuntime().readRunsForProject();
-  return c.json({ runs });
-});
-
-// 4e.1 / D54. Per-run detail with the full nodeOutputs map. The list
-// endpoint above already includes nodeOutputs today, so this endpoint
-// exists mainly to (a) give the drawer a stable per-run cache key it can
-// re-fetch, and (b) leave room for the response to grow run-detail-only
-// fields without bloating the list payload (4e.6 may add resolved-inputs
-// previews, attempt counters, etc.). Returns 404 for unknown projects
-// AND unknown / cross-project run ids — no info leak on cross-project ids.
-app.get('/api/projects/:projectId/workflow-runs/:runId', (c) => {
-  const id = c.req.param('projectId');
-  const runId = c.req.param('runId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const run = runtime.workflowRuntime().readRunForProject(runId);
-  if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
-  return c.json({ run });
-});
-
-// 4e.2 / D53. Re-fire a failed run from a specific failed node. Returns the
-// new run's id; the original run row stays intact with a lineage suffix on
-// `lastReason`. 404 for unknown project / cross-project run; 400 for
-// shape errors (missing nodeId, target run not failed/cancelled, target
-// node not failed).
-app.post('/api/projects/:projectId/workflow-runs/:runId/retry-from', async (c) => {
-  const id = c.req.param('projectId');
-  const runId = c.req.param('runId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ nodeId?: string }>().catch(() => ({}) as { nodeId?: string });
-  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
-  if (!nodeId) return c.json({ ok: false, error: 'nodeId required' }, 400);
-  const result = await runtime.workflowRuntime().retryFromFailedNode(runId, nodeId);
-  if (!result.ok) {
-    // Treat "unknown run" as 404; everything else (validation) as 400.
-    const status = result.error.startsWith('unknown run:') ? 404 : 400;
-    return c.json({ ok: false, error: result.error }, status);
-  }
-  return c.json({ ok: true, runId: result.runId });
-});
-
-// 6.6 — activity-panel "Failed recently" dismissals. The runs themselves
-// stay forever in workflow_runs (the 4e Runs tab is canonical); this only
-// records that a user has cleared a failure off the at-a-glance list.
+// 6.6 — activity-panel "Failed recently" dismissals. The dismissals side-table
+// is generic across v1/v2; the validation step below confirms the runId
+// corresponds to a real v2 run before recording. 19.12 — v1 workflow_runs
+// list / get / retry-from / cancel removed; v2 runs are read via
+// /workflow-v2/runs[/:runId].
 app.get('/api/projects/:projectId/failed-run-dismissals', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -2810,31 +2235,10 @@ app.post('/api/projects/:projectId/workflow-runs/:runId/dismiss', (c) => {
   const runId = c.req.param('runId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const run = runtime.workflowRuntime().readRunForProject(runId);
+  const run = workflowRunsV2Repo.getRunForProject(runId as never, runtime.project.id);
   if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
   const dismissedAt = dismissFailedRun(runId as ULID, Date.now());
   return c.json({ ok: true, dismissedAt });
-});
-
-// 6.3 — cancel a single in-flight run from the activity panel. Re-uses the
-// runtime's `cancelRunExternal` (kills in-flight subagents, flips status to
-// `cancelled`, sets `lastReason`). 404 for unknown project / cross-project
-// runs; 400 if already terminal.
-app.post('/api/projects/:projectId/workflow-runs/:runId/cancel', async (c) => {
-  const id = c.req.param('projectId');
-  const runId = c.req.param('runId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ reason?: string }>().catch(() => ({}) as { reason?: string });
-  const reason = typeof body.reason === 'string' && body.reason.trim()
-    ? body.reason.trim()
-    : 'cancelled from activity panel';
-  const result = await runtime.workflowRuntime().cancelRunExternal(runId, reason);
-  if (!result.ok) {
-    const status = result.error.startsWith('unknown run:') ? 404 : 400;
-    return c.json({ ok: false, error: result.error }, status);
-  }
-  return c.json({ ok: true });
 });
 
 app.get('/api/projects/:projectId/worktrees', (c) => {
@@ -2874,49 +2278,9 @@ app.post('/api/projects/:projectId/worktrees/destroy', async (c) => {
   }
 });
 
-app.post('/api/projects/:projectId/workflow/node-complete', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ workflowRunId?: string; nodeId?: string; output?: unknown }>();
-  const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
-  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
-  if (!runId || !nodeId) {
-    return c.json({ ok: false, error: 'workflowRunId and nodeId required' }, 400);
-  }
-  try {
-    const result = await runtime.workflowRuntime().nodeComplete(runId, nodeId, body.output ?? {});
-    return c.json(result);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-app.post('/api/projects/:projectId/workflow/node-failed', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ workflowRunId?: string; nodeId?: string; reason?: string }>();
-  const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
-  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
-  const reason = typeof body.reason === 'string' ? body.reason : '';
-  if (!runId || !nodeId || !reason) {
-    return c.json({ ok: false, error: 'workflowRunId, nodeId, and reason required' }, 400);
-  }
-  try {
-    const result = await runtime.workflowRuntime().nodeFailed(runId, nodeId, reason);
-    return c.json(result);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-app.get('/api/projects/:projectId/approvals', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ approvals: runtime.workflowRuntime().listPendingApprovals() });
-});
+// 19.12 — v1 /workflow/node-complete, /workflow/node-failed, /approvals
+// routes removed. v2 DAG handles node completion + approvals internally;
+// review responses go through POST /workflow-v2/review.
 
 /** Read a subagent transcript JSONL file, parse it, and return the per-line
  *  events. Path is required and MUST live under `~/.claude/projects/` — any
@@ -2952,54 +2316,9 @@ app.get('/api/subagent-transcript', async (c) => {
   }
 });
 
-app.post('/api/projects/:projectId/approval/respond', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{
-    workflowRunId?: string;
-    nodeId?: string;
-    approved?: boolean;
-    response?: string;
-  }>();
-  const runId = typeof body.workflowRunId === 'string' ? body.workflowRunId.trim() : '';
-  const nodeId = typeof body.nodeId === 'string' ? body.nodeId.trim() : '';
-  if (!runId || !nodeId || typeof body.approved !== 'boolean') {
-    return c.json({ ok: false, error: 'workflowRunId, nodeId, and approved required' }, 400);
-  }
-  try {
-    const result = await runtime
-      .workflowRuntime()
-      .respondToApproval(runId, nodeId, body.approved, body.response ?? '');
-    return c.json(result);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-app.post('/api/projects/:projectId/workflow/run', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ name?: string; input?: unknown }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-  const inputs =
-    body.input && typeof body.input === 'object' && !Array.isArray(body.input)
-      ? (body.input as Record<string, unknown>)
-      : undefined;
-  try {
-    const run = await runtime.workflowRuntime().runWorkflow(name, inputs);
-    return c.json({ ok: true, run });
-  } catch (err) {
-    const msg = (err as Error).message;
-    // 4f / D62 — a disabled workflow surfaces as a 409 (not 500) so the
-    // orchestrator can react with the right conversational turn ("that
-    // workflow is paused — enable it or pick another?").
-    const is409 = /^ambiguous trigger|^no valid workflow|^unknown workflow|is not callable|is disabled/.test(msg);
-    return c.json({ ok: false, error: msg }, is409 ? 409 : 500);
-  }
-});
+// 19.12 — v1 /approval/respond and /workflow/run routes removed. v2 paths:
+// POST /workflow-v2/review for review decisions; POST /workflow-v2/fire
+// (or via MCP) for manual runs by name.
 
 // Section 19.4f — fire a v2 (Section-19) DAG workflow. The definition is
 // passed inline in the body until the v2 workflow registry + builder UI land
