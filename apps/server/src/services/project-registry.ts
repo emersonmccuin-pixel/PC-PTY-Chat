@@ -30,8 +30,12 @@ export class ProjectRegistry {
   /** Load every non-deleted project from the DB into the registry. */
   loadAll(): void {
     for (const p of listProjects()) {
-      this.runtimes.set(p.id, this.construct(p));
+      const runtime = this.construct(p);
+      this.runtimes.set(p.id, runtime);
       this.slugById.set(p.id, p.slug);
+      // Section 19.13 — run one-shot init (YAML→DB workflow import) before
+      // any UI fetch lands. bootstrap() is idempotent.
+      runtime.bootstrap();
     }
   }
 
@@ -44,6 +48,7 @@ export class ProjectRegistry {
     const runtime = this.construct(project);
     this.runtimes.set(projectId, runtime);
     this.slugById.set(project.id, project.slug);
+    runtime.bootstrap();
     return runtime;
   }
 
@@ -61,6 +66,7 @@ export class ProjectRegistry {
     const runtime = this.construct(project);
     this.runtimes.set(project.id, runtime);
     this.slugById.set(project.id, project.slug);
+    runtime.bootstrap();
     return runtime;
   }
 

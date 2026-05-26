@@ -3,13 +3,15 @@
 // CRUD + scope/promote/duplicate/soft-delete affordances mirroring repos/pods.ts.
 // Every mutation writes a `workflow_audit` row in the same transaction.
 //
-// Naming: `name` is the user-facing label (per-scope unique among live rows
-// via partial UNIQUE indices). `id` is the slug — derived from the YAML's
-// `id:` field at create time. Slugs are immutable post-create; renaming
-// changes `name` only.
+// Identity model (mirrors agents):
+//   - `id` is an internal ULID (PK). Cross-scope unique by construction.
+//   - `slug` is the author-readable kebab-case identifier from the YAML's
+//     `id:` field. Per-scope partial UNIQUE — two projects can both define
+//     `triage`; one global may also exist.
+//   - `name` is the per-scope-unique display label. UI surfaces use this.
 //
 // Resolution at dispatch (mirrors `resolveAgentForDispatch`): project-scope
-// row for this project wins, then live global row with the same name.
+// row for this project wins, then live global row with the same slug.
 
 import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
 import type {
@@ -32,9 +34,10 @@ import {
 
 function rowToWorkflow(row: typeof workflows.$inferSelect): WorkflowRow {
   return {
-    id: row.id,
+    id: row.id as ULID,
     scope: row.scope,
     projectId: row.projectId ?? null,
+    slug: row.slug,
     name: row.name,
     displayName: row.displayName ?? null,
     description: row.description ?? null,
@@ -56,6 +59,7 @@ function workflowSnapshot(row: WorkflowRow): string {
   return JSON.stringify({
     scope: row.scope,
     projectId: row.projectId,
+    slug: row.slug,
     name: row.name,
     displayName: row.displayName,
     description: row.description,
@@ -69,8 +73,10 @@ function workflowSnapshot(row: WorkflowRow): string {
 // --- create ----------------------------------------------------------------
 
 export interface CreateWorkflowInput {
-  /** Slug (kebab-case). Must equal the YAML's `id:` field. */
-  id: string;
+  /** Optional pre-minted ULID. The repo mints one when omitted. */
+  id?: ULID;
+  /** Kebab-case slug from the YAML's `id:`. Required. */
+  slug: string;
   scope: PodScope;
   /** Required when `scope === 'project'`. */
   projectId?: ULID | null;
@@ -94,10 +100,12 @@ export function createWorkflow(
     throw new Error('createWorkflow: projectId is required when scope === "project"');
   }
   const now = Date.now();
+  const id = (input.id ?? newId()) as ULID;
   const row = {
-    id: input.id,
+    id,
     scope: input.scope,
     projectId: input.scope === 'project' ? input.projectId ?? null : null,
+    slug: input.slug,
     name: input.name,
     displayName: input.displayName ?? null,
     description: input.description ?? null,
@@ -115,7 +123,7 @@ export function createWorkflow(
   const out = rowToWorkflow(row as typeof workflows.$inferSelect);
   const auditValues = buildWorkflowAuditRow(
     {
-      workflowId: input.id,
+      workflowId: id,
       field: 'created',
       newValue: workflowSnapshot(out),
       audit,
@@ -131,7 +139,7 @@ export function createWorkflow(
 
 // --- read ------------------------------------------------------------------
 
-export function getWorkflowById(id: string): WorkflowRow | null {
+export function getWorkflowById(id: ULID): WorkflowRow | null {
   const row = getDb()
     .select()
     .from(workflows)
@@ -141,8 +149,38 @@ export function getWorkflowById(id: string): WorkflowRow | null {
 }
 
 /** Include soft-deleted rows. Used by the restore path. */
-export function getWorkflowByIdIncludingDeleted(id: string): WorkflowRow | null {
+export function getWorkflowByIdIncludingDeleted(id: ULID): WorkflowRow | null {
   const row = getDb().select().from(workflows).where(eq(workflows.id, id)).get();
+  return row ? rowToWorkflow(row) : null;
+}
+
+export interface GetWorkflowBySlugInput {
+  slug: string;
+  scope: PodScope;
+  projectId?: ULID | null;
+  /** Include soft-deleted rows. Defaults to false. */
+  includeDeleted?: boolean;
+}
+
+export function getWorkflowBySlug(input: GetWorkflowBySlugInput): WorkflowRow | null {
+  if (input.scope === 'project' && !input.projectId) {
+    throw new Error('getWorkflowBySlug: projectId is required when scope === "project"');
+  }
+  const projectCmp =
+    input.scope === 'project'
+      ? eq(workflows.projectId, input.projectId!)
+      : isNull(workflows.projectId);
+  const conditions = [
+    eq(workflows.slug, input.slug),
+    eq(workflows.scope, input.scope),
+    projectCmp,
+  ];
+  if (!input.includeDeleted) conditions.push(isNull(workflows.deletedAt));
+  const row = getDb()
+    .select()
+    .from(workflows)
+    .where(and(...conditions))
+    .get();
   return row ? rowToWorkflow(row) : null;
 }
 
@@ -177,11 +215,7 @@ export function getWorkflowByName(input: GetWorkflowByNameInput): WorkflowRow | 
 
 export interface ListWorkflowsOptions {
   scope?: PodScope;
-  /** When set, narrows to project-scope rows for this project. Implies
-   *  `scope: 'project'` unless `includeGlobals` is also set. */
   projectId?: ULID;
-  /** When true alongside `projectId`, returns BOTH project-scope rows for
-   *  the project AND every global row — the union the Workflows tab surfaces. */
   includeGlobals?: boolean;
 }
 
@@ -238,7 +272,7 @@ const UPDATE_WORKFLOW_FIELD_MAP: ReadonlyArray<
 ];
 
 export function updateWorkflow(
-  id: string,
+  id: ULID,
   patch: UpdateWorkflowInput,
   audit: WorkflowAuditInput,
 ): WorkflowRow | null {
@@ -266,7 +300,7 @@ export function updateWorkflow(
   }
 
   // Non-audited shadow fields (yamlHash / parsedDefinition / status / parseError
-  // ride with `yaml`). They get persisted but don't emit their own audit rows.
+  // ride with `yaml`).
   const shadowChanges: Record<string, unknown> = {};
   if (patch.yamlHash !== undefined && patch.yamlHash !== existing.yamlHash) {
     shadowChanges.yamlHash = patch.yamlHash;
@@ -319,7 +353,7 @@ export function updateWorkflow(
 // --- soft-delete + restore ------------------------------------------------
 
 export function softDeleteWorkflow(
-  id: string,
+  id: ULID,
   audit: WorkflowAuditInput,
 ): WorkflowRow | null {
   const existing = getWorkflowById(id);
@@ -347,7 +381,7 @@ export function softDeleteWorkflow(
 
 /** Clear `deleted_at`. Returns the restored row, or null if id unknown or not
  *  currently deleted. Intentionally NOT audited (mirrors agents). */
-export function restoreWorkflow(id: string): WorkflowRow | null {
+export function restoreWorkflow(id: ULID): WorkflowRow | null {
   const row = getDb().select().from(workflows).where(eq(workflows.id, id)).get();
   if (!row || row.deletedAt === null) return null;
   const now = Date.now();
@@ -362,10 +396,11 @@ export function restoreWorkflow(id: string): WorkflowRow | null {
 // --- promote-to-global -----------------------------------------------------
 
 /** Flip `scope='global'`, clear `projectId`. Throws if the row is already
- *  global. UNIQUE constraint on `workflows_global_name_idx` may throw if a
- *  global with the same name already exists — caller surfaces as 409. */
+ *  global. UNIQUE constraint on `workflows_global_slug_idx` or
+ *  `workflows_global_name_idx` may throw if a global with the same slug or
+ *  name already exists — caller surfaces as 409. */
 export function promoteWorkflowToGlobal(
-  id: string,
+  id: ULID,
   audit: WorkflowAuditInput,
 ): WorkflowRow | null {
   const existing = getWorkflowById(id);
@@ -402,10 +437,10 @@ export function promoteWorkflowToGlobal(
 // --- duplicate -------------------------------------------------------------
 
 export interface DuplicateWorkflowInput {
-  sourceId: string;
-  /** New slug for the clone. Defaults to `<sourceId>-copy`. */
-  newId?: string;
-  /** New name for the clone. Defaults to `<source.name> (copy)`. */
+  sourceId: ULID;
+  /** New slug for the clone. Defaults to `<sourceSlug>-copy`. */
+  newSlug?: string;
+  /** New name for the clone. Defaults to `<sourceName> (copy)`. */
   newName?: string;
   /** Override the target project. Defaults to the source's projectId (or
    *  null for global sources, in which case `projectId` MUST be supplied to
@@ -415,10 +450,9 @@ export interface DuplicateWorkflowInput {
   targetScope?: PodScope;
 }
 
-/** Clone a workflow as a NEW row. The clone is force-disabled (matches 4f's
- *  duplicate-workflow UX). Audit row on the clone carries
- *  `field='duplicated_from'` with the source slug in `priorValue` so History
- *  can render lineage. */
+/** Clone a workflow as a NEW row with a fresh ULID. Force-disabled. Audit row
+ *  on the clone carries `field='duplicated_from'` with the source slug in
+ *  `priorValue` for History lineage. */
 export function duplicateWorkflow(
   input: DuplicateWorkflowInput,
   audit: WorkflowAuditInput,
@@ -433,11 +467,16 @@ export function duplicateWorkflow(
     throw new Error('duplicateWorkflow: projectId required for project-scope clone');
   }
 
-  const newId = input.newId ?? `${source.id}-copy`;
+  const newSlug = input.newSlug ?? `${source.slug}-copy`;
   const newName = input.newName ?? `${source.name} (copy)`;
 
-  if (getWorkflowByIdIncludingDeleted(newId)) {
-    throw new Error(`workflow id "${newId}" already exists`);
+  const slugCollision = getWorkflowBySlug({
+    slug: newSlug,
+    scope: targetScope,
+    projectId: targetScope === 'project' ? targetProjectId! : null,
+  });
+  if (slugCollision) {
+    throw new Error(`workflow slug "${newSlug}" already exists in the target scope`);
   }
   const nameCollision = getWorkflowByName({
     name: newName,
@@ -449,10 +488,12 @@ export function duplicateWorkflow(
   }
 
   const now = Date.now();
+  const newId_ = newId() as ULID;
   const cloneRow = {
-    id: newId,
+    id: newId_,
     scope: targetScope,
     projectId: targetScope === 'project' ? targetProjectId! : null,
+    slug: newSlug,
     name: newName,
     displayName: source.displayName,
     description: source.description,
@@ -470,7 +511,7 @@ export function duplicateWorkflow(
   const out = rowToWorkflow(cloneRow as typeof workflows.$inferSelect);
   const auditRow = buildWorkflowAuditRow(
     {
-      workflowId: newId,
+      workflowId: newId_,
       field: 'duplicated_from',
       priorValue: source.id,
       newValue: workflowSnapshot(out),
@@ -488,32 +529,17 @@ export function duplicateWorkflow(
 // --- dispatch resolution ---------------------------------------------------
 
 /** Prefer a project-scoped row for this project; fall back to a live global
- *  row with the same name. Returns null when neither exists. Mirrors
+ *  row with the same slug. Returns null when neither exists. Mirrors
  *  `resolveAgentForDispatch`. */
 export function resolveWorkflowForDispatch(
-  name: string,
+  slug: string,
   projectId?: ULID | null,
 ): WorkflowRow | null {
   if (projectId) {
-    const project = getWorkflowByName({ name, scope: 'project', projectId });
+    const project = getWorkflowBySlug({ slug, scope: 'project', projectId });
     if (project) return project;
   }
-  return getWorkflowByName({ name, scope: 'global' });
-}
-
-/** Same shape as resolveWorkflowForDispatch, but resolves by slug (id) rather
- *  than name. Used by the fire path that already holds an id. */
-export function resolveWorkflowByIdForDispatch(
-  id: string,
-  projectId?: ULID | null,
-): WorkflowRow | null {
-  const row = getWorkflowById(id);
-  if (!row) return null;
-  // A project-scope row from a different project isn't visible here. Globals
-  // always resolve.
-  if (row.scope === 'global') return row;
-  if (projectId && row.projectId === projectId) return row;
-  return null;
+  return getWorkflowBySlug({ slug, scope: 'global' });
 }
 
 // --- raw count (used by importer health-check) -----------------------------

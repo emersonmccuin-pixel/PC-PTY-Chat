@@ -23,12 +23,15 @@ export type WorkflowRowStatus = 'active' | 'invalid';
 
 /** Persisted workflow row. The graph itself lives in `yaml` + `parsedDefinition`. */
 export interface WorkflowRow {
-  /** Slug from the YAML's `id:`. Author-readable, kebab-case, unique per
-   *  (scope, projectId) among live rows. */
-  id: string;
+  /** Internal ULID PK (mirrors agents — author-readable identity lives in
+   *  `slug`). Cross-scope unique by construction. */
+  id: ULID;
   scope: PodScope;
   /** NULL when `scope === 'global'`. Required when `scope === 'project'`. */
   projectId: ULID | null;
+  /** Author-readable slug from the YAML's `id:`. Kebab-case, unique per
+   *  (scope, projectId) among live rows. */
+  slug: string;
   name: string;
   displayName: string | null;
   description: string | null;
@@ -78,7 +81,7 @@ export const WORKFLOW_AUDIT_FIELDS: readonly WorkflowAuditField[] = [
 
 export interface WorkflowAuditRow {
   id: ULID;
-  workflowId: string;
+  workflowId: ULID;
   changeSetId: ULID | null;
   actor: PodAuditActor;
   field: WorkflowAuditField;

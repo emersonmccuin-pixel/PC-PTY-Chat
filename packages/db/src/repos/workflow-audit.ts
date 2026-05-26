@@ -32,7 +32,7 @@ export interface WorkflowAuditInput {
 }
 
 export interface BuildWorkflowAuditRowInput {
-  workflowId: string;
+  workflowId: ULID;
   field: WorkflowAuditField;
   fieldRef?: string | null;
   priorValue?: string | null;
@@ -42,7 +42,7 @@ export interface BuildWorkflowAuditRowInput {
 
 export interface WorkflowAuditRowValues {
   id: ULID;
-  workflowId: string;
+  workflowId: ULID;
   changeSetId: ULID | null;
   actor: PodAuditActor;
   field: WorkflowAuditField;
@@ -72,7 +72,7 @@ export function buildWorkflowAuditRow(
 }
 
 export interface ListWorkflowAuditOptions {
-  workflowId: string;
+  workflowId: ULID;
   limit?: number;
   beforeCreatedAt?: number;
   actor?: PodAuditActor;

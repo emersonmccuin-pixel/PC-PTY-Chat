@@ -34,6 +34,7 @@ import {
 import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import { WorktreeService } from './worktree.ts';
+import { importV2WorkflowsFromDisk } from './workflow-import.ts';
 import {
   fireDagWorkflow,
   applyV2ReviewDecision,
@@ -80,6 +81,11 @@ export class ProjectRuntime {
   private setupWizard: PtySession | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registryV2: WorkflowV2Registry | null = null;
+  /** Section 19.13 — one-shot YAML→DB import per ProjectRuntime lifetime.
+   *  ProjectRegistry calls `bootstrap()` right after construct; the flag
+   *  keeps the second call a no-op (defends against hot-reload + ensure()
+   *  fallthrough during dev). */
+  private workflowsBootstrapped = false;
   private workItemSvc: WorkItemService | null = null;
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
@@ -131,6 +137,31 @@ export class ProjectRuntime {
     const slugChanged = project.slug !== this.project.slug;
     this.project = project;
     if (slugChanged) this.worktreesSvc = null;
+  }
+
+  /** Section 19.13 — one-shot bootstrap. Called by ProjectRegistry right
+   *  after construct() / register(). Runs the v2 YAML → DB importer. Future
+   *  one-shot project-init work can chain here.
+   *
+   *  Idempotent: the second call (e.g. via `ensure()` after `loadAll()`) is
+   *  a no-op. Synchronous on purpose — fs reads are cheap, and we want the
+   *  import to happen before any UI fetch lands. */
+  bootstrap(): void {
+    if (this.workflowsBootstrapped) return;
+    this.workflowsBootstrapped = true;
+    const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
+    try {
+      const out = importV2WorkflowsFromDisk({ projectId: this.project.id, workflowsDir: dir });
+      if (out.scanned > 0 || out.yamlFilesDeleted > 0) {
+        console.log(
+          `[pc] workflow-import ${this.project.slug}: scanned=${out.scanned} imported=${out.imported} invalid=${out.importedInvalid} alreadyPresent=${out.alreadyPresent} yamlFilesDeleted=${out.yamlFilesDeleted} skippedNonV2=${out.skippedNonV2}`,
+        );
+      }
+    } catch (err) {
+      console.log(
+        `[pc] workflow-import ${this.project.slug} failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /** Lazy: v2 workflow registry rooted at `<folder>/.project-companion/workflows/`.

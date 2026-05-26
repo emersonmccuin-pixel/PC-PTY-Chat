@@ -179,14 +179,17 @@ export const workItems = sqliteTable(
 export const workflows = sqliteTable(
   'workflows',
   {
-    /** Slug from the YAML's `id:` field. String, not ULID — author-readable. */
-    id: text('id').primaryKey(),
+    /** ULID PK (mirrors agents). The YAML's `id:` field lives in `slug`. */
+    id: text('id').primaryKey().$type<ULID>(),
     scope: text('scope').notNull().default('project').$type<PodScope>(),
     /** NULL when `scope === 'global'`; required when `scope === 'project'`.
      *  App-enforced; sqlite doesn't constrain by enum-of-scope. */
     projectId: text('project_id')
       .$type<ULID | null>()
       .references(() => projects.id),
+    /** Author-readable slug from the YAML's `id:` field. Per-scope partial
+     *  UNIQUE — two projects can both define `triage`; one global. */
+    slug: text('slug').notNull(),
     name: text('name').notNull(),
     /** Optional pretty name surfaced in the rail when set; defaults to `name`. */
     displayName: text('display_name'),
@@ -211,6 +214,14 @@ export const workflows = sqliteTable(
   },
   (t) => [
     index('workflows_scope_project_idx').on(t.scope, t.projectId),
+    /** Unique global workflow slug (live rows only). */
+    uniqueIndex('workflows_global_slug_idx')
+      .on(t.slug)
+      .where(sql`scope = 'global' AND deleted_at IS NULL`),
+    /** Unique per-project workflow slug (live rows only). */
+    uniqueIndex('workflows_project_slug_idx')
+      .on(t.projectId, t.slug)
+      .where(sql`scope = 'project' AND deleted_at IS NULL`),
     /** Unique global workflow name (live rows only). */
     uniqueIndex('workflows_global_name_idx')
       .on(t.name)
@@ -233,6 +244,7 @@ export const workflowAudit = sqliteTable(
     id: text('id').primaryKey().$type<ULID>(),
     workflowId: text('workflow_id')
       .notNull()
+      .$type<ULID>()
       .references(() => workflows.id),
     changeSetId: text('change_set_id').$type<ULID | null>(),
     actor: text('actor').notNull().$type<PodAuditActor>(),
