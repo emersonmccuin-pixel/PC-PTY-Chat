@@ -58,6 +58,7 @@ import { getDataDir } from '@pc/utils';
 
 import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
 import { runPreflight } from './services/preflight.ts';
+import { installClaude, installGit } from './services/onboarding-install.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
   dispatchContinueAgent,
@@ -98,7 +99,12 @@ import {
   readMemoryFile,
   writeMemoryFile,
 } from './services/memory-files.ts';
-import { browseFolder, BrowseError, listDrives } from './services/fs-browse.ts';
+import {
+  browseFolder,
+  BrowseError,
+  createChildFolder,
+  listDrives,
+} from './services/fs-browse.ts';
 import { probeFolder } from './services/fs-probe.ts';
 import {
   FileNotFoundError,
@@ -765,6 +771,28 @@ app.get('/api/preflight', async (c) => {
   return c.json({ ok: true, preflight });
 });
 
+// ── Onboarding installs (Section 10 Phase 2) ──────────────────────────────
+// Run the OFFICIAL installers on an explicit wizard click. Each re-runs
+// preflight and returns it so the wizard can advance. Long-running.
+
+app.post('/api/onboarding/install/claude', async (c) => {
+  try {
+    const r = await installClaude();
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
+});
+
+app.post('/api/onboarding/install/git', async (c) => {
+  try {
+    const r = await installGit();
+    return c.json({ ok: true, ...r });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
+});
+
 // ── Filesystem browse + probe (create-project UI) ─────────────────────────
 
 /** List a directory for the folder picker. Query:
@@ -792,6 +820,38 @@ app.get('/api/fs/browse', (c) => {
 /** Enumerate drive roots for the picker's drive-jump row (Windows). */
 app.get('/api/fs/drives', (c) => {
   return c.json({ ok: true, drives: listDrives() });
+});
+
+/** Create one direct child directory under the currently viewed folder. Body:
+ *    parentPath — absolute directory to create inside
+ *    name       — single folder-name segment
+ *    gateRoot   — optional browse gate; when set, parent + child must stay
+ *                 inside it. */
+app.post('/api/fs/mkdir', async (c) => {
+  const body = await c.req.json<{ parentPath?: string; name?: string; gateRoot?: string }>();
+  const parentPath = typeof body.parentPath === 'string' ? body.parentPath.trim() : '';
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const gateRoot = typeof body.gateRoot === 'string' ? body.gateRoot.trim() : '';
+  if (!parentPath) return c.json({ ok: false, error: 'parentPath required' }, 400);
+  if (!name) return c.json({ ok: false, error: 'folder name required' }, 400);
+
+  const opts = gateRoot ? { roots: [gateRoot] } : {};
+  try {
+    return c.json({ ok: true, ...createChildFolder(parentPath, name, opts) });
+  } catch (err) {
+    if (err instanceof BrowseError) {
+      const status =
+        err.kind === 'forbidden'
+          ? 403
+          : err.kind === 'not_found'
+            ? 404
+            : err.kind === 'already_exists'
+              ? 409
+              : 400;
+      return c.json({ ok: false, error: err.message, kind: err.kind }, status);
+    }
+    return c.json({ ok: false, error: (err as Error).message }, 500);
+  }
 });
 
 /** Probe a folder for the create-project preview. Body: `{ path }`.
