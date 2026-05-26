@@ -1,6 +1,6 @@
 // Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
 // Source: apps/web/src/components/KanbanBoard.tsx
-// Adapted for Project Companion:
+// Adapted for Caisson:
 //  - api calls keyed by projectId (ULID), not slug
 //  - live updates via useProjectWs envelope hint, not EventSource
 //  - Section 2c: rebuilt card visual (no status chip, glyph + child-count
@@ -45,6 +45,8 @@ function resolveCancelledHidden(
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
+import { applyFilters } from './work-items/filter-sort';
+import { WorkItemsToolbar } from './work-items/WorkItemsToolbar';
 import { useWorkItemsView } from '@/store/work-items-view';
 
 interface KanbanBoardProps {
@@ -101,7 +103,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     };
   }, []);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
-  const setShowAgentContracts = useWorkItemsView((s) => s.setShowAgentContracts);
+  const filters = useWorkItemsView((s) => s.filters);
 
   // Section 26.7. Agent-contract work items render only when the toggle is on.
   // Hidden rows still flow through child-count + parent lookups so non-agent
@@ -111,10 +113,17 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     () => items.filter((i) => i.isAgentTask).length,
     [items],
   );
-  const visibleItems = useMemo(
-    () => (showAgentContracts ? items : items.filter((i) => !i.isAgentTask)),
-    [items, showAgentContracts],
-  );
+  // Section 37.6 — toolbar filters + sort apply on top of the agent-contract
+  // visibility toggle. Sort affects within-stage ordering on the board; the
+  // explicit `position` still wins for drag-and-drop reorders inside a stage,
+  // so the toolbar sort only applies when the user hasn't manually reordered
+  // (default 'activity' desc effectively becomes a tiebreaker on equal positions).
+  // Kanban honors drag positions inside each column, so toolbar `sort` doesn't
+  // apply here — only filters. Table view (37.7) is where sort is load-bearing.
+  const visibleItems = useMemo(() => {
+    const base = showAgentContracts ? items : items.filter((i) => !i.isAgentTask);
+    return applyFilters(base, filters);
+  }, [items, showAgentContracts, filters]);
 
   const refetch = useCallback(() => {
     api
@@ -239,11 +248,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <div className="flex h-full flex-col">
-        <KanbanToolbar
-          showAgentContracts={showAgentContracts}
-          onToggleAgentContracts={() => setShowAgentContracts(!showAgentContracts)}
-          hiddenAgentCount={hiddenAgentCount}
-        />
+        <WorkItemsToolbar hiddenAgentCount={hiddenAgentCount} />
         <div className="min-h-0 flex-1">
           <KanbanScrollContainer>
             {sortedStages.map((stage) => (
@@ -307,36 +312,6 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   );
 }
 
-/** Section 26.7 toolbar. Hosts the "See Agent Contracts" toggle today; future
- *  Section 14 work (filters + table/kanban view switch) layers in here. */
-function KanbanToolbar({
-  showAgentContracts,
-  onToggleAgentContracts,
-  hiddenAgentCount,
-}: {
-  showAgentContracts: boolean;
-  onToggleAgentContracts: () => void;
-  hiddenAgentCount: number;
-}) {
-  const hiddenLabel =
-    !showAgentContracts && hiddenAgentCount > 0
-      ? ` (${hiddenAgentCount} hidden)`
-      : '';
-  return (
-    <div className="flex items-center justify-end gap-3 border-b border-border bg-background px-4 py-2 text-sm">
-      <label className="flex cursor-pointer items-center gap-2 text-muted-foreground hover:text-foreground">
-        <input
-          type="checkbox"
-          checked={showAgentContracts}
-          onChange={onToggleAgentContracts}
-          className="h-3.5 w-3.5 cursor-pointer accent-primary"
-        />
-        <span>See Agent Contracts{hiddenLabel}</span>
-      </label>
-    </div>
-  );
-}
-
 /** Compute a new `position` value such that the item lands at `targetIdx` in
  *  `bucket` (bucket excludes the dragged item, sorted ascending by position).
  *  Returns null when bucket is empty AND targetIdx is out of range (defensive
@@ -394,7 +369,7 @@ function KanbanScrollContainer({ children }: { children: React.ReactNode }) {
     <div className="group relative h-full">
       <div
         ref={ref}
-        className="flex h-full gap-4 overflow-x-auto p-4 [scrollbar-gutter:stable]"
+        className="flex h-full min-h-0 gap-4 overflow-x-auto overflow-y-hidden p-4 [scrollbar-gutter:stable]"
       >
         {children}
       </div>
@@ -461,11 +436,11 @@ function Column({
       ref={setNodeRef}
       data-stage-id={stage.id}
       className={
-        'flex min-w-[14rem] flex-1 basis-0 flex-col border bg-card p-3 transition-colors ' +
+        'flex h-full min-h-0 min-w-[14rem] flex-1 basis-0 flex-col overflow-hidden border bg-card p-3 transition-colors ' +
         (isOver ? 'border-primary' : 'border-border')
       }
     >
-      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-foreground">
+      <div className="mb-2 flex shrink-0 items-center justify-between text-xs font-semibold uppercase tracking-wider text-foreground">
         <span className="flex items-center gap-1.5">
           <span>{stage.name}</span>
           {/* Section 27 — small flag badge so the user can see which column
@@ -479,20 +454,22 @@ function Column({
         <span className="text-xs font-normal text-muted-foreground">{items.length}</span>
       </div>
       <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-        <div className="flex flex-col gap-2">
-          {items.map((item) => (
-            <SortableCard
-              key={item.id}
-              item={item}
-              childCount={childCounts.get(item.id) ?? 0}
-              onClick={() => onItemClick(item.id)}
-            />
-          ))}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+          <div className="flex flex-col gap-2">
+            {items.map((item) => (
+              <SortableCard
+                key={item.id}
+                item={item}
+                childCount={childCounts.get(item.id) ?? 0}
+                onClick={() => onItemClick(item.id)}
+              />
+            ))}
+          </div>
         </div>
       </SortableContext>
       <button
         onClick={onAddCard}
-        className="mt-2 px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="mt-2 shrink-0 px-2 py-1 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         + Add card
       </button>
@@ -632,4 +609,3 @@ function CardContent({ item, childCount }: { item: WorkItem; childCount: number 
     </div>
   );
 }
-
