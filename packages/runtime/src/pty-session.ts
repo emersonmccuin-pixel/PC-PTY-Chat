@@ -21,6 +21,7 @@ import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 import { claudeProjectsRoot } from './path-resolver.ts';
 import { requireClaudeBinary } from './claude-resolver.ts';
 import { TimedBracketedPasteQueue } from './send-protocol.ts';
+import { collapseAnsiToWhitespace } from './ansi.ts';
 
 /** claude.exe v2+ detects IDE-embedded mode from env vars set by the host
  *  (VS Code, JetBrains, or a parent claude.exe). When PC spawns a child
@@ -74,6 +75,17 @@ function scrubIdeIntegrationEnv(env: Record<string, string | undefined>): Record
  *  `E--Claude-Code-Projects-Personal-Caisson-workspace`. */
 export function encodeCwdForClaude(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9._-]/g, '-');
+}
+
+export function terminalBufferLooksReady(rawBuffer: string): boolean {
+  const normalized = collapseAnsiToWhitespace(rawBuffer);
+  return (
+    /Welcome\s*back/i.test(normalized) ||
+    /Tips\s*for\s*getting\s*started/i.test(normalized) ||
+    /What's\s*new/i.test(normalized) ||
+    /Try\s*"/i.test(normalized) ||
+    /\/remote-control\s+is\s+active/i.test(normalized)
+  );
 }
 
 export interface PtySessionOptions {
@@ -342,15 +354,9 @@ export class PtySession extends EventEmitter {
         }
       }
 
-      // First time we see the welcome banner, mark ready.
+      // First time we see a Claude-ready terminal signal, mark ready.
       if (!this.bannerSeen) {
-        const cleanAll = stripAnsi(this.rawBuffer);
-        if (
-          /Welcome\s*back/i.test(cleanAll) ||
-          /Tips\s*for\s*getting\s*started/i.test(cleanAll) ||
-          /What's\s*new/i.test(cleanAll) ||
-          /Try\s*"/i.test(cleanAll)
-        ) {
+        if (terminalBufferLooksReady(this.rawBuffer)) {
           this.bannerSeen = true;
           this.setState('ready');
         }

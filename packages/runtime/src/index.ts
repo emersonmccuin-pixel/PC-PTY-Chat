@@ -4,7 +4,12 @@
 // surfaces use them). The agent-system primitives (LowLevelSpawn, AgentRun,
 // InteractiveSession, AgentRunJsonlTailer) sit alongside as named exports.
 
-export { encodeCwdForClaude, PtySession, stripAnsi } from './pty-session.ts';
+export {
+  encodeCwdForClaude,
+  PtySession,
+  stripAnsi,
+  terminalBufferLooksReady,
+} from './pty-session.ts';
 export type { PtySessionOptions, SessionState } from './pty-session.ts';
 export { JsonlTailer } from './jsonl-tailer.ts';
 export type { JsonlEvent, JsonlTailerOptions } from './jsonl-tailer.ts';
