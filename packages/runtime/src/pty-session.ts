@@ -504,6 +504,9 @@ export class PtySession extends EventEmitter {
       // the disk log is the contract.
       this.persistJsonlEvent(ev);
       this.emit('jsonl-event', ev);
+      if (ev.kind === 'jsonl-turn-end' && this.state === 'thinking') {
+        this.setState('ready');
+      }
       this.scheduleCursorPersist(filePath);
     });
     this.tailer.on('error', (err: Error) => {
@@ -552,7 +555,9 @@ export class PtySession extends EventEmitter {
     // into N half-submits. The queue keeps the historical 500ms paste delay
     // but guarantees the next prompt is not written until the prior Enter has
     // gone through.
-    this.sendQueue.enqueue(text);
+    const result = this.sendQueue.enqueue(text);
+    if (result === 'exited') throw new Error('session exited');
+    this.setState('thinking');
   }
 
   /** Stop the current turn. In claude.exe interactive mode, Escape (\x1b) is

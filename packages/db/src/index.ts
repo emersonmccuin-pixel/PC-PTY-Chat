@@ -232,3 +232,26 @@ export {
   setOrchestratorSessionTitle,
 } from './repos/orchestrator-sessions.ts';
 export type { CreateOrchestratorSessionInput } from './repos/orchestrator-sessions.ts';
+
+export {
+  cancelOpenOrchestratorSendsForSession,
+  cancelQueuedOrchestratorSend,
+  enqueueOrchestratorSend,
+  getOrchestratorSendQueueRow,
+  hasOpenOrchestratorSendsForSession,
+  listOpenOrchestratorSendsForSession,
+  listQueuedOrchestratorSendsForSession,
+  listVisibleOrchestratorSendsForSession,
+  markOrchestratorSendDelivered,
+  markOrchestratorSendDelivering,
+  markOrchestratorSendFailed,
+  markNextDeliveredOrchestratorSendObservedInJsonl,
+  recordDeliveredOrchestratorSend,
+  retryFailedOrchestratorSend,
+} from './repos/orchestrator-send-queue.ts';
+export type {
+  EnqueueOrchestratorSendInput,
+  OrchestratorSendQueueRow,
+  OrchestratorSendQueueStatus,
+  RecordDeliveredOrchestratorSendInput,
+} from './repos/orchestrator-send-queue.ts';

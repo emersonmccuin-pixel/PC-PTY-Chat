@@ -7,10 +7,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   claudeConfigDir,
+  claudeConfigDirFromJsonlPath,
   claudeProjectsRoot,
   encodeCwdForClaude,
   jsonlPathFor,
@@ -79,4 +80,27 @@ test('projectDirFor and jsonlPathFor compose the deterministic on-disk shape', (
       join('X:\\cc', 'projects', 'X--work-space', `${sessionId}.jsonl`),
     );
   });
+});
+
+test('claudeConfigDirFromJsonlPath returns the config root from a session JSONL path', () => {
+  const root = resolve('tmp-claude-config-root');
+  const file = join(
+    root,
+    'projects',
+    'E--Claude-Code-Projects-Personal-PC-PTY-Chat',
+    '32508f95-0ae5-471e-bb4c-93dd4ce8e7df.jsonl',
+  );
+
+  assert.equal(claudeConfigDirFromJsonlPath(file), root);
+});
+
+test('claudeConfigDirFromJsonlPath rejects paths outside a projects root', () => {
+  const file = join(
+    resolve('tmp-claude-config-root'),
+    'not-projects',
+    'E--Claude-Code-Projects-Personal-PC-PTY-Chat',
+    '32508f95-0ae5-471e-bb4c-93dd4ce8e7df.jsonl',
+  );
+
+  assert.equal(claudeConfigDirFromJsonlPath(file), null);
 });

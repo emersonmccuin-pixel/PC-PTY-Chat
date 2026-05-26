@@ -23,7 +23,7 @@ import {
   reactivateOrchestratorSession,
   workflowsRepo,
 } from '@pc/db';
-import { jsonlPathFor, PtySession } from '@pc/runtime';
+import { claudeConfigDirFromJsonlPath, jsonlPathFor, PtySession } from '@pc/runtime';
 import { selectStageEntryWorkflows } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
@@ -395,7 +395,7 @@ export class ProjectRuntime {
     // CLAUDE_CONFIG_DIR (was a latent bug pre-Section-23: hardcoded homedir
     // here, CC writes elsewhere when env var is set, hooks hid the
     // mismatch by feeding the chat panel directly).
-    const jsonlPath = jsonlPathFor(this.project.folderPath, session.providerSessionId);
+    const jsonlPath = session.jsonlPath;
     // Section 16a.3 — materialise the project's PM pod into the workspace.
     // Replaces the pre-16a `--append-system-prompt-file` lever (which layered
     // PC's PM identity on top of CC's coding-assistant default). `--agent
@@ -439,27 +439,24 @@ export class ProjectRuntime {
       transcriptPath: resolve(sessionDir, 'transcript.log'),
       claudeSessionId: session.providerSessionId,
       resume: session.resume,
-      extraEnv: { PC_SESSION_ID: session.row.id, ...podPrep.extraEnv },
+      extraEnv: {
+        PC_SESSION_ID: session.row.id,
+        ...podPrep.extraEnv,
+        ...(session.claudeConfigDir ? { CLAUDE_CONFIG_DIR: session.claudeConfigDir } : {}),
+      },
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
       agentName: pmAgentName,
       mcpConfigPath: podPrep.mcpConfigPath,
     });
 
-    // Tear down the materialised pod + flip the session row to ended when the
-    // PTY exits. 'exit' fires once per lifecycle (claude.exe exit, kill(), or
-    // fatal). Explicit-end paths (startNewSession / resumeSession) flip the
-    // row BEFORE calling kill(), so by the time this fires they no-op out via
-    // getActiveOrchestratorSession returning null. Natural exits (Ctrl+D,
-    // claude.exe crash, idle timeout) had no row-flip before this — leaving
-    // the DB stuck at status='active' while the chat panel correctly saw the
-    // session-end hook event. SessionsRail and Orchestrator disagreed.
+    // Process lifecycle is not chat lifecycle. A claude.exe child can exit
+    // because of a transient resume/config problem, a terminal disconnect, or
+    // a user-level Ctrl+D. The orchestrator session row stays active until PC
+    // explicitly starts another session; the next ensurePty() resumes the same
+    // row from its persisted JSONL path.
     this.pty.once('exit', () => {
       try { podPrep.cleanup(); } catch { /* best-effort */ }
-      try {
-        const active = getActiveOrchestratorSession(this.project.id);
-        if (active) endOrchestratorSession(active.id, 'pty_exit');
-      } catch { /* best-effort */ }
     });
 
     return this.pty;
@@ -820,6 +817,8 @@ export class ProjectRuntime {
     row: OrchestratorSession;
     providerSessionId: string;
     resume: boolean;
+    jsonlPath: string;
+    claudeConfigDir: string | null;
   } {
     const active = getActiveOrchestratorSession(this.project.id);
     if (active?.providerSessionId) {
@@ -837,6 +836,10 @@ export class ProjectRuntime {
         row: active,
         providerSessionId: active.providerSessionId,
         resume: existsSync(expectedJsonl),
+        jsonlPath: expectedJsonl,
+        claudeConfigDir: active.jsonlPath
+          ? claudeConfigDirFromJsonlPath(active.jsonlPath)
+          : null,
       };
     }
     if (active) {
@@ -848,7 +851,13 @@ export class ProjectRuntime {
       projectId: this.project.id,
       providerSessionId: randomUUID(),
     });
-    return { row: fresh, providerSessionId: fresh.providerSessionId!, resume: false };
+    return {
+      row: fresh,
+      providerSessionId: fresh.providerSessionId!,
+      resume: false,
+      jsonlPath: jsonlPathFor(this.project.folderPath, fresh.providerSessionId!),
+      claudeConfigDir: null,
+    };
   }
 
   /**

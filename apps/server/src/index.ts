@@ -6,7 +6,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 
 import { homedir } from 'node:os';
 
@@ -23,10 +23,17 @@ import { resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
+  cancelOpenOrchestratorSendsForSession,
+  cancelQueuedOrchestratorSend,
+  enqueueOrchestratorSend,
+  getOrchestratorSendQueueRow,
   getActiveOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
   insertPostTurnSummary,
+  listOpenOrchestratorSendsForSession,
+  listQueuedOrchestratorSendsForSession,
+  listVisibleOrchestratorSendsForSession,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   getGlobalSettings,
@@ -41,6 +48,13 @@ import {
   reorderProjects,
   runMigrations,
   setGlobalSettings,
+  hasOpenOrchestratorSendsForSession,
+  markOrchestratorSendDelivered,
+  markOrchestratorSendDelivering,
+  markOrchestratorSendFailed,
+  markNextDeliveredOrchestratorSendObservedInJsonl,
+  recordDeliveredOrchestratorSend,
+  retryFailedOrchestratorSend,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
@@ -51,12 +65,17 @@ import {
   insertStatuslineSnapshot,
   listLatestSnapshotPerSession,
   getLatestSnapshotForProject,
+  type OrchestratorSendQueueRow,
   workflowRunsV2Repo,
 } from '@pc/db';
 import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
-import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
+import {
+  loadSessionReplayEnvelopes,
+  type ReplayEnvelope,
+} from './services/session-replay.ts';
+import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
 import { installClaude, installGit } from './services/onboarding-install.ts';
 import { startLogin, getLoginState, cancelLogin } from './services/onboarding-auth.ts';
@@ -238,10 +257,9 @@ setConfiguredClaudeExe(readSettings().claudeExe);
   }
 }
 
-// Per-project WS subscriber map. P14 tags broadcasts with `projectId` so the UI
-// can route events to its active project; for P4 we route at the server by
-// keeping one subscriber set per project.
-const subscribers = new Map<ULID, Set<WebSocket>>();
+// Per-project WS subscriber hub. Multiple browser clients can observe the same
+// project; reconnecting one client must not detach another from broadcasts.
+const wsHub = new ProjectWebSocketHub<ULID>();
 
 /**
  * Send `msg` to every WS subscribed to this project. P14: every outgoing
@@ -251,16 +269,7 @@ const subscribers = new Map<ULID, Set<WebSocket>>();
  * payload wins so call sites stay self-describing.
  */
 function broadcastTo(projectId: ULID, msg: unknown): void {
-  const set = subscribers.get(projectId);
-  if (!set) return;
-  const tagged =
-    msg !== null && typeof msg === 'object'
-      ? { projectId, ...(msg as Record<string, unknown>) }
-      : msg;
-  const data = JSON.stringify(tagged);
-  for (const c of set) {
-    if (c.readyState === c.OPEN) c.send(data);
-  }
+  wsHub.broadcast(projectId, msg);
 }
 
 /**
@@ -269,12 +278,102 @@ function broadcastTo(projectId: ULID, msg: unknown): void {
  * in v1). No `projectId` tag is injected; consumers filter by `type`.
  */
 function broadcastAll(msg: unknown): void {
-  const data = JSON.stringify(msg);
-  for (const set of subscribers.values()) {
-    for (const c of set) {
-      if (c.readyState === c.OPEN) c.send(data);
-    }
+  wsHub.broadcastAll(msg);
+}
+
+type SendAckStatus =
+  | 'received'
+  | 'queued'
+  | 'invalid-message'
+  | 'no-session'
+  | 'error';
+
+interface PublicSendQueueItem {
+  id: ULID;
+  clientMessageId: string;
+  text: string;
+  status: OrchestratorSendQueueRow['status'];
+  createdAt: number;
+  updatedAt: number;
+  deliveryAttempts: number;
+  failureReason: string | null;
+}
+
+function publicSendQueueItem(row: OrchestratorSendQueueRow): PublicSendQueueItem {
+  return {
+    id: row.id,
+    clientMessageId: row.clientMessageId,
+    text: row.text,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deliveryAttempts: row.deliveryAttempts,
+    failureReason: row.failureReason,
+  };
+}
+
+function sendQueueSnapshotPayload(sessionId: ULID): {
+  type: 'send-queue-snapshot';
+  sessionId: ULID;
+  items: PublicSendQueueItem[];
+} {
+  return {
+    type: 'send-queue-snapshot',
+    sessionId,
+    items: listVisibleOrchestratorSendsForSession(sessionId).map(publicSendQueueItem),
+  };
+}
+
+function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {
+  broadcastTo(projectId, sendQueueSnapshotPayload(sessionId));
+}
+
+function queuedStatusForState(
+  state: string,
+  hasBacklog: boolean,
+): 'queued_busy' | 'queued_spawning' | 'queued_backlog' {
+  if (hasBacklog) return 'queued_backlog';
+  if (state === 'spawning') return 'queued_spawning';
+  return 'queued_busy';
+}
+
+function deliverNextQueuedPrompt(projectId: ULID, runtime: ProjectRuntime): void {
+  const active = getActiveOrchestratorSession(projectId);
+  if (!active) return;
+  const live = runtime.ptySession();
+  if (!live || live.getState() !== 'ready') {
+    broadcastSendQueueSnapshot(projectId, active.id);
+    return;
   }
+  const [next] = listQueuedOrchestratorSendsForSession(active.id);
+  if (!next) {
+    broadcastSendQueueSnapshot(projectId, active.id);
+    return;
+  }
+  markOrchestratorSendDelivering(next.id);
+  broadcastSendQueueSnapshot(projectId, active.id);
+  try {
+    live.send(next.text);
+    markOrchestratorSendDelivered(next.id);
+  } catch (err) {
+    markOrchestratorSendFailed(
+      next.id,
+      err instanceof Error ? err.message : 'Failed to deliver queued prompt',
+    );
+  }
+  broadcastSendQueueSnapshot(projectId, active.id);
+}
+
+function maybeAdvanceSendQueueConfirmation(
+  projectId: ULID,
+  sessionId: ULID | null,
+  event: unknown,
+): void {
+  if (!sessionId || !event || typeof event !== 'object') return;
+  const ev = event as { kind?: string; text?: unknown };
+  if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
+  const observed = markNextDeliveredOrchestratorSendObservedInJsonl(sessionId, ev.text);
+  if (observed) broadcastSendQueueSnapshot(projectId, sessionId);
 }
 
 const projectScaffold = new ProjectScaffold({
@@ -436,13 +535,16 @@ function attachPtyHandlers(
 ): void {
   const flag = session as unknown as { __pcHandlersAttached?: boolean };
   if (flag.__pcHandlersAttached) return;
+  const attachedSessionId = getActiveOrchestratorSession(projectId)?.id ?? null;
   session.on('raw', (text: string) => broadcastTo(projectId, { type: 'raw', text }));
-  session.on('state', (state: string) => broadcastTo(projectId, { type: 'state', state }));
+  session.on('state', (state: string) => {
+    broadcastTo(projectId, { type: 'state', state });
+    if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
+  });
   session.on('turn-end', () => {
     // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
     // marked still-running across an orchestrator turn boundary). v2 DAG
     // runs are self-contained with their own idle + wall-clock timeouts.
-    void runtime;
     broadcastTo(projectId, { type: 'turn-end' });
   });
   session.on('event', (event: unknown) => {
@@ -453,6 +555,7 @@ function attachPtyHandlers(
   // so the chat panel can merge them without ambiguity.
   session.on('jsonl-event', (event: unknown) => {
     broadcastTo(projectId, { type: 'jsonl', event });
+    maybeAdvanceSendQueueConfirmation(projectId, attachedSessionId, event);
     // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
     // row carries rich per-turn metadata; we log every one to the DB. Surface
     // design is deferred per the buildout — collect data first.
@@ -1273,50 +1376,138 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
   const id = c.req.param('projectId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const previous = getActiveOrchestratorSession(id);
+  if (previous) {
+    cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by new session');
+    broadcastSendQueueSnapshot(id, previous.id);
+  }
   const session = runtime.startNewSession();
   const pty = runtime.ensurePty();
   attachPtyHandlers(id, runtime, pty);
+  const replay = loadSessionReplay(runtime, session.id);
   // Tell every subscriber to clear its local chat state; the next replay will
   // be empty (we just wiped events.jsonl) so the panel starts blank.
-  broadcastTo(id, { type: 'session-changed', session });
-  return c.json({ ok: true, session });
+  broadcastTo(id, { type: 'session-changed', transition: 'new-session', session });
+  broadcastSessionReplay(id, session.id, replay);
+  return c.json({ ok: true, transition: 'new-session', session, replay });
 });
 
 /** Resume a past orchestrator session. Re-activates the target row, respawns
- *  the PTY with --resume so claude.exe loads the prior context, then replays
- *  the row's events.jsonl to every subscriber so the chat panel re-populates
- *  immediately (no refresh required). The JSONL tailer also fires on the
- *  new spawn; client dedupes against the events.jsonl entries. */
+ *  the PTY with --resume so claude.exe loads the prior context, then sends an
+ *  atomic replay snapshot so the chat panel re-populates immediately. Live
+ *  JSONL tailing starts at the persisted cursor; replay comes from PC's
+ *  durable per-session event log. */
 app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
   const id = c.req.param('projectId') as ULID;
   const targetId = c.req.param('targetId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const previous = getActiveOrchestratorSession(id);
   let session;
   try {
     session = runtime.resumeSession(targetId);
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 400);
   }
+  if (previous && previous.id !== session.id) {
+    cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by resume');
+    broadcastSendQueueSnapshot(id, previous.id);
+  }
   const pty = runtime.ensurePty();
   attachPtyHandlers(id, runtime, pty);
-  broadcastTo(id, { type: 'session-changed', session });
-  replayActiveSessionEvents(id, runtime);
-  return c.json({ ok: true, session });
+  const replay = loadSessionReplay(runtime, session.id);
+  broadcastTo(id, { type: 'session-changed', transition: 'resume-session', session });
+  broadcastSessionReplay(id, session.id, replay);
+  return c.json({ ok: true, transition: 'resume-session', session, replay });
 });
 
-/** Replay the active session's normalized event log to all WS subscribers.
- *  Mirrors the per-socket replay in the WS-connect handler so a same-page
- *  resume shows the prior chat history without needing a browser refresh.
- *  Sources from jsonl-events.jsonl (Section 23), falling back to the
- *  legacy events.jsonl for pre-23 sessions. */
-function replayActiveSessionEvents(projectId: ULID, runtime: ProjectRuntime): void {
-  const active = getActiveOrchestratorSession(projectId);
-  if (!active) return;
-  const envelopes = loadSessionReplayEnvelopes(runtime.sessionDataPath(active.id));
-  for (const env of envelopes) {
-    broadcastTo(projectId, env);
+app.post('/api/projects/:projectId/send-queue/:sendId/cancel', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const sendId = c.req.param('sendId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const active = getActiveOrchestratorSession(id);
+  if (!active) return c.json({ ok: false, error: 'No active orchestrator session' }, 404);
+
+  const existing = getOrchestratorSendQueueRow(sendId);
+  if (!existing || existing.projectId !== id || existing.sessionId !== active.id) {
+    return c.json({ ok: false, error: 'Queued prompt not found' }, 404);
   }
+
+  const cancelled = cancelQueuedOrchestratorSend(sendId, active.id, 'user cancelled');
+  if (!cancelled) {
+    return c.json({
+      ok: false,
+      error: `Queued prompt is already ${existing.status}`,
+    }, 409);
+  }
+
+  broadcastSendQueueSnapshot(id, active.id);
+  return c.json({ ok: true, item: publicSendQueueItem(cancelled) });
+});
+
+app.post('/api/projects/:projectId/send-queue/:sendId/retry', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const sendId = c.req.param('sendId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const active = getActiveOrchestratorSession(id);
+  if (!active) return c.json({ ok: false, error: 'No active orchestrator session' }, 404);
+
+  const existing = getOrchestratorSendQueueRow(sendId);
+  if (!existing || existing.projectId !== id || existing.sessionId !== active.id) {
+    return c.json({ ok: false, error: 'Queued prompt not found' }, 404);
+  }
+  if (existing.status !== 'failed') {
+    return c.json({
+      ok: false,
+      error: `Queued prompt is ${existing.status}, not failed`,
+    }, 409);
+  }
+
+  let live = runtime.ptySession();
+  if (!live) {
+    try {
+      live = runtime.ensurePty();
+      attachPtyHandlers(id, runtime, live);
+    } catch (err) {
+      return c.json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Failed to restart Claude',
+      }, 409);
+    }
+  }
+
+  const state = live.getState();
+  const hasBacklog = hasOpenOrchestratorSendsForSession(active.id);
+  const retried = retryFailedOrchestratorSend(
+    sendId,
+    active.id,
+    queuedStatusForState(state, hasBacklog),
+  );
+  if (!retried) {
+    return c.json({ ok: false, error: 'Failed prompt could not be retried' }, 409);
+  }
+
+  broadcastSendQueueSnapshot(id, active.id);
+  if (state === 'ready') deliverNextQueuedPrompt(id, runtime);
+  return c.json({ ok: true, item: publicSendQueueItem(retried) });
+});
+
+function loadSessionReplay(runtime: ProjectRuntime, sessionId: ULID): ReplayEnvelope[] {
+  return loadSessionReplayEnvelopes(runtime.sessionDataPath(sessionId));
+}
+
+/** Send a session's normalized event log as one checkpoint. This keeps
+ *  resume/reconnect deterministic on the client: the live buffer is replaced
+ *  once with the replay snapshot, instead of being rebuilt from a burst of
+ *  individual WS messages that can race local navigation state. */
+function broadcastSessionReplay(
+  projectId: ULID,
+  sessionId: ULID,
+  events: ReplayEnvelope[],
+): void {
+  broadcastTo(projectId, { type: 'session-replay', sessionId, events });
 }
 
 // ── Agent-designer transient session (17b.12) ─────────────────────────────
@@ -3326,19 +3517,7 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  // Supersede prior subscribers for this project so tsx-watch reloads + tab
-  // reload-races don't doubled-broadcast.
-  const existing = subscribers.get(projectId);
-  if (existing) {
-    for (const prior of existing) {
-      if (prior.readyState === prior.OPEN) {
-        try { prior.close(1000, 'superseded by newer client'); } catch { /* best effort */ }
-      }
-    }
-  }
-  const set = new Set<WebSocket>();
-  set.add(ws);
-  subscribers.set(projectId, set);
+  const detachSubscriber = wsHub.subscribe(projectId, ws);
 
   // Spawn the PtySession on first subscriber. Bind event forwarders.
   const session = runtime.ensurePty();
@@ -3355,10 +3534,14 @@ wss.on('connection', (ws, req) => {
   // GET /api/projects/:id/sessions/:sessionId/events, not the WS replay.
   const activeSession = getActiveOrchestratorSession(projectId);
   if (activeSession) {
-    const envelopes = loadSessionReplayEnvelopes(runtime.sessionDataPath(activeSession.id));
-    for (const env of envelopes) {
-      ws.send(JSON.stringify({ projectId, ...env }));
-    }
+    const events = loadSessionReplayEnvelopes(runtime.sessionDataPath(activeSession.id));
+    ws.send(JSON.stringify({
+      projectId,
+      type: 'session-replay',
+      sessionId: activeSession.id,
+      events,
+    }));
+    ws.send(JSON.stringify({ projectId, ...sendQueueSnapshotPayload(activeSession.id) }));
   }
 
   ws.on('message', (raw) => {
@@ -3368,10 +3551,14 @@ wss.on('connection', (ws, req) => {
     } catch {
       return;
     }
-    const live = runtime.ptySession();
     const sendAck = (
       clientMessageId: unknown,
-      ack: { ok: boolean; status: 'received' | 'invalid-message' | 'no-session' | 'error'; error?: string },
+      ack: {
+        ok: boolean;
+        status: SendAckStatus;
+        error?: string;
+        queueItem?: PublicSendQueueItem;
+      },
     ) => {
       if (typeof clientMessageId !== 'string' || !clientMessageId) return;
       if (ws.readyState !== ws.OPEN) return;
@@ -3387,17 +3574,76 @@ wss.on('connection', (ws, req) => {
           });
           break;
         }
-        if (!live) {
+        const clientMessageId =
+          typeof msg.clientMessageId === 'string' && msg.clientMessageId
+            ? msg.clientMessageId
+            : newId();
+        const active = getActiveOrchestratorSession(projectId);
+        if (!active) {
           sendAck(msg.clientMessageId, {
             ok: false,
             status: 'no-session',
-            error: 'No live orchestrator session is attached',
+            error: 'No active orchestrator session is attached',
           });
+          break;
+        }
+        let live = runtime.ptySession();
+        if (!live) {
+          try {
+            live = runtime.ensurePty();
+            attachPtyHandlers(projectId, runtime, live);
+          } catch (err) {
+            sendAck(msg.clientMessageId, {
+              ok: false,
+              status: 'no-session',
+              error: err instanceof Error
+                ? err.message
+                : 'No live orchestrator session is attached',
+            });
+            break;
+          }
+        }
+        const state = live.getState();
+        const hasBacklog = hasOpenOrchestratorSendsForSession(active.id);
+        if (state !== 'ready' || hasBacklog) {
+          try {
+            const row = enqueueOrchestratorSend({
+              projectId,
+              sessionId: active.id,
+              clientMessageId,
+              text: msg.text,
+              status: queuedStatusForState(state, hasBacklog),
+            });
+            sendAck(msg.clientMessageId, {
+              ok: true,
+              status: 'queued',
+              queueItem: publicSendQueueItem(row),
+            });
+            broadcastSendQueueSnapshot(projectId, active.id);
+            if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
+          } catch (err) {
+            sendAck(msg.clientMessageId, {
+              ok: false,
+              status: 'error',
+              error: err instanceof Error ? err.message : 'Failed to queue prompt',
+            });
+          }
           break;
         }
         try {
           live.send(msg.text);
-          sendAck(msg.clientMessageId, { ok: true, status: 'received' });
+          const row = recordDeliveredOrchestratorSend({
+            projectId,
+            sessionId: active.id,
+            clientMessageId,
+            text: msg.text,
+          });
+          sendAck(msg.clientMessageId, {
+            ok: true,
+            status: 'received',
+            queueItem: publicSendQueueItem(row),
+          });
+          broadcastSendQueueSnapshot(projectId, active.id);
         } catch (err) {
           sendAck(msg.clientMessageId, {
             ok: false,
@@ -3407,11 +3653,14 @@ wss.on('connection', (ws, req) => {
         }
         break;
       case 'interrupt':
-        live?.interrupt();
+        runtime.ptySession()?.interrupt();
         break;
       case 'resize':
-        if (live && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          live.resize(msg.cols, msg.rows);
+        {
+          const live = runtime.ptySession();
+          if (live && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+            live.resize(msg.cols, msg.rows);
+          }
         }
         break;
       case 'ask-reply': {
@@ -3428,8 +3677,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    set.delete(ws);
-    if (set.size === 0) subscribers.delete(projectId);
+    detachSubscriber();
   });
 });
 

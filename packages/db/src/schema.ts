@@ -417,6 +417,45 @@ export const orchestratorSessions = sqliteTable(
   ],
 );
 
+export const orchestratorSendQueue = sqliteTable(
+  'orchestrator_send_queue',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    sessionId: text('session_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => orchestratorSessions.id),
+    clientMessageId: text('client_message_id').notNull(),
+    text: text('text').notNull(),
+    status: text('status').notNull().$type<
+      | 'queued_busy'
+      | 'queued_spawning'
+      | 'queued_backlog'
+      | 'delivering'
+      | 'delivered_to_pty'
+      | 'observed_in_jsonl'
+      | 'failed'
+      | 'cancelled'
+    >(),
+    deliveryAttempts: integer('delivery_attempts').notNull().default(0),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    deliveredAt: integer('delivered_at'),
+    failedAt: integer('failed_at'),
+    cancelledAt: integer('cancelled_at'),
+    failureReason: text('failure_reason'),
+  },
+  (t) => [
+    uniqueIndex('orch_send_queue_client_msg_idx').on(t.sessionId, t.clientMessageId),
+    index('orch_send_queue_project_idx').on(t.projectId, t.createdAt),
+    index('orch_send_queue_session_status_idx').on(t.sessionId, t.status, t.createdAt),
+  ],
+);
+
 export const attachments = sqliteTable(
   'attachments',
   {
