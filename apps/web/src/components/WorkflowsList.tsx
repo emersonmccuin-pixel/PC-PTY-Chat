@@ -21,6 +21,7 @@ import {
   api,
   type Project,
   type ULID,
+  type V2RunDetail,
   type V2RunStatus,
   type V2RunSummary,
   type WorkflowRow,
@@ -28,6 +29,7 @@ import {
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useProjectWorkflows } from '@/hooks/use-project-workflows';
 import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
+import { useWorkflowsListNav } from '@/store/workflows-list-nav';
 import { WorkflowBuilderModal } from './WorkflowBuilderModal';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
 
@@ -48,21 +50,51 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<WorkflowRow | null>(null);
   const [selectedId, setSelectedId] = useState<ULID | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
   const [triggerKind, setTriggerKind] = useState<TriggerFilter>('all');
   const [tab, setTab] = useState<DetailTab>('graph');
   const [actionErr, setActionErr] = useState<string | null>(null);
 
+  // Cross-tab navigation directive — set by ActivityPanel / future callers
+  // via `useWorkflowsListNav.openTo`. We watch `nav` (generation counter) so
+  // re-issuing the same directive still triggers selection.
+  const navSlug = useWorkflowsListNav((s) => s.workflowSlug);
+  const navRunId = useWorkflowsListNav((s) => s.runId);
+  const navTab = useWorkflowsListNav((s) => s.tab);
+  const navGen = useWorkflowsListNav((s) => s.nav);
+  const consumeNav = useWorkflowsListNav((s) => s.consume);
+
   // Clear selection + filters on project switch.
   useEffect(() => {
     setSelectedId(null);
+    setSelectedRunId(null);
     setFilter('');
     setStatus('all');
     setTriggerKind('all');
     setTab('graph');
     setActionErr(null);
   }, [project.id]);
+
+  // Consume cross-tab nav directives. Runs once per `navGen` bump.
+  useEffect(() => {
+    if (navGen === 0 || !navSlug) return;
+    const target = workflows.find((w) => w.slug === navSlug);
+    if (!target) {
+      // Workflow list hasn't loaded the target yet — leave the directive in
+      // place so a subsequent render (when `workflows` arrives) consumes it.
+      return;
+    }
+    setSelectedId(target.id);
+    if (navRunId) setSelectedRunId(navRunId);
+    if (navTab) setTab(navTab);
+    consumeNav();
+    // Intentionally key only on navGen + workflows-len so the effect fires
+    // exactly when (a) a new directive lands, or (b) workflows finishes
+    // loading after a directive landed first.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navGen, workflows.length]);
 
   // Split rows by scope.
   const { projectRows, globalRows } = useMemo(() => {
@@ -81,6 +113,16 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     const first = projectRows[0] ?? globalRows[0] ?? null;
     setSelectedId(first ? first.id : null);
   }, [workflows, selectedId, projectRows, globalRows]);
+
+  // Centralised rail-click handler: switching workflows drops the selected
+  // run (runs are per-workflow). Done as a handler, NOT a useEffect keyed on
+  // selectedId — the nav-directive effect also sets selectedId + selectedRunId
+  // together, and an effect-based clear would run AFTER the nav effect and
+  // clobber the just-set runId.
+  function selectWorkflow(id: ULID) {
+    if (id !== selectedId) setSelectedRunId(null);
+    setSelectedId(id);
+  }
 
   // Apply filters.
   const filtered = useMemo(() => {
@@ -259,7 +301,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
                 row={row}
                 runs={runs.filter((r) => r.workflowId === row.slug)}
                 selected={row.id === selectedId}
-                onSelect={() => setSelectedId(row.id)}
+                onSelect={() => selectWorkflow(row.id)}
               />
             ))}
           </ListSection>
@@ -277,7 +319,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
                 row={row}
                 runs={runs.filter((r) => r.workflowId === row.slug)}
                 selected={row.id === selectedId}
-                onSelect={() => setSelectedId(row.id)}
+                onSelect={() => selectWorkflow(row.id)}
               />
             ))}
           </ListSection>
@@ -286,10 +328,14 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
         <main className="overflow-y-auto">
           {selectedRow ? (
             <DetailPane
+              project={project}
               row={selectedRow}
               runs={runsForSelected}
               tab={tab}
               setTab={setTab}
+              events={events}
+              selectedRunId={selectedRunId}
+              setSelectedRunId={setSelectedRunId}
               onEdit={() => setEditingRow(selectedRow)}
               onRunNow={() => void onRunNow(selectedRow)}
               onDuplicate={() => void onDuplicate(selectedRow)}
@@ -461,10 +507,14 @@ function ListRow({
 // ── Right detail pane ────────────────────────────────────────────────────
 
 function DetailPane({
+  project,
   row,
   runs,
   tab,
   setTab,
+  events,
+  selectedRunId,
+  setSelectedRunId,
   onEdit,
   onRunNow,
   onDuplicate,
@@ -472,10 +522,14 @@ function DetailPane({
   onPromote,
   onDelete,
 }: {
+  project: Project;
   row: WorkflowRow;
   runs: V2RunSummary[];
   tab: DetailTab;
   setTab: (t: DetailTab) => void;
+  events: WsEnvelope[];
+  selectedRunId: string | null;
+  setSelectedRunId: (id: string | null) => void;
   onEdit: () => void;
   onRunNow: () => void;
   onDuplicate: () => void;
@@ -604,7 +658,16 @@ function DetailPane({
 
       <div className="min-h-0 flex-1 overflow-hidden">
         {tab === 'graph' && <GraphTab row={row} />}
-        {tab === 'runs' && <RunsTab row={row} runs={runs} />}
+        {tab === 'runs' && (
+          <RunsTab
+            project={project}
+            row={row}
+            runs={runs}
+            events={events}
+            selectedRunId={selectedRunId}
+            setSelectedRunId={setSelectedRunId}
+          />
+        )}
         {tab === 'yaml' && <YamlTab row={row} />}
       </div>
     </div>
@@ -665,7 +728,29 @@ function GraphTab({ row }: { row: WorkflowRow }) {
   );
 }
 
-function RunsTab({ row, runs }: { row: WorkflowRow; runs: V2RunSummary[] }) {
+function RunsTab({
+  project,
+  row,
+  runs,
+  events,
+  selectedRunId,
+  setSelectedRunId,
+}: {
+  project: Project;
+  row: WorkflowRow;
+  runs: V2RunSummary[];
+  events: WsEnvelope[];
+  selectedRunId: string | null;
+  setSelectedRunId: (id: string | null) => void;
+}) {
+  // Auto-scroll the selected row into view when the selection lands from a
+  // cross-tab nav directive (the row may be off-screen if there are many).
+  const selectedRowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!selectedRunId) return;
+    selectedRowRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [selectedRunId]);
+
   if (runs.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center text-xs text-muted-foreground">
@@ -676,20 +761,64 @@ function RunsTab({ row, runs }: { row: WorkflowRow; runs: V2RunSummary[] }) {
     );
   }
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="flex flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex flex-col overflow-y-auto">
         {runs.map((r) => (
-          <RunRow key={r.id} run={r} />
+          <RunRow
+            key={r.id}
+            run={r}
+            selected={r.id === selectedRunId}
+            onSelect={() =>
+              setSelectedRunId(r.id === selectedRunId ? null : r.id)
+            }
+            innerRef={r.id === selectedRunId ? selectedRowRef : undefined}
+          />
         ))}
       </div>
+      {selectedRunId && row.parsedDefinition && (
+        <RunInlineDetail
+          project={project}
+          row={row}
+          runId={selectedRunId}
+          events={events}
+          onClose={() => setSelectedRunId(null)}
+        />
+      )}
     </div>
   );
 }
 
-function RunRow({ run }: { run: V2RunSummary }) {
+function RunRow({
+  run,
+  selected,
+  onSelect,
+  innerRef,
+}: {
+  run: V2RunSummary;
+  selected: boolean;
+  onSelect: () => void;
+  innerRef?: React.RefObject<HTMLDivElement | null>;
+}) {
   const started = run.startedAt ?? run.createdAt;
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-border/40 px-4 py-2.5 text-xs hover:bg-muted/40">
+    <div
+      ref={innerRef}
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={
+        'flex cursor-pointer items-center justify-between gap-3 border-b border-border/40 border-l-2 px-4 py-2.5 text-xs transition-colors ' +
+        (selected
+          ? 'border-l-primary bg-muted'
+          : 'border-l-transparent hover:bg-muted/40')
+      }
+    >
       <div className="flex min-w-0 items-center gap-2">
         <StatusPill status={run.status} />
         <span className="truncate font-mono text-[11px] text-muted-foreground">
@@ -704,6 +833,115 @@ function RunRow({ run }: { run: V2RunSummary }) {
       <div className="flex shrink-0 items-center gap-3 text-[10px] text-muted-foreground">
         <span>{run.trigger}</span>
         <span>{formatRelativeTime(started)}</span>
+      </div>
+    </div>
+  );
+}
+
+interface V2RunChangedEnvelope extends WsEnvelope {
+  type: 'workflow-v2-run-changed';
+  projectId: string;
+  runId: string;
+  status: V2RunStatus;
+  dagState: WorkflowV2.WorkflowDagState;
+}
+
+/** 19.20 — inline replacement for the old WorkflowV2RunViewer modal. Loads
+ *  the run's dagState + merges live `workflow-v2-run-changed` envelopes on
+ *  top so the graph overlay updates as nodes complete / fail. Reuses the
+ *  workflow row's already-parsed def — no second def fetch needed. */
+function RunInlineDetail({
+  project,
+  row,
+  runId,
+  events,
+  onClose,
+}: {
+  project: Project;
+  row: WorkflowRow;
+  runId: string;
+  events: WsEnvelope[];
+  onClose: () => void;
+}) {
+  const [run, setRun] = useState<V2RunDetail | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRun(null);
+    setLoadErr(null);
+    void api
+      .getV2Run(project.id, runId)
+      .then((res) => {
+        if (!cancelled) setRun(res.run);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setLoadErr(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, runId]);
+
+  // Live dag state — start from the loaded run, walk subsequent WS envelopes
+  // for this run, the last one wins.
+  const liveDag = useMemo<WorkflowV2.WorkflowDagState | null>(() => {
+    if (!run) return null;
+    let dag = run.dagState as unknown as WorkflowV2.WorkflowDagState;
+    for (const env of events) {
+      if (env?.type !== 'workflow-v2-run-changed') continue;
+      const e = env as V2RunChangedEnvelope;
+      if (e.projectId !== project.id || e.runId !== runId) continue;
+      if (e.dagState) dag = e.dagState;
+    }
+    return dag;
+  }, [events, run, project.id, runId]);
+
+  const liveStatus = useMemo<V2RunStatus | null>(() => {
+    if (!run) return null;
+    let status: V2RunStatus = run.status;
+    for (const env of events) {
+      if (env?.type !== 'workflow-v2-run-changed') continue;
+      const e = env as V2RunChangedEnvelope;
+      if (e.projectId !== project.id || e.runId !== runId) continue;
+      if (e.status) status = e.status;
+    }
+    return status;
+  }, [events, run, project.id, runId]);
+
+  const def = row.parsedDefinition as unknown as WorkflowV2.Workflow | null;
+
+  return (
+    <div className="flex min-h-[280px] flex-1 flex-col border-t border-border bg-card">
+      <header className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Run
+          </span>
+          <span className="truncate font-mono text-[11px] text-foreground">
+            {runId}
+          </span>
+          {liveStatus && <StatusPill status={liveStatus} />}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="border border-border bg-card px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="Close run detail"
+        >
+          Close
+        </button>
+      </header>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {loadErr ? (
+          <div className="p-4 text-xs text-destructive">
+            Couldn't load run: {loadErr}
+          </div>
+        ) : !run || !def ? (
+          <div className="p-4 text-xs text-muted-foreground">Loading run…</div>
+        ) : (
+          <WorkflowGraphV2 workflow={def} runState={liveDag} />
+        )}
       </div>
     </div>
   );

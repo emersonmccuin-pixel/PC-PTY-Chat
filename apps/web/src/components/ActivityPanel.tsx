@@ -19,7 +19,7 @@ import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
-import { useWorkflowV2RunViewer } from '@/store/workflow-v2-run-viewer';
+import { useWorkflowsListNav } from '@/store/workflows-list-nav';
 
 interface ActivityPanelProps {
   project: Project | null;
@@ -287,7 +287,10 @@ function RunningWorkflowCard({
 }) {
   // 19.12 — cancel button removed; v2 has no run-cancel endpoint yet (the
   // v1 endpoint died with the v1 routes). Re-add when the v2 cancel ships.
-  const openViewer = useWorkflowV2RunViewer((s) => s.open);
+  // 19.20 — modal viewer removed; click now navigates to the Workflows tab
+  // with the run selected inline.
+  const setTab = useActiveCenterTab((s) => s.setTab);
+  const openTo = useWorkflowsListNav((s) => s.openTo);
 
   const startedAt = run.startedAt ?? run.createdAt;
   const elapsed = formatElapsed(nowMs - startedAt);
@@ -302,7 +305,10 @@ function RunningWorkflowCard({
     <li>
       <button
         type="button"
-        onClick={() => openViewer(run.workflowId, run.id)}
+        onClick={() => {
+          setTab('workflows');
+          openTo({ workflowSlug: run.workflowId, runId: run.id, tab: 'runs' });
+        }}
         className="block w-full px-3 py-2 text-left hover:bg-muted/40"
       >
         <div className="flex items-baseline justify-between gap-2">
@@ -447,10 +453,11 @@ function HumanReviewRegion({
   nowMs: number;
 }) {
   // 19.12 — paused v2 runs land here. The old v1 `/api/projects/:id/approvals`
-  // endpoint (per-approval-node scroll-to-chat-bubble) is gone; click now
-  // opens the v2 run viewer instead. Per-approval-bubble navigation re-enters
-  // when v2 surfaces a pending-asks LIST endpoint (none today).
-  const openViewer = useWorkflowV2RunViewer((s) => s.open);
+  // endpoint (per-approval-node scroll-to-chat-bubble) is gone; click jumps
+  // to chat (orchestrator tab) where the human-review prompt sits as a bubble.
+  // 19.20 — modal viewer removed; we drop the dual setTab+openViewer call.
+  // Per-approval-bubble navigation re-enters when v2 surfaces a pending-asks
+  // LIST endpoint (none today).
   const setTab = useActiveCenterTab((s) => s.setTab);
   // requestScrollTo retained for the future per-approval navigation path; not
   // used in v1 of this region.
@@ -474,10 +481,7 @@ function HumanReviewRegion({
             <li key={run.id}>
               <button
                 type="button"
-                onClick={() => {
-                  setTab('orchestrator');
-                  openViewer(run.workflowId, run.id);
-                }}
+                onClick={() => setTab('orchestrator')}
                 className="block w-full px-3 py-2 text-left hover:bg-muted/40"
               >
                 <div className="flex items-baseline justify-between gap-2">
@@ -489,7 +493,7 @@ function HumanReviewRegion({
                   </div>
                 </div>
                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                  paused — review in run viewer
+                  paused — review in chat
                 </div>
               </button>
             </li>
@@ -549,7 +553,8 @@ function FailedRecentlyRegion({
   nowMs: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const openViewer = useWorkflowV2RunViewer((s) => s.open);
+  const setTab = useActiveCenterTab((s) => s.setTab);
+  const openTo = useWorkflowsListNav((s) => s.openTo);
 
   async function handleDismiss(runId: string) {
     // Optimistic: emit the dismissal event so the hook drops it from the
@@ -603,7 +608,14 @@ function FailedRecentlyRegion({
               <li key={run.id} className="flex items-baseline gap-2 px-3 py-2">
                 <button
                   type="button"
-                  onClick={() => openViewer(run.workflowId, run.id)}
+                  onClick={() => {
+                    setTab('workflows');
+                    openTo({
+                      workflowSlug: run.workflowId,
+                      runId: run.id,
+                      tab: 'runs',
+                    });
+                  }}
                   className="min-w-0 flex-1 text-left hover:underline"
                 >
                   <div className="flex items-baseline justify-between gap-2">

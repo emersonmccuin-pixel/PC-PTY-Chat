@@ -30,7 +30,6 @@ import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
 import { WorkflowsList } from './WorkflowsList';
-import { WorkflowV2RunViewerMount } from './WorkflowV2RunViewer';
 
 // Section 32.1 — TabBar lifted to a topbar but spanning the full width
 // confused users. Refinement (Session 31) puts the tab strip back above the
@@ -123,9 +122,6 @@ export function Shell({
             onExpand={() => onToggleActivityPanelOpen(true)}
           />
         </Panel>
-        {activeProject && (
-          <WorkflowV2RunViewerMount projectId={activeProject.id} events={wsEvents} />
-        )}
         {activeProject && (
           <AgentTranscriptModalMount
             project={activeProject}
