@@ -20,6 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
 import { claudeProjectsRoot } from './path-resolver.ts';
 import { requireClaudeBinary } from './claude-resolver.ts';
+import { TimedBracketedPasteQueue } from './send-protocol.ts';
 
 /** claude.exe v2+ detects IDE-embedded mode from env vars set by the host
  *  (VS Code, JetBrains, or a parent claude.exe). When PC spawns a child
@@ -70,7 +71,7 @@ function scrubIdeIntegrationEnv(env: Record<string, string | undefined>): Record
  *  against `C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test` →
  *  `C--Users-emers-AppData-Local-Temp-cc-stream-test` and
  *  `E:\\Projects\\Caisson\\workspace` →
- *  `E--Claude-Code-Projects-Personal-PC-PTY-Chat-workspace`. */
+ *  `E--Claude-Code-Projects-Personal-Caisson-workspace`. */
 export function encodeCwdForClaude(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9._-]/g, '-');
 }
@@ -180,6 +181,7 @@ export class PtySession extends EventEmitter {
   private tailer: JsonlTailer | null = null;
   private discoveryTimer: NodeJS.Timeout | null = null;
   private cursorPersistTimer: NodeJS.Timeout | null = null;
+  private sendQueue: TimedBracketedPasteQueue;
 
   constructor(opts: PtySessionOptions) {
     super();
@@ -199,6 +201,11 @@ export class PtySession extends EventEmitter {
     this.excludeJsonlPaths = new Set(
       (opts.excludeJsonlPaths ?? []).map((p) => resolve(p)),
     );
+    this.sendQueue = new TimedBracketedPasteQueue({
+      write: (bytes) => this.child.write(bytes),
+      isExited: () => this.state === 'exited',
+      onSubmitted: () => this.setState('thinking'),
+    });
 
     mkdirSync(dirname(opts.transcriptPath), { recursive: true });
     writeFileSync(opts.transcriptPath, '');
@@ -351,6 +358,7 @@ export class PtySession extends EventEmitter {
     });
 
     this.child.onExit(({ exitCode, signal }) => {
+      this.sendQueue.clear();
       this.setState('exited');
       this.emit('exit', exitCode, signal);
     });
@@ -534,26 +542,17 @@ export class PtySession extends EventEmitter {
     }, 1000);
   }
 
-  /** Send a user message. Adds carriage return to submit. */
+  /** Send a user message. Serializes paste/Enter pairs so rapid sends cannot
+   *  merge in Claude's composer before the first delayed Enter fires. */
   send(text: string) {
     if (this.state === 'exited') throw new Error('session exited');
     // Multi-line inputs (Section 4d's subagent dispatch envelope is always
     // multi-line) must use bracketed paste mode, or claude.exe's TUI
     // interprets each embedded `\n` as a submit and fragments the prompt
-    // into N half-submits — the model receives only the first line and the
-    // remaining tokens (workflowRunId / nodeId / instructions) are lost or
-    // bounce off the input box while CC is mid-busy. Wrap with `\x1b[200~`
-    // ... `\x1b[201~` so the TUI accepts the body as a single paste, then
-    // send a separate Enter to submit. Single-line inputs are wrapped too —
-    // harmless, and keeps one code path. 50ms wasn't enough for CC to
-    // finish processing the paste-mode bytes before the Enter arrived
-    // (observed in 4d.7 live testing: paste collapsed to "Pasted text #1
-    // +4 lines" but the Enter was dropped). 500ms is conservative.
-    this.child.write('\x1b[200~' + text + '\x1b[201~');
-    setTimeout(() => {
-      this.child.write('\r');
-      this.setState('thinking');
-    }, 500);
+    // into N half-submits. The queue keeps the historical 500ms paste delay
+    // but guarantees the next prompt is not written until the prior Enter has
+    // gone through.
+    this.sendQueue.enqueue(text);
   }
 
   /** Stop the current turn. In claude.exe interactive mode, Escape (\x1b) is
@@ -589,6 +588,7 @@ export class PtySession extends EventEmitter {
       clearTimeout(this.cursorPersistTimer);
       this.cursorPersistTimer = null;
     }
+    this.sendQueue.clear();
     if (this.tailer) {
       this.tailer.stop();
       this.tailer = null;
