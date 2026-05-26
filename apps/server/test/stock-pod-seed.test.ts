@@ -1,10 +1,8 @@
 // Section 17e.1 unit tests — stock pod boot-time seed.
 //
-// Verifies the idempotency contract for the 5-pod stock seed: a fresh DB
-// inserts all 5 rows (each with a `created` audit row attributing the
-// system-seed reason); a second call is a no-op (0 inserts, 5 rows total,
-// no extra audit rows); pre-existing rows are never overwritten regardless
-// of content drift.
+// Verifies the idempotency contract for the stock seed: a fresh DB inserts
+// every stock row; a second call is a no-op; non-user-edited drift is
+// reseeded; user-authored changes are preserved.
 //
 // Run via:  pnpm --filter @pc/server test
 
@@ -17,10 +15,22 @@ import { join } from 'node:path';
 const tmpDataDir = mkdtempSync(join(tmpdir(), 'pc-stock-seed-db-'));
 process.env.PC_DATA_DIR = tmpDataDir;
 
-const { closeDb, runMigrations, getAgentByName, listAgentAudit, updateAgent, listAgents } =
-  await import('@pc/db');
+const {
+  closeDb,
+  runMigrations,
+  getAgentByName,
+  listAgentAudit,
+  listAgents,
+  listKnowledge,
+  updateAgent,
+  updateKnowledge,
+} = await import('@pc/db');
 import type { ULID } from '@pc/domain';
-import { STOCK_POD_CONTENT, seedStockPods } from '../src/services/stock-pod-seed.ts';
+import {
+  CAISSON_KNOWLEDGE_DOCS,
+  STOCK_POD_CONTENT,
+  seedStockPods,
+} from '../src/services/stock-pod-seed.ts';
 
 const STOCK_POD_NAMES = STOCK_POD_CONTENT.map((p) => p.name);
 
@@ -33,7 +43,7 @@ after(() => {
   rmSync(tmpDataDir, { recursive: true, force: true });
 });
 
-test('first call on empty DB inserts all 7 stock pod rows', () => {
+test('first call on empty DB inserts every stock pod row and caisson knowledge docs', () => {
   for (const name of STOCK_POD_NAMES) {
     assert.equal(
       getAgentByName({ name, scope: 'global' }),
@@ -44,6 +54,9 @@ test('first call on empty DB inserts all 7 stock pod rows', () => {
 
   const result = seedStockPods();
   assert.equal(result.insertedCount, STOCK_POD_NAMES.length);
+  assert.equal(result.knowledgeInsertedCount, CAISSON_KNOWLEDGE_DOCS.length);
+  assert.equal(result.knowledgeReseededCount, 0);
+  assert.equal(result.knowledgeSkippedCount, 0);
   assert.equal(result.entries.length, STOCK_POD_NAMES.length);
   for (const entry of result.entries) {
     assert.equal(entry.action, 'inserted', `${entry.name} should be inserted on fresh DB`);
@@ -64,15 +77,36 @@ test('first call on empty DB inserts all 7 stock pod rows', () => {
     assert.equal(row!.outputDestination, content.outputDestination);
     assert.equal(row!.description, content.description);
 
-    // One audit row per pod, attributing the boot-time seed.
+    // One agent audit row per pod, plus caisson's seeded knowledge docs.
     const audit = listAgentAudit({ agentId: row!.id });
-    assert.equal(audit.length, 1, `${content.name}: exactly one audit row from the seed`);
-    assert.equal(audit[0].field, 'created');
-    assert.equal(audit[0].actor, 'orchestrator');
-    assert.ok(
-      audit[0].reason?.startsWith('system-seed:17e'),
-      `${content.name}: audit reason should be a 17e system-seed marker, got: ${audit[0].reason}`,
+    const expectedAuditCount =
+      content.name === 'caisson' ? 1 + CAISSON_KNOWLEDGE_DOCS.length : 1;
+    assert.equal(
+      audit.length,
+      expectedAuditCount,
+      `${content.name}: expected seed audit rows`,
     );
+    const created = audit.find((r) => r.field === 'created');
+    assert.ok(created, `${content.name}: created audit row should exist`);
+    assert.equal(created.actor, 'orchestrator');
+    assert.ok(
+      created.reason?.startsWith('system-seed:17e'),
+      `${content.name}: audit reason should be a 17e system-seed marker, got: ${created.reason}`,
+    );
+
+    if (content.name === 'caisson') {
+      const knowledge = listKnowledge({ agentId: row!.id, scope: 'global' });
+      assert.equal(knowledge.length, CAISSON_KNOWLEDGE_DOCS.length);
+      assert.deepEqual(
+        knowledge.map((k) => k.name),
+        [...CAISSON_KNOWLEDGE_DOCS.map((d) => d.name)].sort(),
+      );
+      for (const doc of CAISSON_KNOWLEDGE_DOCS) {
+        const rowDoc = knowledge.find((k) => k.name === doc.name);
+        assert.ok(rowDoc, `${doc.name} should be seeded`);
+        assert.equal(rowDoc!.content, doc.content.trim());
+      }
+    }
   }
 });
 
@@ -88,6 +122,9 @@ test('second call is a no-op — 0 inserts, full roster present, no extra audit 
 
   const result = seedStockPods();
   assert.equal(result.insertedCount, 0);
+  assert.equal(result.knowledgeInsertedCount, 0);
+  assert.equal(result.knowledgeReseededCount, 0);
+  assert.equal(result.knowledgeSkippedCount, 0);
   assert.equal(result.entries.length, expected);
   for (const entry of result.entries) {
     assert.equal(entry.action, 'unchanged', `${entry.name} should be unchanged on second call`);
@@ -101,8 +138,61 @@ test('second call is a no-op — 0 inserts, full roster present, no extra audit 
   // No extra audit rows on any pod.
   for (const row of stockRowsAfter) {
     const audit = listAgentAudit({ agentId: row.id });
-    assert.equal(audit.length, 1, `${row.name}: no new audit rows from the no-op call`);
+    const expectedAuditCount = row.name === 'caisson' ? 1 + CAISSON_KNOWLEDGE_DOCS.length : 1;
+    assert.equal(
+      audit.length,
+      expectedAuditCount,
+      `${row.name}: no new audit rows from the no-op call`,
+    );
   }
+});
+
+test('caisson stock knowledge auto-reseeds when source-owned content drifts', () => {
+  const live = getAgentByName({ name: 'caisson', scope: 'global' });
+  assert.ok(live, 'caisson pod should be live from prior tests');
+  const doc = listKnowledge({ agentId: live!.id, scope: 'global' }).find(
+    (k) => k.name === 'caisson-navigation-guide',
+  );
+  assert.ok(doc, 'navigation guide should be seeded');
+
+  updateKnowledge(
+    doc!.id,
+    { content: '<<stale source-owned navigation guide>>' },
+    { actor: 'orchestrator', reason: 'system-seed:test-knowledge-drift-fixture' },
+  );
+
+  const result = seedStockPods();
+  assert.equal(result.knowledgeReseededCount, 1);
+  assert.equal(result.knowledgeSkippedCount, 0);
+
+  const after = listKnowledge({ agentId: live!.id, scope: 'global' }).find(
+    (k) => k.name === 'caisson-navigation-guide',
+  );
+  const expected = CAISSON_KNOWLEDGE_DOCS.find((d) => d.name === 'caisson-navigation-guide');
+  assert.equal(after!.content, expected!.content.trim());
+});
+
+test('user-edited caisson stock knowledge is left alone', () => {
+  const live = getAgentByName({ name: 'caisson', scope: 'global' });
+  assert.ok(live, 'caisson pod should be live from prior tests');
+  const doc = listKnowledge({ agentId: live!.id, scope: 'global' }).find(
+    (k) => k.name === 'caisson-product-model',
+  );
+  assert.ok(doc, 'product model should be seeded');
+
+  updateKnowledge(
+    doc!.id,
+    { content: '<<user-customised caisson product model>>' },
+    { actor: 'user', reason: 'local product wording' },
+  );
+
+  const result = seedStockPods();
+  assert.equal(result.knowledgeSkippedCount, 1);
+
+  const after = listKnowledge({ agentId: live!.id, scope: 'global' }).find(
+    (k) => k.name === 'caisson-product-model',
+  );
+  assert.equal(after!.content, '<<user-customised caisson product model>>');
 });
 
 // User-edited rows are protected — drift is reported (skipped-user-edited)

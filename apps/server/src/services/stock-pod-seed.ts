@@ -14,8 +14,14 @@
 // `researcher-pod-content.ts` (their content lives here now) and the
 // flat-file `templates/.project-companion/agents/` directory.
 
-import { type CreateAgentInput } from '@pc/db';
-import { mergeRequiredAgentTools } from '@pc/domain';
+import {
+  createKnowledge,
+  getKnowledgeByName,
+  listAgentAudit,
+  updateKnowledge,
+  type CreateAgentInput,
+} from '@pc/db';
+import { mergeRequiredAgentTools, type ULID } from '@pc/domain';
 import { seedPodWithDriftReseed, type SeedPodAction } from './pod-seed-with-drift.ts';
 import { WORKFLOW_BUILDER_POD_CONTENT } from './workflow-builder-pod-content.ts';
 
@@ -46,7 +52,7 @@ If the task you've been given is genuinely ambiguous — the prompt is missing a
 
 Use this sparingly. If you can answer the question yourself by reading more files, do that instead. Asking should only happen when the answer requires user intent / project knowledge / a trade-off call you can't make from the worktree alone.
 
-Your run pauses on the call. PC delivers your question to the orchestrator; when an answer arrives, your run resumes via \`--resume <sessionId>\` with the answer in scope. Continue from where you left off — don't repeat earlier work.
+Your run pauses on the call. Caisson delivers your question to the orchestrator; when an answer arrives, your run resumes via \`--resume <sessionId>\` with the answer in scope. Continue from where you left off — don't repeat earlier work.
 
 ## Requesting approval (before destructive operations)
 
@@ -295,116 +301,599 @@ Don't ask the user to pick tools from a list. They don't know what each one does
 - You do NOT manage the orchestrator pod or other stock pods. Hand any user request about those to "Global Settings → Specialists."
 - You do NOT make commit-the-pod calls before the user confirms the preview. Always preview-then-confirm.`;
 
-const CAISSON_PROMPT = `You are **caisson** — the in-app specialist for Project Companion (PC). The orchestrator dispatches you when the user asks how PC works, or asks for changes to PC's configuration. You have two jobs:
+const CAISSON_PROMPT = `You are caisson: the in-app specialist for Caisson. The orchestrator dispatches you when the user asks how Caisson works, where to find something in the app, or asks for a Caisson configuration change.
 
-1. **Explain how PC works.** Stages, work items, agents, workflows, knowledge, quick tasks, fields, hooks, the orchestrator — translate to plain English for a non-technical user.
-2. **Mutate PC config on the user's behalf.** Global app settings, project settings, project stages, field schemas, project workflows, project CLAUDE.md. You hit the local HTTP API via \`curl\` (Bash).
+Your job has two parts:
 
-You are dispatched — return your answer (Q&A) or "done, here's what I changed" (mutation) and stop. You are NOT the chat panel.
+1. Explain Caisson in plain English: projects, chat, work items, stages, agents, workflows, knowledge, quick tasks, settings, files, and activity.
+2. Make approved Caisson configuration changes: global settings, project settings, stages, field schemas, workflow definitions, and project CLAUDE.md.
 
-## Mental model of PC
+You are a dispatched specialist, not the main chat panel. Return the answer or the result of the change, then stop.
 
-- **Project** — top-level unit (e.g. "Acme Sales," "Q3 Planning"). Each owns its own work items, stages, agents, workflows, knowledge.
-- **Stages** — columns on the project board. Each project picks its own. Stages can carry typed flags: \`isDone\` (terminal-success column), \`isCancelled\` (terminal-abandon column), \`isNew\` (the column new items land in). At most one stage per flag per project.
-- **Work items** — cards on the board. Title + body + custom fields + attachments + audit log. Live in a stage.
-- **Field schemas** — per-project typed extra columns on work items. The schema defines the shape; each work item carries values matching it.
-- **Agents (pods)** — specialist personas. Stock pods (orchestrator, researcher, writer, code-writer, reviewer, planner, extractor, agent-designer, quick-tasks-pm, caisson) are global + baked in. Custom pods are user-created, project-scoped by default. Spawned via \`pc_invoke_agent\`.
-- **Workflows** — DAGs of agent dispatches, fired automatically by stage-entry triggers (or manually via \`pc_run_workflow\`).
-- **Quick tasks** — atomic todos in a pinned cross-project surface. Managed by the quick-tasks-pm pod.
-- **Knowledge** — reference docs attached to an agent; agent reads them at runtime via \`pc_knowledge_read\`.
-- **Orchestrator** — the chat panel for each project. The user talks to it; it dispatches workers (like you).
-- **Hooks** — \`.cjs\` scripts in \`templates/.claude/hooks/\` that fire on Claude Code lifecycle events (pre-tool, post-tool, ask-intercept, stop). They enforce things like path-guard for worktree writes.
-- **Global vs project settings** — global = machine-wide PC config (data dir, telemetry, font scale, agent dispatch caps, JSONL retention). Project = name + git remote only at the project level.
+## Source of truth
 
-When the user asks "how does X work?" answer from this model + reads of the codebase when you need specifics.
+You must be useful even when you do not have access to Caisson's source repo.
 
-## Reading the app for deeper questions
+Use this order:
 
-- \`apps/server/src/index.ts\` — all HTTP routes (~3000 lines). Use Read with offset/limit to jump to a handler.
-- \`apps/server/src/services/\` — backing service logic (work-item lifecycle, workflow runtime, agent dispatch, pod seeding, etc.).
-- \`packages/domain/src/\` — shared types and constants (stock pod names, stage shape, work item kinds).
-- \`packages/db/src/\` — Drizzle schema + DAO layer.
-- \`apps/web/src/components/\` — React UI.
-- \`docs/TRACKER.md\` — current section status (Planning / Building / Testing / Complete).
-- \`docs/buildout/\` — detailed section plans.
-- \`docs/design/\` — long-lived architectural decisions.
+1. Current runtime state from MCP tools and local HTTP API reads.
+2. Attached knowledge docs. For detailed product, navigation, workflow, agent, or config questions, read the relevant doc with pc_knowledge_read before answering.
+3. Source files only when they are available and the user needs implementation-level detail. Source reads are optional verification, not a dependency.
 
-Cite \`file:line\` when the user is technical enough to care. Otherwise translate.
+If you cannot verify a detail, say so and answer at the level you can support. Never invent paths, settings, workflow behavior, or API responses.
 
-## Mutating config — the HTTP API
+## How to answer
 
-PC runs the API at \`http://127.0.0.1:4040\` (local-only, no auth). Hit it with curl via Bash. **Always read the route handler in \`apps/server/src/index.ts\` before calling it** — the request shape may have shifted since this prompt was written.
+- Translate product concepts for a non-technical user.
+- Prefer "Click Work items, then open the card" over implementation language.
+- Keep answers short unless the user asks for depth.
+- For technical users, cite runtime evidence or file references only when you actually inspected them.
+- If the question is about "where do I go in the UI?", use the navigation knowledge doc.
+- If the question is about "how does this feature work?", use the product/workflow/agent knowledge docs.
 
-### Routes you can mutate
+## Making changes
 
-| What | Method + Path | Handler |
-|---|---|---|
-| Global app settings | \`PATCH /api/settings\` | index.ts:662 |
-| Project name / git remote | \`PATCH /api/projects/:projectId\` | index.ts:790 |
-| Project stages (bulk replace) | \`PATCH /api/projects/:projectId/stages\` | index.ts:2021 |
-| Field schemas (bulk replace) | \`PUT /api/projects/:projectId/field-schemas\` | index.ts:2108 |
-| Create workflow | \`POST /api/projects/:projectId/workflows\` | index.ts:2192 |
-| Edit workflow | \`PUT /api/projects/:projectId/workflows/:wfId\` | index.ts:2246 |
-| Delete workflow | \`DELETE /api/projects/:projectId/workflows/:wfId\` | index.ts:2321 |
-| Project CLAUDE.md | \`PUT /api/projects/:projectId/claude-md\` | index.ts:1397 |
+Before mutating anything:
 
-### Reading current state
+1. Read current state with MCP tools or HTTP GET.
+2. Describe the proposed change in product terms.
+3. Ask for approval when the change is broad, destructive, or hard to undo.
+4. Apply the change with curl through Bash.
+5. Check the response and report the result.
 
-Prefer MCP tools (typed, idempotent):
+You may skip approval for simple reads, renaming a project, renaming a stage without changing its id, or adding a new stage at the end of the board.
 
-- \`pc_list_stages({ projectId })\`
-- \`pc_list_field_schemas({ projectId })\`
-- \`pc_list_workflows({ projectId })\`
-- \`pc_list_agents()\`
+Call pc_request_approval before:
 
-For settings the MCP doesn't read, curl \`GET\` the same path (drop the body).
+- Removing, reordering, or re-flagging stages.
+- Mutating field schemas.
+- Deleting or disabling workflows.
+- Mutating global app settings.
+- Mutating project CLAUDE.md.
+- Any change that could affect many existing work items or future agent behavior.
 
-### Approval gate
+The local API is http://127.0.0.1:4040. Use the config cookbook knowledge doc for route shapes. If the API returns an error, surface the error instead of guessing a fix.
 
-**Call \`pc_request_approval\` before any of the following:**
+## Boundaries
 
-- Adding, removing, reordering, or re-flagging stages (board layout change affects every work item in the project)
-- Mutating field schemas (existing work items may carry old field values)
-- Deleting a workflow with active runs
-- Mutating global app settings (affects every project on the machine)
-- Mutating the project's CLAUDE.md (becomes the system prompt for every future orchestrator session)
-
-Include the BEFORE state + the proposed AFTER state in the summary so the user can judge.
-
-**Skip approval for** reads, adding a new stage at the end of the list, renaming a stage's label (id unchanged), or changing the project's name.
-
-### curl shape
-
-\`\`\`
-curl -sS -X PATCH http://127.0.0.1:4040/api/projects/<projectId>/stages \\
-  -H "Content-Type: application/json" \\
-  -d '{"stages":[{"id":"todo","name":"Todo","order":0},{"id":"done","name":"Done","order":1,"isDone":true}]}'
-\`\`\`
-
-Always check the response. \`{ ok: true, ... }\` = applied. \`{ ok: false, error: ... }\` (4xx/5xx) = surface the error to the user verbatim and stop.
-
-### Destructive stage removal
-
-The stages handler returns \`409 STAGE_HAS_ITEMS\` with an \`orphans\` array if you try to remove a stage that still has work items. To force it, re-send with \`force: true\` and \`fallbackStageId: "<retained-stage-id>"\` — orphans get reassigned. **Always pc_request_approval before forcing.**
+- Do not write source code or edit files in the user's project. Dispatch code-writing work to code-writer through the orchestrator instead.
+- Do not perform long filesystem investigations. Ask the orchestrator to dispatch researcher when the work is exploratory.
+- Use Bash only for local curl calls needed to read or mutate Caisson config.
+- Do not change stock specialist prompts or knowledge unless the user explicitly asks for that administrative action.
 
 ## When to pause
 
-- **pc_request_approval** — before any destructive mutation (see list above).
-- **pc_ask_orchestrator** — the user's intent is ambiguous and you need a clarification only the orchestrator (or via the orchestrator, the user) can give. Example: "you said 'add a review stage' — should it come before or after Done?"
-- **pc_ask_user** — direct user input for a pure judgment call (naming, tone, taste).
+- pc_request_approval: before the broad/destructive changes listed above.
+- pc_ask_orchestrator: when the user's intent is ambiguous and the orchestrator may know the project context.
+- pc_ask_user: when only the human can decide a naming, priority, or taste question.
 
 ## Output
 
-For Q&A: the answer, terse, plain English. Cite file:line only when the user is technical enough to care.
+For Q&A: answer directly in plain English.
 
-For mutations: one-line summary of what changed (in product terms, not API terms). If a curl returned a 4xx/5xx, paste the error verbatim.
+For mutations: one-line summary of what changed. If the API failed, paste the error plainly.
 
 ## Style
 
-- Plain English. The user is non-technical. NEVER say "PATCH the stages route," "JSON payload," "field schema row." Say "I'll change your project's columns to X, Y, Z" or "I added a new field called 'Priority' to your project."
-- Terse. Bullets over paragraphs. No preamble, no recap.
-- Don't recite the codebase. Translate.
-- If you don't know, say so. Don't fabricate. Re-read the route or service to verify.`;
+- Terse, calm, and practical.
+- No implementation jargon unless the user asked for it.
+- No preamble. No recap.
+- If you don't know, say so and name the missing information.`;
+
+export const CAISSON_KNOWLEDGE_DOCS = [
+  {
+    name: 'caisson-product-model',
+    content: `# Caisson product model
+
+Caisson is a local-first command center for one person running work across multiple projects. It turns a folder on disk into a project workspace with chat, work items, agents, workflows, files, and activity tracking.
+
+## Core objects
+
+- App: the local Caisson UI and server. It runs on the user's machine, uses the user's Claude Code login/subscription, and stores data in the configured data directory.
+- Project: the top-level workspace. A project points at one folder on disk and owns its chat sessions, work items, stages, field schemas, workflows, project agents, files, and project CLAUDE.md.
+- Orchestrator: the project chat. The user talks to the orchestrator; it answers, updates work items, and dispatches specialists. It is the front door for each project.
+- Work item: a card on the project board. It has a title, body, stage, typed field values, optional parent/children, attachments, status, and activity.
+- Stage: a board column. Stages are per-project. A stage can have flags like new, done, or cancelled. Stage ids matter because workflows and work items refer to them.
+- Field schema: a project-specific definition for extra work-item fields. Supported types are text, number, boolean, enum, and date.
+- Attachment: content stored on a work item. Agents and workflows use attachments for longer reports, JSON, markdown, or evidence.
+- Agent or pod: a specialist persona with instructions, tools, model settings, and optional knowledge docs. Stock agents are built in; project agents are user-created for one project.
+- Knowledge: reference documents attached to an agent. The agent sees doc names and summaries at spawn and reads full content with pc_knowledge_read when relevant.
+- Workflow: a repeatable recipe. In the current v2 system, a workflow definition has triggers and nodes. Running a workflow creates a root work item and child work items for node outputs.
+- Quick Tasks: a pinned cross-project todo surface for small personal tasks. The quick-tasks-pm specialist manages that list.
+- Activity: the right panel and modal surfaces that show running agents, running workflows, waiting-for-user items, failed recent work, and transcripts.
+
+## Mental model for users
+
+Caisson is not just a kanban board and not just a chat window. The chat is the project manager, the board is the shared state of the work, agents are specialists, and workflows are repeatable processes.
+
+When explaining Caisson:
+
+- "Project" means the workspace around one folder.
+- "Chat" means the project's orchestrator.
+- "Work items" are the durable tasks and outputs.
+- "Agents" do focused work.
+- "Workflows" automate a repeated sequence.
+- "Knowledge" teaches an agent reusable context.
+- "Activity" shows what is happening or waiting on the user.
+
+## Local-first constraints
+
+- Caisson runs locally and talks to a local HTTP API at 127.0.0.1:4040.
+- It uses Claude Code on the user's machine; there is no separate Caisson token billing.
+- The project folder is the user's real folder on disk. Caisson-created files such as .project-companion, .claude, and CLAUDE.md are part of the project scaffolding.
+- The data directory stores Caisson's SQLite DB, run logs, worktrees, quick-tasks workspace, and per-project runtime data.
+
+## What caisson should do with this model
+
+Use this doc to answer conceptual questions without reading source files. If the user asks for current state - for example "what stages does this project have?" - read current state with the available MCP/API tools before answering.`,
+  },
+  {
+    name: 'caisson-navigation-guide',
+    content: `# Caisson navigation guide
+
+Use this when the user asks where something is, how to get to a feature, or what a screen means.
+
+## App chrome
+
+- Top-left CAISSON wordmark opens the app menu. The app menu contains App settings.
+- The header breadcrumb shows the active project, current center tab, and sometimes the active chat session.
+- The center tab strip contains: chat, work items, agents, workflows, files. Project settings is opened from the gear button at the right of the tab strip.
+- The left rail primarily lists projects. It has a filter box, a plus button for creating a project, and project rows.
+- Right-click a project row for project actions: open project settings, open in file explorer, copy folder path, new session, archive, or delete Caisson files.
+- The right activity panel shows running and waiting work. When collapsed it becomes a narrow activity gutter with count badges.
+
+## Chat tab
+
+The chat tab is the project orchestrator. Use it for normal conversation, project-specific requests, dispatching agents, and asking Caisson to create or update work items.
+
+The session switcher lives in the breadcrumb when the chat tab is active. It lets the user browse or resume project chat sessions.
+
+## Work items tab
+
+The work-items tab is the board. Columns are the project's stages. Cards are work items.
+
+Common actions:
+
+- Add a card at the bottom of a stage.
+- Drag cards between stages or within a stage.
+- Click a card to open its detail modal.
+- In the detail modal, use tabs: Overview, Children, Attachments, Activity.
+- Overview edits title, body, stage, and typed fields.
+- Children shows child cards and lets the user create a child.
+- Attachments shows reports or files attached by agents/workflows.
+- Activity shows recent work-item events.
+
+Stage and field-schema editing is not on the board itself. It is in Project settings.
+
+## Agents tab
+
+The Agents tab has two groups:
+
+- Built-in: stock specialists. They are read-only here.
+- This project: project-specific custom agents.
+
+Use "+ Add agent" to open the conversational agent designer. The detail pane shows the selected agent's description, prompt/context, tools, and knowledge.
+
+Stock specialist editing lives in App settings > Specialists, not the project Agents tab.
+
+## Workflows tab
+
+The Workflows tab lists v2 workflow definitions. It shows valid workflows, invalid YAML definitions, run counts, and a Run now action.
+
+Use "+ New workflow" to open the workflow-builder modal. That modal pairs a workflow-builder chat with a visual workflow graph. The user can drag nodes/wires; the builder picks up those changes between turns.
+
+## Files tab
+
+The Files tab shows the project's files. When Files is active, the left rail changes into a file tree. Leaving Files returns the left rail to projects/sessions.
+
+## Project settings
+
+Open Project settings from the gear button in the center tab strip or from a project row context menu.
+
+Sections:
+
+- Project info: display name, slug, folder, git remote.
+- Stages: edit board columns, order, ids for new stages, and stage flags.
+- Field schemas: create typed fields for work items.
+- Danger zone: archive project or delete Caisson scaffold files from the project folder.
+
+## App settings
+
+Open App settings from the CAISSON app menu.
+
+Sections:
+
+- General: projects folder, telemetry, hide-cancelled-stage default, bug log target, font scale.
+- Storage: effective data directory. This is read-only at runtime; changing it requires restart with PC_DATA_DIR.
+- Usage: statusline-derived usage and cost estimates.
+- Specialists: stock pod editor. Edits here affect every project. Reset to default restores seeded prompt/settings but does not remove knowledge, secrets, or MCP servers.
+
+## Activity panel
+
+Activity is for runtime status:
+
+- Running agents.
+- Running workflows.
+- Waiting on you.
+- Failed recently.
+
+Clicking activity cards opens transcripts, workflow run viewers, or the relevant waiting item when available.`,
+  },
+  {
+    name: 'caisson-config-cookbook',
+    content: `# Caisson config cookbook
+
+Use this when caisson needs to read or mutate Caisson configuration. Prefer typed MCP tools for reads. Use local HTTP with curl for config mutations.
+
+Base URL: http://127.0.0.1:4040
+
+## Read tools to prefer
+
+- pc_list_stages({ projectId }) reads project stages.
+- pc_list_field_schemas({ projectId }) reads field schemas.
+- pc_list_agents() reads available agents.
+- pc_list_workflows({ projectId }) reads workflows when available through MCP.
+- pc_knowledge_read reads agent knowledge docs by id.
+
+For state not exposed by MCP, use HTTP GET.
+
+## Important HTTP routes
+
+Global settings:
+
+- GET /api/settings
+- PATCH /api/settings
+
+Projects:
+
+- GET /api/projects
+- GET /api/projects/:projectId
+- PATCH /api/projects/:projectId for display name and git remote.
+- PATCH /api/projects/reorder for rail order.
+- DELETE /api/projects/:projectId archives a project.
+- DELETE /api/projects/:projectId/files removes Caisson scaffold files from the project folder.
+- POST /api/projects/:projectId/reveal opens the project folder in the OS file explorer.
+
+Project CLAUDE.md:
+
+- GET /api/projects/:projectId/claude-md-status
+- PUT /api/projects/:projectId/claude-md
+
+Work items:
+
+- GET /api/projects/:projectId/work-items
+- POST /api/projects/:projectId/work-items/create
+- GET /api/projects/:projectId/work-items/:wiId
+- PATCH /api/projects/:projectId/work-items/:wiId
+- POST /api/projects/:projectId/work-items/:wiId/move
+- DELETE /api/projects/:projectId/work-items/:wiId archives a work item.
+- POST /api/projects/:projectId/work-items/:wiId/restore
+- GET /api/projects/:projectId/work-items/:wiId/attachments
+
+Stages:
+
+- PATCH /api/projects/:projectId/stages bulk-replaces stages.
+- If removing a stage that still has work items, the server returns 409 STAGE_HAS_ITEMS with orphan information.
+- To force stage removal, resend with force: true and fallbackStageId. Always ask approval first.
+
+Field schemas:
+
+- GET /api/projects/:projectId/field-schemas
+- PUT /api/projects/:projectId/field-schemas bulk-replaces schemas.
+
+Workflow v2:
+
+- GET /api/projects/:projectId/workflow-v2/definitions
+- POST /api/projects/:projectId/workflow-v2/definitions publishes a v2 workflow definition.
+- GET /api/projects/:projectId/workflow-v2/definitions/:wfId
+- POST /api/projects/:projectId/workflow-v2/fire runs a workflow.
+- GET /api/projects/:projectId/workflow-v2/runs
+- GET /api/projects/:projectId/workflow-v2/runs/:runId
+- POST /api/projects/:projectId/workflow-v2/review submits a workflow review decision.
+
+Workflow builder:
+
+- POST /api/projects/:projectId/workflow-builder/start
+- POST /api/projects/:projectId/workflow-builder/send
+- POST /api/projects/:projectId/workflow-builder/interrupt
+- DELETE /api/projects/:projectId/workflow-builder
+- POST /api/projects/:projectId/workflow-builder/draft
+- GET /api/projects/:projectId/workflow-builder/draft/:sessionId
+
+## Approval rules
+
+Ask approval before:
+
+- Removing, reordering, or re-flagging stages.
+- Forcing stage removal with fallback reassignment.
+- Mutating field schemas.
+- Deleting, disabling, or replacing workflow definitions.
+- Mutating global app settings.
+- Mutating project CLAUDE.md.
+- Archiving projects or deleting Caisson files.
+
+Approval summary should include:
+
+- Current state.
+- Proposed state.
+- Why the change matters.
+- Any known side effects.
+
+## Safe changes that usually do not need approval
+
+- Reading settings or project state.
+- Renaming a project display name.
+- Updating a project git remote.
+- Renaming a stage label while keeping its id.
+- Adding a new stage at the end.
+
+## curl pattern
+
+Use Bash only for curl. Always include Content-Type for JSON writes. Always inspect the response.
+
+For a PATCH:
+
+curl -sS -X PATCH http://127.0.0.1:4040/api/projects/PROJECT_ID/stages -H "Content-Type: application/json" -d "JSON_BODY"
+
+If the response is an error or the command fails, report that error and stop. Do not guess that a change applied.`,
+  },
+  {
+    name: 'caisson-workflows-guide',
+    content: `# Caisson workflows guide
+
+Use this when the user asks how workflows work, why one did or did not run, or where workflow output goes.
+
+## Current workflow model
+
+Caisson uses workflow v2 as the active workflow surface. A workflow is a repeatable definition with triggers and nodes. The UI hides YAML for normal users; workflows are usually authored through the workflow-builder modal.
+
+## Authoring
+
+The primary authoring path is conversational:
+
+1. User opens Workflows > + New workflow.
+2. Caisson opens the workflow-builder modal.
+3. The workflow-builder asks what the workflow should do.
+4. The builder creates or edits a visual workflow graph and draft definition.
+5. The user can drag nodes/wires in the graph; the builder picks up those edits between turns.
+6. Publishing stores the workflow definition for the project.
+
+## Triggers
+
+The schema supports four trigger kinds:
+
+- manual: user can run it on demand.
+- stage-on-entry: workflow fires when a work item moves into a chosen stage.
+- schedule: planned schema support, UI follow-up.
+- event: planned schema support, UI follow-up.
+
+The v1 UI affordances are manual and stage-on-entry. Stage-on-entry fires on forward moves by default. Backward moves do not fire unless the workflow explicitly opts into regression firing.
+
+## Node kinds
+
+The current v2 node set:
+
+- agent: dispatches a specialist to complete work.
+- bash: runs a shell command in the workflow worktree.
+- script: runs a node or python script.
+- human-review: pauses for the user.
+- orchestrator-review: asks the orchestrator to review a bundle.
+
+Loop nodes and nested sub-workflows are deferred.
+
+## Work-item-as-contract
+
+Every workflow run creates durable work items:
+
+- A workflow-root work item represents the whole run.
+- Each node creates a child work item.
+- Agent node outputs live on the child work item body, fields, and attachments.
+- References like a prior node's output resolve by reading that prior child work item.
+
+This is why workflow output appears in work items and attachments rather than only in chat.
+
+## Review and reject loops
+
+Review-reject is the kick-back mechanism. A review node can reject to a previous node with feedback. Reject edges default to max_iterations: 3. If the workflow exceeds the iteration ceiling, it escalates to human review instead of looping forever.
+
+## Where users see workflow status
+
+- Workflows tab: definitions, Run now, run-count/status pills, invalid definitions.
+- Activity panel: active workflow runs, paused runs waiting on user, failed recent runs.
+- Workflow run viewer: graph/running state for a specific run.
+- Work items: root and child work items preserve outputs, attachments, and review state.
+
+## Common explanations
+
+"Why didn't my workflow run when I moved a card backward?"
+
+Stage-on-entry triggers fire on forward moves by default. Backward/regression moves do not fire unless the workflow was configured to also fire on regression.
+
+"Where did the result go?"
+
+Look at the workflow root work item and its child node work items. Long results usually appear as attachments.
+
+"Why is a workflow waiting?"
+
+It likely hit a human-review or orchestrator-review node, or an agent asked for approval/clarification. Check Activity > Waiting on you.
+
+"Can I build a workflow without YAML?"
+
+Yes. Use Workflows > + New workflow. The workflow-builder handles the definition and visual graph.`,
+  },
+  {
+    name: 'caisson-agents-guide',
+    content: `# Caisson agents guide
+
+Use this when the user asks how agents work, where to create one, what stock agents do, or how knowledge works.
+
+## What an agent is
+
+An agent, also called a pod, is a specialist with:
+
+- Name.
+- Description.
+- System instructions.
+- Tool allowlist.
+- Model and effort settings.
+- Optional max-turn cap.
+- Output destination.
+- Optional knowledge docs.
+- Optional secrets and MCP server config.
+
+The orchestrator dispatches agents for focused work. The user can also create project-specific agents through the Agents tab.
+
+## Stock agents
+
+Stock agents are global, built-in, and available to every project:
+
+- orchestrator: the project chat and dispatcher.
+- researcher: filesystem/web investigation and findings.
+- writer: drafts prose, emails, docs, summaries, release notes.
+- code-writer: writes or edits code and verifies it.
+- reviewer: critiques drafts, code, plans, or designs.
+- planner: breaks goals into ordered, verifiable steps.
+- extractor: extracts structured JSON from unstructured input.
+- agent-designer: conversationally creates new project agents.
+- workflow-builder: conversationally creates workflow v2 definitions.
+- quick-tasks-pm: manages the Quick Tasks surface.
+- caisson: explains and configures Caisson itself.
+
+## Project agents
+
+Project agents are custom specialists scoped to one project. They appear under "This project" in the Agents tab.
+
+Create one from Agents > + Add agent. The conversational agent designer asks what the agent should do, picks sensible model/tools, previews the design, and creates the agent after confirmation.
+
+## Where stock agents are edited
+
+Built-in agents are read-only in the project Agents tab. Edit stock specialists from App settings > Specialists. Edits there affect every project. Reset to default restores the seeded prompt and settings; knowledge, secrets, and MCP servers are untouched.
+
+## Knowledge docs
+
+Knowledge docs are reference material attached to an agent.
+
+Good knowledge docs include:
+
+- Product facts.
+- Style guides.
+- Examples.
+- API/service notes.
+- Domain rules.
+- Navigation guides.
+
+The agent's spawn prompt lists available knowledge docs by name, id, and short summary. The agent reads full content by calling pc_knowledge_read with the doc id.
+
+Use knowledge instead of the system prompt when the material is long, sometimes relevant, or likely to evolve. Use the prompt for role, behavior rules, safety rules, and always-on operating instructions.
+
+## Tools
+
+Agent tools are explicit. If a tool is not in the allowlist, the agent cannot call it.
+
+Common tools:
+
+- Read, Glob, Grep: inspect files.
+- Bash: shell commands, usually for checks or local API calls.
+- Edit: mutate existing files.
+- WebFetch/WebSearch: external lookup when allowed.
+- pc-rig tools: Caisson-specific tools for work items, workflows, agents, knowledge, questions, and approvals.
+
+## Model and effort
+
+- Haiku/low: simple extraction and cheap quick tasks.
+- Sonnet/medium or high: most writing, routine analysis, and code.
+- Opus/high: complex planning, investigation, synthesis, or project-management behavior.
+
+Pick the cheapest model that can reliably do the job.
+
+## Output destinations
+
+- chat: return useful output to the chat.
+- passthrough: agent conversation is the product surface.
+- work-item/attachment patterns: used by workflows and agent work-item contracts.
+
+## When to create an agent
+
+Create an agent for recurring work with a stable role. For a one-off task, ask the orchestrator to do or dispatch the work directly.`,
+  },
+  {
+    name: 'caisson-troubleshooting',
+    content: `# Caisson troubleshooting guide
+
+Use this for common user confusion and operational failure modes.
+
+## If caisson does not know
+
+Say what is missing. Then choose the best available path:
+
+- Runtime state question: read MCP/API state.
+- Product explanation: read the relevant knowledge doc.
+- Implementation detail: inspect source only if available; otherwise say source access is unavailable.
+- User-intent question: ask the orchestrator or user.
+
+Do not fabricate exact paths, ids, workflow behavior, API response shapes, or route names.
+
+## Common user questions
+
+"Where is X?"
+
+Use the navigation guide. Answer with the tab/menu path first.
+
+"Why can't I edit a built-in agent here?"
+
+Built-in agents are read-only in the project Agents tab. Edit them in App settings > Specialists because those edits affect every project.
+
+"Why did my workflow not fire?"
+
+Check whether the workflow is enabled, whether it has a manual or stage-on-entry trigger, whether the card moved into the trigger stage, and whether the move was forward. Stage-on-entry does not fire on backward moves by default.
+
+"Why is my workflow waiting?"
+
+Check Activity > Waiting on you. It may be paused at human review, orchestrator review, approval, or a question from an agent.
+
+"Where did an agent's long answer go?"
+
+Check the relevant work item attachments and Activity/transcript. Long reports are often attached rather than pasted into chat.
+
+"Why does a project not show in the rail?"
+
+It may be archived. Check project/settings or the archive restore surface if available. Also verify the active project list from GET /api/projects.
+
+"How do I change board columns?"
+
+Open Project settings > Stages. Rename/add stages there. Removing/reordering/re-flagging stages affects many work items and should require approval.
+
+"How do I add custom fields to cards?"
+
+Open Project settings > Field schemas. Add a text, number, boolean, enum, or date field. Existing cards will show the new typed editor.
+
+"How do I teach an agent something?"
+
+Add a knowledge doc to that agent. For stock specialists, use the stock specialist/admin surface if available. For project agents, use the Agents tab and its knowledge/context area.
+
+"What does Caisson cost?"
+
+Caisson uses the user's existing Claude Code authentication/subscription. Usage views estimate cost from statusline data; they are not a separate Caisson bill.
+
+## Local API problems
+
+If curl fails to connect to 127.0.0.1:4040, the Caisson server may not be running or may be on a different port. Report the connection failure.
+
+If the API returns a 4xx/5xx JSON error, paste the useful error text. Do not retry with guessed payloads unless the error clearly says what to change.
+
+If a stage replacement returns STAGE_HAS_ITEMS, explain that removing a non-empty stage would orphan cards. Ask approval before forcing reassignment to a fallback stage.
+
+## Knowledge tool problems
+
+If the prompt lists a knowledge doc but pc_knowledge_read is unavailable, say the knowledge tool is not exposed in this run. Answer only from the prompt/runtime state and flag the limitation.
+
+If no knowledge doc exists for a topic, say so. Suggest adding one if the topic should be durable.
+
+## Safe escalation
+
+Ask pc_ask_orchestrator when the project context matters. Ask pc_ask_user when only the human can decide. Ask pc_request_approval before broad or destructive config changes.`,
+  },
+] as const;
 
 const CODE_WRITER_PROMPT = `You are a code-writer. The orchestrator dispatches you to write or modify code to meet a spec. Read the surrounding code first; match its conventions. Verify your own work — run the project's tests, typecheck, and lint before you finish. Don't hand back code you haven't watched pass.
 
@@ -671,7 +1160,7 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
   // catalog access + comms (ask + approval gate). Bash is the load-bearing
   // grant — without it, no curl, no config mutation. Edit/Write are off
   // (caisson doesn't write source files; CLAUDE.md edits go through the API).
-  // WebFetch/WebSearch off (PC is local; no external lookups needed).
+  // WebFetch/WebSearch off (Caisson is local; no external lookups needed).
   tools: mergeRequiredAgentTools([
     'Read',
     'Glob',
@@ -692,9 +1181,9 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
   maxTurns: 25,
   outputDestination: 'chat',
   description:
-    "In-app specialist for Project Companion. Answers questions about how PC works (stages, work items, agents, workflows, etc.) and mutates project + global config via the local HTTP API. Always asks for approval before destructive changes.",
+    "In-app specialist for Caisson. Answers questions about how Caisson works (stages, work items, agents, workflows, etc.) and mutates project + global config via the local HTTP API. Always asks for approval before destructive changes.",
   dispatchGuidance:
-    'product questions about PC ("how do stages work?", "what\'s a workflow?", "how do agents work?") AND config changes (project settings, stages, fields, workflows, CLAUDE.md, global app settings). Approval-gated for destructive ops.',
+    'product questions about Caisson ("how do stages work?", "what\'s a workflow?", "how do agents work?") AND config changes (project settings, stages, fields, workflows, CLAUDE.md, global app settings). Approval-gated for destructive ops.',
 };
 
 const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
@@ -876,6 +1365,86 @@ export const STOCK_POD_CONTENT: readonly CreateAgentInput[] = [
 
 export type SeedStockPodAction = SeedPodAction;
 
+type StockKnowledgeDoc = (typeof CAISSON_KNOWLEDGE_DOCS)[number];
+
+interface SeedStockKnowledgeResult {
+  insertedCount: number;
+  reseededCount: number;
+  skippedCount: number;
+}
+
+function seedStockKnowledgeDocs(
+  agentId: ULID,
+  docs: readonly StockKnowledgeDoc[],
+  opts: { reasonTag: string; agentName: string },
+): SeedStockKnowledgeResult {
+  let insertedCount = 0;
+  let reseededCount = 0;
+  let skippedCount = 0;
+
+  for (const doc of docs) {
+    const content = doc.content.trim();
+    const existing = getKnowledgeByName({
+      agentId,
+      scope: 'global',
+      name: doc.name,
+    });
+
+    if (!existing) {
+      createKnowledge(
+        {
+          agentId,
+          scope: 'global',
+          name: doc.name,
+          kind: 'knowledge',
+          content,
+        },
+        {
+          actor: 'orchestrator',
+          reason: `system-seed:${opts.reasonTag} - ${opts.agentName} knowledge '${doc.name}' created at boot`,
+        },
+      );
+      insertedCount += 1;
+      continue;
+    }
+
+    if (existing.kind === 'knowledge' && existing.content === content) continue;
+
+    if (hasNonSystemKnowledgeEdit(agentId, existing.id)) {
+      skippedCount += 1;
+      continue;
+    }
+
+    updateKnowledge(
+      existing.id,
+      { kind: 'knowledge', content },
+      {
+        actor: 'orchestrator',
+        reason: `system-reseed:${opts.reasonTag} - ${opts.agentName} knowledge '${doc.name}' drift`,
+      },
+    );
+    reseededCount += 1;
+  }
+
+  return { insertedCount, reseededCount, skippedCount };
+}
+
+function hasNonSystemKnowledgeEdit(agentId: ULID, knowledgeId: ULID): boolean {
+  const rows = listAgentAudit({ agentId, field: 'knowledge', limit: 1000 });
+  for (const row of rows) {
+    if (row.fieldRef !== knowledgeId) continue;
+    if (isSystemKnowledgeSeed(row.reason, row.actor)) return false;
+    return true;
+  }
+  return false;
+}
+
+function isSystemKnowledgeSeed(reason: string | null, actor: string): boolean {
+  if (actor !== 'orchestrator') return false;
+  const r = reason ?? '';
+  return r.startsWith('system-seed:') || r.startsWith('system-reseed:');
+}
+
 export interface SeedStockPodEntry {
   name: string;
   action: SeedStockPodAction;
@@ -894,6 +1463,12 @@ export interface SeedStockPodsResult {
   reseededCount: number;
   /** Convenience count of pods skipped because of user edits. */
   skippedCount: number;
+  /** Convenience count of stock knowledge docs inserted this call. */
+  knowledgeInsertedCount: number;
+  /** Convenience count of stock knowledge docs auto-reseeded this call. */
+  knowledgeReseededCount: number;
+  /** Convenience count of stock knowledge docs skipped because of user edits. */
+  knowledgeSkippedCount: number;
 }
 
 /** Boot-time seed for the stock specialist pods. Insert-or-drift-reseed
@@ -908,6 +1483,9 @@ export function seedStockPods(): SeedStockPodsResult {
   let insertedCount = 0;
   let reseededCount = 0;
   let skippedCount = 0;
+  let knowledgeInsertedCount = 0;
+  let knowledgeReseededCount = 0;
+  let knowledgeSkippedCount = 0;
   for (const content of STOCK_POD_CONTENT) {
     const result = seedPodWithDriftReseed(content, { reasonTag: '17e' });
     entries.push({
@@ -919,6 +1497,24 @@ export function seedStockPods(): SeedStockPodsResult {
     if (result.action === 'inserted') insertedCount += 1;
     else if (result.action === 'reseeded') reseededCount += 1;
     else if (result.action === 'skipped-user-edited') skippedCount += 1;
+
+    if (content.name === 'caisson') {
+      const knowledge = seedStockKnowledgeDocs(result.agentId as ULID, CAISSON_KNOWLEDGE_DOCS, {
+        reasonTag: '17e',
+        agentName: content.name,
+      });
+      knowledgeInsertedCount += knowledge.insertedCount;
+      knowledgeReseededCount += knowledge.reseededCount;
+      knowledgeSkippedCount += knowledge.skippedCount;
+    }
   }
-  return { entries, insertedCount, reseededCount, skippedCount };
+  return {
+    entries,
+    insertedCount,
+    reseededCount,
+    skippedCount,
+    knowledgeInsertedCount,
+    knowledgeReseededCount,
+    knowledgeSkippedCount,
+  };
 }
