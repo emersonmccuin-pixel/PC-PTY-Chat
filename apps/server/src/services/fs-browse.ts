@@ -14,7 +14,7 @@
 // null when at the filesystem root OR at the gate root (whichever is higher)
 // — stops the picker from walking past the gate.
 
-import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
@@ -89,7 +89,56 @@ export function browseFolder(input: string | null | undefined, opts: BrowseOptio
   return { path, parent, entries };
 }
 
-export type BrowseErrorKind = 'invalid' | 'forbidden' | 'not_found' | 'not_directory';
+export function createChildFolder(
+  parentInput: string | null | undefined,
+  nameInput: string | null | undefined,
+  opts: BrowseOptions = {},
+): BrowseResult {
+  const parentView = browseFolder(parentInput, opts);
+  const name = (nameInput ?? '').trim();
+  if (!name) {
+    throw new BrowseError('folder name required', 'invalid');
+  }
+  if (name === '.' || name === '..') {
+    throw new BrowseError(`invalid folder name: ${JSON.stringify(name)}`, 'invalid');
+  }
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) {
+    throw new BrowseError(`folder name must be a single path segment: ${JSON.stringify(name)}`, 'invalid');
+  }
+
+  const target = resolve(parentView.path, name);
+  if (normalize(dirname(target)) !== normalize(parentView.path)) {
+    throw new BrowseError(`folder name escapes the parent directory: ${JSON.stringify(name)}`, 'invalid');
+  }
+
+  const gateRoots = (opts.roots ?? []).map((r) => resolve(r));
+  if (gateRoots.length > 0 && !isInsideAnyRoot(target, gateRoots)) {
+    throw new BrowseError(`path not inside the allowed root(s): ${target}`, 'forbidden');
+  }
+  if (existsSync(target)) {
+    throw new BrowseError(`path already exists: ${target}`, 'already_exists');
+  }
+
+  try {
+    mkdirSync(target);
+  } catch (err) {
+    const code = typeof err === 'object' && err && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+    if (code === 'EEXIST') {
+      throw new BrowseError(`path already exists: ${target}`, 'already_exists');
+    }
+    throw new BrowseError(`failed to create folder: ${(err as Error).message}`, 'invalid');
+  }
+  return browseFolder(target, opts);
+}
+
+export type BrowseErrorKind =
+  | 'invalid'
+  | 'forbidden'
+  | 'not_found'
+  | 'not_directory'
+  | 'already_exists';
 
 export class BrowseError extends Error {
   constructor(message: string, public readonly kind: BrowseErrorKind) {
