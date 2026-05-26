@@ -73,6 +73,10 @@ function mkFixture(opts: { yamls?: { id: string; body: string }[] } = {}): Fixtu
     templatesDir: resolve(tmpDir, 'templates'),
     trunkPath: tmpDir,
   });
+  // Section 19.17 — workflows live in the DB now; the v2 stage-on-entry
+  // matcher reads from there, not from the on-disk registry. Bootstrap
+  // imports any YAMLs the fixture wrote to disk into DB rows.
+  runtime.bootstrap();
 
   const fired: { workflowId: string; trigger: WorkflowV2.WorkflowTrigger }[] = [];
   runtime.fireV2Workflow = (async (

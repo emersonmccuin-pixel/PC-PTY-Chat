@@ -119,6 +119,7 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
+import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
@@ -1115,6 +1116,46 @@ app.post('/api/projects', async (c) => {
 // verbs for the chrome quick-add button (34.7) + the MCP tools
 // (`pc_create_quick_task`, `pc_list_quick_tasks`, `pc_list_quick_tasks_for_project`).
 registerQuickTasksRoutes(app, { registry: projectRegistry });
+
+/** Section 19.17 — workflows are first-class scoped rows (mirrors agents
+ *  pattern). CRUD + lifecycle live under `/api/workflows/*`; the legacy
+ *  `/api/projects/:projectId/workflow-v2/*` GET endpoints survive only as
+ *  read-only compat for the existing web client (19.18 rewires). */
+registerWorkflowRoutes(app, {
+  broadcastTo,
+  broadcastAll,
+  countInFlightRuns: (projectId, slug) => {
+    const runs = workflowRunsV2Repo.listRunsByProject(projectId);
+    return runs.filter(
+      (r) =>
+        r.workflowId === slug &&
+        (r.status === 'pending' || r.status === 'running' || r.status === 'paused'),
+    ).length;
+  },
+  cancelInFlightRuns: (projectId, slug) => {
+    const runs = workflowRunsV2Repo.listRunsByProject(projectId);
+    for (const r of runs) {
+      if (
+        r.workflowId === slug &&
+        (r.status === 'pending' || r.status === 'running' || r.status === 'paused')
+      ) {
+        workflowRunsV2Repo.setStatus(r.id, 'cancelled', {
+          lastReason: 'workflow soft-deleted',
+        });
+        broadcastTo(projectId, {
+          type: 'workflow-v2-run-changed',
+          runId: r.id,
+          status: 'cancelled',
+        });
+      }
+    }
+  },
+  fireWorkflow: async (projectId, def, trigger) => {
+    const runtime = resolveProject(projectId);
+    if (!runtime) throw new Error(`unknown project: ${projectId}`);
+    return runtime.fireV2Workflow(def, trigger);
+  },
+});
 
 registerPodRoutes(app, {
   broadcastAll,
@@ -2413,62 +2454,16 @@ app.get('/api/subagent-transcript', async (c) => {
 // POST /workflow-v2/review for review decisions; POST /workflow-v2/fire
 // (or via MCP) for manual runs by name.
 
-// Section 19.4f — fire a v2 (Section-19) DAG workflow. The definition is
-// passed inline in the body until the v2 workflow registry + builder UI land
-// (19.9–19.11). Returns the run id + root work-item id; the run proceeds in the
-// background and broadcasts state over WS (`workflow-v2-run-changed`).
-app.post('/api/projects/:projectId/workflow-v2/fire', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ workflow?: unknown; trigger?: unknown }>();
-  const wf = body.workflow as { id?: unknown; name?: unknown; nodes?: unknown } | undefined;
-  if (!wf || typeof wf.id !== 'string' || typeof wf.name !== 'string' || !Array.isArray(wf.nodes)) {
-    return c.json({ ok: false, error: 'workflow must have { id, name, nodes[] }' }, 400);
-  }
-  // 19.6 — validate the graph (cycles / when: grammar / ref integrity / trigger
-  // shape) before firing. Same validator the builder will call at publish time.
-  const graph = validateWorkflowV2(wf as never);
-  if (!graph.ok) {
-    return c.json({ ok: false, error: `invalid workflow: ${graph.errors.join('; ')}`, errors: graph.errors }, 400);
-  }
-  try {
-    const trigger =
-      body.trigger && typeof body.trigger === 'object'
-        ? (body.trigger as { kind: 'manual' | 'stage-on-entry' | 'schedule' | 'event' })
-        : { kind: 'manual' as const };
-    const res = await runtime.fireV2Workflow(wf as never, trigger as never);
-    return c.json({ ok: true, ...res });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 400);
-  }
-});
+// Section 19.17 — POST `/api/projects/:projectId/workflow-v2/fire` and
+// POST `/api/projects/:projectId/workflow-v2/definitions` deleted. The new
+// canonical surface is `/api/workflows/:id/fire` (id-based, DB-backed) and
+// `POST/PUT /api/workflows` for create/update. The MCP tools were repointed
+// alongside the route move. GET endpoints below survive as 19.18 compat.
 
-// Section 19 — v2 workflow DEFINITIONS store (distinct from runs above).
-// publish: validate → write YAML → registry reload → broadcast. Create or
-// overwrite by id (the builder pod's publish tool calls this).
-app.post('/api/projects/:projectId/workflow-v2/definitions', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ workflow?: unknown }>();
-  const wf = body.workflow as { id?: unknown; name?: unknown; nodes?: unknown } | undefined;
-  if (!wf || typeof wf.id !== 'string' || typeof wf.name !== 'string' || !Array.isArray(wf.nodes)) {
-    return c.json({ ok: false, error: 'workflow must have { id, name, nodes[] }' }, 400);
-  }
-  const graph = validateWorkflowV2(wf as never);
-  if (!graph.ok) {
-    return c.json({ ok: false, error: `invalid workflow: ${graph.errors.join('; ')}`, errors: graph.errors }, 400);
-  }
-  try {
-    const res = runtime.publishV2Workflow(wf as never);
-    return c.json({ ok: true, ...res }, 201);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 400);
-  }
-});
-
-// list: valid + invalid v2 definitions for the Workflows tab.
+// list: valid + invalid v2 definitions for the Workflows tab. Reads from
+// DB post-19.17. 19.18 swaps the web client over to `/api/workflows`; this
+// compat shape (using `fileName` for invalids — a legacy of the on-disk
+// registry) is preserved so a mid-19 web client doesn't crash.
 app.get('/api/projects/:projectId/workflow-v2/definitions', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -2476,17 +2471,21 @@ app.get('/api/projects/:projectId/workflow-v2/definitions', (c) => {
   const state = runtime.listV2Workflows();
   return c.json({
     ok: true,
-    valid: state.valid.map((e) => ({ id: e.workflow.id, name: e.workflow.name, workflow: e.workflow })),
-    invalid: state.invalid.map((e) => ({ fileName: e.fileName, errors: e.errors })),
+    valid: state.valid.map((e) => ({
+      id: e.workflow.id,
+      name: e.workflow.name,
+      workflow: e.workflow,
+    })),
+    invalid: state.invalid.map((e) => ({ fileName: `${e.slug}.yaml`, errors: e.errors })),
   });
 });
 
-// get one by id (the workflow def + raw YAML, for the editor).
+// get one by id (slug-based; legacy web-client contract). DB-backed.
 app.get('/api/projects/:projectId/workflow-v2/definitions/:wfId', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const entry = runtime.workflowV2Registry().findById(c.req.param('wfId'));
+  const entry = runtime.findV2WorkflowBySlug(c.req.param('wfId'));
   if (!entry) return c.json({ ok: false, error: 'workflow not found' }, 404);
   return c.json({ ok: true, workflow: entry.workflow, yamlText: entry.yamlText });
 });
@@ -3363,16 +3362,49 @@ wss.on('connection', (ws, req) => {
   }
 
   ws.on('message', (raw) => {
-    let msg: { type?: string; text?: string; cols?: number; rows?: number };
+    let msg: { type?: string; text?: string; clientMessageId?: unknown; cols?: number; rows?: number };
     try {
       msg = JSON.parse(raw.toString());
     } catch {
       return;
     }
     const live = runtime.ptySession();
+    const sendAck = (
+      clientMessageId: unknown,
+      ack: { ok: boolean; status: 'received' | 'invalid-message' | 'no-session' | 'error'; error?: string },
+    ) => {
+      if (typeof clientMessageId !== 'string' || !clientMessageId) return;
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(JSON.stringify({ projectId, type: 'send-ack', clientMessageId, ...ack }));
+    };
     switch (msg.type) {
       case 'send':
-        if (live && typeof msg.text === 'string') live.send(msg.text);
+        if (typeof msg.text !== 'string') {
+          sendAck(msg.clientMessageId, {
+            ok: false,
+            status: 'invalid-message',
+            error: 'send.text must be a string',
+          });
+          break;
+        }
+        if (!live) {
+          sendAck(msg.clientMessageId, {
+            ok: false,
+            status: 'no-session',
+            error: 'No live orchestrator session is attached',
+          });
+          break;
+        }
+        try {
+          live.send(msg.text);
+          sendAck(msg.clientMessageId, { ok: true, status: 'received' });
+        } catch (err) {
+          sendAck(msg.clientMessageId, {
+            ok: false,
+            status: 'error',
+            error: err instanceof Error ? err.message : 'Failed to send prompt',
+          });
+        }
         break;
       case 'interrupt':
         live?.interrupt();

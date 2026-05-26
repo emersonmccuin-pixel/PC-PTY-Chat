@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { OrchestratorSession, Project, ULID, WorkflowV2, WorkItem } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID, WorkflowRow, WorkflowV2, WorkItem } from '@pc/domain';
 import { isQuickTasksKind, postMoveStatusForStage } from '@pc/domain';
 import type { ReviewDecision } from '@pc/workflows';
 import {
@@ -21,15 +21,10 @@ import {
   getOrchestratorSession,
   moveWorkItemStage,
   reactivateOrchestratorSession,
+  workflowsRepo,
 } from '@pc/db';
 import { jsonlPathFor, PtySession } from '@pc/runtime';
-import {
-  WorkflowV2Registry,
-  selectStageEntryWorkflows,
-  serializeWorkflowV2,
-  validateWorkflowV2,
-  type RegistryV2State,
-} from '@pc/workflows';
+import { selectStageEntryWorkflows } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
@@ -80,7 +75,6 @@ export class ProjectRuntime {
   private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
   private worktreesSvc: WorktreeService | null = null;
-  private registryV2: WorkflowV2Registry | null = null;
   /** Section 19.13 — one-shot YAML→DB import per ProjectRuntime lifetime.
    *  ProjectRegistry calls `bootstrap()` right after construct; the flag
    *  keeps the second call a no-op (defends against hot-reload + ensure()
@@ -164,39 +158,62 @@ export class ProjectRuntime {
     }
   }
 
-  /** Lazy: v2 workflow registry rooted at `<folder>/.project-companion/workflows/`.
-   *  19.12 — v1 registry + 4h.8 typed-edge boot-migration removed. */
-  workflowV2Registry(): WorkflowV2Registry {
-    if (!this.registryV2) {
-      const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
-      this.registryV2 = new WorkflowV2Registry(dir);
-      this.registryV2.reload();
+  /** Section 19.17 — DB-backed view of every v2 workflow visible to this
+   *  project (project-scope rows + globals). Returns `{ valid, invalid }`
+   *  shaped to match the legacy registry surface so the compat GET endpoint
+   *  (`/api/projects/:id/workflow-v2/definitions`) can serialize without
+   *  reshaping. 19.18 swaps the web client over to `/api/workflows` and the
+   *  compat endpoint goes with it. */
+  listV2Workflows(): {
+    valid: Array<{ id: string; name: string; workflow: WorkflowV2.Workflow; rowId: ULID }>;
+    invalid: Array<{ id: string; slug: string; errors: string[] }>;
+  } {
+    const rows = workflowsRepo.listWorkflows({
+      projectId: this.project.id,
+      includeGlobals: true,
+    });
+    const valid: Array<{
+      id: string;
+      name: string;
+      workflow: WorkflowV2.Workflow;
+      rowId: ULID;
+    }> = [];
+    const invalid: Array<{ id: string; slug: string; errors: string[] }> = [];
+    for (const r of rows) {
+      if (r.status === 'active' && r.parsedDefinition !== null) {
+        const wf = r.parsedDefinition as WorkflowV2.Workflow;
+        valid.push({ id: r.slug, name: r.name, workflow: wf, rowId: r.id });
+      } else {
+        invalid.push({
+          id: r.id,
+          slug: r.slug,
+          errors: r.parseError ? [r.parseError] : ['invalid workflow row'],
+        });
+      }
     }
-    return this.registryV2;
+    return { valid, invalid };
   }
 
-  /** Section 19 — publish (create or overwrite) a v2 workflow definition.
-   *  Validates the graph, writes the YAML to `<folder>/.project-companion/
-   *  workflows/<id>.yaml`, reloads the registry, and broadcasts the change so
-   *  the Workflows tab refreshes. Returns the on-disk path. Throws on invalid
-   *  graph (caller maps to HTTP 400). */
-  publishV2Workflow(workflow: WorkflowV2.Workflow): { id: string; path: string } {
-    const result = validateWorkflowV2(workflow);
-    if (!result.ok) {
-      throw new Error(`invalid workflow: ${result.errors.join('; ')}`);
-    }
-    const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const path = resolve(dir, `${workflow.id}.yaml`);
-    writeFileSync(path, serializeWorkflowV2(workflow), 'utf-8');
-    this.workflowV2Registry().reload();
-    this.opts.broadcast({ type: 'project-workflows-changed', projectId: this.project.id, id: workflow.id });
-    return { id: workflow.id, path };
-  }
-
-  /** Section 19 — current v2 registry state (valid + invalid), reloaded. */
-  listV2Workflows(): RegistryV2State {
-    return this.workflowV2Registry().reload();
+  /** Look up a single v2 workflow by its YAML slug (the legacy in-memory
+   *  registry's contract). Used by the slug-based compat GET endpoint;
+   *  prefer `getWorkflowById` for new code paths. */
+  findV2WorkflowBySlug(slug: string): {
+    workflow: WorkflowV2.Workflow;
+    yamlText: string;
+    row: WorkflowRow;
+  } | null {
+    const project = workflowsRepo.getWorkflowBySlug({
+      slug,
+      scope: 'project',
+      projectId: this.project.id,
+    });
+    const row = project ?? workflowsRepo.getWorkflowBySlug({ slug, scope: 'global' });
+    if (!row || row.status !== 'active' || row.parsedDefinition === null) return null;
+    return {
+      workflow: row.parsedDefinition as WorkflowV2.Workflow,
+      yamlText: row.yaml,
+      row,
+    };
   }
 
   /**
@@ -286,7 +303,8 @@ export class ProjectRuntime {
         id: s.id,
         ...(s.order !== undefined ? { order: s.order } : {}),
       }));
-      const matches = selectStageEntryWorkflows(this.workflowV2Registry().listValid(), stages, {
+      const validDefs = this.listV2Workflows().valid.map((e) => e.workflow);
+      const matches = selectStageEntryWorkflows(validDefs, stages, {
         fromStageId,
         toStageId: args.toStage,
       });
@@ -558,7 +576,6 @@ export class ProjectRuntime {
     this.workflowBuilderPrep = null;
     this.workflowBuilderSessionId = null;
     this.worktreesSvc = null;
-    this.registryV2 = null;
     this.workItemSvc = null;
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
