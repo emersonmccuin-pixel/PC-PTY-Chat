@@ -9,7 +9,10 @@
 // - Graph tab renders `WorkflowGraphV2` read-only against `row.parsedDefinition`.
 // - Runs tab is wired to the existing `useProjectWorkflowV2Runs` feeder
 //   (sidecar-backed; 19.20 will absorb the per-run viewer modal into this tab).
-// - Raw YAML tab is a read-only `<pre>` view today; 19.19 lands the editor.
+// - Section 19.19: Raw YAML tab is now an editable textarea. PUT routes
+//   through `normaliseDef` (parse + validate + canonical serialize); failure
+//   either lands as a 400 (slug rename / structural) or as a status='invalid'
+//   row carrying `parseError` — both surface inline.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkflowV2 } from '@pc/domain';
@@ -647,8 +650,8 @@ function GraphTab({ row }: { row: WorkflowRow }) {
             {row.parseError ?? '(no parse error recorded)'}
           </pre>
           <p className="mt-3 text-xs text-muted-foreground">
-            Re-open this workflow in the builder to fix the validation errors, or
-            edit the Raw YAML tab directly (19.19).
+            Re-open this workflow in the builder to fix the validation errors,
+            or edit the Raw YAML tab directly.
           </p>
         </div>
       </div>
@@ -707,14 +710,134 @@ function RunRow({ run }: { run: V2RunSummary }) {
 }
 
 function YamlTab({ row }: { row: WorkflowRow }) {
+  // Local draft layered on top of the server's `row.yaml`. The textarea is the
+  // editor; Save → PUT /api/workflows/:id with `{ yaml }`; server re-parses +
+  // re-validates + reconciles `parsedDefinition` + bumps `yamlHash`. On
+  // success the server may have reformatted (canonical-form YAML), so we
+  // re-baseline from the response — what the user sees in the editor matches
+  // the DB.
+  //
+  // Three failure modes the user might see here:
+  //   1. Structural / slug-rename → 400 → thrown Error → red banner above the
+  //      editor, draft preserved so the user can fix it.
+  //   2. YAML parses but validation fails → server returns 200 with
+  //      `status='invalid'` + `parseError`. We surface the parseError in the
+  //      same red banner; the row IS persisted invalid, matching the same
+  //      shape the rail / Graph tab already use for invalid rows.
+  //   3. Already-invalid row on entry → row.parseError is non-null; we show
+  //      it above the editor as a starting-point warning.
+  const [draft, setDraft] = useState(row.yaml);
+  const [baselineYaml, setBaselineYaml] = useState(row.yaml);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(row.parseError ?? null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Adopt server-side updates. If the user has unsaved edits, leave the draft
+  // alone — they probably want to keep typing. Re-baseline silently so the
+  // dirty check stays honest.
+  useEffect(() => {
+    if (row.yaml === baselineYaml) return;
+    const dirtyNow = draft !== baselineYaml;
+    setBaselineYaml(row.yaml);
+    if (!dirtyNow) {
+      setDraft(row.yaml);
+      setError(row.parseError ?? null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.yaml, row.parseError]);
+
+  // Reset on row switch.
+  useEffect(() => {
+    setDraft(row.yaml);
+    setBaselineYaml(row.yaml);
+    setError(row.parseError ?? null);
+    setSavedAt(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row.id]);
+
+  const dirty = draft !== baselineYaml;
+
+  async function save() {
+    if (!dirty || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.updateWorkflowRow(row.id, {
+        yaml: draft,
+        reason: 'ui-raw-yaml-edit',
+      });
+      // Server may have canonicalised — re-seed from the response.
+      setBaselineYaml(updated.yaml);
+      setDraft(updated.yaml);
+      setSavedAt(Date.now());
+      if (updated.status === 'invalid') {
+        setError(updated.parseError ?? 'Workflow is invalid.');
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function revert() {
+    setDraft(baselineYaml);
+    setError(row.parseError ?? null);
+  }
+
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border bg-muted/30 px-4 py-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-        Read-only · editor lands in 19.19
+      <div className="flex items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="flex items-center gap-2">
+          <span>Raw YAML</span>
+          {dirty ? (
+            <span className="border border-warning/60 bg-warning/15 px-1 py-px text-warning">
+              unsaved
+            </span>
+          ) : savedAt ? (
+            <span className="border border-success/60 bg-success/15 px-1 py-px text-success">
+              saved
+            </span>
+          ) : null}
+        </span>
+        <span className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={revert}
+            disabled={!dirty || busy}
+            className="border border-border bg-card px-2 py-1 text-[10px] uppercase tracking-wider hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Revert
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!dirty || busy}
+            className="border border-primary bg-primary/30 px-2 py-1 text-[10px] uppercase tracking-wider text-foreground hover:bg-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </span>
       </div>
-      <pre className="flex-1 overflow-auto bg-background p-4 font-mono text-xs text-foreground">
-        {row.yaml}
-      </pre>
+
+      {error && (
+        <div className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-destructive">
+            {row.status === 'invalid' && !dirty ? 'Workflow is invalid' : 'Save error'}
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-destructive">
+            {error}
+          </pre>
+        </div>
+      )}
+
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        spellCheck={false}
+        className="flex-1 resize-none bg-background p-4 font-mono text-xs text-foreground outline-none"
+        placeholder="version: 2&#10;id: my-workflow&#10;name: My workflow&#10;nodes: …"
+      />
     </div>
   );
 }
