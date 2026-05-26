@@ -1,6 +1,6 @@
 // Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
 // Source: apps/web/src/components/ProjectRail.tsx
-// Adapted for Project Companion: no inline create-project form here — the
+// Adapted for Caisson: no inline create-project form here — the
 // "+ New project" button bubbles up via `onCreateProject` so the create flow
 // (folder picker + probe + POST /api/projects) lives in a top-level modal
 // shared with future affordances (Q5). Active-slug comes from a zustand
@@ -179,8 +179,16 @@ export function ProjectRail({
 
   return (
     <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
-      <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wider text-muted-foreground">
-        Projects
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs uppercase tracking-wider text-muted-foreground">
+        <span>Projects</span>
+        <button
+          onClick={onCreateProject}
+          title="New project"
+          aria-label="New project"
+          className="flex h-5 w-5 items-center justify-center text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          +
+        </button>
       </div>
       {projects.length > 0 && (
         <div className="border-b border-border px-2 py-1.5">
@@ -255,14 +263,6 @@ export function ProjectRail({
             );
           })
         )}
-      </div>
-      <div className="border-t border-border p-2">
-        <button
-          onClick={onCreateProject}
-          className="w-full px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          + New project
-        </button>
       </div>
       <UsageCapsPanel snapshot={activeSnapshot} />
       {filesNote && (

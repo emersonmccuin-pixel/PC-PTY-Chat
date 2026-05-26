@@ -1,6 +1,6 @@
 /* Vendored from emersonmccuin-pixel/project-companion @ 1e843cc (MIT)
    Source: apps/web/src/styles.css
-   Adapted for Project Companion: added @fontsource/jetbrains-mono import;
+   Adapted for Caisson: added @fontsource/jetbrains-mono import;
    dropped tw-animate-css + dark-variant scaffolding (single locked look). */
 
 @import '@fontsource/jetbrains-mono/400.css';
@@ -221,6 +221,19 @@ select {
   border: 1px solid var(--input);
   color: var(--foreground);
   font-family: inherit;
+}
+
+/* Native <select> popup is OS/browser-painted and won't pick up the parent's
+   background. Force the popup into the Vellum palette: color-scheme tells
+   Chromium to render the dropdown chrome dark; styling <option> paints the
+   list itself. */
+select {
+  color-scheme: dark;
+}
+
+select option {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
 }
 
 input:focus,
@@ -598,6 +611,41 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 
+.chat-copy-button {
+  margin-left: auto;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: rgba(16, 12, 8, 0.94);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms, color 140ms, border-color 140ms, background 140ms;
+}
+
+.chat-turn-row:hover .chat-copy-button,
+.chat-turn-row:focus-within .chat-copy-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-copy-button:hover,
+.chat-copy-button:focus-visible {
+  color: var(--foreground);
+  border-color: var(--border);
+  background: var(--card);
+  outline: none;
+}
+
 /* PM turn card — cornered tab opening top-left toward the avatar. */
 .chat-turn {
   padding: 13px 18px;
@@ -638,6 +686,21 @@ button:disabled {
   border-color: rgba(184, 90, 90, 0.32);
   border-top-color: var(--destructive);
   border-left-color: var(--destructive);
+}
+
+.chat-turn-user.chat-turn-warning {
+  border-right-color: var(--warning);
+  border-left-color: rgba(216, 166, 74, 0.32);
+}
+
+.chat-turn-user.chat-turn-info {
+  border-right-color: var(--info);
+  border-left-color: rgba(111, 166, 194, 0.32);
+}
+
+.chat-turn-user.chat-turn-danger {
+  border-right-color: var(--destructive);
+  border-left-color: rgba(184, 90, 90, 0.32);
 }
 
 /* Child card — tool / agent / workflow / edit. No avatar, no speaker chrome. */
@@ -846,4 +909,3 @@ button:disabled {
   color: rgba(95, 232, 143, 0.55);
   font-size: 9px;
 }
-

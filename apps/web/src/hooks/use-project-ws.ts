@@ -25,6 +25,14 @@ export interface WsEnvelope {
   [k: string]: unknown;
 }
 
+export interface SendAckEnvelope extends WsEnvelope {
+  type: 'send-ack';
+  clientMessageId: string;
+  ok: boolean;
+  status: 'received' | 'invalid-message' | 'no-session' | 'error';
+  error?: string;
+}
+
 // ── Chat-event shapes ─────────────────────────────────────────────────────
 // Server emits hook-driven events as `{type:'event', event:{kind,...}}`. The
 // kinds + fields below mirror packages/runtime/src/hook-scripts/event-capture.cjs
@@ -462,7 +470,7 @@ export type JsonlEvent =
 // ── Outbound WS messages (Q8 chat send + interrupt + ask-reply) ───────────
 
 export type WsOutbound =
-  | { type: 'send'; text: string }
+  | { type: 'send'; text: string; clientMessageId?: string }
   | { type: 'interrupt' }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'ask-reply'; toolUseId: string; answer: string };

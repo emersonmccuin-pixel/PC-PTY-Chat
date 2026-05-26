@@ -8,7 +8,8 @@
 // buildout § 17d "Hides the internal kind distinction." New docs default to
 // 'knowledge'; existing 'example' rows render identically.
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import { api, type PodBundle, type PodKnowledge, type ULID } from '@/api/client';
 import { Markdown } from '../Markdown';
@@ -23,6 +24,9 @@ interface ContextTabProps {
    *  a pure rendered-markdown viewer. Used when a stock pod is opened from
    *  the project Agents tab; edits live in Global Settings → Specialists. */
   readOnly?: boolean;
+  /** Compact list mode for summary surfaces such as the project Agents tab. */
+  collapseDocsByDefault?: boolean;
+  previewLineCount?: number;
 }
 
 interface EditState {
@@ -32,7 +36,16 @@ interface EditState {
   draft: { name: string; content: string };
 }
 
-export function ContextTab({ podId, bundle, loading, error, onChanged, readOnly }: ContextTabProps) {
+export function ContextTab({
+  podId,
+  bundle,
+  loading,
+  error,
+  onChanged,
+  readOnly,
+  collapseDocsByDefault = false,
+  previewLineCount = 3,
+}: ContextTabProps) {
   const [edit, setEdit] = useState<EditState | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -169,6 +182,8 @@ export function ContextTab({ podId, bundle, loading, error, onChanged, readOnly 
                 row={row}
                 disabled={busy || edit !== null}
                 readOnly={readOnly}
+                collapseByDefault={collapseDocsByDefault}
+                previewLineCount={previewLineCount}
                 onEdit={() => startEdit(row)}
                 onDelete={() => void remove(row)}
               />
@@ -184,27 +199,82 @@ function KnowledgeRow({
   row,
   disabled,
   readOnly,
+  collapseByDefault,
+  previewLineCount,
   onEdit,
   onDelete,
 }: {
   row: PodKnowledge;
   disabled: boolean;
   readOnly?: boolean;
+  collapseByDefault: boolean;
+  previewLineCount: number;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const [expanded, setExpanded] = useState(!collapseByDefault);
+  const preview = useMemo(
+    () => buildKnowledgePreview(row.content, previewLineCount),
+    [row.content, previewLineCount],
+  );
+  const collapsible = collapseByDefault;
+  const showFullContent = !collapsible || expanded;
+  const ToggleIcon = expanded ? ChevronDown : ChevronRight;
+
   return (
     <div className="border border-border bg-card px-3 py-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="font-mono text-xs font-medium text-foreground">{row.name}</div>
-          <div className="mt-2 text-[12px] text-foreground">
-            {row.content ? (
-              <Markdown text={row.content} />
+          <div className="flex min-w-0 items-center gap-1.5">
+            {collapsible && (
+              <button
+                type="button"
+                onClick={() => setExpanded((open) => !open)}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-expanded={expanded}
+                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.name}`}
+                title={expanded ? 'Collapse' : 'Expand'}
+              >
+                <ToggleIcon className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            )}
+            {collapsible ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((open) => !open)}
+                className="min-w-0 truncate text-left font-mono text-xs font-medium text-foreground hover:text-primary"
+                aria-expanded={expanded}
+              >
+                {row.name}
+              </button>
             ) : (
-              <span className="italic text-muted-foreground">(empty)</span>
+              <div className="min-w-0 truncate font-mono text-xs font-medium text-foreground">
+                {row.name}
+              </div>
             )}
           </div>
+
+          {showFullContent ? (
+            <div className="mt-2 text-[12px] text-foreground">
+              {row.content ? (
+                <Markdown text={row.content} />
+              ) : (
+                <span className="italic text-muted-foreground">(empty)</span>
+              )}
+            </div>
+          ) : (
+            <div className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground">
+              {preview.text ? (
+                <>
+                  {preview.text}
+                  {preview.truncated && <span className="text-foreground">...</span>}
+                </>
+              ) : (
+                <span className="italic">(empty)</span>
+              )}
+            </div>
+          )}
+
           <div className="mt-1 text-[10px] text-muted-foreground">
             {row.content.length.toLocaleString()} chars
           </div>
@@ -232,6 +302,20 @@ function KnowledgeRow({
       </div>
     </div>
   );
+}
+
+function buildKnowledgePreview(
+  content: string,
+  maxLines: number,
+): { text: string; truncated: boolean } {
+  const trimmed = content.replace(/\r\n/g, '\n').trim();
+  if (!trimmed) return { text: '', truncated: false };
+  const lines = trimmed.split('\n').slice(0, Math.max(1, maxLines));
+  const text = lines.join('\n').trimEnd();
+  return {
+    text,
+    truncated: text.length < trimmed.length,
+  };
 }
 
 function KnowledgeEditor({

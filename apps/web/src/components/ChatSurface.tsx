@@ -14,6 +14,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { Copy as CopyIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -1319,6 +1320,7 @@ export function ChatSurface({
                   bubbleId={bubbleId}
                   status={status}
                   pendingStatus={pendingStatus}
+                  copyText={copyTextForEvent(ev)}
                 >
                   <EventBubble
                     event={ev}
@@ -1421,6 +1423,7 @@ function ChatTurnCard({
   status,
   pendingStatus,
   variant = 'turn',
+  copyText,
 }: {
   kind: 'user' | 'pm';
   ts?: string;
@@ -1430,6 +1433,7 @@ function ChatTurnCard({
   status?: ChatTurnStatus;
   pendingStatus?: PendingPromptStatus;
   variant?: ChatTurnVariant;
+  copyText?: string | null;
 }) {
   // Child variant: just the smaller card. No avatar / speaker chrome —
   // child renderers (tool group, agent dispatch, workflow run, edit) carry
@@ -1473,6 +1477,7 @@ function ChatTurnCard({
           {subParts.length > 0 && (
             <span className="chat-turn-sub">{subParts.join(' · ')}</span>
           )}
+          {copyText && <CopyButton text={copyText} />}
         </div>
         <div className={cardClasses}>{children}</div>
       </div>
@@ -1593,6 +1598,26 @@ function EventBubble({
     default:
       return null;
   }
+}
+
+function copyTextForEvent(event: ChatEvent): string | null {
+  if (event.kind === 'assistant') {
+    const text = (event as AssistantEvent).text ?? '';
+    return text.trim() ? text : null;
+  }
+  if (event.kind === 'user') {
+    const text = (event as UserEvent).text ?? '';
+    const visible = parseUserText(text)
+      .filter((p) => p.kind !== 'workflow-event' && p.kind !== 'agent-event')
+      .map((p) => p.text)
+      .join('');
+    return visible.trim() ? visible : null;
+  }
+  if (event.kind === 'task-end') {
+    const text = (event as TaskEndEvent).result ?? '';
+    return text.trim() ? text : null;
+  }
+  return null;
 }
 
 function QueueIndicator({ text }: { text: string }) {
@@ -2052,10 +2077,12 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
             /* clipboard unavailable */
           });
       }}
-      title="Copy to clipboard"
-      className="absolute right-1 top-1 hidden border border-border bg-card/90 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground group-hover:block"
+      title={copied ? 'Copied' : 'Copy to clipboard'}
+      aria-label={copied ? 'Copied to clipboard' : 'Copy message to clipboard'}
+      className="chat-copy-button"
     >
-      {copied ? 'Copied' : label}
+      <CopyIcon className="h-3 w-3" aria-hidden />
+      <span>{copied ? 'Copied' : label}</span>
     </button>
   );
 }
@@ -2091,14 +2118,12 @@ function UserBubble({ event, projectId }: { event: UserEvent; projectId: string 
             <div className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
               {g.part.text || '(empty body)'}
             </div>
-            <CopyButton text={g.part.text} />
           </div>
         ) : (
           <div key={idx} className="group relative text-sm text-foreground">
             <div className="whitespace-pre-wrap break-words">
               {g.parts.map((part, j) => renderInlinePart(part, j, projectId)) || '(empty prompt)'}
             </div>
-            <CopyButton text={g.parts.map((p) => p.text).join('')} />
           </div>
         ),
       )}
@@ -2206,7 +2231,6 @@ function AssistantBubble({ event, projectId }: { event: AssistantEvent; projectI
           {text}
         </ReactMarkdown>
       </div>
-      <CopyButton text={text} />
     </div>
   );
 }
@@ -2919,7 +2943,6 @@ function TaskEndBubble({ event }: { event: TaskEndEvent }) {
       ) : (
         <div className="text-sm italic text-muted-foreground">(no result text)</div>
       )}
-      {text && <CopyButton text={text} />}
     </div>
   );
 }

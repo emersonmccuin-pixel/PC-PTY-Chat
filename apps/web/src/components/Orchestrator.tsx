@@ -1,6 +1,6 @@
-// Vendored from emersonmccuin-pixel/pc-pty-chat-rig @ legacy/app.js (MIT)
+// Vendored from the legacy chat rig @ legacy/app.js (MIT)
 // Source: apps/web/legacy/app.js
-// Adapted for Project Companion: thin wrapper around <ChatSurface> that owns
+// Adapted for Caisson: thin wrapper around <ChatSurface> that owns
 // session metadata (title / + New session / Resume / past-session view /
 // session-ended banner) and the StatusBar. All chat rendering + composer +
 // thinking-indicator + scroll machinery lives in ChatSurface.
@@ -356,7 +356,7 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
       events={sourceEvents}
       projectId={project.id}
       currentSessionId={session?.id ?? null}
-      onSend={(text) => send({ type: 'send', text })}
+      onSend={(text, clientMessageId) => send({ type: 'send', text, clientMessageId })}
       onInterrupt={() => send({ type: 'interrupt' })}
       onAskReply={(toolUseId, answer) =>
         send({ type: 'ask-reply', toolUseId, answer })

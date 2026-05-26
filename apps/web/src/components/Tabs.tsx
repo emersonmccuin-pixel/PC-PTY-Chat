@@ -1,18 +1,18 @@
 // Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
 // Source: apps/web/src/components/Tabs.tsx
-// Adapted for Project Companion: Section 32.1 — hoisted to a full-width
+// Adapted for Caisson: Section 32.1 — hoisted to a full-width
 // topbar (rendered above the body grid in Shell); restyled from folder-
 // tab to underline-active with hover-revealed ↗ popout affordance.
 
-export const TABS = ['orchestrator', 'work-items', 'workflows', 'agents', 'files'] as const;
+export const TABS = ['orchestrator', 'work-items', 'agents', 'workflows', 'files'] as const;
 /** `project-settings` is reachable via the right-aligned gear, not the main strip. */
 export type Tab = (typeof TABS)[number] | 'project-settings';
 
 const LABEL: Record<(typeof TABS)[number], string> = {
-  orchestrator: 'orchestrator',
+  orchestrator: 'chat',
   'work-items': 'work items',
-  workflows: 'workflows',
   agents: 'agents',
+  workflows: 'workflows',
   files: 'files',
 };
 

@@ -529,6 +529,8 @@ function DetailPane({
             error={bundleErr}
             onChanged={() => void loadBundle()}
             readOnly={isStock}
+            collapseDocsByDefault
+            previewLineCount={3}
           />
         </DetailSection>
 
