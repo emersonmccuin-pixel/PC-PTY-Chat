@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { OrchestratorSession, Project, ULID, Workflow, WorkflowV2 } from '@pc/domain';
+import type { OrchestratorSession, Project, ULID, WorkflowV2 } from '@pc/domain';
 import { isQuickTasksKind } from '@pc/domain';
 import type { ReviewDecision } from '@pc/workflows';
 import {
@@ -70,17 +70,12 @@ export class ProjectRuntime {
    *  Pod-spawn cleanup is bound to the session end. */
   private agentDesigner: PtySession | null = null;
   private agentDesignerPrep: PodSpawnPrep | null = null;
-  private workflowCreator: PtySession | null = null;
   /** Section 19.9 — transient `workflow-builder` stock pod session that drives
-   *  the new "+ New workflow" modal (v2-aware). Distinct from `workflowCreator`
-   *  which targets v1 schema and stays alive until Section 19.12 culls it. */
+   *  the "+ New workflow" modal. v1 `workflowCreator` removed in 19.12. */
   private workflowBuilder: PtySession | null = null;
   private workflowBuilderPrep: PodSpawnPrep | null = null;
   private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
-  /** Tracks the transient PC_SESSION_ID assigned to the current workflow-
-   *  creator. Used to scope draft-state cleanup on session exit. */
-  private workflowCreatorSessionId: string | null = null;
   private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private registry: WorkflowRegistry | null = null;
@@ -95,11 +90,6 @@ export class ProjectRuntime {
    *  scan is cheap (per-file idempotence) but pointless once a project has
    *  been migrated within the current process. */
   private workflowMigrationRan = false;
-  /** 4b.1: in-memory workflow-creator drafts keyed by transient PC_SESSION_ID.
-   *  Populated by `pc_update_workflow_draft` mid-interview; consumed by the
-   *  visualizer via the `workflow-creator-draft` WS envelope. Cleared on
-   *  session exit (4b.3's `endWorkflowCreator` plus a sweep in `shutdown()`). */
-  private readonly workflowCreatorDrafts: Map<string, Workflow> = new Map();
   /** Section 19.9 — v2 workflow-builder drafts keyed by transient PC_SESSION_ID.
    *  Populated by `pc_save_workflow_draft` mid-interview; consumed by the
    *  visualizer via the `workflow-builder-draft` WS envelope. Cleared on
@@ -568,12 +558,9 @@ export class ProjectRuntime {
   /** Kill the PtySession (if any) and clear caches so the runtime cold-starts. */
   shutdown(): void {
     try { this.pty?.kill(); } catch { /* best-effort */ }
-    try { this.workflowCreator?.kill(); } catch { /* best-effort */ }
     try { this.workflowBuilder?.kill(); } catch { /* best-effort */ }
     try { this.workflowBuilderPrep?.cleanup(); } catch { /* best-effort */ }
     this.pty = null;
-    this.workflowCreator = null;
-    this.workflowCreatorSessionId = null;
     this.workflowBuilder = null;
     this.workflowBuilderPrep = null;
     this.workflowBuilderSessionId = null;
@@ -583,7 +570,6 @@ export class ProjectRuntime {
     this.workItemSvc = null;
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
-    this.workflowCreatorDrafts.clear();
     this.workflowBuilderDrafts.clear();
   }
 
@@ -639,7 +625,7 @@ export class ProjectRuntime {
   }
 
   /** Deterministic CC session identity for a transient (non-resumable) modal
-   *  session — agent-designer / workflow-creator / setup-wizard. Mirrors the
+   *  session — agent-designer / workflow-builder / setup-wizard. Mirrors the
    *  orchestrator's session ownership (resolveSessionForSpawn): mint a clean
    *  UUID, pass it as `--session-id`, and tail the EXACT jsonl path CC writes.
    *
@@ -678,94 +664,11 @@ export class ProjectRuntime {
     }
   }
 
-  /** 4b.1: stash the latest workflow-creator draft for a session. The MCP
-   *  tool `pc_update_workflow_draft` calls into this through the matching
-   *  HTTP endpoint. Index.ts handles the WS broadcast. */
-  setWorkflowCreatorDraft(sessionId: string, def: Workflow): void {
-    this.workflowCreatorDrafts.set(sessionId, def);
-  }
-
-  /** Lookup helper — currently unused beyond tests + a future "replay on
-   *  reconnect" pass. Returns undefined if no draft exists for the session. */
-  getWorkflowCreatorDraft(sessionId: string): Workflow | undefined {
-    return this.workflowCreatorDrafts.get(sessionId);
-  }
-
-  /** Drop draft state for a specific workflow-creator session. 4b.3 calls
-   *  this from `endWorkflowCreator`. */
-  clearWorkflowCreatorDraft(sessionId: string): void {
-    this.workflowCreatorDrafts.delete(sessionId);
-  }
-
-  /** 4b.3: transient PtySession driving the conversational workflow-creator
-   *  modal. Mirrors `startAgentCreator`. One workflow-creator at a time per
-   *  project; calling `start` again kills the prior one. */
-  startWorkflowCreator(): PtySession {
-    if (this.workflowCreator) {
-      try { this.workflowCreator.kill(); } catch { /* best-effort */ }
-      this.workflowCreator = null;
-    }
-    if (this.workflowCreatorSessionId) {
-      this.clearWorkflowCreatorDraft(this.workflowCreatorSessionId);
-      this.workflowCreatorSessionId = null;
-    }
-    this.refreshHooksIfStale();
-    const transientId = `wc-${randomUUID()}`;
-    const sessionDir = this.sessionDataPath(transientId);
-    mkdirSync(sessionDir, { recursive: true });
-    const cc = this.transientCcSession();
-    this.workflowCreator = new PtySession({
-      workspaceDir: this.project.folderPath,
-      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
-      eventsPath: resolve(sessionDir, 'events.jsonl'),
-      transcriptPath: resolve(sessionDir, 'transcript.log'),
-      claudeSessionId: cc.ccSessionId,
-      resume: false,
-      jsonlPath: cc.jsonlPath,
-      extraEnv: { PC_SESSION_ID: transientId },
-      appendSystemPromptPath: resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'workflow-creator-prompt.md',
-      ),
-    });
-    this.workflowCreatorSessionId = transientId;
-    return this.workflowCreator;
-  }
-
-  /** Returns the live workflow-creator PtySession, or null if not started /
-   *  exited. */
-  workflowCreatorPty(): PtySession | null {
-    return this.workflowCreator && this.workflowCreator.getState() !== 'exited'
-      ? this.workflowCreator
-      : null;
-  }
-
-  /** The transient PC_SESSION_ID assigned to the current workflow-creator
-   *  PtySession (or the most-recently exited one). Used by the draft-state
-   *  endpoint to scope cleanup. */
-  workflowCreatorSession(): string | null {
-    return this.workflowCreatorSessionId;
-  }
-
-  /** Kill the workflow-creator session + clear its draft state. Idempotent. */
-  endWorkflowCreator(): void {
-    if (this.workflowCreator) {
-      try { this.workflowCreator.kill(); } catch { /* best-effort */ }
-      this.workflowCreator = null;
-    }
-    if (this.workflowCreatorSessionId) {
-      this.clearWorkflowCreatorDraft(this.workflowCreatorSessionId);
-      this.workflowCreatorSessionId = null;
-    }
-  }
-
   // ── Section 19.9 — workflow-builder transient session (v2-aware) ──────────
   //
   // Mirror of `startAgentDesigner` (uses `preparePodSpawn` to materialise the
-  // pod's prompt + tool allowlist — REPLACES CC's default identity). Distinct
-  // from `startWorkflowCreator` above which is the v1 pod; both coexist until
-  // Section 19.12.
+  // pod's prompt + tool allowlist — REPLACES CC's default identity). Replaces
+  // the v1 `workflow-creator` PtySession + draft store, both removed in 19.12.
 
   /** Section 19.9 — stash the latest v2 workflow-builder draft for a session.
    *  Called by the matching HTTP endpoint when `pc_save_workflow_draft` fires.
@@ -990,28 +893,14 @@ export class ProjectRuntime {
       // `.project-companion/orchestrator-prompt.md` are unused post-16a;
       // safe to leave on disk (no reader) or manually delete.
 
-      // Section 4b phase 4b.3: keep the workflow-creator prompt in lock-step
-      // with the trunk template. This file backs a transient session that
-      // nobody hand-edits — always re-render so changes to the interview
-      // script land on next boot.
-      const wfCreatorSrc = resolve(
-        this.opts.templatesDir,
-        '.project-companion',
-        'workflow-creator-prompt.md',
-      );
-      const wfCreatorDest = resolve(
-        this.project.folderPath,
-        '.project-companion',
-        'workflow-creator-prompt.md',
-      );
-      if (existsSync(wfCreatorSrc)) {
-        mkdirSync(resolve(this.project.folderPath, '.project-companion'), { recursive: true });
-        const raw = readFileSync(wfCreatorSrc, 'utf-8');
-        writeFileSync(wfCreatorDest, renderTemplate(raw, tokens), 'utf-8');
-      }
-      // 5.6 / D82: setup-wizard prompt. Same always-re-render rule as the
-      // workflow-creator — nobody hand-edits this file, and the interview
-      // script may evolve between PC versions.
+      // 19.12 — workflow-creator-prompt.md backfill removed. The v1
+      // workflow-creator session (which `appendSystemPromptPath`-ed this file
+      // onto CC's default identity) is gone; v2 uses the workflow-builder
+      // stock pod via `preparePodSpawn`. Existing per-project copies are
+      // unused; safe to leave on disk or manually delete.
+
+      // 5.6 / D82: setup-wizard prompt. Always-re-render (nobody hand-edits
+      // this file, and the interview script may evolve between PC versions).
       const swCreatorSrc = resolve(
         this.opts.templatesDir,
         '.project-companion',
