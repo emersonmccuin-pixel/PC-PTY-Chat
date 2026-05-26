@@ -1,0 +1,21 @@
+-- Section 36 follow-up — fix workflow-builder's origin.
+--
+-- The workflow-builder pod was added by Section 19.9 AFTER Section 36.1's
+-- migration `0023_data_driven_agent_identity.sql` landed. That migration's
+-- inline backfill captured the 10 stock pods known at write time:
+--
+--   orchestrator, researcher, writer, code-writer, reviewer, planner,
+--   extractor, agent-designer, quick-tasks-pm, caisson
+--
+-- workflow-builder wasn't on the list. Existing installs that booted between
+-- 36.1 and 36.2 inserted the workflow-builder row WITHOUT `origin: 'stock'`
+-- (the seed code didn't pass origin yet), and the seed mechanism never
+-- updates `origin` after the initial insert.
+--
+-- Cold installs are already fine: the seed code now passes `origin: 'stock'`
+-- (Section 36.2) so the row lands correctly on first boot.
+--
+-- This migration is idempotent: a no-op on cold installs (no row matches);
+-- a one-row UPDATE on existing installs.
+
+UPDATE `agents` SET `origin` = 'stock' WHERE `name` = 'workflow-builder';
