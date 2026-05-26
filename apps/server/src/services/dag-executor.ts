@@ -162,7 +162,7 @@ export class DagExecutor {
       // Non-review nodes first: dispatch concurrently (capped), await, settle.
       if (runReady.length > 0) {
         await this.runLayer(runReady, resolve);
-        this.deps.persist(this.state, computeRunStatus(this.workflow, this.state));
+        this.persistRun(computeRunStatus(this.workflow, this.state));
         continue; // re-evaluate (a review may now be ready)
       }
 
@@ -278,7 +278,26 @@ export class DagExecutor {
     const status = computeRunStatus(this.workflow, this.state);
     if (status === 'completed') this.deps.event({ type: 'workflow_completed' });
     else if (status === 'failed') this.deps.event({ type: 'workflow_failed' });
-    this.deps.persist(this.state, status);
+    this.persistRun(status);
     return status;
+  }
+
+  /** Persist a (possibly terminal) status, deriving lastReason from failed
+   *  nodes so a `failed` run is debuggable (the v1 path always passed `null`,
+   *  which left reject-ceiling and agent-failure runs opaque in Activity). */
+  private persistRun(status: RunStatus): void {
+    const opts = status === 'failed' ? { lastReason: this.deriveFailureReason() } : undefined;
+    this.deps.persist(this.state, status, opts);
+  }
+
+  private deriveFailureReason(): string {
+    const failed: string[] = [];
+    for (const node of this.workflow.nodes) {
+      const rec = this.state.nodes[node.id];
+      if (rec?.state === 'failed') {
+        failed.push(`${node.id}: ${rec.error ?? 'unknown error'}`);
+      }
+    }
+    return failed.length > 0 ? failed.join('; ') : 'workflow failed';
   }
 }

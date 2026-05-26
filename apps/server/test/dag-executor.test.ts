@@ -36,6 +36,7 @@ interface Recorder {
   events: { type: string; nodeId?: string }[];
   holds: string[];
   lastStatus: () => string | undefined;
+  lastReason: () => string | undefined;
   outputs: Record<string, string>;
 }
 
@@ -49,6 +50,7 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
   const holds: string[] = [];
   const outputs: Record<string, string> = {};
   let lastStatus: string | undefined;
+  let lastReason: string | undefined;
   const callCount: Record<string, number> = {};
 
   const deps: DagExecutorDeps = {
@@ -69,8 +71,9 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
     requestReview: async (node) => {
       reviewRequests.push(node.id);
     },
-    persist: (_state, status) => {
+    persist: (_state, status, o) => {
       lastStatus = status;
+      if (o?.lastReason !== undefined) lastReason = o.lastReason;
     },
     event: (ev) => events.push({ type: ev.type, nodeId: ev.nodeId }),
     isCancelled: () => false,
@@ -87,6 +90,7 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
     holds,
     outputs,
     lastStatus: () => lastStatus,
+    lastReason: () => lastReason,
   };
 }
 
@@ -122,6 +126,8 @@ test('agent failure → run fails, downstream not dispatched', async () => {
   const status = await exec.advance();
   assert.equal(status, 'failed');
   assert.deepEqual(r.agentCalls, ['a']); // b skipped (all_success upstream failed)
+  // F#2: failed runs must carry a lastReason derived from the failed node(s).
+  assert.equal(r.lastReason(), 'a: boom');
 });
 
 test('review pause then approve → run completes', async () => {
@@ -174,6 +180,8 @@ test('reject past the ceiling → held for human, run fails', async () => {
   assert.deepEqual(r.holds, ['rev']);
   assert.ok(r.events.some((e) => e.type === 'iteration_ceiling_hit'));
   assert.deepEqual(r.agentCalls, ['code', 'code']); // never re-ran a 3rd time; done never ran
+  // F#2: ceiling failures must carry a debuggable lastReason (was null pre-fix).
+  assert.match(r.lastReason() ?? '', /rev: reject iteration ceiling reached \(2\/2\)/);
 });
 
 test('reject carry: reviewer notes flow into the re-dispatched node via $self.output (19.5)', async () => {
