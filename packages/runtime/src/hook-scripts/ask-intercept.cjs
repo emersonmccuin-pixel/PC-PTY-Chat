@@ -1,5 +1,5 @@
 // PreToolUse hook for interactive tools (AskUserQuestion, ExitPlanMode).
-// Forwards the tool input to the PC-PTY-Chat server, waits for the user's
+// Forwards the tool input to the Caisson server, waits for the user's
 // answer, then denies the original tool call with the answer as the reason
 // — so CC sees the answer and continues.
 

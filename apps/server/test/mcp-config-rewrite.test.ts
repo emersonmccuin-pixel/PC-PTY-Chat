@@ -126,7 +126,7 @@ test('idempotent on second call', () => {
 
 const DEV: NodeLauncher = { command: 'node', env: {} };
 const PACKAGED: NodeLauncher = {
-  command: 'C:/Apps/PC/ProjectCompanion.exe',
+  command: 'C:/Apps/Caisson/Caisson.exe',
   env: { ELECTRON_RUN_AS_NODE: '1' },
 };
 
@@ -163,7 +163,7 @@ test('applyNodeLauncher: packaged launcher rewrites both PC node servers + merge
   const config = scaffoldShape();
   assert.equal(applyNodeLauncher(config, PACKAGED), true);
   for (const key of ['pc-rig', 'webhook'] as const) {
-    assert.equal(config.mcpServers[key].command, 'C:/Apps/PC/ProjectCompanion.exe');
+    assert.equal(config.mcpServers[key].command, 'C:/Apps/Caisson/Caisson.exe');
     assert.equal(config.mcpServers[key].env.ELECTRON_RUN_AS_NODE, '1');
   }
   // existing env preserved
@@ -187,7 +187,7 @@ test('applyNodeLauncher: packaged→dev strips stale ELECTRON_RUN_AS_NODE + rest
   const config: McpFixture = {
     mcpServers: {
       'pc-rig': {
-        command: 'C:/old/ProjectCompanion.exe',
+        command: 'C:/old/Caisson.exe',
         args: ['C:/res/packages/mcp/dist/server.mjs'],
         env: { ELECTRON_RUN_AS_NODE: '1', PC_PROJECT_ID: '01ABC' },
       },
@@ -218,7 +218,7 @@ test('applyNodeLauncherToProjects: writes only changed files, skips missing', ()
   const after = JSON.parse(readFileSync(join(a, '.mcp.json'), 'utf-8')) as ReturnType<
     typeof scaffoldShape
   >;
-  assert.equal(after.mcpServers['pc-rig'].command, 'C:/Apps/PC/ProjectCompanion.exe');
+  assert.equal(after.mcpServers['pc-rig'].command, 'C:/Apps/Caisson/Caisson.exe');
 
   // second pass = no writes
   assert.equal(applyNodeLauncherToProjects([a], PACKAGED).rewritten.length, 0);

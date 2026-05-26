@@ -13,7 +13,7 @@
 //   6. Scaffold (templates rendered into the folder). attach-to-git skips
 //      README to preserve the user's existing one.
 //   7. Commit the scaffold as `Initial commit` (fresh folder) or
-//      `Add Project Companion scaffold` (in-place w/ pre-existing files or
+//      `Add Caisson scaffold` (in-place w/ pre-existing files or
 //      attach-to-git — only the PC paths get staged, not the user's other
 //      uncommitted changes).
 //   8. Insert the DB row with the pre-minted id.
@@ -157,7 +157,7 @@ export class ProjectCreate {
     }
     const scaffoldMsg =
       input.mode === 'attach-to-git' || hadExistingFiles
-        ? 'Add Project Companion scaffold'
+        ? 'Add Caisson scaffold'
         : 'Initial commit';
     await exec('git', ['commit', '-m', scaffoldMsg], { cwd: folderPath });
 

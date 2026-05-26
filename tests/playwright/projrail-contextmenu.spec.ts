@@ -8,7 +8,7 @@ import { test, expect } from '@playwright/test';
 
 test('right-clicking a project row opens (and keeps open) the context menu', async ({ page }) => {
   await page.goto('/');
-  await page.waitForSelector('button:has-text("Project B"), button:has-text("PC-PTY-Chat")', {
+  await page.waitForSelector('button:has-text("Project B"), button:has-text("Caisson")', {
     timeout: 10_000,
   });
   const row = page.locator('button').filter({ hasText: 'Project B' }).first();

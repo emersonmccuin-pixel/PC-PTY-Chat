@@ -56,7 +56,7 @@ const POD_DEFAULTS: Record<string, ExpectedOutput> = {
   'workflow-builder': { kind: 'text' },
 
   // caisson (Section 36) is the in-app PC specialist — answers "how does X
-  // work?" questions about Project Companion and mutates config via curl.
+  // work?" questions about Caisson and mutates config via curl.
   // Free-form Q&A or "done, here's what I changed" — no structured contract.
   caisson: { kind: 'text' },
 };

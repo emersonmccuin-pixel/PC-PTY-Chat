@@ -54,7 +54,7 @@ test('encodeCwdForClaude collapses non-[A-Za-z0-9._-] to "-"', () => {
   // Empirical samples from Section 0.
   assert.equal(
     encodeCwdForClaude('E:\\Projects\\Caisson'),
-    'E--Claude-Code-Projects-Personal-PC-PTY-Chat',
+    'E--Claude-Code-Projects-Personal-Caisson',
   );
   assert.equal(
     encodeCwdForClaude('C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test'),

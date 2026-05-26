@@ -242,7 +242,7 @@ function ProbePreview({ state }: { state: ProbeState }) {
     }
     return (
       <div className="text-xs text-success">
-        Existing git repo — will add the Project Companion scaffold as one new
+        Existing git repo — will add the Caisson scaffold as one new
         commit. Your code + history stay untouched.
       </div>
     );

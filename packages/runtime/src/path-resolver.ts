@@ -8,7 +8,7 @@
 // CWD encoding rule is empirically derived (Section 0): every non
 // [A-Za-z0-9._-] byte maps to '-'. Spaces, colons, backslashes all collapse
 // to dashes. Verified against `E:\Projects\Caisson`
-// → `E--Claude-Code-Projects-Personal-PC-PTY-Chat`.
+// → `E--Claude-Code-Projects-Personal-Caisson`.
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
