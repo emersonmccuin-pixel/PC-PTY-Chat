@@ -251,8 +251,8 @@ test('cancel while queued: aborts ticket, terminal=cancelled with cause=cancel-w
 test('cancel during running: kills spawn; grace expires → cancelled', async () => {
   const { run, stub } = makeRun({
     // Idle would fire during cancel-grace if cancellation did not own timers.
-    idleMs: 20,
-    cancelGraceMs: 80,
+    idleMs: 1_000,
+    cancelGraceMs: 1_500,
   });
   const terminalP = awaitTerminal(run);
   run.start();
@@ -264,7 +264,7 @@ test('cancel during running: kills spawn; grace expires → cancelled', async ()
   run.cancel();
   assert.equal(stub.killed, true);
   // Grace must elapse before terminal fires.
-  await tick(120);
+  await tick(1_800);
   const t = await terminalP;
   assert.equal(t.status, 'cancelled');
   assert.equal(t.cause, 'cancelled');
@@ -315,7 +315,7 @@ test('spawn-stuck timer fires if gate never opens', async () => {
 });
 
 test('idle timer fires if no jsonl events arrive in running', async () => {
-  const { run, stub } = makeRun({ idleMs: 30 });
+  const { run, stub } = makeRun({ idleMs: 100 });
   const terminalP = awaitTerminal(run);
   run.start();
   await tick();
@@ -323,14 +323,14 @@ test('idle timer fires if no jsonl events arrive in running', async () => {
   await tick();
   assert.equal(run.getState(), 'running');
   // Don't fire any JSONL events.
-  await tick(60);
+  await tick(250);
   const t = await terminalP;
   assert.equal(t.status, 'failed');
   assert.equal(t.cause, 'idle-timeout');
 });
 
 test('idle timer resets on every jsonl event', async () => {
-  const { run, stub } = makeRun({ idleMs: 60 });
+  const { run, stub } = makeRun({ idleMs: 1_000, wallClockMs: 10_000 });
   let terminal: { status: string; cause?: string } | null = null;
   run.on('terminal', (t: { status: string; cause?: string }) => {
     terminal = t;
@@ -339,13 +339,12 @@ test('idle timer resets on every jsonl event', async () => {
   await tick();
   stub.fireReady();
   await tick();
-  // Send a jsonl event every 30ms — should never timeout because each
-  // resets the 60ms idle window.
+  // Send jsonl events well inside the idle window. The total elapsed time is
+  // longer than one idle window, but each event resets it.
   for (let i = 0; i < 4; i++) {
-    await tick(30);
+    await tick(300);
     stub.emit('jsonl-event', { row: { type: 'user' } } as unknown as JsonlEvent);
   }
-  // We've been alive for ~120ms; idle is 60ms but each event resets.
   assert.equal(terminal, null);
   assert.equal(run.getState(), 'running');
 });

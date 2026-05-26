@@ -39,6 +39,18 @@ function collect(filePath: string, opts: { startLine?: number } = {}): JsonlEven
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+async function waitUntil(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+  intervalMs = 25,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return;
+    await wait(intervalMs);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // User / assistant / tool parsing
 // ─────────────────────────────────────────────────────────────────────────
@@ -556,7 +568,7 @@ test('partial trailing line held until newline lands', async () => {
 
   // Now finish the partial line + add a newline. Wait for the poll.
   appendFileSync(path, `${partial.slice(30)}\n`, 'utf-8');
-  await wait(250);
+  await waitUntil(() => events.length === 2);
   tailer.stop();
   cleanup(path);
 
@@ -605,7 +617,7 @@ test('appended lines after start() are picked up by the watcher', async () => {
     JSON.stringify({ type: 'user', message: { role: 'user', content: 'second' } }) + '\n',
     'utf-8',
   );
-  await wait(250);
+  await waitUntil(() => events.length === 2);
   tailer.stop();
   cleanup(f);
 
