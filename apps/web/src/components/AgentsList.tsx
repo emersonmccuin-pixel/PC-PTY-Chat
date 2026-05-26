@@ -33,7 +33,11 @@ export function AgentsList({ project, events }: AgentsListProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [detailModalPodId, setDetailModalPodId] = useState<string | null>(null);
   const [selectedPodId, setSelectedPodId] = useState<string | null>(null);
-  const [builtinCollapsed, setBuiltinCollapsed] = useState(false);
+  // Built-in section is collapsed by default (Section 36+): user's own
+  // project agents are the actionable surface; stock pods are reference
+  // material the user reaches for occasionally. Top of the rail + collapsed
+  // closed keeps them one click away without taking screen space.
+  const [builtinCollapsed, setBuiltinCollapsed] = useState(true);
   const [filter, setFilter] = useState('');
 
   const { stockPods, projectPods } = useMemo(() => {
@@ -109,13 +113,15 @@ export function AgentsList({ project, events }: AgentsListProps) {
       <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr] overflow-hidden">
         <aside className="overflow-y-auto border-r border-border">
           <ListSection
-            title="This project"
-            count={projectPods.length}
-            filteredCount={filtered.project.length}
-            empty="No project agents yet."
-            startExpanded
+            title="Built-in"
+            subtitle="Read-only here. Edit in Global Settings → Specialists."
+            count={stockPods.length}
+            filteredCount={filtered.stock.length}
+            empty="No stock specialists."
+            collapsed={builtinCollapsed}
+            onToggle={() => setBuiltinCollapsed((c) => !c)}
           >
-            {filtered.project.map((pod) => (
+            {filtered.stock.map((pod) => (
               <ListRow
                 key={pod.id}
                 pod={pod}
@@ -126,15 +132,13 @@ export function AgentsList({ project, events }: AgentsListProps) {
           </ListSection>
 
           <ListSection
-            title="Built-in"
-            subtitle="Read-only here."
-            count={stockPods.length}
-            filteredCount={filtered.stock.length}
-            empty="No stock specialists."
-            collapsed={builtinCollapsed}
-            onToggle={() => setBuiltinCollapsed((c) => !c)}
+            title="This project"
+            count={projectPods.length}
+            filteredCount={filtered.project.length}
+            empty="No project agents yet."
+            startExpanded
           >
-            {filtered.stock.map((pod) => (
+            {filtered.project.map((pod) => (
               <ListRow
                 key={pod.id}
                 pod={pod}
@@ -281,6 +285,11 @@ function ListRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  // Section 36+ — only stock pods can drift from a canonical seed; custom
+  // pods are user-authored from the start so the concept doesn't apply.
+  // driftedFields === null on non-stock rows (or stock rows without
+  // canonical content); [] on pristine; populated when customised.
+  const customized = pod.driftedFields !== null && pod.driftedFields.length > 0;
   return (
     <div
       role="button"
@@ -300,7 +309,17 @@ function ListRow({
       }
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-xs font-medium text-foreground">{pod.name}</span>
+        <span className="flex items-center gap-1.5 truncate text-xs font-medium text-foreground">
+          <span className="truncate">{pod.name}</span>
+          {customized && (
+            <span
+              className="shrink-0 border border-amber-500/60 bg-amber-500/10 px-1 py-px text-[9px] uppercase tracking-wider text-amber-300"
+              title={`Customized — drifted on: ${pod.driftedFields!.join(', ')}`}
+            >
+              Customized
+            </span>
+          )}
+        </span>
         <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground">
           {resolveModelLabel(pod.model)}
         </span>

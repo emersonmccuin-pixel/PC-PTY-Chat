@@ -84,6 +84,15 @@ export interface PodRoutesDeps {
     name: string,
     reason: string,
   ) => { agent: PodAgentRow | null; resetFields: string[] };
+  /** Section 36+ — drift detector for a single live pod. Returns null for
+   *  non-stock pods (or pods without canonical content), `[]` for pristine
+   *  stock pods, or the array of drifted SEED_OWNED_FIELDS names. Injected
+   *  for the same reason as resetStockPodToDefault — tests don't pull the
+   *  large prompt-text canonical content. */
+  detectStockPodDrift?: (pod: PodAgentRow) => string[] | null;
+  /** Section 36+ — names of every stock pod the server canonically ships.
+   *  Drives the "Reset all to default" summary shape. */
+  listCanonicalStockPodNames?: () => string[];
 }
 
 /** Public projection of a secret — `valuePlaintext` is stripped. Never sent
@@ -273,23 +282,36 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
 
   /** List live pods. Without `?projectId`: globals only. With
    *  `?projectId=<ulid>`: union of globals + that project's project-scope rows
-   *  (the Agents-tab view). */
+   *  (the Agents-tab view). Each row carries `driftedFields: string[] | null`
+   *  (Section 36+ — null for non-stock, [] for pristine stock, populated for
+   *  customised stock) so the UI can render the "Customized" pill without a
+   *  second round trip. */
   app.get('/api/agents/pods', (c) => {
     const qs = new URL(c.req.url).searchParams;
     const projectId = qs.get('projectId') as ULID | null;
     const pods = projectId
       ? listAgents({ projectId, includeGlobals: true })
       : listAgents({ scope: 'global' });
-    return c.json({ ok: true, pods });
+    const detectDrift = deps.detectStockPodDrift;
+    const annotated = pods.map((p) => ({
+      ...p,
+      driftedFields: detectDrift ? detectDrift(p) : null,
+    }));
+    return c.json({ ok: true, pods: annotated });
   });
 
   /** Full bundle for the detail modal: agent row + knowledge + secret
-   *  metadata (no values) + mcp servers. */
+   *  metadata (no values) + mcp servers. Section 36+ — drift info attached
+   *  so PodDetailModal can show the "Customized" pill + "Reset to default"
+   *  affordance in lockstep with what GET /api/agents/pods returns. */
   app.get('/api/agents/pods/:id', (c) => {
     const id = c.req.param('id') as ULID;
     const bundle = getPodBundle(id);
     if (!bundle) return c.json({ ok: false, error: `unknown pod: ${id}` }, 404);
-    return c.json({ ok: true, ...bundle });
+    const driftedFields = deps.detectStockPodDrift
+      ? deps.detectStockPodDrift(bundle.agent)
+      : null;
+    return c.json({ ok: true, ...bundle, driftedFields });
   });
 
   /** Audit log for a pod. Filters: actor, field, beforeCreatedAt, limit. */
@@ -502,6 +524,70 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
       pod: result.agent,
       resetFields: result.resetFields,
     });
+  });
+
+  /** Section 36+ — Reset every drifted stock pod to its seeded canonical
+   *  content in one call. Walks the canonical roster, runs drift detection
+   *  on each live row, calls `resetStockPodToDefault` for the drifted ones.
+   *  Returns a summary of which pods were touched and which were already
+   *  pristine. Body: `{ reason?: string }` — defaults to 'ui-reset-all'.
+   *  Audit rows land as `actor='user'` for each per-pod reset (same as the
+   *  single-pod path). */
+  app.post('/api/agents/pods/reset-all-stock-to-default', async (c) => {
+    if (!deps.resetStockPodToDefault || !deps.detectStockPodDrift || !deps.listCanonicalStockPodNames) {
+      return c.json(
+        { ok: false, error: 'reset-all not wired on this server' },
+        500,
+      );
+    }
+    let body: Record<string, unknown> = {};
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      /* empty body is fine */
+    }
+    const reason =
+      typeof body.reason === 'string' && body.reason.trim()
+        ? body.reason.trim()
+        : 'ui-reset-all';
+
+    const names = deps.listCanonicalStockPodNames();
+    const reset: Array<{ name: string; resetFields: string[] }> = [];
+    const unchanged: string[] = [];
+    const missing: string[] = [];
+
+    for (const name of names) {
+      // Look up the live row (project-agnostic — stock pods are global-scope).
+      const live = listAgents({ scope: 'global' }).find((p) => p.name === name);
+      if (!live) {
+        missing.push(name);
+        continue;
+      }
+      const drifted = deps.detectStockPodDrift(live);
+      if (!drifted || drifted.length === 0) {
+        unchanged.push(name);
+        continue;
+      }
+      const result = deps.resetStockPodToDefault(name, reason);
+      if (!result.agent || result.resetFields.length === 0) {
+        // Defensive — detectStockPodDrift said drifted but the reset said no
+        // change. Could happen if a row was user-edited then concurrent-reset
+        // between the detect + reset calls. Surface as unchanged.
+        unchanged.push(name);
+        continue;
+      }
+      reset.push({ name, resetFields: result.resetFields });
+      // Broadcast a single pod-changed envelope per reset row, matching the
+      // shape per-pod reset emits. Consumers (web rail + sessions) refetch.
+      deps.broadcastAll({
+        type: 'pod-changed',
+        change: 'updated',
+        pod: result.agent,
+      });
+      deps.onPodChanged?.(name, 'updated');
+    }
+
+    return c.json({ ok: true, reset, unchanged, missing });
   });
 
   /** Patch a pod's scalar fields. Multi-field updates audit under a shared

@@ -301,6 +301,11 @@ export interface Pod {
   /** Section 36 — orchestrator-facing dispatch hint, also surfaced in the
    *  Specialists tab + Pod detail modal. Null for most user-created pods. */
   dispatchGuidance: string | null;
+  /** Section 36+ — drift detection vs the canonical seed content. `null` for
+   *  non-stock pods (or stock pods without canonical content registered);
+   *  `[]` for pristine stock pods; populated with `SEED_OWNED_FIELDS` names
+   *  for customised stock pods (drives the "Customized" pill + Reset-all UI). */
+  driftedFields: string[] | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -1236,6 +1241,22 @@ export const api = {
       `/api/agents/pods/${podId}/reset-to-default`,
       {},
     ).then((r) => ({ pod: r.pod, resetFields: r.resetFields })),
+
+  /** Section 36+ — Reset every drifted stock pod in one call. Returns
+   *  per-pod summary: which were reset (with the field list), which were
+   *  already pristine, and any names registered in the canonical roster
+   *  but missing from the DB (shouldn't happen — defensive). */
+  resetAllStockPodsToDefault: () =>
+    postJson<{
+      ok: true;
+      reset: Array<{ name: string; resetFields: string[] }>;
+      unchanged: string[];
+      missing: string[];
+    }>(`/api/agents/pods/reset-all-stock-to-default`, {}).then((r) => ({
+      reset: r.reset,
+      unchanged: r.unchanged,
+      missing: r.missing,
+    })),
 
   patchPod: (podId: ULID, patch: PatchPodInput) =>
     postJsonMethod<{ ok: true; pod: Pod }>(

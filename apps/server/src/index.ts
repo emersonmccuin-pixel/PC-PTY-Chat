@@ -120,6 +120,7 @@ import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
+import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { applyNodeLauncherToProjects, rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { recordAgentInvoke } from './services/agent-audit.ts';
@@ -1037,6 +1038,8 @@ registerPodRoutes(app, {
     const r = resetStockPodToDefault(name, reason);
     return { agent: r.agent, resetFields: r.resetFields };
   },
+  detectStockPodDrift,
+  listCanonicalStockPodNames,
   onPodChanged: (podName) => {
     if (podName !== 'orchestrator') return;
     for (const runtime of projectRegistry.list()) {

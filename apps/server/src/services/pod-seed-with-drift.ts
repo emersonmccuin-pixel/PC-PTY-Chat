@@ -99,7 +99,15 @@ const SEED_OWNED_FIELDS = [
   'dispatchGuidance',
 ] as const;
 
-function collectDriftedFields(live: PodAgentRow, content: CreateAgentInput): string[] {
+/** Compare a live agent row against its canonical seed content and return the
+ *  list of `SEED_OWNED_FIELDS` names that have drifted. Section 36+ exposes
+ *  this for the Agents tab "Customized" pill + Specialists tab "Reset all to
+ *  default" surfaces, so the same drift logic that drives boot-time reseeding
+ *  also drives the UI affordances. */
+export function collectDriftedFields(
+  live: PodAgentRow,
+  content: CreateAgentInput,
+): string[] {
   const drift: string[] = [];
   // Section 26 — for the tools field, compare against the *merged* seed (the
   // repo layer auto-merges REQUIRED_AGENT_TOOLS at create/update time, so the

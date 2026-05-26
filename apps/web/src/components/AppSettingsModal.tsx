@@ -133,6 +133,31 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     }
   }
 
+  /** Section 36+ — Reset every customised stock pod in one call. */
+  async function resetAllPods() {
+    const customizedNames = (stockPods ?? [])
+      .filter((p) => p.driftedFields !== null && p.driftedFields.length > 0)
+      .map((p) => p.name);
+    if (customizedNames.length === 0) {
+      window.alert('No customised stock pods to reset. Everything already matches the seeded default.');
+      return;
+    }
+    const ok = window.confirm(
+      `Reset ${customizedNames.length} customised specialist${customizedNames.length === 1 ? '' : 's'} to seeded default?\n\n${customizedNames.map((n) => `  • ${n}`).join('\n')}\n\nFor each: prompt, tools, model, effort, max-turns, output destination revert. Knowledge, secrets, and MCP servers are untouched. Each change is audited.`,
+    );
+    if (!ok) return;
+    setResetErr(null);
+    setResetBusyId('all' as ULID);
+    try {
+      await api.resetAllStockPodsToDefault();
+      refetchStockPods();
+    } catch (e) {
+      setResetErr((e as Error).message);
+    } finally {
+      setResetBusyId(null);
+    }
+  }
+
   const editPod = stockPods?.find((p) => p.id === editPodId) ?? null;
   const dataDirDirty = draft.dataDir !== initialDataDir.current;
 
@@ -249,6 +274,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                     resetBusyId={resetBusyId}
                     onEdit={(id) => setEditPodId(id)}
                     onReset={(pod) => void resetPod(pod)}
+                    onResetAll={() => void resetAllPods()}
                   />
                 )}
               </div>
@@ -611,13 +637,18 @@ function SpecialistsTab({
   resetBusyId,
   onEdit,
   onReset,
+  onResetAll,
 }: {
   stockPods: Pod[] | null;
   error: string | null;
   resetBusyId: ULID | null;
   onEdit: (id: ULID) => void;
   onReset: (pod: Pod) => void;
+  onResetAll: () => void;
 }) {
+  const customizedCount = (stockPods ?? []).filter(
+    (p) => p.driftedFields !== null && p.driftedFields.length > 0,
+  ).length;
   return (
     <div className="flex flex-col gap-3">
       <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -628,6 +659,28 @@ function SpecialistsTab({
           {error}
         </div>
       )}
+      {stockPods !== null && stockPods.length > 0 && (
+        <div className="flex items-center justify-between border border-border bg-card px-3 py-2">
+          <div className="text-xs text-muted-foreground">
+            {customizedCount === 0
+              ? 'All specialists match their seeded defaults.'
+              : `${customizedCount} specialist${customizedCount === 1 ? '' : 's'} customised.`}
+          </div>
+          <button
+            type="button"
+            onClick={onResetAll}
+            disabled={resetBusyId !== null || customizedCount === 0}
+            className="border border-destructive/60 bg-card px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+            title={
+              customizedCount === 0
+                ? 'Nothing to reset — every specialist is on its seeded default.'
+                : 'Reset every customised specialist to its seeded default. Knowledge / secrets / MCP servers stay.'
+            }
+          >
+            {resetBusyId === ('all' as ULID) ? 'Resetting all…' : 'Reset all to default'}
+          </button>
+        </div>
+      )}
       {stockPods === null ? (
         <div className="text-xs text-muted-foreground">Loading specialists…</div>
       ) : stockPods.length === 0 ? (
@@ -636,39 +689,56 @@ function SpecialistsTab({
         </div>
       ) : (
         <div className="flex flex-col gap-1">
-          {stockPods.map((pod) => (
-            <div
-              key={pod.id}
-              className="grid grid-cols-[1fr_auto] items-center gap-3 border border-border bg-background px-3 py-2"
-            >
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-foreground">{pod.name}</div>
-                {pod.description && (
-                  <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {pod.description}
+          {stockPods.map((pod) => {
+            const customized = pod.driftedFields !== null && pod.driftedFields.length > 0;
+            return (
+              <div
+                key={pod.id}
+                className="grid grid-cols-[1fr_auto] items-center gap-3 border border-border bg-background px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                    <span className="truncate">{pod.name}</span>
+                    {customized && (
+                      <span
+                        className="shrink-0 border border-amber-500/60 bg-amber-500/10 px-1 py-px text-[9px] uppercase tracking-wider text-amber-300"
+                        title={`Drifted on: ${pod.driftedFields!.join(', ')}`}
+                      >
+                        Customized
+                      </span>
+                    )}
                   </div>
-                )}
+                  {pod.description && (
+                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {pod.description}
+                    </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onEdit(pod.id)}
+                    className="border border-border bg-card px-2 py-1 text-xs hover:bg-muted"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReset(pod)}
+                    disabled={resetBusyId !== null || !customized}
+                    className="border border-destructive/60 bg-card px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={
+                      customized
+                        ? 'Restore the seeded canonical content.'
+                        : 'Already on default.'
+                    }
+                  >
+                    {resetBusyId === pod.id ? 'Resetting…' : 'Reset to default'}
+                  </button>
+                </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => onEdit(pod.id)}
-                  className="border border-border bg-card px-2 py-1 text-xs hover:bg-muted"
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onReset(pod)}
-                  disabled={resetBusyId !== null}
-                  className="border border-destructive/60 bg-card px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="Restore the seeded canonical content."
-                >
-                  {resetBusyId === pod.id ? 'Resetting…' : 'Reset to default'}
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
