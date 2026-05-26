@@ -44,7 +44,12 @@ interface AppSettingsModalProps {
 export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModalProps) {
   const [active, setActive] = useState<TabId>('general');
   const [draft, setDraft] = useState<GlobalSettings>(settings);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Section 33 — one picker serves two fields; track which is open.
+  const [picker, setPicker] = useState<null | 'projectsFolder' | 'claudeConfigDir'>(null);
+  // Section 33 — resolved Claude profile PC is using (effective dir + source).
+  const [profile, setProfile] = useState<
+    { effective: string; source: 'override' | 'shell' | 'default' } | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -68,12 +73,23 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !pickerOpen && !editPodId) cancel();
+      if (e.key === 'Escape' && !picker && !editPodId) cancel();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickerOpen, editPodId]);
+  }, [picker, editPodId]);
+
+  // Section 33 — load the resolved Claude profile for the General-tab read-out.
+  const loadProfile = useRef(() => {
+    void api
+      .getClaudeProfile()
+      .then((p) => setProfile({ effective: p.effective, source: p.source }))
+      .catch(() => {});
+  });
+  useEffect(() => {
+    loadProfile.current();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,7 +182,8 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     draft.telemetryOptIn !== settings.telemetryOptIn ||
     draft.bugLogTargetProjectId !== settings.bugLogTargetProjectId ||
     draft.fontScale !== settings.fontScale ||
-    draft.hideCancelledStage !== settings.hideCancelledStage;
+    draft.hideCancelledStage !== settings.hideCancelledStage ||
+    draft.claudeConfigDir !== settings.claudeConfigDir;
 
   async function saveGeneral() {
     if (busy || !generalDirty) return;
@@ -179,10 +196,14 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         bugLogTargetProjectId: draft.bugLogTargetProjectId,
         fontScale: draft.fontScale,
         hideCancelledStage: draft.hideCancelledStage,
+        claudeConfigDir: draft.claudeConfigDir,
       };
       const r = await api.patchSettings(patch);
       initialFontScale.current = r.settings.fontScale;
       onSaved(r.settings, r.restartRequired);
+      // Section 33 — the effective profile may have just changed; refresh the
+      // read-out so it reflects the new account immediately.
+      loadProfile.current();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -256,7 +277,9 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                     draft={draft}
                     onDraftChange={(patch) => setDraft((p) => ({ ...p, ...patch }))}
                     projects={projects}
-                    onBrowse={() => setPickerOpen(true)}
+                    profile={profile}
+                    onBrowse={() => setPicker('projectsFolder')}
+                    onBrowseClaudeConfig={() => setPicker('claudeConfigDir')}
                   />
                 )}
                 {active === 'storage' && (
@@ -326,13 +349,23 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
           </div>
         </div>
       </div>
-      {pickerOpen && (
+      {picker === 'projectsFolder' && (
         <FolderBrowserModal
           initialPath={draft.projectsFolder}
-          onCancel={() => setPickerOpen(false)}
+          onCancel={() => setPicker(null)}
           onSelect={(p) => {
             setDraft({ ...draft, projectsFolder: p });
-            setPickerOpen(false);
+            setPicker(null);
+          }}
+        />
+      )}
+      {picker === 'claudeConfigDir' && (
+        <FolderBrowserModal
+          initialPath={draft.claudeConfigDir ?? profile?.effective ?? ''}
+          onCancel={() => setPicker(null)}
+          onSelect={(p) => {
+            setDraft({ ...draft, claudeConfigDir: p });
+            setPicker(null);
           }}
         />
       )}
@@ -361,15 +394,67 @@ function GeneralTab({
   draft,
   onDraftChange,
   projects,
+  profile,
   onBrowse,
+  onBrowseClaudeConfig,
 }: {
   draft: GlobalSettings;
   onDraftChange: (patch: Partial<GlobalSettings>) => void;
   projects: Project[];
+  profile: { effective: string; source: 'override' | 'shell' | 'default' } | null;
   onBrowse: () => void;
+  onBrowseClaudeConfig: () => void;
 }) {
+  const override = draft.claudeConfigDir;
+  const sourceLabel =
+    profile?.source === 'override'
+      ? 'override'
+      : profile?.source === 'shell'
+        ? 'inherited from the shell that launched PC'
+        : 'default (~/.claude)';
   return (
     <div className="flex flex-col gap-4">
+      <FieldRow
+        label="Claude account"
+        help="Which Claude login PC runs your chats and agents under. Switch this to point PC at a different account's data (e.g. work vs personal) without restarting your shell. Applies to NEW chat sessions — existing chats stay on their current account, so click + New session in a project to switch it over."
+      >
+        <div className="flex flex-col gap-2">
+          <div className="flex items-stretch gap-1">
+            <button
+              type="button"
+              onClick={onBrowseClaudeConfig}
+              className="border border-border bg-card px-2 py-1 text-xs text-foreground hover:bg-muted"
+            >
+              Browse…
+            </button>
+            <code className="flex-1 truncate border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+              {override ?? 'Use the account from my shell (default)'}
+            </code>
+            {override !== null && (
+              <button
+                type="button"
+                onClick={() => onDraftChange({ claudeConfigDir: null })}
+                className="border border-border bg-card px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="Clear the override and inherit the account from the shell that launched PC."
+              >
+                Use shell default
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {profile ? (
+              <>
+                PC is currently using{' '}
+                <code className="font-mono text-foreground/80">{profile.effective}</code>{' '}
+                <span className="text-muted-foreground">({sourceLabel})</span>.
+              </>
+            ) : (
+              'Resolving current account…'
+            )}
+          </div>
+        </div>
+      </FieldRow>
+
       <FieldRow
         label="Projects folder"
         help="Default initial path for the create-project folder picker. Hot-reloadable."

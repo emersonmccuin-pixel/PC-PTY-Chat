@@ -406,6 +406,9 @@ export interface ActivityPanelSettings {
 export interface GlobalSettings {
   dataDir: string;
   telemetryOptIn: boolean;
+  /** Section 33 — override for which Claude account/profile PC uses. `null` =
+   *  inherit the shell env that launched the server. */
+  claudeConfigDir: string | null;
   projectsFolder: string;
   activityPanel: ActivityPanelSettings;
   bugLogTargetProjectId: ULID | null;
@@ -790,6 +793,17 @@ export const api = {
       patch,
       'PATCH',
     ),
+
+  /** Section 33 — resolved Claude profile PC is using right now (effective
+   *  CLAUDE_CONFIG_DIR + where it came from). The override choice itself rides
+   *  on GlobalSettings.claudeConfigDir. */
+  getClaudeProfile: () =>
+    getJson<{
+      ok: true;
+      override: string | null;
+      effective: string;
+      source: 'override' | 'shell' | 'default';
+    }>('/api/settings/claude-profile'),
 
   // ── Project mutate / delete (Q11) ────────────────────────────────────────
   updateProject: (projectId: ULID, patch: { name?: string; git_remote?: string | null }) =>

@@ -18,8 +18,8 @@ import type {
   ULID,
   WorkItemType,
 } from '@pc/domain';
-import { isWorkItemType, withSettingsDefaults } from '@pc/domain';
-import { resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
+import { isWorkItemType, resolveClaudeConfigDirEnv, withSettingsDefaults } from '@pc/domain';
+import { claudeConfigDir, resolveNodeLauncher, setConfiguredClaudeExe } from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
@@ -177,6 +177,28 @@ runMigrations(resolve(ROOT, 'packages', 'db', 'drizzle'));
 // resolver falls through to CLAUDE_EXE → PATH → ~/.local/bin. readSettings is
 // a hoisted declaration; the DB is ready post-migration.
 setConfiguredClaudeExe(readSettings().claudeExe);
+
+// Section 33 — capture the shell-inherited CLAUDE_CONFIG_DIR ONCE, before any
+// stored override is applied, so clearing the override later restores it
+// rather than getting stuck on the last override.
+const SHELL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+
+/** Point `process.env.CLAUDE_CONFIG_DIR` at the chosen Claude profile (or
+ *  restore the shell default when `override` is null). This single assignment
+ *  is the whole mechanism: path-resolver reads the env var fresh on every call
+ *  AND every claude.exe spawn inherits `process.env`, so chat JSONL location,
+ *  the retention sweep, Usage aggregation, and fresh spawns all follow the
+ *  chosen profile. Existing PtY sessions keep whatever dir they spawned under
+ *  (resume derives it from the persisted JSONL path), so a change is
+ *  restart-required for live chats but immediate for new ones. */
+function applyClaudeConfigDirOverride(override: string | null): void {
+  const next = resolveClaudeConfigDirEnv(override, SHELL_CLAUDE_CONFIG_DIR);
+  if (next === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = next;
+}
+
+// Apply the stored profile override at boot (mirror of setConfiguredClaudeExe).
+applyClaudeConfigDirOverride(readSettings().claudeConfigDir);
 
 // Section 16a.2 — seed the global orchestrator pod if it doesn't already
 // exist. Idempotent on every boot; user/MCP edits to the row survive (the
@@ -813,6 +835,12 @@ app.patch('/api/settings', async (c) => {
           : typeof body.claudeExe === 'string' && body.claudeExe.trim()
             ? body.claudeExe.trim()
             : null,
+      claudeConfigDir:
+        body.claudeConfigDir === undefined
+          ? current.claudeConfigDir
+          : typeof body.claudeConfigDir === 'string' && body.claudeConfigDir.trim()
+            ? body.claudeConfigDir.trim()
+            : null,
       onboardingCompletedAt:
         body.onboardingCompletedAt === undefined
           ? current.onboardingCompletedAt
@@ -863,8 +891,27 @@ app.patch('/api/settings', async (c) => {
   // Keep the runtime resolver in lockstep with the stored override. Takes
   // effect on the next spawn (existing PtY sessions keep their resolved path).
   setConfiguredClaudeExe(merged.claudeExe);
+  // Section 33 — redirect CLAUDE_CONFIG_DIR immediately so the next fresh chat
+  // session (and every JSONL path computed after this) uses the chosen
+  // profile. Live sessions are unaffected; the UI nudges + New session.
+  applyClaudeConfigDirOverride(merged.claudeConfigDir);
   const restartRequired = merged.dataDir !== current.dataDir;
   return c.json({ ok: true, settings: merged, restartRequired });
+});
+
+/** Section 33 — which Claude account/profile PC is actually talking to right
+ *  now. `override` is the stored choice (null = inherit shell env); `effective`
+ *  is the resolved CLAUDE_CONFIG_DIR every spawn + JSONL path uses; `source`
+ *  explains where `effective` came from. Drives the General-tab read-out so the
+ *  user can see which account is live without inspecting their shell env. */
+app.get('/api/settings/claude-profile', (c) => {
+  const override = readSettings().claudeConfigDir;
+  return c.json({
+    ok: true,
+    override,
+    effective: claudeConfigDir(),
+    source: override ? 'override' : SHELL_CLAUDE_CONFIG_DIR ? 'shell' : 'default',
+  });
 });
 
 // ── Preflight (Section 10 Phase 0) ────────────────────────────────────────
