@@ -17,6 +17,7 @@ import {
   buildEnvMap,
   expandToolWildcards,
   materializePod,
+  renderAvailableTools,
   renderAgentMd,
   renderMcpConfig,
   substituteVariables,
@@ -137,6 +138,23 @@ test('renderAgentMd emits the canonical frontmatter shape', () => {
   assert.equal(lines[7], '---');
   assert.equal(lines[8], '');
   assert.equal(lines[9], 'You are a researcher. Read sources and synthesize.');
+});
+
+test('renderAgentMd appends the generated available-tools footer', () => {
+  const md = renderAgentMd(makeAgent(), ['Read', 'mcp__pc-rig__pc_log']);
+  assert.ok(md.includes('## Available tools'));
+  assert.ok(md.includes('- `Read` - Read text files from the project'));
+  assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line to the project'));
+});
+
+test('renderAgentMd suppresses the generated footer when the prompt places {{AVAILABLE_TOOLS}}', () => {
+  const md = renderAgentMd(
+    makeAgent({ prompt: 'Tools:\n\n{{AVAILABLE_TOOLS}}\n\nDone.' }),
+    ['Read'],
+  );
+  assert.equal((md.match(/## Available tools/g) ?? []).length, 0);
+  assert.ok(md.includes('- `Read` - Read text files from the project'));
+  assert.ok(!md.includes('{{AVAILABLE_TOOLS}}'));
 });
 
 test('renderAgentMd omits optional fields when null/empty', () => {
@@ -424,6 +442,9 @@ test('materializePod expands mcp__pc-rig__* against the supplied catalog', () =>
       'mcp__pc-rig__pc_knowledge_read',
     ]).join(', ');
     assert.match(md, new RegExp(`\\ntools: ${expectedTools}\\n`));
+    assert.ok(md.includes('## Available tools'));
+    assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line'));
+    assert.ok(!md.includes('- `mcp__pc-rig__*`'));
   } finally {
     dirs.cleanup();
   }
@@ -587,21 +608,36 @@ test('renderAgentMd leaves the body unchanged when no variables map is passed', 
   assert.ok(md.includes('Use {{UNKNOWN}} as-is.'));
 });
 
-test('materializePod threads opts.variables through to the rendered .md', () => {
+test('renderAvailableTools describes cataloged tools and leaves unknown tools as slugs', () => {
+  const out = renderAvailableTools(['Read', 'mcp__external__do_thing']);
+  assert.ok(out.includes('- `Read` - Read text files from the project'));
+  assert.ok(out.includes('- `mcp__external__do_thing`'));
+});
+
+test('materializePod renders AVAILABLE_TOOLS from final expanded tools, overriding stale caller values', () => {
   const dirs = freshDirs();
   try {
     const bundle = makeBundle({
-      agent: makeAgent({ prompt: 'Tools you have:\n\n{{AVAILABLE_TOOLS}}' }),
+      agent: makeAgent({
+        prompt: 'Tools you have:\n\n{{AVAILABLE_TOOLS}}',
+        tools: ['Read', 'mcp__pc-rig__*'],
+      }),
     });
     const result = materializePod({
       bundle,
       worktreeDir: dirs.worktree,
       scratchDir: dirs.scratch,
-      variables: { AVAILABLE_TOOLS: '- `Read` — read files\n- `Glob` — list files' },
+      mcpToolCatalog: {
+        'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'],
+      },
+      variables: { AVAILABLE_TOOLS: '- `stale` - should not render' },
     });
     const md = readFileSync(result.agentMdPath, 'utf8');
-    assert.ok(md.includes('- `Read` — read files'));
-    assert.ok(md.includes('- `Glob` — list files'));
+    assert.ok(md.includes('- `Read` - Read text files from the project'));
+    assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line'));
+    assert.ok(md.includes('- `mcp__pc-rig__pc_get_work_item` - Fetch a card'));
+    assert.ok(!md.includes('mcp__pc-rig__*'));
+    assert.ok(!md.includes('stale'));
     assert.ok(!md.includes('{{AVAILABLE_TOOLS}}'));
   } finally {
     dirs.cleanup();

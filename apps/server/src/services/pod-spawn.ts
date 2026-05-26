@@ -26,10 +26,7 @@ import { getPodForSpawn } from '@pc/db';
 import type { PodMcpServerConfig, ULID } from '@pc/domain';
 import { materializePod, type MaterializedPod, type PodWorkItemContext } from '@pc/runtime';
 import { PC_RIG_TOOL_NAMES } from './pod-tool-catalog.ts';
-import {
-  renderAvailableAgents,
-  renderAvailableTools,
-} from './pod-variable-renderers.ts';
+import { renderAvailableAgents } from './pod-variable-renderers.ts';
 
 export interface PreparePodSpawnInput {
   /** Agent name — looked up against the pod rows. */
@@ -89,17 +86,13 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
 
   const baseline = readProjectMcpBaseline(input.worktreeDir);
 
-  // Section 36 — pod-prompt variable substitution. Compute lazily: scan the
-  // prompt body for the two known placeholders first so the renderers (which
-  // hit the DB / catalog) only fire when actually referenced. Prompt bodies
-  // without `{{AVAILABLE_*}}` skip both renders.
+  // Section 36 — pod-prompt variable substitution. Compute the DB-backed
+  // roster lazily only when referenced. AVAILABLE_TOOLS is materializer-owned
+  // because it must render from the final expanded tool allowlist.
   const promptBody = bundle.agent.prompt;
   const variables: Record<string, string> = {};
   if (promptBody.includes('{{AVAILABLE_AGENTS}}')) {
     variables.AVAILABLE_AGENTS = renderAvailableAgents(input.projectId ?? null);
-  }
-  if (promptBody.includes('{{AVAILABLE_TOOLS}}')) {
-    variables.AVAILABLE_TOOLS = renderAvailableTools(bundle.agent.tools);
   }
 
   const materialised: MaterializedPod = materializePod({

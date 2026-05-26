@@ -14,16 +14,16 @@
 //     each section. Each entry carries name + origin tag + description + the
 //     orchestrator-facing `dispatch_guidance` hint (when non-null).
 //
-//   - `AVAILABLE_TOOLS` — a one-line-per-tool quick-reference using the
-//     @pc/domain tool-catalog descriptions. Caller passes the expanded tool
-//     list (post-wildcard, post-mergeRequiredAgentTools).
+//   - `AVAILABLE_TOOLS` — materializer-owned in @pc/runtime so it can render
+//     from the final expanded tool list (post-wildcard,
+//     post-mergeRequiredAgentTools).
 //
-// These exist for the orchestrator prompt (36.4); other pods don't enumerate
-// agents or tools in their prompts. Add new variables here as the need
-// arises — one variable per use case, no general-purpose templating.
+// AVAILABLE_AGENTS exists for the orchestrator prompt (36.4). Add new
+// DB-backed variables here as the need arises — one variable per use case,
+// no general-purpose templating.
 
 import { listAgents } from '@pc/db';
-import { descriptionOf, type ULID } from '@pc/domain';
+import type { ULID } from '@pc/domain';
 
 /** Format the full agent roster the orchestrator (or any other pod opting in
  *  via `{{AVAILABLE_AGENTS}}`) can dispatch to. Stock pods first, then
@@ -52,19 +52,4 @@ export function renderAvailableAgents(projectId: ULID | null | undefined): strin
     blocks.push(lines.join('\n'));
   }
   return blocks.join('\n\n');
-}
-
-/** Format the expanded tool list as a one-line-per-tool quick reference.
- *  Uses @pc/domain's tool catalog for descriptions; tools not in the catalog
- *  appear with no description line. Order matches the input list (callers
- *  typically pass the expanded post-wildcard tools, which preserves the
- *  materializer's ordering convention). */
-export function renderAvailableTools(tools: readonly string[]): string {
-  if (tools.length === 0) return '';
-  const lines: string[] = [];
-  for (const t of tools) {
-    const desc = descriptionOf(t);
-    lines.push(desc ? `- \`${t}\` — ${desc}` : `- \`${t}\``);
-  }
-  return lines.join('\n');
 }

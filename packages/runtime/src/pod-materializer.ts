@@ -33,7 +33,7 @@ import type {
   PodSecretRow,
   PodSpawnBundle,
 } from '@pc/domain';
-import { mergeRequiredAgentTools } from '@pc/domain';
+import { descriptionOf, mergeRequiredAgentTools } from '@pc/domain';
 
 /** Work-item context the orchestrator forwards via `pc_invoke_agent.workItemId`.
  *  When supplied, the materialiser appends a "## Your assignment" section to
@@ -77,9 +77,9 @@ export interface MaterializePodOptions {
    *  names (e.g. `'AVAILABLE_AGENTS'`); the materializer replaces every
    *  `{{KEY}}` occurrence in the prompt body with the supplied string before
    *  writing the .md. Unknown variables are LEFT INTACT (loud surface in the
-   *  rendered prompt — never silently stripped). Caller computes the values
-   *  (DB access lives in the server layer, not in the runtime package).
-   *  No-op when omitted. */
+   *  rendered prompt — never silently stripped). Caller computes DB-backed
+   *  values; AVAILABLE_TOOLS is always recomputed here from the final
+   *  expanded tool list. No-op when omitted. */
   variables?: Record<string, string>;
 }
 
@@ -107,6 +107,7 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   const expandedTools = mergeRequiredAgentTools(
     expandToolWildcards(bundle.agent.tools, catalog),
   );
+  const variables = withMaterializerVariables(opts.variables, expandedTools);
 
   const agentMdPath = resolve(worktreeDir, '.claude', 'agents', `${bundle.agent.name}.md`);
   mkdirSync(dirname(agentMdPath), { recursive: true });
@@ -117,7 +118,7 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
       expandedTools,
       bundle.knowledge,
       opts.workItem,
-      opts.variables,
+      variables,
     ),
     'utf8',
   );
@@ -174,11 +175,53 @@ export function renderAgentMd(
   if (agent.effort) fm.push(`effort: ${agent.effort}`);
   if (agent.maxTurns !== null) fm.push(`maxTurns: ${agent.maxTurns}`);
   fm.push('---');
-  const body = substituteVariables(agent.prompt.trim(), variables);
+  const effectiveVariables = withMaterializerVariables(variables, tools);
+  const body = substituteVariables(agent.prompt.trim(), effectiveVariables);
   const assignment = workItem ? renderAssignment(workItem) : '';
   const canReadKnowledge = tools.includes(KNOWLEDGE_READ_TOOL);
   const footer = canReadKnowledge ? renderKnowledgeFooter(agent.id, knowledge) : '';
-  return `${fm.join('\n')}\n\n${body}${assignment}${footer}\n`;
+  const toolsFooter = agent.prompt.includes('{{AVAILABLE_TOOLS}}')
+    ? ''
+    : renderAvailableToolsFooter(tools);
+  return `${fm.join('\n')}\n\n${body}${assignment}${footer}${toolsFooter}\n`;
+}
+
+/** Canonical tool-list rendering for agent prompts. This runs inside the
+ *  materializer, after wildcard expansion and required-tool merging, so the
+ *  prompt sees the same concrete allowlist that is written to frontmatter. */
+export function renderAvailableTools(tools: readonly string[]): string {
+  if (tools.length === 0) return '';
+  const lines: string[] = [];
+  for (const t of tools) {
+    const desc = descriptionOf(t);
+    lines.push(desc ? `- \`${t}\` - ${desc}` : `- \`${t}\``);
+  }
+  return lines.join('\n');
+}
+
+function withMaterializerVariables(
+  variables: Record<string, string> | undefined,
+  tools: readonly string[],
+): Record<string, string> | undefined {
+  if (tools.length === 0) return variables;
+  return {
+    ...(variables ?? {}),
+    AVAILABLE_TOOLS: renderAvailableTools(tools),
+  };
+}
+
+function renderAvailableToolsFooter(tools: readonly string[]): string {
+  const rendered = renderAvailableTools(tools);
+  if (!rendered) return '';
+  return [
+    '',
+    '',
+    '## Available tools',
+    '',
+    'Generated at spawn time from your actual tool allowlist after wildcard expansion. These are the tools you can call:',
+    '',
+    rendered,
+  ].join('\n');
 }
 
 /** Section 36 — replace every `{{KEY}}` in `body` with `variables[KEY]` when
