@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch --ignore \"**/data/**\" --ignore \"**/test-results/**\" --ignore \"**/playwright-report/**\" src/index.ts",
     "start": "tsx src/index.ts",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"test/*.test.ts\" \"test/v2/*.test.ts\""
   },
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/ws": "^8.5.13",
+    "esbuild": "^0.21.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }
