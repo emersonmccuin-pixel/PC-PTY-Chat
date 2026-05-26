@@ -894,6 +894,20 @@ export const api = {
       { workflow, trigger: { kind: 'manual' } },
     ),
 
+  /** 19.12 — fetch one v2 run with its sidecar dagState + event log. Backs the
+   *  tactical v2 run viewer (Activity Panel jump-to-watch). 404 on unknown id. */
+  getV2Run: (projectId: ULID, runId: string) =>
+    getJson<{ ok: true; run: V2RunDetail; events: V2RunEvent[] }>(
+      `/api/projects/${projectId}/workflow-v2/runs/${encodeURIComponent(runId)}`,
+    ),
+
+  /** 19.12 — fetch one parsed v2 workflow def by id. The v2 run viewer pairs
+   *  this with `getV2Run` to render live dagState overlays on the graph. */
+  getV2WorkflowDef: (projectId: ULID, wfId: string) =>
+    getJson<{ ok: true; workflow: V2WorkflowDef; yamlText: string }>(
+      `/api/projects/${projectId}/workflow-v2/definitions/${encodeURIComponent(wfId)}`,
+    ),
+
   // ── Workflows (4e) ────────────────────────────────────────────────────
   /** Full Workflow def for the drawer's Definition tab + raw YAML text for
    *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. 4h.11a — also returns
@@ -1804,3 +1818,36 @@ export interface V2RunSummary {
   startedAt: number | null;
   endedAt: number | null;
 }
+
+/** 19.12 — full v2 run row shape returned by `getV2Run`. dagState is the live
+ *  per-node runtime record the viewer overlays onto the graph; fields the
+ *  viewer doesn't read are typed loosely as `unknown` to keep the surface narrow. */
+export interface V2RunDetail extends V2RunSummary {
+  dagState: {
+    nodes: Record<string, { state: string; workItemId?: string; iteration?: number; error?: string; startedAt?: number; endedAt?: number }>;
+    rejectIterations?: Record<string, number>;
+    rejectFeedback?: Record<string, string>;
+  };
+  workflowYamlSnapshot: string;
+  triggerContext: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  triggeredBySessionId: string | null;
+  lastActivityAt: number | null;
+}
+
+/** 19.12 — append-only event for the run's audit log. Not currently rendered
+ *  by the viewer; the type exists so `getV2Run` can return the event array
+ *  without an `unknown` cast at the call site. */
+export interface V2RunEvent {
+  id: string;
+  runId: string;
+  type: string;
+  nodeId: string | null;
+  data: Record<string, unknown> | null;
+  occurredAt: number;
+}
+
+/** 19.12 — parsed v2 workflow def returned by `getV2WorkflowDef`. The viewer
+ *  passes this straight to `WorkflowGraphV2`. Shape is `WorkflowV2.Workflow`
+ *  from `@pc/domain`; opaque on the client (we never inspect node fields). */
+export type V2WorkflowDef = V2WorkflowDefSummary & { [key: string]: unknown };

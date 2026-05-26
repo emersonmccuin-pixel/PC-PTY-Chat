@@ -33,7 +33,7 @@ const WS_PILL: Record<WsStatus, { dot: string; label: string; title: string }> =
   idle: { dot: 'bg-zinc-500', label: '—', title: 'No project selected' },
 };
 
-export function StatusBar({ projectId, projectName, wsStatus }: StatusBarProps) {
+export function StatusBar({ projectId, wsStatus }: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [showMcp, setShowMcp] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -117,16 +117,6 @@ export function StatusBar({ projectId, projectName, wsStatus }: StatusBarProps) 
           <span className="text-foreground/50">ws</span>
           <span className="tabular-nums text-foreground">{WS_PILL[wsStatus].label}</span>
         </span>
-
-        {projectName && (
-          <>
-            <span className="text-[var(--fg-dim)]">│</span>
-            <span className="flex items-center gap-1.5" title="Active project workspace">
-              <span className="text-foreground/50">workspace</span>
-              <span className="text-foreground">{projectName}</span>
-            </span>
-          </>
-        )}
 
         <span className="ml-auto text-[var(--fg-dim)]">caisson</span>
       </div>

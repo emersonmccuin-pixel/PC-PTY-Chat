@@ -11,22 +11,15 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { AgentRunRecord, Project, WorkflowRun } from '@/api/client';
+import type { AgentRunRecord, Project, V2RunStatus, V2RunSummary } from '@/api/client';
 import { api } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
-import { useProjectWorkflowRuns } from '@/hooks/use-project-workflow-runs';
+import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
-import { useWorkflowDrawer } from '@/store/workflow-drawer';
-
-interface PendingApproval {
-  workflowRunId: string;
-  nodeId: string;
-  message: string;
-  onRejectPrompt: string | null;
-}
+import { useWorkflowV2RunViewer } from '@/store/workflow-v2-run-viewer';
 
 interface ActivityPanelProps {
   project: Project | null;
@@ -35,11 +28,7 @@ interface ActivityPanelProps {
   onExpand: () => void;
 }
 
-const ACTIVE_STATUSES = new Set<WorkflowRun['status']>([
-  'pending',
-  'in-progress',
-  'paused',
-]);
+const ACTIVE_STATUSES = new Set<V2RunStatus>(['pending', 'running', 'paused']);
 
 export function ActivityPanel({
   project,
@@ -59,7 +48,7 @@ export function ActivityPanel({
   // AgentDispatchGroupBubble can open it from a different tab.
   const openTranscript = useAgentTranscript((s) => s.open);
 
-  const { runs } = useProjectWorkflowRuns(project, events);
+  const { runs } = useProjectWorkflowV2Runs(project, events);
   const activeRuns = useMemo(
     () => runs.filter((r) => ACTIVE_STATUSES.has(r.status)),
     [runs],
@@ -69,27 +58,24 @@ export function ActivityPanel({
     [runs],
   );
   const { runs: agentRuns } = useProjectAgentRuns(project, events);
-  const approvals = usePendingApprovals(project, events);
 
-  const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+  const sevenDaysAgoMsEpoch = nowMs - 7 * 24 * 60 * 60 * 1000;
   const dismissedRunIds = useDismissedRunIds(project);
   const recentFailedRuns = useMemo(
     () =>
       runs
         .filter((r) => r.status === 'failed' || r.status === 'cancelled')
         .filter((r) => {
-          const completed = r.completedAt
-            ? new Date(r.completedAt).getTime()
-            : new Date(r.startedAt).getTime();
-          return completed >= sevenDaysAgoMs;
+          const completed = r.endedAt ?? r.startedAt ?? r.createdAt;
+          return completed >= sevenDaysAgoMsEpoch;
         })
         .filter((r) => !dismissedRunIds.has(r.id))
         .sort((a, b) => {
-          const ta = new Date(a.completedAt ?? a.startedAt).getTime();
-          const tb = new Date(b.completedAt ?? b.startedAt).getTime();
+          const ta = a.endedAt ?? a.startedAt ?? a.createdAt;
+          const tb = b.endedAt ?? b.startedAt ?? b.createdAt;
           return tb - ta;
         }),
-    [runs, sevenDaysAgoMs, dismissedRunIds],
+    [runs, sevenDaysAgoMsEpoch, dismissedRunIds],
   );
   // Section 32.3 — auto-swell on first non-zero "waiting on you" or
   // "failed". Running counts don't auto-swell (they resolve themselves).
@@ -149,7 +135,6 @@ export function ActivityPanel({
             <HumanReviewRegion
               project={project}
               pausedRuns={pausedRuns}
-              approvals={approvals}
               nowMs={nowMs}
             />
             <FailedRecentlyRegion
@@ -271,12 +256,11 @@ function EmptyRegion({ text }: { text: string }) {
 }
 
 function RunningWorkflowsRegion({
-  project,
   runs,
   nowMs,
 }: {
   project: Project;
-  runs: WorkflowRun[];
+  runs: V2RunSummary[];
   nowMs: number;
 }) {
   return (
@@ -286,12 +270,7 @@ function RunningWorkflowsRegion({
       ) : (
         <ul className="divide-y divide-border/50">
           {runs.map((run) => (
-            <RunningWorkflowCard
-              key={run.id}
-              run={run}
-              projectId={project.id}
-              nowMs={nowMs}
-            />
+            <RunningWorkflowCard key={run.id} run={run} nowMs={nowMs} />
           ))}
         </ul>
       )}
@@ -301,19 +280,17 @@ function RunningWorkflowsRegion({
 
 function RunningWorkflowCard({
   run,
-  projectId,
   nowMs,
 }: {
-  run: WorkflowRun;
-  projectId: string;
+  run: V2RunSummary;
   nowMs: number;
 }) {
-  const [cancelling, setCancelling] = useState(false);
-  const [cancelErr, setCancelErr] = useState<string | null>(null);
-  const openDrawerTo = useWorkflowDrawer((s) => s.openTo);
+  // 19.12 — cancel button removed; v2 has no run-cancel endpoint yet (the
+  // v1 endpoint died with the v1 routes). Re-add when the v2 cancel ships.
+  const openViewer = useWorkflowV2RunViewer((s) => s.open);
 
-  const elapsed = formatElapsed(nowMs - new Date(run.startedAt).getTime());
-  const currentStep = describeCurrentStep(run);
+  const startedAt = run.startedAt ?? run.createdAt;
+  const elapsed = formatElapsed(nowMs - startedAt);
   const statusLabel =
     run.status === 'paused'
       ? 'paused'
@@ -321,52 +298,24 @@ function RunningWorkflowCard({
         ? 'starting…'
         : 'running';
 
-  async function handleCancel(e: React.MouseEvent) {
-    e.stopPropagation();
-    if (cancelling) return;
-    setCancelling(true);
-    setCancelErr(null);
-    try {
-      await api.cancelWorkflowRun(projectId, run.id);
-    } catch (err) {
-      setCancelErr((err as Error).message);
-      setCancelling(false);
-    }
-    // No setCancelling(false) on success — the WS envelope will move the
-    // run out of `activeRuns`, unmounting this card.
-  }
-
   return (
     <li>
       <button
         type="button"
-        onClick={() => openDrawerTo(run.workflowId, run.id)}
+        onClick={() => openViewer(run.workflowId, run.id)}
         className="block w-full px-3 py-2 text-left hover:bg-muted/40"
       >
         <div className="flex items-baseline justify-between gap-2">
           <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-            {run.workflowId}
+            {run.workflowName || run.workflowId}
           </div>
           <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
             {elapsed}
           </div>
         </div>
-        <div className="mt-0.5 flex items-baseline justify-between gap-2">
-          <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-            {statusLabel} · {currentStep}
-          </div>
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={cancelling}
-            className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
-          >
-            {cancelling ? '…' : 'Cancel'}
-          </button>
+        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          {statusLabel}
         </div>
-        {cancelErr && (
-          <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
-        )}
       </button>
     </li>
   );
@@ -478,18 +427,6 @@ function RunningAgentCard({
   );
 }
 
-function describeCurrentStep(run: WorkflowRun): string {
-  const entries = Object.entries(run.nodeOutputs ?? {});
-  // Prefer the first `running` node; otherwise the most recently updated
-  // `pending` one. Empty node-outputs → "starting…".
-  const inProgress = entries.find(([, o]) => o?.status === 'running');
-  if (inProgress) return inProgress[0];
-  const pending = entries.find(([, o]) => o?.status === 'pending');
-  if (pending) return `up next: ${pending[0]}`;
-  if (entries.length === 0) return 'starting…';
-  return 'finishing';
-}
-
 function formatElapsed(ms: number): string {
   if (ms < 0 || !Number.isFinite(ms)) return '—';
   const s = Math.floor(ms / 1000);
@@ -501,76 +438,23 @@ function formatElapsed(ms: number): string {
 }
 
 
-function usePendingApprovals(
-  project: Project | null,
-  events: WsEnvelope[],
-): PendingApproval[] {
-  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
-
-  useEffect(() => {
-    if (!project) {
-      setApprovals([]);
-      return;
-    }
-    let cancelled = false;
-    const refetch = () => {
-      void fetch(`/api/projects/${project.id}/approvals`)
-        .then((r) => r.json() as Promise<{ approvals: PendingApproval[] }>)
-        .then((r) => {
-          if (!cancelled) setApprovals(r.approvals ?? []);
-        })
-        .catch(() => {
-          /* best-effort */
-        });
-    };
-    refetch();
-    return () => {
-      cancelled = true;
-    };
-  }, [project?.id]);
-
-  // Refetch on approval-required arrival OR workflow-run-changed (which
-  // fires when the run resumes after approval — drops the approval from
-  // the server-side pending list).
-  useEffect(() => {
-    if (!project || events.length === 0) return;
-    const last = events[events.length - 1]!;
-    const kind = (last as { event?: { kind?: string } }).event?.kind;
-    if (kind === 'approval-required' || last.type === 'workflow-run-changed') {
-      void fetch(`/api/projects/${project.id}/approvals`)
-        .then((r) => r.json() as Promise<{ approvals: PendingApproval[] }>)
-        .then((r) => setApprovals(r.approvals ?? []))
-        .catch(() => {
-          /* best-effort */
-        });
-    }
-  }, [events, project?.id]);
-
-  return approvals;
-}
-
 function HumanReviewRegion({
-  project: _project,
   pausedRuns,
-  approvals,
   nowMs,
 }: {
   project: Project;
-  pausedRuns: WorkflowRun[];
-  approvals: PendingApproval[];
+  pausedRuns: V2RunSummary[];
   nowMs: number;
 }) {
+  // 19.12 — paused v2 runs land here. The old v1 `/api/projects/:id/approvals`
+  // endpoint (per-approval-node scroll-to-chat-bubble) is gone; click now
+  // opens the v2 run viewer instead. Per-approval-bubble navigation re-enters
+  // when v2 surfaces a pending-asks LIST endpoint (none today).
+  const openViewer = useWorkflowV2RunViewer((s) => s.open);
   const setTab = useActiveCenterTab((s) => s.setTab);
-  const requestScrollTo = useChatScrollTarget((s) => s.requestScrollTo);
-
-  // Map runId → its pending approval (if any). Most paused runs have one;
-  // orchestrator-review pauses have none and click-through just lands the
-  // user on the orchestrator tab.
-  const approvalByRunId = useMemo(() => {
-    const m = new Map<string, PendingApproval>();
-    for (const a of approvals) m.set(a.workflowRunId, a);
-    return m;
-  }, [approvals]);
+  // requestScrollTo retained for the future per-approval navigation path; not
+  // used in v1 of this region.
+  void useChatScrollTarget;
 
   if (pausedRuns.length === 0) {
     return (
@@ -584,37 +468,28 @@ function HumanReviewRegion({
     <RegionShell title="Waiting on you" badge={String(pausedRuns.length)}>
       <ul className="divide-y divide-border/50">
         {pausedRuns.map((run) => {
-          const approval = approvalByRunId.get(run.id);
-          const stepLabel = approval
-            ? `approval: ${approval.nodeId}`
-            : describeCurrentStep(run);
-          const waiting = formatElapsed(
-            nowMs - new Date(run.startedAt).getTime(),
-          );
+          const startedAt = run.startedAt ?? run.createdAt;
+          const waiting = formatElapsed(nowMs - startedAt);
           return (
             <li key={run.id}>
               <button
                 type="button"
                 onClick={() => {
                   setTab('orchestrator');
-                  if (approval) {
-                    requestScrollTo(
-                      `approval-${approval.workflowRunId}-${approval.nodeId}`,
-                    );
-                  }
+                  openViewer(run.workflowId, run.id);
                 }}
                 className="block w-full px-3 py-2 text-left hover:bg-muted/40"
               >
                 <div className="flex items-baseline justify-between gap-2">
                   <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-                    {run.workflowId}
+                    {run.workflowName || run.workflowId}
                   </div>
                   <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
                     {waiting}
                   </div>
                 </div>
                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                  {stepLabel}
+                  paused — review in run viewer
                 </div>
               </button>
             </li>
@@ -670,11 +545,11 @@ function FailedRecentlyRegion({
   nowMs,
 }: {
   project: Project;
-  runs: WorkflowRun[];
+  runs: V2RunSummary[];
   nowMs: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const openRun = useWorkflowDrawer((s) => s.openTo);
+  const openViewer = useWorkflowV2RunViewer((s) => s.open);
 
   async function handleDismiss(runId: string) {
     // Optimistic: emit the dismissal event so the hook drops it from the
@@ -719,25 +594,21 @@ function FailedRecentlyRegion({
       {expanded && (
         <ul className="divide-y divide-border/50">
           {runs.map((run) => {
-            const when = formatElapsed(
-              nowMs - new Date(run.completedAt ?? run.startedAt).getTime(),
-            );
-            const failedNode = Object.entries(run.nodeOutputs ?? {}).find(
-              ([, o]) => o?.status === 'failed',
-            );
-            const stepLabel = failedNode
-              ? `${run.status} at ${failedNode[0]}`
+            const endedAt = run.endedAt ?? run.startedAt ?? run.createdAt;
+            const when = formatElapsed(nowMs - endedAt);
+            const stepLabel = run.lastReason
+              ? `${run.status}: ${run.lastReason}`
               : run.status;
             return (
               <li key={run.id} className="flex items-baseline gap-2 px-3 py-2">
                 <button
                   type="button"
-                  onClick={() => openRun(run.workflowId, run.id)}
+                  onClick={() => openViewer(run.workflowId, run.id)}
                   className="min-w-0 flex-1 text-left hover:underline"
                 >
                   <div className="flex items-baseline justify-between gap-2">
                     <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-                      {run.workflowId}
+                      {run.workflowName || run.workflowId}
                     </div>
                     <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
                       {when} ago
@@ -751,7 +622,7 @@ function FailedRecentlyRegion({
                   type="button"
                   onClick={() => void handleDismiss(run.id)}
                   className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
-                  title="Hide this failure from the list (the 4e Runs tab still keeps it)"
+                  title="Hide this failure from the list"
                 >
                   Dismiss
                 </button>

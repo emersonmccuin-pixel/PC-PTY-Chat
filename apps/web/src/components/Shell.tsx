@@ -1,6 +1,6 @@
 // Vendored from emersonmccuin-pixel/project-companion @ 6053ad6 (MIT)
 // Source: apps/web/src/components/Shell.tsx
-// Adapted for Project Companion: react-resizable-panels v4 API; active-slug
+// Adapted for Caisson: react-resizable-panels v4 API; active-slug
 // from zustand store; per-project tab persistence from a tab-store.
 //
 // v4 sizing gotcha: numeric Panel size props ({18}) are pixels; strings
@@ -31,6 +31,7 @@ import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
 import { WorkflowList } from './WorkflowList';
 import { WorkflowDrawer } from './workflows/WorkflowDrawer';
+import { WorkflowV2RunViewerMount } from './WorkflowV2RunViewer';
 
 // Section 32.1 — TabBar lifted to a topbar but spanning the full width
 // confused users. Refinement (Session 31) puts the tab strip back above the
@@ -125,6 +126,9 @@ export function Shell({
         </Panel>
         {activeProject && (
           <WorkflowDrawer projectId={activeProject.id} events={wsEvents} />
+        )}
+        {activeProject && (
+          <WorkflowV2RunViewerMount projectId={activeProject.id} events={wsEvents} />
         )}
         {activeProject && (
           <AgentTranscriptModalMount
@@ -254,7 +258,7 @@ function EmptyState({
             Create your first project
           </h1>
           <p className="text-sm text-muted-foreground">
-            Project Companion turns a folder on disk into a chat-driven
+            Caisson turns a folder on disk into a chat-driven
             workspace: orchestrator conversations, work items, and workflows
             scoped to one project at a time.
           </p>
