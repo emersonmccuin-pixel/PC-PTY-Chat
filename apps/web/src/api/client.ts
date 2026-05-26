@@ -473,6 +473,39 @@ export interface OrchestratorSession {
   deletedAt: number | null;
 }
 
+export type SessionReplayItem =
+  | { type: 'jsonl'; event: unknown }
+  | { type: 'event'; event: unknown };
+
+export type SessionTransitionKind = 'new-session' | 'resume-session';
+
+export interface SessionTransitionResponse {
+  transition: SessionTransitionKind;
+  session: OrchestratorSession;
+  replay: SessionReplayItem[];
+}
+
+export type OrchestratorSendQueueStatus =
+  | 'queued_busy'
+  | 'queued_spawning'
+  | 'queued_backlog'
+  | 'delivering'
+  | 'delivered_to_pty'
+  | 'observed_in_jsonl'
+  | 'failed'
+  | 'cancelled';
+
+export interface OrchestratorSendQueueItem {
+  id: ULID;
+  clientMessageId: string;
+  text: string;
+  status: OrchestratorSendQueueStatus;
+  createdAt: number;
+  updatedAt: number;
+  deliveryAttempts: number;
+  failureReason: string | null;
+}
+
 export const api = {
   listProjects: () =>
     getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
@@ -1138,16 +1171,28 @@ export const api = {
     ).then((r) => r.session),
 
   startNewSession: (projectId: ULID) =>
-    postJson<{ ok: true; session: OrchestratorSession }>(
+    postJson<{ ok: true } & SessionTransitionResponse>(
       `/api/projects/${projectId}/sessions/new`,
       {},
-    ).then((r) => r.session),
+    ),
 
   resumeSession: (projectId: ULID, targetSessionId: ULID) =>
-    postJson<{ ok: true; session: OrchestratorSession }>(
+    postJson<{ ok: true } & SessionTransitionResponse>(
       `/api/projects/${projectId}/sessions/${targetSessionId}/resume`,
       {},
-    ).then((r) => r.session),
+    ),
+
+  cancelQueuedOrchestratorSend: (projectId: ULID, sendId: ULID) =>
+    postJson<{ ok: true; item: OrchestratorSendQueueItem }>(
+      `/api/projects/${projectId}/send-queue/${sendId}/cancel`,
+      {},
+    ),
+
+  retryOrchestratorSend: (projectId: ULID, sendId: ULID) =>
+    postJson<{ ok: true; item: OrchestratorSendQueueItem }>(
+      `/api/projects/${projectId}/send-queue/${sendId}/retry`,
+      {},
+    ),
 
   listSessions: (projectId: ULID) =>
     getJson<{ ok: true; sessions: OrchestratorSession[] }>(

@@ -4,7 +4,7 @@
 // view returns to the project list. 5+P.C: when the center tab is Files,
 // rail content overrides to <FilesRail> regardless of railMode.
 
-import type { Project } from '@/api/client';
+import type { Project, SessionTransitionResponse } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useRailMode } from '@/store/rail-mode';
@@ -16,6 +16,7 @@ interface LeftRailProps {
   projects: Project[];
   activeProject: Project | null;
   events: WsEnvelope[];
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
@@ -25,6 +26,7 @@ export function LeftRail({
   projects,
   activeProject,
   events,
+  applySessionTransition,
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
@@ -62,7 +64,11 @@ export function LeftRail({
           ‹ projects
         </button>
         <div className="flex-1 overflow-hidden">
-          <SessionsRail project={activeProject} events={events} />
+          <SessionsRail
+            project={activeProject}
+            events={events}
+            applySessionTransition={applySessionTransition}
+          />
         </div>
       </div>
     );

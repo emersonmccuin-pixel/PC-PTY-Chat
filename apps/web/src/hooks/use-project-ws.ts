@@ -1,23 +1,27 @@
 // Per-project WebSocket subscription.
 //
-// Server contract: `/ws?projectId=<ULID>`. Opening with a projectId supersedes
-// any prior connection for that project (server-side `subscribers.set`), so we
-// can switch projects cleanly by simply opening a new WS — no manual unsub
-// needed. The per-project scope means events are pre-filtered: if you only
-// want one project's events, you only get that project's events.
+// Server contract: `/ws?projectId=<ULID>`. Each tab/view subscribes to the
+// project's broadcast stream independently; the server no longer supersedes
+// same-project sockets. The per-project scope means events are pre-filtered:
+// if you only want one project's events, you only get that project's events.
 //
 // "All projects" mode (ActivityPanel toggle, Q12) is handled by a sibling
 // hook (useAllProjectsWs) that opens one socket per non-active project.
 //
 // Q13 hardening: exponential backoff on reconnect (2 → 5 → 15 → 30s cap), a
 // single status-update per disconnect (the WsStatus state only flips once
-// per close), and seenTs dedup so the server's events.jsonl replay (which
-// fires on every connect — `apps/server/src/index.ts:818`) doesn't
-// double-render history after a retry.
+// per close), and seenTs dedup so legacy hook events don't double-render
+// around reconnects. Active-session history now arrives as one
+// `session-replay` checkpoint instead of a burst of individual WS messages.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { Project } from '@/api/client';
+import type {
+  Project,
+  SessionReplayItem,
+  SessionTransitionKind,
+  SessionTransitionResponse,
+} from '@/api/client';
 
 export interface WsEnvelope {
   projectId: string;
@@ -29,8 +33,46 @@ export interface SendAckEnvelope extends WsEnvelope {
   type: 'send-ack';
   clientMessageId: string;
   ok: boolean;
-  status: 'received' | 'invalid-message' | 'no-session' | 'error';
+  status: 'received' | 'queued' | 'invalid-message' | 'no-session' | 'error';
   error?: string;
+  queueItem?: SendQueueItem;
+}
+
+export interface SendQueueItem {
+  id: string;
+  clientMessageId: string;
+  text: string;
+  status:
+    | 'queued_busy'
+    | 'queued_spawning'
+    | 'queued_backlog'
+    | 'delivering'
+    | 'delivered_to_pty'
+    | 'observed_in_jsonl'
+    | 'failed'
+    | 'cancelled';
+  createdAt: number;
+  updatedAt: number;
+  deliveryAttempts: number;
+  failureReason: string | null;
+}
+
+export interface SendQueueSnapshotEnvelope extends WsEnvelope {
+  type: 'send-queue-snapshot';
+  sessionId: string;
+  items: SendQueueItem[];
+}
+
+export interface SessionReplayEnvelope extends WsEnvelope {
+  type: 'session-replay';
+  sessionId: string;
+  events: SessionReplayItem[];
+}
+
+export interface SessionChangedEnvelope extends WsEnvelope {
+  type: 'session-changed';
+  transition?: SessionTransitionKind;
+  session?: unknown;
 }
 
 // ── Chat-event shapes ─────────────────────────────────────────────────────
@@ -482,6 +524,7 @@ interface UseProjectWsResult {
   status: WsStatus;
   clear: () => void;
   send: (msg: WsOutbound) => boolean;
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
 // 2026-05-20 — bumped 500 → 10_000 to fix "chat history disappears mid-session"
@@ -498,6 +541,42 @@ const MAX_BUFFERED = 10_000;
 /** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
 export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
 
+function eventTimestamp(env: WsEnvelope): string | null {
+  if (env.type !== 'event') return null;
+  const inner = (env.event as { ts?: unknown } | undefined) ?? {};
+  return typeof inner.ts === 'string' ? inner.ts : null;
+}
+
+function replayEventsFromEnvelope(env: WsEnvelope, projectId: string): WsEnvelope[] {
+  if (env.type !== 'session-replay') return [];
+  const rawEvents = (env as Partial<SessionReplayEnvelope>).events;
+  return replayEventsFromItems(rawEvents, projectId);
+}
+
+function replayEventsFromItems(rawEvents: unknown, projectId: string): WsEnvelope[] {
+  if (!Array.isArray(rawEvents)) return [];
+  const out: WsEnvelope[] = [];
+  for (const candidate of rawEvents) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const type = (candidate as { type?: unknown }).type;
+    if (type !== 'jsonl' && type !== 'event') continue;
+    out.push({
+      projectId,
+      type,
+      event: (candidate as { event?: unknown }).event,
+    });
+  }
+  return out;
+}
+
+function sessionTransitionKind(env: WsEnvelope): SessionTransitionKind | null {
+  if (env.type !== 'session-changed') return null;
+  const transition = (env as Partial<SessionChangedEnvelope>).transition;
+  return transition === 'new-session' || transition === 'resume-session'
+    ? transition
+    : null;
+}
+
 export function nextBackoffMs(prevDelay: number): number {
   const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
   if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
@@ -508,9 +587,11 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
   const [events, setEvents] = useState<WsEnvelope[]>([]);
   const [status, setStatus] = useState<WsStatus>('idle');
   const wsRef = useRef<WebSocket | null>(null);
+  const seenTsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setEvents([]);
+    seenTsRef.current.clear();
     if (!project) {
       setStatus('idle');
       return;
@@ -519,7 +600,6 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let delay: number = RECONNECT_SCHEDULE_MS[0];
-    const seenTs = new Set<string>();
 
     function connect(): void {
       if (cancelled) return;
@@ -558,19 +638,51 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
         }
         if (!env || env.projectId !== project!.id) return;
         if (env.type === 'event') {
-          const inner = (env.event as { ts?: unknown } | undefined) ?? {};
-          if (typeof inner.ts === 'string') {
-            if (seenTs.has(inner.ts)) return;
-            seenTs.add(inner.ts);
+          const ts = eventTimestamp(env);
+          if (ts) {
+            const seenTs = seenTsRef.current;
+            if (seenTs.has(ts)) return;
+            seenTs.add(ts);
           }
         }
         const final = env;
-        // session-changed marks a hard checkpoint: the server wiped events.jsonl
-        // and minted a fresh Claude session. Drop everything prior so the chat
-        // panel matches what Claude actually has in context.
+        // New session is a hard reset. Resume is a soft checkpoint: keep the
+        // current buffer visible until the replay snapshot lands.
         if (final.type === 'session-changed') {
+          const transition = sessionTransitionKind(final);
+          if (transition === 'resume-session') {
+            setEvents((prev) => {
+              const next = [...prev, final];
+              return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
+            });
+          } else {
+            seenTsRef.current.clear();
+            setEvents([final]);
+          }
+          return;
+        }
+        if (final.type === 'session-replay') {
+          const replay = replayEventsFromEnvelope(final, project!.id);
+          const seenTs = seenTsRef.current;
           seenTs.clear();
-          setEvents([final]);
+          for (const replayEnv of replay) {
+            const ts = eventTimestamp(replayEnv);
+            if (ts) seenTs.add(ts);
+          }
+          setEvents((prev) => {
+            const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
+            const latestSessionChanged = [...prev]
+              .reverse()
+              .find((candidate) => candidate.type === 'session-changed');
+            const checkpoints = [
+              ...(latestState ? [latestState] : []),
+              ...(latestSessionChanged ? [latestSessionChanged] : []),
+            ];
+            const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);
+            const replaySlice =
+              replay.length > replayLimit ? replay.slice(replay.length - replayLimit) : replay;
+            return [...checkpoints, ...replaySlice];
+          });
           return;
         }
         setEvents((prev) => {
@@ -607,10 +719,48 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     }
   }, []);
 
+  const applySessionTransition = useCallback(
+    (transition: SessionTransitionResponse): void => {
+      if (!project || transition.session.projectId !== project.id) return;
+
+      const replay = replayEventsFromItems(transition.replay, project.id);
+      const checkpoint: SessionChangedEnvelope = {
+        projectId: project.id,
+        type: 'session-changed',
+        transition: transition.transition,
+        session: transition.session,
+      };
+
+      const seenTs = seenTsRef.current;
+      seenTs.clear();
+      for (const replayEnv of replay) {
+        const ts = eventTimestamp(replayEnv);
+        if (ts) seenTs.add(ts);
+      }
+
+      setEvents((prev) => {
+        const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
+        const checkpoints = [
+          ...(transition.transition === 'resume-session' && latestState ? [latestState] : []),
+          checkpoint,
+        ];
+        const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);
+        const replaySlice =
+          replay.length > replayLimit ? replay.slice(replay.length - replayLimit) : replay;
+        return [...checkpoints, ...replaySlice];
+      });
+    },
+    [project],
+  );
+
   return {
     events,
     status,
-    clear: () => setEvents([]),
+    clear: () => {
+      seenTsRef.current.clear();
+      setEvents([]);
+    },
     send,
+    applySessionTransition,
   };
 }

@@ -277,6 +277,7 @@ export default function App() {
                 <button
                   ref={sessionBreadcrumbRef}
                   type="button"
+                  data-testid="session-switcher-trigger"
                   onClick={() => setSessionSwitcherOpen((v) => !v)}
                   className={`inline-flex items-center gap-1 italic hover:text-accent ${
                     sessionSwitcherOpen ? 'text-accent' : ''
@@ -353,16 +354,18 @@ export default function App() {
           onProjectReorder={handleProjectReorder}
           wsEvents={ws.events}
           wsSend={ws.send}
-          wsClear={ws.clear}
           wsStatus={ws.status}
+          applySessionTransition={ws.applySessionTransition}
         />
       </div>
       {sessionSwitcherOpen && activeProject && (
         <SessionSwitcher
           projectId={activeProject.id}
+          projectSlug={activeProject.slug}
           activeSessionId={sessionId}
           anchorEl={sessionBreadcrumbRef.current}
           onClose={() => setSessionSwitcherOpen(false)}
+          applySessionTransition={ws.applySessionTransition}
         />
       )}
       {brandMenuOpen && (
@@ -418,4 +421,3 @@ export default function App() {
     </div>
   );
 }
-

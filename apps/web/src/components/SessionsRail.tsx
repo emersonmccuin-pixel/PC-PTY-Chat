@@ -5,7 +5,12 @@
 
 import { useEffect, useState } from 'react';
 
-import { api, type OrchestratorSession, type Project } from '@/api/client';
+import {
+  api,
+  type OrchestratorSession,
+  type Project,
+  type SessionTransitionResponse,
+} from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useViewingSession } from '@/store/viewing-session';
 
@@ -14,9 +19,14 @@ interface SessionsRailProps {
   /** WS event stream for the active project. We watch for session-changed
    *  envelopes so a fresh "New session" surfaces here without a refetch. */
   events: WsEnvelope[];
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
-export function SessionsRail({ project, events }: SessionsRailProps) {
+export function SessionsRail({
+  project,
+  events,
+  applySessionTransition,
+}: SessionsRailProps) {
   const [sessions, setSessions] = useState<OrchestratorSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +40,8 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
     setResumingId(targetId);
     setResumeError(null);
     try {
-      await api.resumeSession(project.id, targetId);
+      const transition = await api.resumeSession(project.id, targetId);
+      applySessionTransition(transition);
       // Clear the read-only-viewing state so the panel snaps back to the live
       // chat (which is now the resumed conversation).
       setViewing(project.slug, null);
@@ -112,6 +123,9 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
           return (
             <div
               key={s.id}
+              data-testid="session-row"
+              data-session-id={s.id}
+              data-session-status={s.status}
               className={
                 'group flex items-center border-l-2 ' +
                 (isViewing || isLive
@@ -143,6 +157,7 @@ export function SessionsRail({ project, events }: SessionsRailProps) {
               </button>
               {!isActive && (
                 <button
+                  data-testid="session-resume"
                   onClick={() => handleResume(s.id)}
                   disabled={isResuming || resumingId !== null}
                   title="Resume this conversation as the live chat"

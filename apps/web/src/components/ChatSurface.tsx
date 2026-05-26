@@ -14,7 +14,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Copy as CopyIcon } from 'lucide-react';
+import { Copy as CopyIcon, RotateCcw, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -25,6 +25,8 @@ import type {
   ChatEvent,
   JsonlEvent,
   SendAckEnvelope,
+  SendQueueItem,
+  SendQueueSnapshotEnvelope,
   SubagentFailureEvent,
   SystemEvent,
   TaskEndEvent,
@@ -181,6 +183,16 @@ interface PendingPrompt {
   expectsAck: boolean;
   queued: boolean;
   failureReason?: string;
+}
+
+type ComposerQueueStatus = SendQueueItem['status'] | 'local_queued';
+
+interface ComposerQueueItem {
+  id: string;
+  clientMessageId: string | null;
+  text: string;
+  status: ComposerQueueStatus;
+  failureReason: string | null;
 }
 
 interface PendingUserEvent extends UserEvent {
@@ -754,6 +766,10 @@ interface ChatSurfaceProps {
   onSend: (text: string, clientMessageId: string) => boolean;
   /** Composer interrupt. */
   onInterrupt: () => boolean;
+  /** Cancel a not-yet-delivered orchestrator queued send. */
+  onCancelQueuedSend?: (queueItemId: string, clientMessageId: string) => boolean | Promise<boolean>;
+  /** Retry a failed orchestrator queued send. */
+  onRetryQueuedSend?: (queueItemId: string) => boolean | Promise<boolean>;
   /** Optional ask-card reply (orchestrator only — wires to WS `ask-reply`).
    *  When omitted, ask cards never appear because the session-id filter drops
    *  them; safe to leave undefined for agent-designer surface. */
@@ -768,6 +784,8 @@ interface ChatSurfaceProps {
   composerDisabled?: boolean;
   /** Override composer placeholder. Defaults to the orchestrator string. */
   composerPlaceholder?: string;
+  /** User-facing reason when the composer is disabled but still visible. */
+  composerDisabledReason?: string;
   /** Optional content above the chat scroller (session title row, agent label, etc.). */
   headerSlot?: ReactNode;
   /** Optional content between scroller and composer (e.g. session-ended notice). */
@@ -789,11 +807,14 @@ export function ChatSurface({
   currentSessionId,
   onSend,
   onInterrupt,
+  onCancelQueuedSend,
+  onRetryQueuedSend,
   onAskReply,
   composerHistoryKey,
   composerHidden,
   composerDisabled,
   composerPlaceholder,
+  composerDisabledReason,
   headerSlot,
   bannerSlot,
   footerSlot,
@@ -828,6 +849,7 @@ export function ChatSurface({
           return {
             ...pending,
             status: 'server-received' as PendingPromptStatus,
+            queued: pending.queued || ack.status === 'queued',
             failureReason: undefined,
           };
         }
@@ -840,6 +862,69 @@ export function ChatSurface({
       return changed ? next : prev;
     });
   }, [events]);
+
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let snapshot: SendQueueSnapshotEnvelope | null = null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'send-queue-snapshot') continue;
+      const candidate = env as SendQueueSnapshotEnvelope;
+      if (candidate.sessionId !== currentSessionId) continue;
+      snapshot = candidate;
+      break;
+    }
+    if (!snapshot) return;
+
+    const byClientMessageId = new Map(
+      snapshot.items.map((item) => [item.clientMessageId, item]),
+    );
+    setPendingPrompts((prev) => {
+      let changed = false;
+      const next = prev.map((pending) => {
+        const item = byClientMessageId.get(pending.id);
+        if (!item) return pending;
+        if (item.status === 'failed') {
+          if (
+            pending.status === 'failed' &&
+            pending.failureReason === (item.failureReason ?? 'Delivery failed')
+          ) {
+            return pending;
+          }
+          changed = true;
+          return {
+            ...pending,
+            status: 'failed' as PendingPromptStatus,
+            queued: false,
+            failureReason: item.failureReason ?? 'Delivery failed',
+          };
+        }
+        if (
+          item.status === 'queued_busy' ||
+          item.status === 'queued_spawning' ||
+          item.status === 'queued_backlog' ||
+          item.status === 'delivering'
+        ) {
+          if (
+            pending.status === 'server-received' &&
+            pending.queued &&
+            pending.failureReason === undefined
+          ) {
+            return pending;
+          }
+          changed = true;
+          return {
+            ...pending,
+            status: 'server-received' as PendingPromptStatus,
+            queued: true,
+            failureReason: undefined,
+          };
+        }
+        return pending;
+      });
+      return changed ? next : prev;
+    });
+  }, [events, currentSessionId]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -1003,9 +1088,35 @@ export function ChatSurface({
     setLastEnvelopeAt(Date.now());
   }, [events.length]);
 
-  // Queued-prompt UI (CC's JSONL queue lines don't carry the prompt text;
-  // cache locally and pop on dequeue events).
-  const [queuedPrompts, setQueuedPrompts] = useState<string[]>([]);
+  // Queue UI: server snapshots are authoritative; the local list is only the
+  // zero-latency bridge before the ACK/snapshot round trip returns.
+  const [queuedPrompts, setQueuedPrompts] = useState<ComposerQueueItem[]>([]);
+  const durableQueueItems = useMemo<ComposerQueueItem[]>(() => {
+    if (!currentSessionId) return [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type !== 'send-queue-snapshot') continue;
+      const snapshot = env as SendQueueSnapshotEnvelope;
+      if (snapshot.sessionId !== currentSessionId) continue;
+      return snapshot.items
+        .filter((item) =>
+          item.status === 'queued_busy' ||
+          item.status === 'queued_spawning' ||
+          item.status === 'queued_backlog' ||
+          item.status === 'delivering' ||
+          item.status === 'delivered_to_pty' ||
+          item.status === 'failed',
+        )
+        .map((item) => ({
+          id: item.id,
+          clientMessageId: item.clientMessageId,
+          text: item.text,
+          status: item.status,
+          failureReason: item.failureReason,
+        }));
+    }
+    return [];
+  }, [events, currentSessionId]);
   const dequeueCount = useMemo(() => {
     let n = 0;
     for (const env of events) {
@@ -1074,11 +1185,51 @@ export function ChatSurface({
             queued: isThinking,
           },
         ]);
-        if (isThinking) setQueuedPrompts((prev) => [...prev, text]);
+        if (isThinking) {
+          setQueuedPrompts((prev) => [
+            ...prev,
+            {
+              id: `local-${clientMessageId}`,
+              clientMessageId,
+              text,
+              status: 'local_queued',
+              failureReason: null,
+            },
+          ]);
+        }
       }
       return ok;
     },
     [onSend, isThinking, wsStatus],
+  );
+  const visibleQueuedPrompts =
+    durableQueueItems.length > 0 ? durableQueueItems : queuedPrompts;
+  const composerSendLabel =
+    isThinking || visibleQueuedPrompts.length > 0 ? 'Queue ↵' : 'Send ↵';
+
+  const handleCancelQueueItem = useCallback(
+    async (item: ComposerQueueItem): Promise<boolean> => {
+      if (!onCancelQueuedSend || !item.clientMessageId) return false;
+      const ok = await onCancelQueuedSend(item.id, item.clientMessageId);
+      if (ok) {
+        setPendingPrompts((prev) =>
+          prev.filter((pending) => pending.id !== item.clientMessageId),
+        );
+        setQueuedPrompts((prev) =>
+          prev.filter((queued) => queued.clientMessageId !== item.clientMessageId),
+        );
+      }
+      return ok;
+    },
+    [onCancelQueuedSend],
+  );
+
+  const handleRetryQueueItem = useCallback(
+    async (item: ComposerQueueItem): Promise<boolean> => {
+      if (!onRetryQueuedSend) return false;
+      return onRetryQueuedSend(item.id);
+    },
+    [onRetryQueuedSend],
   );
 
   // Conditional auto-follow + jump-to-recent.
@@ -1361,9 +1512,13 @@ export function ChatSurface({
           historyKey={composerHistoryKey}
           onSend={handleSend}
           onInterrupt={handleInterrupt}
-          queuedPrompts={queuedPrompts}
+          queueItems={visibleQueuedPrompts}
+          onCancelQueueItem={handleCancelQueueItem}
+          onRetryQueueItem={handleRetryQueueItem}
           disabled={composerDisabled}
           placeholder={composerPlaceholder}
+          disabledReason={composerDisabledReason}
+          sendLabel={composerSendLabel}
         />
       )}
       {footerSlot}
@@ -3131,23 +3286,58 @@ function writeHistory(key: string, list: string[]) {
   }
 }
 
+function queueStatusLabel(status: ComposerQueueStatus): string {
+  switch (status) {
+    case 'queued_spawning':
+      return 'Starting';
+    case 'queued_backlog':
+      return 'Waiting';
+    case 'queued_busy':
+    case 'local_queued':
+      return 'Queued';
+    case 'delivering':
+      return 'Sending';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'delivered_to_pty':
+      return 'Sent';
+    case 'observed_in_jsonl':
+      return 'Confirmed';
+  }
+}
+
+function canCancelQueueItem(status: ComposerQueueStatus): boolean {
+  return status === 'queued_busy' || status === 'queued_spawning' || status === 'queued_backlog';
+}
+
 function Composer({
   historyKey,
   onSend,
   onInterrupt,
-  queuedPrompts,
+  queueItems,
+  onCancelQueueItem,
+  onRetryQueueItem,
   disabled,
   placeholder,
+  disabledReason,
+  sendLabel,
 }: {
   historyKey: string;
   onSend: (text: string) => boolean;
   onInterrupt: () => boolean;
-  queuedPrompts: string[];
+  queueItems: ComposerQueueItem[];
+  onCancelQueueItem: (item: ComposerQueueItem) => Promise<boolean>;
+  onRetryQueueItem: (item: ComposerQueueItem) => Promise<boolean>;
   disabled?: boolean;
   placeholder?: string;
+  disabledReason?: string;
+  sendLabel: string;
 }) {
   const [text, setText] = useState('');
   const [interruptFeedback, setInterruptFeedback] = useState<'sent' | 'failed' | null>(null);
+  const [queueActionIds, setQueueActionIds] = useState<Set<string>>(() => new Set());
   const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const COMPOSER_MIN_PX = 56;
@@ -3190,6 +3380,22 @@ function Composer({
   useEffect(() => () => {
     if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
   }, []);
+
+  async function runQueueAction(
+    item: ComposerQueueItem,
+    action: (item: ComposerQueueItem) => Promise<boolean>,
+  ) {
+    setQueueActionIds((prev) => new Set(prev).add(item.id));
+    try {
+      await action(item);
+    } finally {
+      setQueueActionIds((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  }
 
   const historyRef = useRef<string[]>(readHistory(historyKey));
   const [historyIdx, setHistoryIdx] = useState<number | null>(null);
@@ -3263,12 +3469,19 @@ function Composer({
           sessionState={sessionState}
           contextUsedPct={contextUsedPct}
         />
-        <span className="ml-auto text-[var(--fg-dim)]">
-          enter to send · shift+enter newline
-        </span>
+        {disabledReason ? (
+          <span className="ml-auto normal-case tracking-normal text-warning">
+            {disabledReason}
+          </span>
+        ) : (
+          <span className="ml-auto text-[var(--fg-dim)]">
+            enter to send · shift+enter newline
+          </span>
+        )}
       </div>
       <textarea
         ref={textareaRef}
+        data-testid="chat-composer-input"
         value={text}
         onChange={(e) => {
           setText(e.target.value);
@@ -3300,26 +3513,78 @@ function Composer({
           'Message the orchestrator…'
         }
         disabled={disabled}
-        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none disabled:opacity-50"
+        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted/60 disabled:opacity-60"
         style={{ minHeight: COMPOSER_MIN_PX, maxHeight: COMPOSER_MAX_PX }}
       />
-      {queuedPrompts.length > 0 && (
-        <div className="flex flex-col gap-1 border border-dashed border-border bg-muted/30 px-2 py-1.5">
+      {queueItems.length > 0 && (
+        <div
+          className="flex flex-col gap-1 border border-dashed border-border bg-muted/30 px-2 py-1.5"
+          data-testid="composer-queue"
+        >
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            Queued · {queuedPrompts.length}
+            Queue · {queueItems.length}
           </div>
-          {queuedPrompts.map((q, i) => (
-            <div
-              key={i}
-              className="flex items-start gap-2 text-xs text-muted-foreground"
-              title="Will be sent when the current turn ends"
-            >
-              <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider">
-                #{i + 1}
-              </span>
-              <span className="truncate italic" title={q}>{q}</span>
-            </div>
-          ))}
+          {queueItems.map((item, i) => {
+            const acting = queueActionIds.has(item.id);
+            const canCancel = canCancelQueueItem(item.status);
+            const canRetry = item.status === 'failed';
+            return (
+              <div
+                key={item.id}
+                className="flex items-start gap-2 text-xs text-muted-foreground"
+                title={item.failureReason ?? 'Will be sent when the current turn ends'}
+                data-testid="composer-queue-item"
+                data-client-message-id={item.clientMessageId ?? undefined}
+                data-queue-item-id={item.id}
+                data-queue-status={item.status}
+              >
+                <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider">
+                  #{i + 1}
+                </span>
+                <span
+                  className={
+                    'shrink-0 rounded-sm px-1 py-0.5 text-[10px] uppercase tracking-wider ' +
+                    (item.status === 'failed'
+                      ? 'bg-destructive/10 text-destructive'
+                      : 'bg-muted text-muted-foreground')
+                  }
+                >
+                  {queueStatusLabel(item.status)}
+                </span>
+                <span className="min-w-0 flex-1 truncate italic" title={item.text}>
+                  {item.text}
+                </span>
+                {canCancel && (
+                  <button
+                    type="button"
+                    onClick={() => { void runQueueAction(item, onCancelQueueItem); }}
+                    disabled={acting}
+                    title="Cancel queued prompt"
+                    aria-label="Cancel queued prompt"
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+                {canRetry && (
+                  <button
+                    type="button"
+                    onClick={() => { void runQueueAction(item, onRetryQueueItem); }}
+                    disabled={acting}
+                    title={
+                      item.failureReason
+                        ? `Retry failed prompt: ${item.failureReason}`
+                        : 'Retry failed prompt'
+                    }
+                    aria-label="Retry failed prompt"
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="flex items-center gap-2">
@@ -3329,7 +3594,7 @@ function Composer({
           disabled={disabled || !text.trim()}
           className="bg-primary px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          Send ↵
+          {sendLabel}
         </button>
         <button
           type="button"

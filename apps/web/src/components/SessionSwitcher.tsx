@@ -12,29 +12,35 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type OrchestratorSession } from '@/api/client';
+import { api, type OrchestratorSession, type SessionTransitionResponse } from '@/api/client';
 import { useRailMode } from '@/store/rail-mode';
+import { useViewingSession } from '@/store/viewing-session';
 
 interface SessionSwitcherProps {
   projectId: string;
+  projectSlug: string;
   activeSessionId: string | null;
   /** Anchor element (the breadcrumb button) — used to position the dropdown
    *  flush-left under it. */
   anchorEl: HTMLElement | null;
   onClose: () => void;
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
 export function SessionSwitcher({
   projectId,
+  projectSlug,
   activeSessionId,
   anchorEl,
   onClose,
+  applySessionTransition,
 }: SessionSwitcherProps) {
   const [sessions, setSessions] = useState<OrchestratorSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const setRailMode = useRailMode((s) => s.setMode);
+  const setViewing = useViewingSession((s) => s.setViewing);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   // Fetch on mount.
@@ -92,7 +98,9 @@ export function SessionSwitcher({
     if (resumingId) return;
     setResumingId(targetId);
     try {
-      await api.resumeSession(projectId, targetId);
+      const transition = await api.resumeSession(projectId, targetId);
+      applySessionTransition(transition);
+      setViewing(projectSlug, null);
       onClose();
     } catch (e) {
       setErr((e as Error).message);
@@ -160,6 +168,7 @@ export function SessionSwitcher({
       </div>
       <button
         type="button"
+        data-testid="session-switcher-browse-all"
         onClick={() => {
           setRailMode('sessions');
           onClose();

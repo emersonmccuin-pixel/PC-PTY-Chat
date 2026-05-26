@@ -5,11 +5,15 @@
 // session-ended banner) and the StatusBar. All chat rendering + composer +
 // thinking-indicator + scroll machinery lives in ChatSurface.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api, type OrchestratorSession, type Project } from '@/api/client';
+import {
+  api,
+  type OrchestratorSession,
+  type Project,
+  type SessionTransitionResponse,
+} from '@/api/client';
 import type {
-  ChatEvent,
   JsonlEvent,
   WsEnvelope,
   WsOutbound,
@@ -24,8 +28,8 @@ interface OrchestratorProps {
   project: Project;
   events: WsEnvelope[];
   send: (msg: WsOutbound) => boolean;
-  clearWs: () => void;
   wsStatus: WsStatus;
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
 /** Section 31.3 — pick a composer placeholder hint from CC's latest
@@ -42,7 +46,13 @@ function composerPlaceholderForSessionState(state: string | null): string | unde
   }
 }
 
-export function Orchestrator({ project, events, send, clearWs, wsStatus }: OrchestratorProps) {
+export function Orchestrator({
+  project,
+  events,
+  send,
+  wsStatus,
+  applySessionTransition,
+}: OrchestratorProps) {
   // Viewing a past session? When set, the chat panel renders that session's
   // events.jsonl in read-only mode (composer hidden, "Return to live" button).
   const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
@@ -190,6 +200,17 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     return null;
   }, [events]);
 
+  const latestRuntimeState = useMemo<string | null>(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const env = events[i]!;
+      if (env.type === 'state') {
+        const state = (env as WsEnvelope & { state?: unknown }).state;
+        return typeof state === 'string' ? state : null;
+      }
+    }
+    return null;
+  }, [events]);
+
   // Section 31.8 — latest `jsonl-turn-duration` durationMs. Fires AFTER
   // `jsonl-turn-end`; composer status line shows the most-recent value as
   // a "Ns" tail. Walk newest-first; null until the first turn lands.
@@ -209,39 +230,11 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     setRuntime({ sessionState: latestSessionState, lastTurnDurationMs });
   }, [latestSessionState, lastTurnDurationMs, setRuntime]);
 
-  // session-end event from CC's SessionEnd hook. The PTY is gone; disable the
-  // composer + surface a footer notice. Cleared when a fresh session is active.
-  //
-  // Section 23 (chat-from-JSONL): hook events for user/assistant turns died
-  // in 23.4, so the previous "if we see user/assistant after session-end,
-  // we're back alive" reset stopped firing. Walk the JSONL envelopes too —
-  // jsonl-user / jsonl-turn-end / jsonl-tool-call are the canonical "this
-  // session is producing content" signals. Also stop at session-changed:
-  // any session-end from a prior CC process is structurally stale once a
-  // new session has been minted.
-  const sessionEnded = useMemo(() => {
-    if (viewingSessionId) return false;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i]!;
-      if (env.type === 'session-changed') return false;
-      if (env.type === 'jsonl') {
-        const jev = (env as WsEnvelope & { event: JsonlEvent }).event;
-        if (
-          jev?.kind === 'jsonl-user' ||
-          jev?.kind === 'jsonl-turn-end' ||
-          jev?.kind === 'jsonl-tool-call'
-        ) {
-          return false;
-        }
-        continue;
-      }
-      if (env.type !== 'event') continue;
-      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-      if (ev?.kind === 'session-end') return true;
-      if (ev?.kind === 'user' || ev?.kind === 'assistant') return false;
-    }
-    return false;
-  }, [events, viewingSessionId]);
+  // Process lifecycle is not chat lifecycle. Hook-level session-end events can
+  // be replayed from old claude.exe exits; they should not close an active PC
+  // chat. Only the persisted session row decides whether this conversation is
+  // structurally ended.
+  const sessionEnded = !viewingSessionId && session?.status === 'ended';
 
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -251,10 +244,11 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
     setResuming(true);
     setResumeError(null);
     try {
-      await api.resumeSession(project.id, session.id);
-      setViewing(project.slug, null);
+      const transition = await api.resumeSession(project.id, session.id);
+      applySessionTransition(transition);
+      setSession(transition.session);
       setPastEvents([]);
-      clearWs();
+      setViewing(project.slug, null);
     } catch (err) {
       setResumeError((err as Error).message);
     } finally {
@@ -265,16 +259,56 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
   async function onNewSession() {
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
     try {
-      await api.startNewSession(project.id);
-      setViewing(project.slug, null);
+      const transition = await api.startNewSession(project.id);
+      applySessionTransition(transition);
+      setSession(transition.session);
       setPastEvents([]);
-      clearWs();
+      setViewing(project.slug, null);
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
     }
   }
 
+  const cancelQueuedSend = useCallback(
+    async (queueItemId: string): Promise<boolean> => {
+      try {
+        await api.cancelQueuedOrchestratorSend(project.id, queueItemId);
+        return true;
+      } catch (err) {
+        alert(`Couldn't cancel queued prompt: ${(err as Error).message}`);
+        return false;
+      }
+    },
+    [project.id],
+  );
+
+  const retryQueuedSend = useCallback(
+    async (queueItemId: string): Promise<boolean> => {
+      try {
+        await api.retryOrchestratorSend(project.id, queueItemId);
+        return true;
+      } catch (err) {
+        alert(`Couldn't retry queued prompt: ${(err as Error).message}`);
+        return false;
+      }
+    },
+    [project.id],
+  );
+
   const composerHidden = isViewingPast || sessionEnded;
+  const composerDisabled = !composerHidden && wsStatus !== 'open';
+  const composerDisabledReason = composerDisabled
+    ? wsStatus === 'connecting'
+      ? 'Reconnecting to local app'
+      : 'Local app connection unavailable'
+    : undefined;
+  const composerPlaceholder = composerDisabled
+    ? 'Reconnecting to the local app...'
+    : latestRuntimeState === 'spawning'
+      ? 'Claude is starting... type to queue'
+      : latestRuntimeState === 'exited'
+        ? 'Claude disconnected... send to restart'
+        : composerPlaceholderForSessionState(latestSessionState);
 
   const headerSlot = (
     <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
@@ -358,12 +392,16 @@ export function Orchestrator({ project, events, send, clearWs, wsStatus }: Orche
       currentSessionId={session?.id ?? null}
       onSend={(text, clientMessageId) => send({ type: 'send', text, clientMessageId })}
       onInterrupt={() => send({ type: 'interrupt' })}
+      onCancelQueuedSend={cancelQueuedSend}
+      onRetryQueuedSend={retryQueuedSend}
       onAskReply={(toolUseId, answer) =>
         send({ type: 'ask-reply', toolUseId, answer })
       }
       composerHistoryKey={project.slug}
       composerHidden={composerHidden}
-      composerPlaceholder={composerPlaceholderForSessionState(latestSessionState)}
+      composerDisabled={composerDisabled}
+      composerPlaceholder={composerPlaceholder}
+      composerDisabledReason={composerDisabledReason}
       headerSlot={headerSlot}
       bannerSlot={bannerSlot}
       footerSlot={footerSlot}

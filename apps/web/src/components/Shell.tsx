@@ -11,7 +11,7 @@
 import { useEffect, useMemo } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
-import type { AgentRunRecord, Project } from '@/api/client';
+import type { AgentRunRecord, Project, SessionTransitionResponse } from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
@@ -45,8 +45,8 @@ interface ShellProps {
   onProjectReorder: (orderedIds: string[]) => void;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
-  wsClear: () => void;
   wsStatus: WsStatus;
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
 export function Shell({
@@ -59,8 +59,8 @@ export function Shell({
   onProjectReorder,
   wsEvents,
   wsSend,
-  wsClear,
   wsStatus,
+  applySessionTransition,
 }: ShellProps) {
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -86,6 +86,7 @@ export function Shell({
             projects={projects}
             activeProject={activeProject}
             events={wsEvents}
+            applySessionTransition={applySessionTransition}
             onCreateProject={onCreateProject}
             onProjectDeleted={onProjectDeleted}
             onProjectReorder={onProjectReorder}
@@ -98,8 +99,8 @@ export function Shell({
             projectCount={projects.length}
             wsEvents={wsEvents}
             wsSend={wsSend}
-            wsClear={wsClear}
             wsStatus={wsStatus}
+            applySessionTransition={applySessionTransition}
             onCreateProject={onCreateProject}
             onProjectUpdated={onProjectUpdated}
             onProjectDeleted={onProjectDeleted}
@@ -177,8 +178,8 @@ function Center({
   projectCount,
   wsEvents,
   wsSend,
-  wsClear,
   wsStatus,
+  applySessionTransition,
   onCreateProject,
   onProjectUpdated,
   onProjectDeleted,
@@ -187,8 +188,8 @@ function Center({
   projectCount: number;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
-  wsClear: () => void;
   wsStatus: WsStatus;
+  applySessionTransition: (transition: SessionTransitionResponse) => void;
   onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
@@ -211,8 +212,8 @@ function Center({
             project={activeProject}
             events={wsEvents}
             send={wsSend}
-            clearWs={wsClear}
             wsStatus={wsStatus}
+            applySessionTransition={applySessionTransition}
           />
         ) : tab === 'workflows' ? (
           <WorkflowsList project={activeProject} events={wsEvents} send={wsSend} />
