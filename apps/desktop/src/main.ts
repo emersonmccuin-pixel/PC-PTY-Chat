@@ -1,4 +1,4 @@
-// Electron main process — Project Companion desktop shell (Section 10 Phase 1).
+// Electron main process — Caisson desktop shell (Section 10 Phase 1).
 //
 // Two run modes, deliberately kept apart so the dev stack's native-module ABI
 // (Node) is never disturbed by Electron's ABI:
@@ -14,7 +14,7 @@
 //     server's own static bundle on 127.0.0.1:PORT. Wired in 1.5; the hook is
 //     stubbed here so the shape is visible.
 
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -53,12 +53,19 @@ async function startInProcessServer(): Promise<void> {
 async function createWindow(): Promise<void> {
   const url = DEV ? DEV_URL : `http://127.0.0.1:${PORT}`;
 
+  // No native File/Edit/View/Window menu — PC's chrome is the web UI. Removing
+  // the application menu also drops its default accelerators; copy/paste/etc.
+  // still work via Chromium's built-in editing handling in the renderer.
+  Menu.setApplicationMenu(null);
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 960,
     minHeight: 600,
     backgroundColor: '#0a0a0a',
+    autoHideMenuBar: true,
+    icon: join(__dirname, '..', 'build', 'icon.png'),
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
