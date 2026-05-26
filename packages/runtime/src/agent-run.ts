@@ -227,7 +227,13 @@ export class AgentRun extends EventEmitter {
       return;
     }
 
-    // spawning / running / paused → kill and wait grace
+    // Once cancellation starts, lifecycle timeout timers should not race the
+    // cancel-grace owner into a failed terminal state.
+    this.clearSpawnStuck();
+    this.clearIdleTimer();
+    this.clearWallClock();
+
+    // spawning / running / paused -> kill and wait grace
     if (this.spawn) {
       try {
         this.spawn.kill();

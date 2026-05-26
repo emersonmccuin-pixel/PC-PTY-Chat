@@ -249,7 +249,11 @@ test('cancel while queued: aborts ticket, terminal=cancelled with cause=cancel-w
 });
 
 test('cancel during running: kills spawn; grace expires → cancelled', async () => {
-  const { run, stub } = makeRun({ cancelGraceMs: 30 });
+  const { run, stub } = makeRun({
+    // Idle would fire during cancel-grace if cancellation did not own timers.
+    idleMs: 20,
+    cancelGraceMs: 80,
+  });
   const terminalP = awaitTerminal(run);
   run.start();
   await tick();
@@ -260,7 +264,7 @@ test('cancel during running: kills spawn; grace expires → cancelled', async ()
   run.cancel();
   assert.equal(stub.killed, true);
   // Grace must elapse before terminal fires.
-  await tick(60);
+  await tick(120);
   const t = await terminalP;
   assert.equal(t.status, 'cancelled');
   assert.equal(t.cause, 'cancelled');
