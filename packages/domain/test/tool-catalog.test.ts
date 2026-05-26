@@ -67,6 +67,14 @@ test('pc-rig tools cover the 17b CRUD additions', () => {
   assert.ok(slugs.has('mcp__pc-rig__pc_list_agent_audit'));
 });
 
+test('pc-rig tools cover the v2 workflow-builder additions', () => {
+  const slugs = new Set(TOOL_CATALOG.map((e) => e.slug));
+  assert.ok(slugs.has('mcp__pc-rig__pc_save_workflow_draft'));
+  assert.ok(slugs.has('mcp__pc-rig__pc_read_workflow_draft'));
+  assert.ok(slugs.has('mcp__pc-rig__pc_get_stages'));
+  assert.ok(slugs.has('mcp__pc-rig__pc_publish_workflow'));
+});
+
 test('friendlyName returns the label for cataloged slugs', () => {
   assert.equal(friendlyName('Read'), 'Read files');
   assert.equal(friendlyName('mcp__pc-rig__pc_log'), 'Log to project (PC)');
