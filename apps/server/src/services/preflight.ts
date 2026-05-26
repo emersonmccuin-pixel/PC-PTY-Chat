@@ -184,14 +184,34 @@ async function probeBinary(
   return { name, present: false, version: null, severity, note };
 }
 
+function gitCandidates(): string[] {
+  if (process.platform !== 'darwin') return ['git'];
+  return ['git', '/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git'];
+}
+
+function nodeCandidates(): string[] {
+  if (process.platform !== 'darwin') return ['node'];
+  return ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node'];
+}
+
+function bashCandidates(): string[] {
+  if (process.platform !== 'darwin') return ['bash'];
+  return ['bash', '/bin/bash', '/opt/homebrew/bin/bash', '/usr/local/bin/bash'];
+}
+
+function pythonCandidates(): string[] {
+  if (process.platform !== 'darwin') return ['python', 'python3'];
+  return ['python', 'python3', '/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3'];
+}
+
 export async function runPreflight(): Promise<PreflightReport> {
   const claude = await checkClaude();
   const [auth, git, node, bash, python] = await Promise.all([
     checkAuth(claude.path),
-    probeBinary('git', 'hard', ['git'], 'Required for project creation + agent worktrees.'),
-    probeBinary('node', 'soft', ['node'], 'Workflow code-nodes only.'),
-    probeBinary('bash', 'soft', ['bash'], 'Workflow code-nodes only.'),
-    probeBinary('python', 'soft', ['python', 'python3'], 'Workflow code-nodes only.'),
+    probeBinary('git', 'hard', gitCandidates(), 'Required for project creation + agent worktrees.'),
+    probeBinary('node', 'soft', nodeCandidates(), 'Workflow code-nodes only.'),
+    probeBinary('bash', 'soft', bashCandidates(), 'Workflow code-nodes only.'),
+    probeBinary('python', 'soft', pythonCandidates(), 'Workflow code-nodes only.'),
   ]);
 
   const ok = claude.status === 'ok' && git.present;

@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CHANNEL,
@@ -40,7 +41,7 @@ test.beforeAll(async ({ request }) => {
 test.afterAll(async ({ request }) => {
   await cleanupQ14(request);
   // Suite-level library cleanup — remove any Q14 fork agents left behind.
-  const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? '';
+  const homeDir = homedir();
   const libDir = join(homeDir, '.project-companion', 'agents');
   for (const f of ['researcher-q14-fork.md']) {
     const p = join(libDir, f);
@@ -179,7 +180,7 @@ test.describe('B. Create empty-folder project (init-empty)', () => {
 test.describe('C. Create in-place project (init-in-place)', () => {
   // Runs BEFORE the actual create so the probe still sees no .git.
   test('C.1 + C.2 probe contract: hasFiles + no .git (pre-create)', async ({ request }) => {
-    // The picker can't reach E:\temp\pc-q14-test (browse allowlist). We
+    // The picker can't reach the fixture root (browse allowlist). We
     // assert the probe contract — the UI rendering layer is one switch off
     // these fields.
     const probe = await probeFolder(request, WITH_FILES);
@@ -203,7 +204,7 @@ test.describe('C. Create in-place project (init-in-place)', () => {
     const commits = log.split('\n');
     expect(commits.length).toBe(2);
     // Newest first per git log default — scaffold commit then initial import.
-    expect(commits[0]).toMatch(/Add Project Companion scaffold/);
+    expect(commits[0]).toMatch(/Add Caisson scaffold/);
     expect(commits[1]).toMatch(/Initial import/);
     // Original files survive.
     expect(existsSync(join(WITH_FILES, 'README.md'))).toBe(true);
@@ -586,7 +587,7 @@ test.describe('H. Project settings — info + agents', () => {
     expect(pa.agents.some((a) => a.name === 'researcher-q14-fork')).toBe(true);
 
     // Tidy: remove the test library agent so cross-run tests stay clean.
-    const homeDir = process.env.USERPROFILE ?? process.env.HOME ?? '';
+    const homeDir = homedir();
     const forked = join(homeDir, '.project-companion', 'agents', 'researcher-q14-fork.md');
     if (existsSync(forked)) rmSync(forked, { force: true });
   });
@@ -674,7 +675,7 @@ test.describe('J. App settings', () => {
     const dataInput = page.locator(
       'div.fixed input[type="text"]',
     );
-    const fresh = 'E:\\temp\\pc-q14-data-test';
+    const fresh = join(tmpdir(), 'pc-q14-data-test');
     await dataInput.fill(fresh);
     await expect(
       page.locator(

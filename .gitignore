@@ -1,14 +1,24 @@
 # Dependencies
 node_modules/
+.pnpm-store/
 
 # Build output
 dist/
 build/
 *.tsbuildinfo
+out/
+coverage/
+apps/desktop/release/
+apps/desktop/staging/
 
 # Runtime state (transient)
 data/*
 !data/.gitkeep
+apps/server/data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
 
 # Manual / accidental data-dir snapshots (timestamped)
 data.bak.*
@@ -20,17 +30,66 @@ worktrees/
 # Default project templates will land under templates/ when the chassis work needs them.
 workspace/
 
-# Debug artifacts (pw-debug screenshots, etc.)
-scripts/*.png
+# Local agent/browser tool state
+/.playwright-mcp/
+/.claude/agents/
+/.claude/skills/
+/.claude/scheduled_tasks.lock
 
 # Playwright artifacts (regenerated per run)
 test-results/
 playwright-report/
 tests/playwright/results.json
 tests/playwright/snap-shell.png
+tests/playwright/.tmp-*.spec.ts
+tests/playwright/readme-*.spec.ts
+
+# Logs and scratch files
+*.log
+*.log.*
+*.out
+.tmp-*
+*.tmp
+*.tmp.*
+*.bak
+*.orig
+.tr-deliverable.tmp.md
+orch-patch.json
+post-chat.yml
+/E*Claude
+
+# Local env and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.crt
+*.mobileprovision
+
+# Debug artifacts (pw-debug screenshots, visual QA dumps, local mockups)
+scripts/*.png
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.html
+Pics/
+docs/screenshots/00-survey.png
+
+# Local experiment outputs. Promote durable fixtures into tests/ or docs/ before tracking.
+/labs/**/node_modules/
+/labs/**/reports/
+/labs/**/sandbox/
 
 # OS / editor noise
 .DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
 .vscode/
 .idea/
 *.swp

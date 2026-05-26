@@ -22,7 +22,7 @@ import {
   setProjectsFolder,
 } from './helpers';
 
-const REPO_ROOT = 'E:\\Projects\\Caisson';
+const REPO_ROOT = process.cwd();
 
 let savedProjectsFolder = '';
 
@@ -97,7 +97,7 @@ async function openCreateAndPick(
   await page.locator('input[placeholder="My project"]').fill(projectName);
   await page.locator('button:has-text("Browse…")').click();
   await expect(page.locator('text=Choose folder')).toBeVisible();
-  // Picker starts at projectsFolder (E:\temp\pc-q14-test). The subfolder
+  // Picker starts at projectsFolder. The subfolder
   // rows should be listed at this level. If the picker remembers a deeper
   // last-browsed dir, walk back up via ↑ until we find the row.
   const entryRow = page
@@ -179,11 +179,11 @@ test.describe('C.3 (real UI) — folder-with-files via picker', () => {
     await expect(
       page.getByRole('button', { name: 'Q14 Project C', exact: true }).first(),
     ).toBeVisible({ timeout: 10_000 });
-    // Two commits on disk: Initial import + Add Project Companion scaffold.
+    // Two commits on disk: Initial import + Add Caisson scaffold.
     const log = execSync('git log --oneline', { cwd: WITH_FILES }).toString().trim();
     const commits = log.split('\n');
     expect(commits.length).toBe(2);
-    expect(commits[0]).toMatch(/Add Project Companion scaffold/);
+    expect(commits[0]).toMatch(/Add Caisson scaffold/);
     expect(commits[1]).toMatch(/Initial import/);
   });
 });
@@ -252,13 +252,32 @@ async function readEventCount(page: Page): Promise<number> {
   return await page.locator('ul > li').count();
 }
 
-/** Kill any process listening on a TCP port (Windows-only via PowerShell). */
+/** Kill any process listening on a TCP port. */
 function killPort(port: number): void {
   try {
-    execSync(
-      `powershell -NoProfile -Command "$pids = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess; foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }"`,
-      { stdio: 'ignore' },
-    );
+    if (process.platform === 'win32') {
+      execSync(
+        `powershell -NoProfile -Command "$pids = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).OwningProcess; foreach ($p in $pids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: 'ignore' },
+      );
+      return;
+    }
+
+    const pids = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split(/\r?\n/)
+      .map((pid) => Number(pid.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* process may have already exited */
+      }
+    }
   } catch {
     /* best-effort */
   }
@@ -282,7 +301,7 @@ async function waitForUp(url: string, timeoutMs: number): Promise<boolean> {
 /** Spawn Hono in the background with optional extra env. */
 function startHono(extraEnv: Record<string, string> = {}): ChildProcess {
   // detached + 'ignore' stdio so the test runner doesn't track its lifetime.
-  // On Windows, `tsx` is via the `.cmd` shim — use shell: true.
+  // On Windows, `tsx` is via the `.cmd` shim; shell: true is harmless elsewhere.
   const child = spawn('pnpm', ['dev'], {
     cwd: REPO_ROOT,
     shell: true,

@@ -1,4 +1,4 @@
-# Project Companion
+# Caisson
 
 Build your own AI workflows by talking to Claude. No code. No prompt engineering. No terminal.
 
@@ -6,7 +6,7 @@ Build your own AI workflows by talking to Claude. No code. No prompt engineering
 
 ## The contract
 
-> **Project Companion** is a tool for a one-person operation — technical or not — to capture, automate, and run their repetitive work across multiple projects. The user lives in conversation with a project-specific **AI Project Manager**. Workflows are authored conversationally, not coded. They fire on schedule, on external events, on manual command, or on internal state changes. Each run produces a tree of tasks — some completed by AI specialists on the user's team, some by external systems via tool integrations, some held for human-in-the-loop review. PC's job is to make every repeatable process less work to run while keeping the user in control of the parts that need judgment.
+> **Caisson** is a tool for a one-person operation — technical or not — to capture, automate, and run their repetitive work across multiple projects. The user lives in conversation with a project-specific **AI Project Manager**. Workflows are authored conversationally, not coded. They fire on schedule, on external events, on manual command, or on internal state changes. Each run produces a tree of tasks — some completed by AI specialists on the user's team, some by external systems via tool integrations, some held for human-in-the-loop review. Caisson's job is to make every repeatable process less work to run while keeping the user in control of the parts that need judgment.
 
 Everything below is that sentence, unpacked.
 
@@ -18,7 +18,7 @@ AI at work is gated by tech fluency.
 
 The people who know what `CLAUDE.md` is, how to write a skill, how to wire up an MCP server — they get real leverage. They turn AI into a teammate that actually knows their job. Everyone else gets a chat window and starts over every conversation.
 
-Project Companion closes that gap. You describe how the work should be done, in plain English, and Companion turns it into something repeatable — captured once, run forever. The person who knows the job is finally the one operating the tool.
+Caisson closes that gap. You describe how the work should be done, in plain English, and Caisson turns it into something repeatable — captured once, run forever. The person who knows the job is finally the one operating the tool.
 
 ## Unpacking the contract
 
@@ -28,7 +28,7 @@ Project Companion closes that gap. You describe how the work should be done, in 
 
 ![Work as a tree of tasks — each card is a unit of work moving through stages you define.](docs/screenshots/02-work-items.png)
 
-**"Workflows are authored conversationally, not coded."** You don't map a node graph or write YAML. You have a conversation; Companion writes the workflow. Change it the same way you built it.
+**"Workflows are authored conversationally, not coded."** You don't map a node graph or write YAML. You have a conversation; Caisson writes the workflow. Change it the same way you built it.
 
 ![Workflows — repeatable recipes, callable on demand or wired to fire automatically.](docs/screenshots/03-workflows.png)
 
@@ -46,11 +46,11 @@ Project Companion closes that gap. You describe how the work should be done, in 
 
 **Data analyst.** You answer the same handful of questions every week — "how's funnel conversion trending," "which channels are softening." Today that means re-explaining to Claude where the data lives, what your semantic layer is, what "active user" means in your warehouse.
 
-In Companion you capture it once: the credentials, the schema, an example query, the semantic-layer rules, and a workflow that walks a specialist through how you'd answer. Call it. The answer comes back built the way you'd build it, every time.
+In Caisson you capture it once: the credentials, the schema, an example query, the semantic-layer rules, and a workflow that walks a specialist through how you'd answer. Call it. The answer comes back built the way you'd build it, every time.
 
 **Sales follow-up.** After every customer call you do the same thing: pull the transcript, read it for questions and concerns, line them up against your product's answers, write a follow-up email in your voice.
 
-In Companion that's a workflow too — product context, your voice samples, your standard answers to common objections, bundled with the steps that do the pulling, parsing, matching, and drafting. You ship the email twenty minutes after the call instead of two days later, and it sounds like you wrote it.
+In Caisson that's a workflow too — product context, your voice samples, your standard answers to common objections, bundled with the steps that do the pulling, parsing, matching, and drafting. You ship the email twenty minutes after the call instead of two days later, and it sounds like you wrote it.
 
 ## How you build it
 
@@ -63,13 +63,59 @@ You have a conversation. The chat has an interview tool that walks you through i
 - **What does review look like?** Draft for your approval, auto-send, file as a task, ping someone for sign-off.
 - **What's the expected output?** An email, a report, a message, a row in a sheet, a new task on the board.
 
-You answer in plain English. Companion writes the workflow. You run it. If something needs to change, you tell it — same chat — and it adjusts.
+You answer in plain English. Caisson writes the workflow. You run it. If something needs to change, you tell it — same chat — and it adjusts.
 
 **Specialists are built the same way.** An interview walks you through a specialist's purpose, what it should produce, where the output goes, which model and tools it needs, and a name. Plain English in, complete agent out. No YAML, no system prompt to hand-write.
 
 ## What it costs
 
-Your existing Claude subscription. Companion uses it directly — same login, same plan, no extra billing. It drives the interactive Claude CLI under the hood; there is no separate API key and no per-token charge.
+Your existing Claude subscription. Caisson uses it directly — same login, same plan, no extra billing. It drives the interactive Claude CLI under the hood; there is no separate API key and no per-token charge.
+
+## Developer setup
+
+Prerequisites:
+
+- Node 22
+- pnpm 10.33.0
+- Git
+- Claude Code CLI, if you want to run the product locally end-to-end
+
+Clone and verify:
+
+```powershell
+git clone https://github.com/emersonmccuin-pixel/Caisson.git
+cd Caisson
+pnpm install --frozen-lockfile
+pnpm run ci
+```
+
+Run locally:
+
+```powershell
+pnpm dev
+pnpm --filter @pc/web dev
+```
+
+The API/channel server runs on `http://127.0.0.1:4040` and `:8788`. The Vite frontend runs on `http://127.0.0.1:5173`.
+
+## Desktop builds
+
+Local package smoke:
+
+```powershell
+pnpm desktop:dist:dir
+```
+
+Installers:
+
+```powershell
+pnpm desktop:dist:win
+pnpm desktop:dist:mac
+```
+
+Windows installers are built on Windows. macOS DMG/ZIP builds are built on macOS. GitHub Actions has separate workflows for package smoke and release installers. macOS release builds require Apple Developer signing and notarization secrets; Windows signing is optional but recommended before public distribution.
+
+See [docs/desktop-build.md](docs/desktop-build.md) for the GitHub Actions runbook and signing secret list.
 
 ## License
 

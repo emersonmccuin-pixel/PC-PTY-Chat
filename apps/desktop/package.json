@@ -1,8 +1,8 @@
 {
   "name": "@pc/desktop",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
-  "description": "Electron shell for Caisson (Windows-first distribution).",
+  "description": "Electron shell for Caisson desktop distribution.",
   "main": "dist/main.js",
   "scripts": {
     "build:main": "node esbuild.config.mjs",
@@ -12,7 +12,10 @@
     "rebuild:native": "node scripts/rebuild-native.mjs",
     "prepackage": "pnpm build:main && pnpm build:icon && pnpm --filter @pc/web build && pnpm --filter @pc/server build && pnpm stage && pnpm rebuild:native",
     "dist:dir": "pnpm prepackage && electron-builder --dir",
-    "dist": "pnpm prepackage && electron-builder --win nsis",
+    "dist": "pnpm prepackage && electron-builder",
+    "dist:win": "pnpm prepackage && electron-builder --win nsis",
+    "dist:mac": "pnpm prepackage && electron-builder --mac dmg zip",
+    "dist:mac:dir": "pnpm prepackage && electron-builder --mac dir",
     "typecheck": "tsc --noEmit"
   },
   "build": {
@@ -21,6 +24,7 @@
     "directories": {
       "output": "release"
     },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
       "package.json"
@@ -36,6 +40,18 @@
     "win": {
       "target": "nsis",
       "icon": "build/icon.png"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "notarize": true,
+      "entitlements": "build-src/entitlements.mac.plist",
+      "entitlementsInherit": "build-src/entitlements.mac.plist"
     },
     "nsis": {
       "oneClick": false,

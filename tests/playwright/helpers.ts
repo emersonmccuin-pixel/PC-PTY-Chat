@@ -1,10 +1,12 @@
 import { type APIRequestContext, type Page, expect } from '@playwright/test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const HONO = 'http://127.0.0.1:4040';
 export const CHANNEL = 'http://127.0.0.1:8788';
-export const FIXTURE_ROOT = 'E:\\temp\\pc-q14-test';
-export const EMPTY = `${FIXTURE_ROOT}\\empty-folder`;
-export const WITH_FILES = `${FIXTURE_ROOT}\\folder-with-files`;
+export const FIXTURE_ROOT = join(tmpdir(), 'pc-q14-test');
+export const EMPTY = join(FIXTURE_ROOT, 'empty-folder');
+export const WITH_FILES = join(FIXTURE_ROOT, 'folder-with-files');
 
 export interface Project {
   id: string;
@@ -120,7 +122,7 @@ export async function waitForRail(page: Page, name: string): Promise<void> {
 export async function gotoShell(page: Page): Promise<void> {
   await page.goto('/');
   // Section 22.4 — wait on the stable shell testid, not brand text. The
-  // brand string changes across themes ("PROJECT COMPANION" → "caisson");
+  // brand string changes across themes ("CAISSON" → "caisson");
   // the testid is contractual.
   await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({
     timeout: 10_000,
@@ -142,5 +144,6 @@ export async function setActiveTab(
   page: Page,
   tab: 'Orchestrator' | 'Work items' | 'Workflows',
 ): Promise<void> {
-  await page.locator(`button:has-text("${tab}")`).first().click();
+  const label = tab === 'Orchestrator' ? 'chat' : tab;
+  await page.getByRole('button', { name: new RegExp(`^${label}$`, 'i') }).first().click();
 }

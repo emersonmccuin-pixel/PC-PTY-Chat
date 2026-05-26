@@ -1,9 +1,14 @@
 {
-  "name": "project-companion",
+  "name": "caisson",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Local-first work-item + workflow companion. Persistent project Orchestrator chat + MCP tools as the differentiator.",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.33.0"
+  },
   "scripts": {
     "dev": "pnpm --filter @pc/server dev",
     "start": "pnpm --filter @pc/server start",
@@ -11,6 +16,13 @@
     "typecheck": "pnpm -r typecheck",
     "test:unit": "pnpm -r --if-present test",
     "test:smoke": "playwright test tests/playwright/chat-smoke.spec.ts",
+    "test:playwright:types": "tsc -p tests/playwright/tsconfig.json --noEmit",
+    "ci": "pnpm typecheck && pnpm test:unit && pnpm build && pnpm test:playwright:types",
+    "desktop:dev": "pnpm --filter @pc/desktop dev",
+    "desktop:dist:dir": "pnpm --filter @pc/desktop dist:dir",
+    "desktop:dist:win": "pnpm --filter @pc/desktop dist:win",
+    "desktop:dist:mac": "pnpm --filter @pc/desktop dist:mac",
+    "desktop:dist:mac:dir": "pnpm --filter @pc/desktop dist:mac:dir",
     "migrate:workflows": "pnpm --filter @pc/server exec tsx ../../scripts/migrate-workflows-to-typed-refs.mjs"
   },
   "pnpm": {
@@ -18,10 +30,12 @@
       "node-pty",
       "better-sqlite3",
       "electron",
-      "esbuild"
+      "esbuild",
+      "sharp"
     ]
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0"
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^22.19.19"
   }
 }

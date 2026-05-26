@@ -15,16 +15,18 @@
 // mid-test. If stronger isolation is ever needed, swap in the killPort +
 // startHono helpers from q14-gaps.spec.ts.
 //
-// Requires: claude.exe installed + authenticated (real CC roundtrips), the
-// folder at SMOKE_WORKSPACE writable. The dev stack also needs claude.exe in
+// Requires: Claude Code installed + authenticated (real CC roundtrips), the
+// folder at SMOKE_WORKSPACE writable. The dev stack also needs `claude` in
 // PATH — same as normal use.
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HONO, gotoShell, setActiveTab } from './helpers';
 
-const SMOKE_ROOT = 'E:\\temp\\pc-smoke-test';
-const SMOKE_WORKSPACE = `${SMOKE_ROOT}\\workspace`;
+const SMOKE_ROOT = join(tmpdir(), 'pc-smoke-test');
+const SMOKE_WORKSPACE = join(SMOKE_ROOT, 'workspace');
 const PROJECT_NAME = 'PC Smoke';
 const PROJECT_SLUG = 'pc-smoke';
 
@@ -82,7 +84,7 @@ async function waitForWsOpen(page: Page): Promise<void> {
  * Send a chat message reliably. The composer is a React controlled textarea
  * with a `disabled={!text.trim()}` Send button — naive `fill + click` races
  * the React state. Pattern: focus, fill, wait for Send to become enabled
- * (= React caught up + claude.exe live), then click.
+ * (= React caught up + Claude Code live), then click.
  */
 async function sendChat(page: Page, text: string): Promise<void> {
   const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
@@ -99,6 +101,10 @@ async function sendChat(page: Page, text: string): Promise<void> {
  *  longer matched `div.text-[10px].uppercase`. */
 async function userBubbleCount(page: Page): Promise<number> {
   return await page.locator('[data-role="user"]').count();
+}
+
+async function confirmedUserBubbleCount(page: Page): Promise<number> {
+  return await page.locator('[data-role="user"]:not([data-pending-status])').count();
 }
 
 async function assistantBubbleCount(page: Page): Promise<number> {
@@ -130,7 +136,7 @@ test.describe.serial('Chat smoke (0g)', () => {
     await setActiveTab(page, 'Orchestrator');
     await waitForWsOpen(page);
 
-    // Give claude.exe time to boot. The PtySession state flips to 'ready'
+    // Give Claude Code time to boot. The PtySession state flips to 'ready'
     // when CC's welcome banner is detected (~3-5s after spawn). No UI
     // signal exposed — wait a generous fixed window so the first send lands
     // after claude is at the prompt.
@@ -151,16 +157,22 @@ test.describe.serial('Chat smoke (0g)', () => {
     const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
     await expect(composer).toBeVisible({ timeout: 10_000 });
 
+    const preUser = await userBubbleCount(page);
+    const preConfirmedUser = await confirmedUserBubbleCount(page);
     await sendChat(page, 'hi');
 
-    // Thinking indicator appears — proves claude.exe received the prompt and
+    // The UI now creates a local pending bubble immediately; the canonical
+    // transcript row will replace it once jsonl-user lands.
+    await expect.poll(() => userBubbleCount(page), { timeout: 2_000 }).toBeGreaterThanOrEqual(preUser + 1);
+
+    // Thinking indicator appears — proves Claude Code received the prompt and
     // is processing. If this never lands, the spawn or send pipeline is broken.
     await expect(page.locator('span').filter({ hasText: /^Thinking$/ })).toBeVisible({
       timeout: 15_000,
     });
 
-    // User bubble lands.
-    await expect.poll(() => userBubbleCount(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+    // Confirmed user bubble lands from JSONL.
+    await expect.poll(() => confirmedUserBubbleCount(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(preConfirmedUser + 1);
 
     // Assistant bubble eventually lands.
     await expect.poll(() => assistantBubbleCount(page), { timeout: 45_000 }).toBeGreaterThanOrEqual(1);
@@ -176,7 +188,7 @@ test.describe.serial('Chat smoke (0g)', () => {
   // ───────────────────────────────────────────────────────────────────────
   // Test 2 — interrupt clears the thinking indicator (0c-followup case).
   // Runs against the WARM claude from Test 1 — the post-respawn case (after
-  // + New session) is flakier in the smoke window because the new claude.exe
+  // + New session) is flakier in the smoke window because the new Claude Code
   // doesn't reliably accept the first prompt within our wait budget.
   // ───────────────────────────────────────────────────────────────────────
   test('2. interrupt clears Thinking → Interrupting → cleared', async () => {
@@ -187,11 +199,11 @@ test.describe.serial('Chat smoke (0g)', () => {
       'Please write a 600-word essay about the geology of the Grand Canyon. Take your time and be thorough.',
     );
 
-    // Wait for the user bubble — proves jsonl-user landed (claude actually
-    // accepted the prompt and started a turn). Interrupting before this is
-    // racy: aborts a turn that never started, leaving isBusy stuck on.
-    const preUser = await userBubbleCount(page);
-    await expect.poll(() => userBubbleCount(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(preUser + 1);
+    // Wait for the confirmed user bubble — proves jsonl-user landed (claude
+    // actually accepted the prompt and started a turn). Interrupting before
+    // this is racy: aborts a turn that never started, leaving isBusy stuck on.
+    const preUser = await confirmedUserBubbleCount(page);
+    await expect.poll(() => confirmedUserBubbleCount(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(preUser + 1);
 
     // Thinking indicator confirms an active turn.
     await expect(page.locator('span').filter({ hasText: /^Thinking$/ })).toBeVisible({
