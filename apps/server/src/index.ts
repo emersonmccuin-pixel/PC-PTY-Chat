@@ -57,8 +57,9 @@ import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import { loadSessionReplayEnvelopes } from './services/session-replay.ts';
-import { runPreflight } from './services/preflight.ts';
+import { runPreflight, probeAuth } from './services/preflight.ts';
 import { installClaude, installGit } from './services/onboarding-install.ts';
+import { startLogin, getLoginState, cancelLogin } from './services/onboarding-auth.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
   dispatchContinueAgent,
@@ -791,6 +792,25 @@ app.post('/api/onboarding/install/git', async (c) => {
   } catch (e) {
     return c.json({ ok: false, error: (e as Error).message }, 500);
   }
+});
+
+// Sign-in drive: spawn CC's own `claude auth login`; the wizard polls state.
+app.post('/api/onboarding/auth/login', (c) => {
+  try {
+    return c.json({ ok: true, login: startLogin() });
+  } catch (e) {
+    return c.json({ ok: false, error: (e as Error).message }, 500);
+  }
+});
+
+app.get('/api/onboarding/auth/state', async (c) => {
+  const auth = await probeAuth();
+  return c.json({ ok: true, login: getLoginState(), authed: auth.status === 'authed', auth });
+});
+
+app.post('/api/onboarding/auth/cancel', (c) => {
+  cancelLogin();
+  return c.json({ ok: true });
 });
 
 // ── Filesystem browse + probe (create-project UI) ─────────────────────────

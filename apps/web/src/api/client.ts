@@ -449,6 +449,14 @@ export interface PreflightReport {
   ok: boolean;
 }
 
+export interface OnboardingLoginState {
+  running: boolean;
+  url: string | null;
+  exited: boolean;
+  exitCode: number | null;
+  tail: string;
+}
+
 // ── Orchestrator session ───────────────────────────────────────────────────
 
 export interface OrchestratorSession {
@@ -722,6 +730,19 @@ export const api = {
       '/api/onboarding/install/git',
       {},
     ),
+
+  /** Start CC's own `claude auth login` (opens the system browser). */
+  startOnboardingLogin: () =>
+    postJson<{ ok: true; login: OnboardingLoginState }>('/api/onboarding/auth/login', {}),
+
+  /** Poll sign-in progress: login process state + whether CC reports authed. */
+  getOnboardingAuthState: () =>
+    getJson<{ ok: true; login: OnboardingLoginState; authed: boolean }>(
+      '/api/onboarding/auth/state',
+    ),
+
+  cancelOnboardingLogin: () =>
+    postJson<{ ok: true }>('/api/onboarding/auth/cancel', {}),
 
   getMcpStatus: (projectId?: string) =>
     getJson<{ alive: boolean; toolCount: number; tools: string[] }>(

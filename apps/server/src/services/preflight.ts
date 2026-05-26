@@ -37,11 +37,11 @@ export interface ClaudePreflight {
 }
 
 export interface AuthPreflight {
-  /** Phase 0 does NOT probe auth. Verifying it needs either a heavy
-   *  interactive spawn or a credentials-file path we won't invent (buildout
-   *  caution). The Phase-2 wizard drives + verifies login via banner
-   *  detection. Reported as 'unknown' so the contract field exists day one. */
-  status: 'unknown';
+  /** Phase 2 probes auth via Claude Code's OWN `claude auth status` command —
+   *  a local token-state read (no network, no model call, no billing) that
+   *  exits 0 when signed in. `unknown` = claude present but status unreadable
+   *  (e.g. an older CC without the subcommand). */
+  status: 'authed' | 'login-required' | 'unknown';
   note: string;
 }
 
@@ -134,6 +134,41 @@ async function checkClaude(): Promise<ClaudePreflight> {
   };
 }
 
+/** Probe sign-in via `claude auth status`. CC prints JSON ({ loggedIn, ... })
+ *  and exits 0 when signed in / 1 when not — the JSON is on stdout either way.
+ *  This is a LOCAL read of CC's own token state: no API call, no `-p`, no
+ *  billing. The same command a user runs to check their login. */
+async function checkAuth(claudePath: string | null): Promise<AuthPreflight> {
+  if (!claudePath) {
+    return { status: 'login-required', note: 'Claude Code is not installed yet.' };
+  }
+  let raw = '';
+  try {
+    const { stdout } = await execFileAsync(claudePath, ['auth', 'status', '--json'], {
+      timeout: PROBE_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    raw = stdout ?? '';
+  } catch (e) {
+    // Exit 1 (not signed in) lands here; the JSON is still on stdout.
+    raw = (e as { stdout?: string }).stdout ?? '';
+  }
+  try {
+    const parsed = JSON.parse(raw) as { loggedIn?: boolean };
+    return parsed.loggedIn
+      ? { status: 'authed', note: 'Signed in to Claude.' }
+      : { status: 'login-required', note: 'Not signed in yet.' };
+  } catch {
+    return { status: 'unknown', note: 'Could not read sign-in status.' };
+  }
+}
+
+/** Standalone auth probe for the onboarding login poll (resolves the binary +
+ *  checks). Avoids re-running the full preflight on every 2s poll. */
+export async function probeAuth(): Promise<AuthPreflight> {
+  return checkAuth(resolveClaudeBinary().path);
+}
+
 async function probeBinary(
   name: string,
   severity: 'hard' | 'soft',
@@ -150,18 +185,14 @@ async function probeBinary(
 }
 
 export async function runPreflight(): Promise<PreflightReport> {
-  const [claude, git, node, bash, python] = await Promise.all([
-    checkClaude(),
+  const claude = await checkClaude();
+  const [auth, git, node, bash, python] = await Promise.all([
+    checkAuth(claude.path),
     probeBinary('git', 'hard', ['git'], 'Required for project creation + agent worktrees.'),
     probeBinary('node', 'soft', ['node'], 'Workflow code-nodes only.'),
     probeBinary('bash', 'soft', ['bash'], 'Workflow code-nodes only.'),
     probeBinary('python', 'soft', ['python', 'python3'], 'Workflow code-nodes only.'),
   ]);
-
-  const auth: AuthPreflight = {
-    status: 'unknown',
-    note: 'Auth is verified at first spawn; the onboarding wizard (Phase 2) drives login.',
-  };
 
   const ok = claude.status === 'ok' && git.present;
 

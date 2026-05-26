@@ -70,7 +70,17 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
   const [busy, setBusy] = useState<null | 'claude' | 'git' | 'auth' | 'refresh'>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const simPreflight = useRef<PreflightReport>(freshMachinePreflight());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stop polling + cancel any in-flight login when the wizard unmounts.
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (!simMode) void api.cancelOnboardingLogin().catch(() => {});
+    };
+  }, [simMode]);
 
   const refreshPreflight = useCallback(async () => {
     if (simMode) {
@@ -173,24 +183,48 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
     }
   }
 
-  // Auth drive — wired to the real PTY-login endpoint in 2.5. For now the
-  // happy path (already authed) + a manual re-check are functional; sim mode
-  // fakes a successful sign-in.
+  // Auth drive — runs CC's own `claude auth login` (it opens the browser +
+  // writes its own credentials), then polls `claude auth status` for success.
   async function handleSignIn() {
     setBusy('auth');
     setError(null);
+    setLoginUrl(null);
     try {
       if (simMode) {
+        await delay(800);
+        setLoginUrl('https://claude.com/cai/oauth/authorize?simulated=1');
         await delay(1400);
         simPreflight.current.auth = { status: 'authed', note: 'Simulated sign-in.' };
         setPreflight({ ...simPreflight.current });
-      } else {
-        // 2.5 will start the login drive here + surface the OAuth URL.
-        await refreshPreflight();
+        setBusy(null);
+        return;
       }
+      await api.startOnboardingLogin();
+      // Poll until CC reports signed-in (or the login process fails).
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(() => {
+        void api
+          .getOnboardingAuthState()
+          .then((s) => {
+            if (s.login.url) setLoginUrl(s.login.url);
+            if (s.authed) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setPreflight((prev) =>
+                prev ? { ...prev, auth: { status: 'authed', note: 'Signed in.' } } : prev,
+              );
+              setBusy(null);
+            } else if (s.login.exited && s.login.exitCode !== 0) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setError('Sign-in didn’t complete. Try again, or use Re-check if you finished in the browser.');
+              setBusy(null);
+            }
+          })
+          .catch(() => {
+            /* transient — keep polling */
+          });
+      }, 2500);
     } catch (e) {
       setError((e as Error).message);
-    } finally {
       setBusy(null);
     }
   }
@@ -307,6 +341,7 @@ export function OnboardingWizard({ simMode, onComplete, onSkip }: OnboardingWiza
                   authed={authOk}
                   busy={busy === 'auth'}
                   refreshing={busy === 'refresh'}
+                  loginUrl={loginUrl}
                   onSignIn={handleSignIn}
                   onRefresh={handleRefresh}
                   onNext={goNext}
@@ -438,12 +473,21 @@ interface AuthStepProps {
   authed: boolean;
   busy: boolean;
   refreshing: boolean;
+  loginUrl: string | null;
   onSignIn: () => void;
   onRefresh: () => void;
   onNext: () => void;
 }
 
-function AuthStep({ authed, busy, refreshing, onSignIn, onRefresh, onNext }: AuthStepProps) {
+function AuthStep({
+  authed,
+  busy,
+  refreshing,
+  loginUrl,
+  onSignIn,
+  onRefresh,
+  onNext,
+}: AuthStepProps) {
   return (
     <div className="flex flex-1 flex-col">
       <h1 className="text-2xl font-semibold tracking-tight">Sign in to Claude</h1>
@@ -453,17 +497,33 @@ function AuthStep({ authed, busy, refreshing, onSignIn, onRefresh, onNext }: Aut
         signed in everywhere.
       </p>
 
-      <div className="mt-6">
+      <div className="mt-6 space-y-3">
         {authed ? (
           <div className="flex items-center gap-2 bg-success/15 px-3 py-2 text-sm text-success">
             <span>✓</span>
             <span>You're signed in.</span>
+          </div>
+        ) : busy ? (
+          <div className="bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            Your browser is opening to sign in to Claude. Finish there and this
+            will update automatically.
           </div>
         ) : (
           <div className="flex items-center gap-2 bg-warning/15 px-3 py-2 text-sm text-warning">
             <span>!</span>
             <span>You're not signed in yet.</span>
           </div>
+        )}
+
+        {!authed && busy && loginUrl && (
+          <a
+            href={loginUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-block bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Open the sign-in page
+          </a>
         )}
       </div>
 
@@ -473,7 +533,7 @@ function AuthStep({ authed, busy, refreshing, onSignIn, onRefresh, onNext }: Aut
         ) : (
           <>
             <PrimaryButton onClick={onSignIn} disabled={busy}>
-              {busy ? 'Opening sign-in…' : 'Sign in to Claude'}
+              {busy ? 'Waiting for sign-in…' : 'Sign in to Claude'}
             </PrimaryButton>
             <SecondaryButton onClick={onRefresh} disabled={refreshing}>
               {refreshing ? 'Checking…' : 'Re-check'}
