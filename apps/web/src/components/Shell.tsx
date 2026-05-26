@@ -21,8 +21,8 @@ import { ActivityPanel } from './ActivityPanel';
 import { AgentsList } from './AgentsList';
 import { AgentTranscriptModal } from './AgentTranscriptModal';
 import { FilesViewer } from './FilesViewer';
-import { KanbanBoard } from './KanbanBoard';
 import { LeftRail } from './LeftRail';
+import { WorkItemsPage } from './work-items/WorkItemsPage';
 import { Orchestrator } from './Orchestrator';
 import { AttachmentLightboxMount } from './AttachmentLightbox';
 import { ChatWorkItemModalMount } from './ChatWorkItemModalMount';
@@ -209,7 +209,7 @@ function Center({
       <TabBar value={tab} onChange={setTab} />
       <div className="flex-1 overflow-hidden">
         {tab === 'work-items' ? (
-          <KanbanBoard project={activeProject} events={wsEvents} />
+          <WorkItemsPage project={activeProject} events={wsEvents} />
         ) : tab === 'orchestrator' ? (
           <Orchestrator
             project={activeProject}
