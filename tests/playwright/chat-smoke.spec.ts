@@ -19,7 +19,7 @@
 // folder at SMOKE_WORKSPACE writable. The dev stack also needs `claude` in
 // PATH — same as normal use.
 
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +29,7 @@ const SMOKE_ROOT = join(tmpdir(), 'pc-smoke-test');
 const SMOKE_WORKSPACE = join(SMOKE_ROOT, 'workspace');
 const PROJECT_NAME = 'PC Smoke';
 const PROJECT_SLUG = 'pc-smoke';
+const HAPPY_PROMPT = 'pc smoke happy path hello';
 
 interface ProjectShape {
   id: string;
@@ -87,10 +88,10 @@ async function waitForWsOpen(page: Page): Promise<void> {
  * (= React caught up + Claude Code live), then click.
  */
 async function sendChat(page: Page, text: string): Promise<void> {
-  const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
+  const composer = page.locator('[data-testid="chat-composer-input"]');
   await composer.click();
   await composer.fill(text);
-  const sendBtn = page.locator('button:has-text("Send")').first();
+  const sendBtn = page.getByRole('button', { name: /^(Send|Queue)/i }).first();
   await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
   await sendBtn.click();
 }
@@ -105,6 +106,86 @@ async function userBubbleCount(page: Page): Promise<number> {
 
 async function confirmedUserBubbleCount(page: Page): Promise<number> {
   return await page.locator('[data-role="user"]:not([data-pending-status])').count();
+}
+
+function confirmedUserBubbleWithText(page: Page, text: string): Locator {
+  return page.locator('[data-role="user"]:not([data-pending-status])').filter({ hasText: text });
+}
+
+async function waitForConfirmedUserText(
+  page: Page,
+  text: string,
+  timeout = 20_000,
+): Promise<void> {
+  await expect(confirmedUserBubbleWithText(page, text)).toBeVisible({ timeout });
+}
+
+function queueItemByText(page: Page, text: string): Locator {
+  return page.locator('[data-testid="composer-queue-item"]').filter({ hasText: text });
+}
+
+async function expectConfirmedUserOrder(
+  page: Page,
+  markers: string[],
+  timeout = 120_000,
+): Promise<void> {
+  await expect.poll(async () => {
+    const rows = await page.locator('[data-role="user"]:not([data-pending-status])').allTextContents();
+    let cursor = -1;
+    for (const marker of markers) {
+      const idx = rows.findIndex((text, i) => i > cursor && text.includes(marker));
+      if (idx === -1) return false;
+      cursor = idx;
+    }
+    return true;
+  }, { timeout }).toBe(true);
+}
+
+async function skipIfClaudeUsageLimited(page: Page): Promise<void> {
+  const usageLimit = page.getByText(
+    /weekly limit|usage limit|rate limit/i,
+  );
+  if ((await usageLimit.count()) > 0) {
+    test.skip(true, 'Claude usage limit is exhausted in this environment');
+  }
+}
+
+async function waitForThinkingOrSkip(page: Page, timeout = 15_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  const thinking = page.locator('span').filter({ hasText: /^Thinking$/ });
+  while (Date.now() < deadline) {
+    await skipIfClaudeUsageLimited(page);
+    if ((await thinking.count()) > 0) return;
+    await page.waitForTimeout(250);
+  }
+  test.skip(true, 'Claude did not stay busy long enough for this regression');
+}
+
+async function ensureStillThinkingOrSkip(page: Page): Promise<void> {
+  await skipIfClaudeUsageLimited(page);
+  const thinking = page.locator('span').filter({ hasText: /^Thinking$/ });
+  if ((await thinking.count()) === 0) {
+    test.skip(true, 'Claude did not stay busy long enough for this regression');
+  }
+}
+
+async function ensureOrchestratorAfterReload(page: Page): Promise<void> {
+  await page.reload();
+  await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 10_000 });
+  const settingsButton = page.locator('button[aria-label="Project settings"]');
+  if ((await settingsButton.count()) === 0) {
+    await page.getByRole('button', { name: PROJECT_NAME, exact: true }).first().click();
+  }
+  await expect(settingsButton).toBeVisible({ timeout: 10_000 });
+  await setActiveTab(page, 'Orchestrator');
+  await waitForWsOpen(page);
+}
+
+async function startNewSession(page: Page): Promise<void> {
+  await page.locator('button:has-text("+ New session")').click();
+  await expect(
+    page.locator('text=No chat events yet. Send a message below to wake the orchestrator.'),
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 async function assistantBubbleCount(page: Page): Promise<number> {
@@ -152,14 +233,14 @@ test.describe.serial('Chat smoke (0g)', () => {
   // ───────────────────────────────────────────────────────────────────────
   // Test 1 — happy path roundtrip
   // ───────────────────────────────────────────────────────────────────────
-  test('1. send "hi" → user bubble + assistant bubble + no stuck spinner', async () => {
+  test('1. send prompt → user bubble + assistant bubble + no stuck spinner', async () => {
     test.setTimeout(90_000);
-    const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
+    const composer = page.locator('[data-testid="chat-composer-input"]');
     await expect(composer).toBeVisible({ timeout: 10_000 });
 
     const preUser = await userBubbleCount(page);
     const preConfirmedUser = await confirmedUserBubbleCount(page);
-    await sendChat(page, 'hi');
+    await sendChat(page, HAPPY_PROMPT);
 
     // The UI now creates a local pending bubble immediately; the canonical
     // transcript row will replace it once jsonl-user lands.
@@ -176,6 +257,7 @@ test.describe.serial('Chat smoke (0g)', () => {
 
     // Assistant bubble eventually lands.
     await expect.poll(() => assistantBubbleCount(page), { timeout: 45_000 }).toBeGreaterThanOrEqual(1);
+    await skipIfClaudeUsageLimited(page);
 
     // No stuck Thinking indicator afterwards.
     await expect(page.locator('span').filter({ hasText: /^Thinking$/ })).toHaveCount(0, {
@@ -193,7 +275,8 @@ test.describe.serial('Chat smoke (0g)', () => {
   // ───────────────────────────────────────────────────────────────────────
   test('2. interrupt clears Thinking → Interrupting → cleared', async () => {
     test.setTimeout(90_000);
-    const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
+    const composer = page.locator('[data-testid="chat-composer-input"]');
+    const preUser = await confirmedUserBubbleCount(page);
     await sendChat(
       page,
       'Please write a 600-word essay about the geology of the Grand Canyon. Take your time and be thorough.',
@@ -202,13 +285,11 @@ test.describe.serial('Chat smoke (0g)', () => {
     // Wait for the confirmed user bubble — proves jsonl-user landed (claude
     // actually accepted the prompt and started a turn). Interrupting before
     // this is racy: aborts a turn that never started, leaving isBusy stuck on.
-    const preUser = await confirmedUserBubbleCount(page);
     await expect.poll(() => confirmedUserBubbleCount(page), { timeout: 15_000 }).toBeGreaterThanOrEqual(preUser + 1);
+    await skipIfClaudeUsageLimited(page);
 
     // Thinking indicator confirms an active turn.
-    await expect(page.locator('span').filter({ hasText: /^Thinking$/ })).toBeVisible({
-      timeout: 5_000,
-    });
+    await waitForThinkingOrSkip(page, 5_000);
 
     // Let claude actually start streaming before interrupting.
     await page.waitForTimeout(8_000);
@@ -245,12 +326,7 @@ test.describe.serial('Chat smoke (0g)', () => {
     // Sanity: prior tests left at least one bubble in the live view.
     expect(await userBubbleCount(page)).toBeGreaterThanOrEqual(1);
 
-    await page.locator('button:has-text("+ New session")').click();
-
-    // Empty state copy appears (panel cleared, no JSONL replay leaking).
-    await expect(
-      page.locator('text=No chat events yet. Send a message below to wake the orchestrator.'),
-    ).toBeVisible({ timeout: 15_000 });
+    await startNewSession(page);
 
     // Bubble counts are zero.
     expect(await userBubbleCount(page)).toBe(0);
@@ -260,89 +336,93 @@ test.describe.serial('Chat smoke (0g)', () => {
     await expect(
       page.locator('text=This session ended.'),
     ).toHaveCount(0);
-    await expect(page.locator('textarea[placeholder^="Message the orchestrator"]')).toBeVisible();
+    await expect(page.locator('[data-testid="chat-composer-input"]')).toBeVisible();
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // Test 4 — past-session view doesn't pollute the live view
-  //
-  // Section 22.4 — SKIPPED. The rail's `Sessions` tab and the past-session
-  // "Return to live" view this test exercised were both reworked. Section
-  // 5++ replaced the past-session-view flow with resume-in-place (click a
-  // past session row → re-activates it as the live session, no "Return to
-  // live" affordance). The regression this test guarded (past-session
-  // events leaking into the live view) is now a different surface — the
-  // resumed-session replay against an already-open WS — and needs a
-  // rewrite against the new flow before it can guard meaningfully.
-  // TRACKER carry-over: rewrite as a resume-replay test that asserts the
-  // live view's bubble counts are correct after a same-id resume.
+  // Test 4 — resume applies replay transactionally and follow-up appends.
   // ───────────────────────────────────────────────────────────────────────
-  test.skip('4. past-session view does not leak into live (needs rewrite for Section 5++ resume flow)', async () => {
+  test('4. resume from history keeps replay visible and appends follow-up', async () => {
     test.setTimeout(90_000);
-    // + New session in Test 3 minted a fresh PtySession. Give it boot time
-    // before we eventually send "ping" in the live view.
-    await page.waitForTimeout(10_000);
-    // Switch the rail to Sessions mode.
-    await page.locator('button:has-text("Sessions")').first().click();
+    await page.locator('[data-testid="session-switcher-trigger"]').click();
+    await page.locator('[data-testid="session-switcher-browse-all"]').click();
 
-    // SessionsRail rows are <button title="…"> children of the rail body.
-    // Scope to the rail container (the div whose header is "Sessions") so we
-    // don't pick up sidebar/buttons elsewhere with title attrs.
-    const sessionsRailBody = page
-      .locator('div.flex.h-full.flex-col.bg-card.text-foreground')
-      .filter({ has: page.locator('text=Sessions') });
-    const sessionRows = sessionsRailBody.locator('button[title]');
+    const liveRows = page.locator('[data-testid="session-row"][data-session-status="active"]');
+    const endedRows = page.locator('[data-testid="session-row"][data-session-status="ended"]');
+    await expect(liveRows).toHaveCount(1, { timeout: 10_000 });
+    await expect.poll(() => endedRows.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
 
-    // Live row carries the " · live" suffix; past rows do not.
-    await expect(sessionRows.filter({ hasText: '· live' })).toHaveCount(1, { timeout: 10_000 });
-    await expect(sessionRows).toHaveCount(await sessionRows.count());
-    expect(await sessionRows.count()).toBeGreaterThanOrEqual(2);
-
-    // SessionsRail lists newest first ⇒ row 0 is live ⇒ row 1 is the most
-    // recent past session (Test 1's "hi" turn, ended by + New session in Test 2).
-    await sessionRows.nth(1).click();
-
-    // Past-session view shows the "Return to live" button in the orchestrator
-    // header and the past session's bubbles (Test 1 had "hi" + the assistant
-    // reply, so at least one Claude bubble should render).
+    const pastRow = endedRows.first();
+    await pastRow.locator('button[title]').first().click();
     await expect(page.locator('button:has-text("Return to live")')).toBeVisible({
       timeout: 10_000,
     });
-    await expect.poll(() => assistantBubbleCount(page), { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
-
-    // Click Return to live.
-    await page.locator('button:has-text("Return to live")').click();
-    await expect(page.locator('button:has-text("+ New session")')).toBeVisible({
-      timeout: 5_000,
+    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible({
+      timeout: 10_000,
     });
 
-    // Switch the rail back to Projects so the composer area isn't obscured by
-    // the Sessions list (optional — composer lives in the main pane).
-    await page.locator('button:has-text("Projects")').first().click();
+    await pastRow.hover();
+    await pastRow.locator('[data-testid="session-resume"]').click();
+    await expect(page.locator('text=Viewing past session')).toHaveCount(0, { timeout: 15_000 });
+    await expect(
+      page.locator('text=No chat events yet. Send a message below to wake the orchestrator.'),
+    ).toHaveCount(0);
+    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible({
+      timeout: 10_000,
+    });
+    await skipIfClaudeUsageLimited(page);
 
-    // Snapshot the live view's bubble counts before sending. After + New
-    // session in Test 3, the live view is empty (zero bubbles); post-send,
-    // we expect exactly one user + one assistant bubble.
-    const preUser = await userBubbleCount(page);
-    const preAssistant = await assistantBubbleCount(page);
+    const followUp = `resume regression follow-up ${Date.now().toString(36)}`;
+    await sendChat(page, followUp);
+    await skipIfClaudeUsageLimited(page);
+    await waitForConfirmedUserText(page, followUp, 20_000);
+    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible();
+  });
 
-    const composer = page.locator('textarea[placeholder^="Message the orchestrator"]');
-    await expect(composer).toBeVisible();
-    await sendChat(page, 'ping');
+  // ───────────────────────────────────────────────────────────────────────
+  // Test 5 — server-owned busy queue: refresh, cancel, FIFO drain.
+  // ───────────────────────────────────────────────────────────────────────
+  test('5. busy-send queue survives refresh, cancels, and drains FIFO', async () => {
+    test.setTimeout(240_000);
+    await startNewSession(page);
+    await page.waitForTimeout(10_000);
 
-    // Live bubble counts grow by exactly one each — no past-session bubbles
-    // leaked in.
-    await expect.poll(() => userBubbleCount(page), { timeout: 15_000 }).toBe(preUser + 1);
-    await expect.poll(() => assistantBubbleCount(page), { timeout: 45_000 }).toBeGreaterThanOrEqual(preAssistant + 1);
+    const suffix = Date.now().toString(36);
+    const longPrompt =
+      `queue regression root ${suffix}: write a detailed 1200-word response about ` +
+      'how a desktop app should handle chat reliability. Do not use bullets.';
+    const refreshPrompt = `queue refresh marker ${suffix}`;
+    const cancelPrompt = `queue cancel marker ${suffix}`;
+    const drainA = `queue drain A marker ${suffix}. Reply exactly DRAIN_A_${suffix}.`;
+    const drainB = `queue drain B marker ${suffix}. Reply exactly DRAIN_B_${suffix}.`;
 
-    // The original "hi" user-bubble text from Test 1 belongs to the past
-    // session. After Return to live + send "ping" in the fresh session, the
-    // chat scroller should NOT contain "hi". Scope to the chat scroller
-    // (not the rail/session titles which can contain prompt text).
-    const liveHi = page
-      .locator('.flex-1.overflow-y-auto')
-      .locator('text=hi')
-      .filter({ hasNotText: /Grand Canyon/i });
-    expect(await liveHi.count()).toBe(0);
+    await sendChat(page, longPrompt);
+    await skipIfClaudeUsageLimited(page);
+    await waitForThinkingOrSkip(page, 15_000);
+    await waitForConfirmedUserText(page, longPrompt, 20_000);
+    await skipIfClaudeUsageLimited(page);
+    await waitForThinkingOrSkip(page, 5_000);
+    await page.waitForTimeout(500);
+    await ensureStillThinkingOrSkip(page);
+
+    await sendChat(page, refreshPrompt);
+    await expect(queueItemByText(page, refreshPrompt)).toBeVisible({ timeout: 5_000 });
+
+    await ensureOrchestratorAfterReload(page);
+    await expect(queueItemByText(page, refreshPrompt)).toBeVisible({ timeout: 15_000 });
+
+    await sendChat(page, cancelPrompt);
+    const cancelItem = queueItemByText(page, cancelPrompt);
+    await expect(cancelItem).toBeVisible({ timeout: 5_000 });
+    await cancelItem.getByRole('button', { name: 'Cancel queued prompt' }).click();
+    await expect(cancelItem).toHaveCount(0, { timeout: 10_000 });
+
+    await sendChat(page, drainA);
+    await sendChat(page, drainB);
+    await expect(queueItemByText(page, drainA)).toBeVisible({ timeout: 5_000 });
+    await expect(queueItemByText(page, drainB)).toBeVisible({ timeout: 5_000 });
+
+    await expectConfirmedUserOrder(page, [longPrompt, refreshPrompt, drainA, drainB], 180_000);
+    await expect(confirmedUserBubbleWithText(page, cancelPrompt)).toHaveCount(0);
   });
 });
