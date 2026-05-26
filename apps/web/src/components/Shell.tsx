@@ -29,7 +29,7 @@ import { ChatWorkItemModalMount } from './ChatWorkItemModalMount';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { RichLinkPreviewCard } from './RichLinkPreviewCard';
 import { TabBar } from './Tabs';
-import { WorkflowList } from './WorkflowList';
+import { WorkflowsList } from './WorkflowsList';
 import { WorkflowV2RunViewerMount } from './WorkflowV2RunViewer';
 
 // Section 32.1 — TabBar lifted to a topbar but spanning the full width
@@ -219,7 +219,7 @@ function Center({
             wsStatus={wsStatus}
           />
         ) : tab === 'workflows' ? (
-          <WorkflowList project={activeProject} events={wsEvents} send={wsSend} />
+          <WorkflowsList project={activeProject} events={wsEvents} send={wsSend} />
         ) : tab === 'agents' ? (
           <AgentsList project={activeProject} events={wsEvents} />
         ) : tab === 'files' ? (

@@ -942,14 +942,6 @@ export const api = {
       `/api/projects/${projectId}/workflow-v2/runs`,
     ),
 
-  /** Section 19.11 — manual "Run now" for a v2 workflow. The full definition
-   *  is passed inline today; the trigger is `manual`. */
-  fireV2Workflow: (projectId: ULID, workflow: unknown) =>
-    postJson<{ ok: true; runId: string; workItemId?: string }>(
-      `/api/projects/${projectId}/workflow-v2/fire`,
-      { workflow, trigger: { kind: 'manual' } },
-    ),
-
   /** 19.12 — fetch one v2 run with its sidecar dagState + event log. Backs the
    *  tactical v2 run viewer (Activity Panel jump-to-watch). 404 on unknown id. */
   getV2Run: (projectId: ULID, runId: string) =>
@@ -964,12 +956,123 @@ export const api = {
       `/api/projects/${projectId}/workflow-v2/definitions/${encodeURIComponent(wfId)}`,
     ),
 
-  // 19.12 — v1 workflow client methods removed (getWorkflow, editWorkflow,
-  // deleteWorkflow, cancelRunsAndDeleteWorkflow, duplicateWorkflow,
-  // fireWorkflow, listWorkflowRuns, getWorkflowRun, retryWorkflowRunFrom,
-  // cancelWorkflowRun). Their server routes are gone; v2 surface lives
-  // under `/workflow-v2/*` (listV2WorkflowDefinitions / listV2WorkflowRuns
-  // / fireV2Workflow / getV2Run / getV2WorkflowDef above).
+  // ── 19.17 — DB-backed `/api/workflows/*` surface ──────────────────────
+  // Replaces the project-scoped `/api/projects/:projectId/workflow-v2/*`
+  // POST routes (which were deleted in 19.17). The GET-side `/workflow-v2/*`
+  // compat routes stay until 19.20 rewires the run viewer.
+
+  /** List every workflow visible to a project — globals ∪ project-scope rows.
+   *  Soft-deleted rows are excluded. */
+  listWorkflowRows: (projectId: ULID) =>
+    getJson<{ ok: true; workflows: WorkflowRow[] }>(
+      `/api/workflows?projectId=${encodeURIComponent(projectId)}`,
+    ).then((r) => r.workflows),
+
+  /** Full row for the detail pane. 404 on soft-deleted (no archive view in
+   *  19.18 v1). */
+  getWorkflowRow: (id: ULID) =>
+    getJson<{ ok: true; workflow: WorkflowRow }>(
+      `/api/workflows/${encodeURIComponent(id)}`,
+    ).then((r) => r.workflow),
+
+  /** Create a new workflow. Server validates the def; 400 on parse / validation
+   *  errors; 409 on slug or name collision in the (scope, projectId) pair. */
+  createWorkflowRow: (input: {
+    def: unknown;
+    projectId?: ULID | null;
+    scope?: WorkflowScope;
+    displayName?: string | null;
+    actor?: 'user' | 'orchestrator';
+    reason?: string;
+  }) =>
+    postJson<{ ok: true; workflow: WorkflowRow }>('/api/workflows', input).then(
+      (r) => r.workflow,
+    ),
+
+  /** Patch a workflow's body + metadata. `def` re-parses + re-validates +
+   *  bumps yamlHash. Slug is immutable in place (rename = duplicate + delete). */
+  updateWorkflowRow: (
+    id: ULID,
+    patch: {
+      def?: unknown;
+      yaml?: string;
+      displayName?: string | null;
+      disabled?: boolean;
+      name?: string;
+      actor?: 'user' | 'orchestrator';
+      reason?: string;
+    },
+  ) =>
+    postJsonMethod<{ ok: true; workflow: WorkflowRow }>(
+      `/api/workflows/${encodeURIComponent(id)}`,
+      patch,
+      'PUT',
+    ).then((r) => r.workflow),
+
+  /** Soft-delete. 409 with `kind: 'in-flight-runs'` when runs are active —
+   *  retry with `cancel: true` to cancel-and-delete in one shot. */
+  deleteWorkflowRow: async (id: ULID, opts?: { cancel?: boolean }): Promise<void> => {
+    const qs = opts?.cancel ? '?cancel=1' : '';
+    const res = await fetch(`/api/workflows/${encodeURIComponent(id)}${qs}`, {
+      method: 'DELETE',
+    });
+    const data = (await res.json()) as {
+      ok?: boolean;
+      error?: string;
+      kind?: string;
+      inFlight?: number;
+    };
+    if (!res.ok || data.ok === false) {
+      const msg = data.error ?? `delete workflow → ${res.status}`;
+      const err = new Error(msg) as Error & {
+        kind?: string;
+        status?: number;
+        inFlight?: number;
+      };
+      if (data.kind) err.kind = data.kind;
+      if (data.inFlight !== undefined) err.inFlight = data.inFlight;
+      err.status = res.status;
+      throw err;
+    }
+  },
+
+  /** Flip a project-scope workflow to global. 409 on global slug / name
+   *  collision. Mirrors `promotePodToGlobal`. */
+  promoteWorkflowToGlobal: (id: ULID) =>
+    postJson<{ ok: true; workflow: WorkflowRow }>(
+      `/api/workflows/${encodeURIComponent(id)}/promote-to-global`,
+      {},
+    ).then((r) => r.workflow),
+
+  /** Force-disabled clone. Same scope by default; pass `targetScope` /
+   *  `targetProjectId` to clone across the global / project boundary. */
+  duplicateWorkflowRow: (
+    id: ULID,
+    input?: {
+      newName?: string;
+      newSlug?: string;
+      targetScope?: WorkflowScope;
+      targetProjectId?: ULID | null;
+    },
+  ) =>
+    postJson<{ ok: true; workflow: WorkflowRow }>(
+      `/api/workflows/${encodeURIComponent(id)}/duplicate`,
+      input ?? {},
+    ).then((r) => r.workflow),
+
+  /** Fire a workflow by row id. Defaults to manual trigger. Global rows need
+   *  `projectId` in the body to identify the target project. */
+  fireWorkflowRow: (
+    id: ULID,
+    input?: {
+      trigger?: { kind: 'manual' | 'stage-on-entry' | 'schedule' | 'event'; [k: string]: unknown };
+      projectId?: ULID;
+    },
+  ) =>
+    postJson<{ ok: true; runId: string; workItemId?: string }>(
+      `/api/workflows/${encodeURIComponent(id)}/fire`,
+      input ?? {},
+    ),
 
   // ── Agent runs (Section 16b.8) ────────────────────────────────────────
   /** Active agent runs for a project. Server filters terminal-state rows
@@ -1506,3 +1609,33 @@ export interface V2RunEvent {
  *  passes this straight to `WorkflowGraphV2`. Shape is `WorkflowV2.Workflow`
  *  from `@pc/domain`; opaque on the client (we never inspect node fields). */
 export type V2WorkflowDef = V2WorkflowDefSummary & { [key: string]: unknown };
+
+// ── 19.16/19.17 — DB-backed workflow row ──────────────────────────────────
+// Mirrors `packages/domain/src/workflow-row.ts`. Kept inline so the browser
+// bundle stays @pc/domain-free.
+
+export type WorkflowScope = 'global' | 'project';
+export type WorkflowOrigin = 'stock' | 'user-created';
+export type WorkflowRowStatus = 'active' | 'invalid';
+
+/** Persisted workflow row — what `/api/workflows` returns. The graph itself
+ *  lives in `yaml` + `parsedDefinition`. */
+export interface WorkflowRow {
+  id: ULID;
+  scope: WorkflowScope;
+  projectId: ULID | null;
+  slug: string;
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  yaml: string;
+  yamlHash: string;
+  parsedDefinition: V2WorkflowDef | null;
+  status: WorkflowRowStatus;
+  parseError: string | null;
+  disabled: boolean;
+  origin: WorkflowOrigin;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+}

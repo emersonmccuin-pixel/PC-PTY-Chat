@@ -1,0 +1,935 @@
+// Section 19.18 — Two-pane Workflows tab. Mirrors AgentsList: left rail with
+// "This project" + "Global" sections + filters, right detail pane with
+// metadata header + tab strip (Graph · Runs · Raw YAML).
+//
+// Replaces the flat-sectioned `WorkflowList.tsx` (deleted in this commit).
+// Surface reads `/api/workflows?projectId=…` via `useProjectWorkflows`.
+//
+// Scope guard for this commit:
+// - Graph tab renders `WorkflowGraphV2` read-only against `row.parsedDefinition`.
+// - Runs tab is wired to the existing `useProjectWorkflowV2Runs` feeder
+//   (sidecar-backed; 19.20 will absorb the per-run viewer modal into this tab).
+// - Raw YAML tab is a read-only `<pre>` view today; 19.19 lands the editor.
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { WorkflowV2 } from '@pc/domain';
+
+import {
+  api,
+  type Project,
+  type ULID,
+  type V2RunStatus,
+  type V2RunSummary,
+  type WorkflowRow,
+} from '@/api/client';
+import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
+import { useProjectWorkflows } from '@/hooks/use-project-workflows';
+import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
+import { WorkflowBuilderModal } from './WorkflowBuilderModal';
+import { WorkflowGraphV2 } from './WorkflowGraphV2';
+
+interface WorkflowsListProps {
+  project: Project;
+  events: WsEnvelope[];
+  send: (msg: WsOutbound) => boolean;
+}
+
+type StatusFilter = 'all' | 'enabled' | 'disabled' | 'invalid';
+type TriggerFilter = 'all' | 'manual' | 'stage-on-entry' | 'schedule' | 'event';
+type DetailTab = 'graph' | 'runs' | 'yaml';
+
+export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
+  const { workflows, refetch } = useProjectWorkflows(project, events);
+  const { runs } = useProjectWorkflowV2Runs(project, events);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState<WorkflowRow | null>(null);
+  const [selectedId, setSelectedId] = useState<ULID | null>(null);
+  const [filter, setFilter] = useState('');
+  const [status, setStatus] = useState<StatusFilter>('all');
+  const [triggerKind, setTriggerKind] = useState<TriggerFilter>('all');
+  const [tab, setTab] = useState<DetailTab>('graph');
+  const [actionErr, setActionErr] = useState<string | null>(null);
+
+  // Clear selection + filters on project switch.
+  useEffect(() => {
+    setSelectedId(null);
+    setFilter('');
+    setStatus('all');
+    setTriggerKind('all');
+    setTab('graph');
+    setActionErr(null);
+  }, [project.id]);
+
+  // Split rows by scope.
+  const { projectRows, globalRows } = useMemo(() => {
+    const proj: WorkflowRow[] = [];
+    const glob: WorkflowRow[] = [];
+    for (const w of workflows) {
+      if (w.scope === 'project') proj.push(w);
+      else glob.push(w);
+    }
+    return { projectRows: proj, globalRows: glob };
+  }, [workflows]);
+
+  // Auto-select on first load / when the current selection vanishes.
+  useEffect(() => {
+    if (selectedId && workflows.some((w) => w.id === selectedId)) return;
+    const first = projectRows[0] ?? globalRows[0] ?? null;
+    setSelectedId(first ? first.id : null);
+  }, [workflows, selectedId, projectRows, globalRows]);
+
+  // Apply filters.
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const matchText = (w: WorkflowRow) =>
+      !q ||
+      w.name.toLowerCase().includes(q) ||
+      w.slug.toLowerCase().includes(q) ||
+      (w.description ?? '').toLowerCase().includes(q);
+    const matchStatus = (w: WorkflowRow) => {
+      if (status === 'all') return true;
+      if (status === 'invalid') return w.status === 'invalid';
+      if (status === 'disabled') return w.disabled;
+      if (status === 'enabled') return !w.disabled && w.status === 'active';
+      return true;
+    };
+    const matchTrigger = (w: WorkflowRow) => {
+      if (triggerKind === 'all') return true;
+      const triggers = parsedTriggers(w);
+      return triggers.some((t) => t.kind === triggerKind);
+    };
+    const apply = (rows: WorkflowRow[]) =>
+      rows.filter((w) => matchText(w) && matchStatus(w) && matchTrigger(w));
+    return { proj: apply(projectRows), glob: apply(globalRows) };
+  }, [filter, status, triggerKind, projectRows, globalRows]);
+
+  const selectedRow = useMemo(
+    () => (selectedId ? workflows.find((w) => w.id === selectedId) ?? null : null),
+    [selectedId, workflows],
+  );
+
+  // Per-workflow run summaries (matched by slug — `V2RunSummary.workflowId`
+  // carries the YAML slug, not the DB ULID).
+  const runsForSelected = useMemo<V2RunSummary[]>(() => {
+    if (!selectedRow) return [];
+    return runs
+      .filter((r) => r.workflowId === selectedRow.slug)
+      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  }, [selectedRow, runs]);
+
+  async function onRunNow(row: WorkflowRow) {
+    setActionErr(null);
+    try {
+      const fireBody = row.scope === 'global' ? { projectId: project.id } : {};
+      await api.fireWorkflowRow(row.id, fireBody);
+    } catch (e) {
+      setActionErr(`Run now failed: ${(e as Error).message}`);
+    }
+  }
+
+  async function onDuplicate(row: WorkflowRow) {
+    setActionErr(null);
+    try {
+      const created = await api.duplicateWorkflowRow(row.id);
+      setSelectedId(created.id);
+      refetch();
+    } catch (e) {
+      setActionErr(`Duplicate failed: ${(e as Error).message}`);
+    }
+  }
+
+  async function onToggleDisabled(row: WorkflowRow) {
+    setActionErr(null);
+    try {
+      await api.updateWorkflowRow(row.id, { disabled: !row.disabled });
+      refetch();
+    } catch (e) {
+      setActionErr(`Update failed: ${(e as Error).message}`);
+    }
+  }
+
+  async function onPromote(row: WorkflowRow) {
+    setActionErr(null);
+    const ok = window.confirm(
+      `Promote "${row.name}" to the global pool?\n\nIt becomes available in every project. The local copy is removed from this project.`,
+    );
+    if (!ok) return;
+    try {
+      await api.promoteWorkflowToGlobal(row.id);
+      refetch();
+    } catch (e) {
+      setActionErr(`Promote failed: ${(e as Error).message}`);
+    }
+  }
+
+  async function onDelete(row: WorkflowRow, cancel: boolean) {
+    setActionErr(null);
+    try {
+      await api.deleteWorkflowRow(row.id, { cancel });
+      if (selectedId === row.id) setSelectedId(null);
+      refetch();
+    } catch (e) {
+      const err = e as Error & { kind?: string; inFlight?: number };
+      if (err.kind === 'in-flight-runs') {
+        const proceed = window.confirm(
+          `${row.name} has ${err.inFlight ?? 'some'} in-flight run(s). Cancel them and delete?`,
+        );
+        if (proceed) {
+          await onDelete(row, true);
+          return;
+        }
+      }
+      setActionErr(`Delete failed: ${err.message}`);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden bg-background">
+      <header className="flex flex-col gap-2 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex flex-1 items-center gap-2 border border-border bg-card px-2 py-1.5">
+            <span aria-hidden className="text-muted-foreground">⌕</span>
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter workflows…"
+              className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="border border-primary bg-primary/30 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-primary/50"
+          >
+            + New workflow
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground">
+          <ChipGroup
+            label="Status"
+            value={status}
+            onChange={setStatus}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'enabled', label: 'Enabled' },
+              { value: 'disabled', label: 'Disabled' },
+              { value: 'invalid', label: 'Invalid' },
+            ]}
+          />
+          <ChipGroup
+            label="Trigger"
+            value={triggerKind}
+            onChange={setTriggerKind}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'manual', label: 'Manual' },
+              { value: 'stage-on-entry', label: 'Stage' },
+              { value: 'schedule', label: 'Schedule' },
+              { value: 'event', label: 'Event' },
+            ]}
+          />
+        </div>
+      </header>
+
+      {actionErr && (
+        <div className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+          {actionErr}
+          <button onClick={() => setActionErr(null)} className="ml-2 underline">
+            dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr] overflow-hidden">
+        <aside className="overflow-y-auto border-r border-border">
+          <ListSection
+            title="This project"
+            count={projectRows.length}
+            filteredCount={filtered.proj.length}
+            empty="No workflows in this project yet."
+          >
+            {filtered.proj.map((row) => (
+              <ListRow
+                key={row.id}
+                row={row}
+                runs={runs.filter((r) => r.workflowId === row.slug)}
+                selected={row.id === selectedId}
+                onSelect={() => setSelectedId(row.id)}
+              />
+            ))}
+          </ListSection>
+
+          <ListSection
+            title="Global"
+            subtitle="Available to every project."
+            count={globalRows.length}
+            filteredCount={filtered.glob.length}
+            empty="No global workflows yet."
+          >
+            {filtered.glob.map((row) => (
+              <ListRow
+                key={row.id}
+                row={row}
+                runs={runs.filter((r) => r.workflowId === row.slug)}
+                selected={row.id === selectedId}
+                onSelect={() => setSelectedId(row.id)}
+              />
+            ))}
+          </ListSection>
+        </aside>
+
+        <main className="overflow-y-auto">
+          {selectedRow ? (
+            <DetailPane
+              row={selectedRow}
+              runs={runsForSelected}
+              tab={tab}
+              setTab={setTab}
+              onEdit={() => setEditingRow(selectedRow)}
+              onRunNow={() => void onRunNow(selectedRow)}
+              onDuplicate={() => void onDuplicate(selectedRow)}
+              onToggleDisabled={() => void onToggleDisabled(selectedRow)}
+              onPromote={() => void onPromote(selectedRow)}
+              onDelete={() => void onDelete(selectedRow, false)}
+            />
+          ) : (
+            <EmptyDetail onAdd={() => setCreateOpen(true)} />
+          )}
+        </main>
+      </div>
+
+      {createOpen && (
+        <WorkflowBuilderModal
+          projectId={project.id}
+          events={events}
+          send={send}
+          onClose={() => {
+            setCreateOpen(false);
+            refetch();
+          }}
+        />
+      )}
+      {editingRow && editingRow.parsedDefinition && (
+        <WorkflowBuilderModal
+          projectId={project.id}
+          events={events}
+          send={send}
+          editingWorkflow={{
+            id: editingRow.slug,
+            def: editingRow.parsedDefinition as unknown as WorkflowV2.Workflow,
+            yamlText: editingRow.yaml,
+          }}
+          onClose={() => {
+            setEditingRow(null);
+            refetch();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Left list ────────────────────────────────────────────────────────────
+
+function ListSection({
+  title,
+  subtitle,
+  count,
+  filteredCount,
+  empty,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  count: number;
+  filteredCount: number;
+  empty: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <header className="flex items-center justify-between gap-2 px-3 pb-1 pt-3 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <span className="flex items-center gap-2">
+          <span>{title}</span>
+          <span className="border border-border px-1 text-[9px] font-normal">{count}</span>
+          {subtitle && (
+            <span className="text-[9px] font-normal normal-case tracking-normal opacity-80">
+              {subtitle}
+            </span>
+          )}
+        </span>
+      </header>
+      {count === 0 ? (
+        <div className="mx-3 mb-2 border border-dashed border-border px-2 py-3 text-center text-[10px] text-muted-foreground">
+          {empty}
+        </div>
+      ) : filteredCount === 0 ? (
+        <div className="mx-3 mb-2 px-2 py-2 text-center text-[10px] text-muted-foreground">
+          no matches
+        </div>
+      ) : (
+        <div className="flex flex-col">{children}</div>
+      )}
+    </section>
+  );
+}
+
+function ListRow({
+  row,
+  runs,
+  selected,
+  onSelect,
+}: {
+  row: WorkflowRow;
+  runs: V2RunSummary[];
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const triggers = parsedTriggers(row);
+  const runningCount = runs.filter(
+    (r) => r.status === 'running' || r.status === 'paused',
+  ).length;
+  const isInvalid = row.status === 'invalid';
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={
+        'flex cursor-pointer flex-col gap-0.5 border-l-2 px-3 py-2 transition-colors ' +
+        (selected
+          ? 'border-primary bg-muted'
+          : 'border-transparent hover:bg-muted') +
+        (row.disabled ? ' saturate-0' : '')
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 truncate text-xs font-medium text-foreground">
+          <span className="truncate">{row.name}</span>
+          {row.disabled && (
+            <span className="shrink-0 bg-foreground/80 px-1 py-px text-[9px] uppercase tracking-wider text-background">
+              Paused
+            </span>
+          )}
+          {isInvalid && (
+            <span className="shrink-0 border border-destructive/60 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
+              Invalid
+            </span>
+          )}
+        </span>
+        {runningCount > 0 && (
+          <span className="shrink-0 bg-primary/20 px-1 py-px text-[9px] uppercase tracking-wider text-primary">
+            {runningCount} running
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <span className="truncate">{row.slug}</span>
+        {triggers.length > 0 && <span>·</span>}
+        <span className="flex shrink-0 gap-1">
+          {triggers.slice(0, 3).map((t, i) => (
+            <span
+              key={i}
+              className="border border-border/60 px-1 text-[9px] uppercase tracking-wider"
+              title={triggerLabel(t)}
+            >
+              {triggerShortLabel(t)}
+            </span>
+          ))}
+        </span>
+      </div>
+      {row.description && (
+        <div className="line-clamp-2 text-[11px] leading-tight text-muted-foreground">
+          {row.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Right detail pane ────────────────────────────────────────────────────
+
+function DetailPane({
+  row,
+  runs,
+  tab,
+  setTab,
+  onEdit,
+  onRunNow,
+  onDuplicate,
+  onToggleDisabled,
+  onPromote,
+  onDelete,
+}: {
+  row: WorkflowRow;
+  runs: V2RunSummary[];
+  tab: DetailTab;
+  setTab: (t: DetailTab) => void;
+  onEdit: () => void;
+  onRunNow: () => void;
+  onDuplicate: () => void;
+  onToggleDisabled: () => void;
+  onPromote: () => void;
+  onDelete: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const triggers = parsedTriggers(row);
+  const nodeCount = nodeCountOf(row);
+  const isProject = row.scope === 'project';
+  const isInvalid = row.status === 'invalid';
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex flex-col gap-3 border-b border-border px-6 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="truncate text-lg font-semibold text-foreground">{row.name}</h2>
+              {isProject ? (
+                <span className="border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+                  project
+                </span>
+              ) : (
+                <span className="border border-success/40 bg-success/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-success">
+                  global
+                </span>
+              )}
+              {row.disabled && (
+                <span className="bg-foreground/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
+                  Paused
+                </span>
+              )}
+              {isInvalid && (
+                <span className="border border-destructive/60 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-destructive">
+                  Invalid
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+              <span>{row.slug}</span>
+              <span>·</span>
+              <span>{nodeCount} node{nodeCount === 1 ? '' : 's'}</span>
+              <span>·</span>
+              <span>{runs.length} run{runs.length === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={onRunNow}
+              disabled={row.disabled || isInvalid}
+              className="border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              title="Fire this workflow with kind=manual"
+            >
+              Run now
+            </button>
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={isInvalid}
+              className="border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Edit
+            </button>
+            <RowMenu
+              open={menuOpen}
+              onOpenChange={setMenuOpen}
+              row={row}
+              onDuplicate={() => {
+                setMenuOpen(false);
+                onDuplicate();
+              }}
+              onToggleDisabled={() => {
+                setMenuOpen(false);
+                onToggleDisabled();
+              }}
+              onPromote={() => {
+                setMenuOpen(false);
+                onPromote();
+              }}
+              onDelete={() => {
+                setMenuOpen(false);
+                onDelete();
+              }}
+            />
+          </div>
+        </div>
+
+        {row.description && (
+          <p className="max-w-3xl text-sm text-muted-foreground">{row.description}</p>
+        )}
+
+        {triggers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+              Triggers
+            </span>
+            {triggers.map((t, i) => (
+              <span
+                key={i}
+                className="border border-border/60 bg-card px-2 py-0.5 text-[11px] text-foreground"
+              >
+                {triggerLabel(t)}
+              </span>
+            ))}
+          </div>
+        )}
+      </header>
+
+      <nav className="flex items-center gap-1 border-b border-border px-4 pt-2">
+        <TabButton active={tab === 'graph'} onClick={() => setTab('graph')}>
+          Graph
+        </TabButton>
+        <TabButton active={tab === 'runs'} onClick={() => setTab('runs')}>
+          Runs
+          {runs.length > 0 && (
+            <span className="ml-1.5 border border-border px-1 text-[9px]">{runs.length}</span>
+          )}
+        </TabButton>
+        <TabButton active={tab === 'yaml'} onClick={() => setTab('yaml')}>
+          Raw YAML
+        </TabButton>
+      </nav>
+
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {tab === 'graph' && <GraphTab row={row} />}
+        {tab === 'runs' && <RunsTab row={row} runs={runs} />}
+        {tab === 'yaml' && <YamlTab row={row} />}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'flex items-center border-b-2 px-3 py-2 text-xs ' +
+        (active
+          ? 'border-primary font-medium text-foreground'
+          : 'border-transparent text-muted-foreground hover:text-foreground')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────
+
+function GraphTab({ row }: { row: WorkflowRow }) {
+  if (row.status === 'invalid' || !row.parsedDefinition) {
+    return (
+      <div className="p-6">
+        <div className="border border-destructive bg-destructive/10 p-4 text-sm">
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-destructive">
+            Invalid workflow
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-destructive">
+            {row.parseError ?? '(no parse error recorded)'}
+          </pre>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Re-open this workflow in the builder to fix the validation errors, or
+            edit the Raw YAML tab directly (19.19).
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const wf = row.parsedDefinition as unknown as WorkflowV2.Workflow;
+  return (
+    <div className="h-full">
+      <WorkflowGraphV2 workflow={wf} />
+    </div>
+  );
+}
+
+function RunsTab({ row, runs }: { row: WorkflowRow; runs: V2RunSummary[] }) {
+  if (runs.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center p-8 text-center text-xs text-muted-foreground">
+        <div>
+          No runs yet for <span className="font-mono">{row.slug}</span>.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="flex flex-col">
+        {runs.map((r) => (
+          <RunRow key={r.id} run={r} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RunRow({ run }: { run: V2RunSummary }) {
+  const started = run.startedAt ?? run.createdAt;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border/40 px-4 py-2.5 text-xs hover:bg-muted/40">
+      <div className="flex min-w-0 items-center gap-2">
+        <StatusPill status={run.status} />
+        <span className="truncate font-mono text-[11px] text-muted-foreground">
+          {run.id.slice(-12)}
+        </span>
+        {run.workItemId && (
+          <span className="border border-border/60 px-1 text-[9px] uppercase tracking-wider text-muted-foreground">
+            wi {run.workItemId.slice(-6)}
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-3 text-[10px] text-muted-foreground">
+        <span>{run.trigger}</span>
+        <span>{formatRelativeTime(started)}</span>
+      </div>
+    </div>
+  );
+}
+
+function YamlTab({ row }: { row: WorkflowRow }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="border-b border-border bg-muted/30 px-4 py-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        Read-only · editor lands in 19.19
+      </div>
+      <pre className="flex-1 overflow-auto bg-background p-4 font-mono text-xs text-foreground">
+        {row.yaml}
+      </pre>
+    </div>
+  );
+}
+
+// ── Row menu (⋯) ─────────────────────────────────────────────────────────
+
+function RowMenu({
+  open,
+  onOpenChange,
+  row,
+  onDuplicate,
+  onToggleDisabled,
+  onPromote,
+  onDelete,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  row: WorkflowRow;
+  onDuplicate: () => void;
+  onToggleDisabled: () => void;
+  onPromote: () => void;
+  onDelete: () => void;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current) return;
+      if (wrapRef.current.contains(e.target as Node)) return;
+      onOpenChange(false);
+    };
+    // Defer one tick so the same click that opened the menu doesn't dismiss.
+    const t = setTimeout(() => {
+      window.addEventListener('mousedown', onDown);
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [open, onOpenChange]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenChange(!open);
+        }}
+        className="border border-border bg-card px-2 py-1.5 text-sm leading-none hover:bg-muted"
+        aria-label="Workflow actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-40 mt-1 flex min-w-[180px] flex-col border border-border bg-card text-xs shadow-lg">
+          <MenuItem onClick={onDuplicate}>Duplicate</MenuItem>
+          <MenuItem onClick={onToggleDisabled}>
+            {row.disabled ? 'Enable' : 'Disable'}
+          </MenuItem>
+          {row.scope === 'project' && (
+            <MenuItem onClick={onPromote}>Promote to global</MenuItem>
+          )}
+          <MenuItem onClick={onDelete} destructive>
+            Delete
+          </MenuItem>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  onClick,
+  destructive,
+  children,
+}: {
+  onClick: () => void;
+  destructive?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={
+        'px-3 py-2 text-left hover:bg-muted ' +
+        (destructive ? 'text-destructive' : 'text-foreground')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+// ── Filter chip group ────────────────────────────────────────────────────
+
+function ChipGroup<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: Array<{ value: T; label: string }>;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-muted-foreground">{label}:</span>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={
+            'border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ' +
+            (value === o.value
+              ? 'border-primary bg-primary/20 text-foreground'
+              : 'border-border/60 text-muted-foreground hover:bg-muted hover:text-foreground')
+          }
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Empty state ──────────────────────────────────────────────────────────
+
+function EmptyDetail({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="flex h-full items-center justify-center p-8 text-center text-xs text-muted-foreground">
+      <div className="max-w-xs">
+        <p>No workflow selected.</p>
+        <p className="mt-1">
+          Pick one from the list, or{' '}
+          <button onClick={onAdd} className="underline hover:text-foreground">
+            create a new workflow
+          </button>
+          .
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Pure helpers ─────────────────────────────────────────────────────────
+
+interface TriggerLike {
+  kind: string;
+  stage?: string;
+  cron?: string;
+  source?: string;
+}
+
+function parsedTriggers(row: WorkflowRow): TriggerLike[] {
+  const def = row.parsedDefinition as { triggers?: TriggerLike[] } | null;
+  return def?.triggers ?? [];
+}
+
+function nodeCountOf(row: WorkflowRow): number {
+  const def = row.parsedDefinition as { nodes?: unknown[] } | null;
+  return def?.nodes?.length ?? 0;
+}
+
+function triggerShortLabel(t: TriggerLike): string {
+  if (t.kind === 'manual') return 'manual';
+  if (t.kind === 'stage-on-entry') return 'stage';
+  if (t.kind === 'schedule') return 'cron';
+  if (t.kind === 'event') return 'event';
+  return t.kind;
+}
+
+function triggerLabel(t: TriggerLike): string {
+  if (t.kind === 'stage-on-entry' && t.stage) return `on stage entry · ${t.stage}`;
+  if (t.kind === 'manual') return 'manual';
+  if (t.kind === 'schedule' && t.cron) return `cron · ${t.cron}`;
+  if (t.kind === 'event' && t.source) return `event · ${t.source}`;
+  return t.kind;
+}
+
+function StatusPill({ status }: { status: V2RunStatus }) {
+  const cls =
+    status === 'running'
+      ? 'bg-primary/20 text-primary'
+      : status === 'paused'
+        ? 'bg-warning/25 text-warning'
+        : status === 'completed'
+          ? 'bg-foreground/15 text-foreground'
+          : status === 'failed'
+            ? 'bg-destructive/20 text-destructive'
+            : status === 'cancelled'
+              ? 'bg-muted text-muted-foreground'
+              : 'bg-muted text-muted-foreground';
+  return (
+    <span className={`px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
+function formatRelativeTime(epochMs: number): string {
+  const diffSec = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
+}
