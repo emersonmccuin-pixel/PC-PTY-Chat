@@ -9,8 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TRUNK = resolve(__dirname, '..', '..', '..');
-const SVG = resolve(TRUNK, 'apps/web/public/icon.svg');
+// Desktop-specific icon (padding trimmed, brighter edge, centered+scaled mark)
+// — kept separate from apps/web/public/icon.svg so the web favicon is untouched.
+const SVG = resolve(__dirname, '..', 'build-src', 'icon.svg');
 const OUT_DIR = resolve(__dirname, '..', 'build');
 const OUT = resolve(OUT_DIR, 'icon.png');
 

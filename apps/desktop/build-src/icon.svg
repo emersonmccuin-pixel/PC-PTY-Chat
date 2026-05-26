@@ -1,0 +1,25 @@
+<svg width="1024" height="1024" viewBox="120 120 784 784" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Desktop app icon — derived from apps/web/public/icon.svg, tuned for small
+       sizes: padding trimmed (viewBox crop), brighter/thicker gold edge for a
+       defined silhouette on dark taskbars, and the "C" mark centered + scaled
+       to ~86% fill. The mark's bbox center is (544,503); the transform recenters
+       it to the square center (512,512) and scales 1.25× about that point. -->
+  <rect x="144" y="144" width="736" height="736" rx="164" fill="#0B0804"></rect>
+  <rect x="146" y="146" width="732" height="732" rx="162" fill="none" stroke="#DCA52E" stroke-width="18"></rect>
+
+  <g transform="translate(512,512) scale(1.25) translate(-544,-503)">
+    <path d="M330 455V365L445 309H508" stroke="#DCA52E" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"></path>
+    <path d="M572 309H690" stroke="#DCA52E" stroke-width="32" stroke-linecap="round"></path>
+    <rect x="445" y="250" width="127" height="118" rx="24" fill="#DCA52E"></rect>
+    <circle cx="724" cy="309" r="50" fill="#DCA52E"></circle>
+
+    <path d="M330 551V641L445 697H508" stroke="#806342" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"></path>
+    <path d="M572 697H690" stroke="#806342" stroke-width="32" stroke-linecap="round"></path>
+    <rect x="445" y="638" width="127" height="118" rx="24" fill="#806342"></rect>
+    <circle cx="724" cy="697" r="50" fill="#806342"></circle>
+
+    <rect x="460" y="482" width="42" height="42" rx="10" fill="#59442A"></rect>
+    <rect x="534" y="482" width="42" height="42" rx="10" fill="#B9822B"></rect>
+    <rect x="608" y="482" width="42" height="42" rx="10" fill="#F2D29A"></rect>
+  </g>
+</svg>
