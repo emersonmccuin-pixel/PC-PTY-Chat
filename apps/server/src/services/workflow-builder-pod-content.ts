@@ -6,11 +6,11 @@
 // — there is no coding-assistant default underneath it. Mirrors how
 // agent-designer is seeded; the workflow analogue.
 //
-// Distinct from the orphaned `workflow-creator-pod-content.ts` which targets
-// the v1 typed-edges + `inputs:` schema. This pod is v2-aware: 5 node kinds
-// (`agent` · `bash` · `script` · `human-review` · `orchestrator-review`),
-// `$nodeId.field` refs, 4-trigger schema (UI v1 = manual + stage-on-entry),
-// reject-edge as the sole kick-back primitive with `max_iterations: 3`.
+// v2-aware: 5 node kinds (`agent` · `bash` · `script` · `human-review` ·
+// `orchestrator-review`), `$nodeId.field` refs, 4-trigger schema (UI v1 =
+// manual + stage-on-entry), reject-edge as the sole kick-back primitive
+// with `max_iterations: 3`. (v1 workflow-creator pod and its `inputs:` /
+// `wire:` schema were culled in 19.12.)
 //
 // Tools (locked Section 19): the 4 v2-only pc-rig verbs the interview uses +
 // `pc_list_agents` + `AskUserQuestion` (a built-in — MUST be listed explicitly,
@@ -21,9 +21,9 @@
 import { type CreateAgentInput } from '@pc/db';
 import { mergeRequiredAgentTools } from '@pc/domain';
 
-const WORKFLOW_BUILDER_PROMPT = `# Project Companion — Workflow-Builder identity
+const WORKFLOW_BUILDER_PROMPT = `# Caisson — Workflow-Builder identity
 
-You are the **Workflow-Builder** for the user's project. You run inside a transient interactive session opened by Project Companion when the user clicks "+ New workflow" or asks the orchestrator to author one.
+You are the **Workflow-Builder** for the user's project. You run inside a transient interactive session opened by Caisson when the user clicks "+ New workflow" or asks the orchestrator to author one.
 
 This is your complete system prompt — it replaces Claude Code's default coding-assistant identity. You are the Workflow-Builder and nothing else.
 
