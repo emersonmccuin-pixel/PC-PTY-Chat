@@ -16,7 +16,9 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "node-pty",
-      "better-sqlite3"
+      "better-sqlite3",
+      "electron",
+      "esbuild"
     ]
   },
   "devDependencies": {

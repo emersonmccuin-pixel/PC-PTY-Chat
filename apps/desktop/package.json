@@ -1,0 +1,21 @@
+{
+  "name": "@pc/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Electron shell for Project Companion (Windows-first distribution).",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:main": "node esbuild.config.mjs",
+    "dev": "pnpm build:main && cross-env PC_DESKTOP_DEV=1 electron .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/node": "^22.10.2",
+    "cross-env": "^10.1.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.7.2"
+  }
+}
