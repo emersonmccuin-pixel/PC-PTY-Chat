@@ -553,3 +553,165 @@ test('repo: listWorkflows({ projectId, includeGlobals: true }) reflects route in
   });
   assert.ok(direct.some((r) => r.slug === 'simple-chain' && r.projectId === pid));
 });
+
+// ── 19.22 — D39 smoke extension ───────────────────────────────────────────
+//
+// Round-trips called out in `buildout/workflow-page-rebuild.md`:
+//   (a) promote-to-global → fire from a second project sees the global.
+//   (b) soft-delete + restore via repo (HTTP restore route not wired yet).
+//   (c) Raw YAML edit → fire dispatches the new def.
+//   (d) `workflow-changed` broadcast envelope shape is stable across
+//       created / updated / deleted — load-bearing for the modal close path
+//       and `useProjectWorkflows`' delta-merge consumer.
+// Single shared file (not a new `workflow-firing-smoke.test.ts`) so the
+// existing `freshApp` deps + project seeding stay reusable.
+
+test('19.22(a): promoted-to-global workflow is fire-able from a second project', async () => {
+  const { app, fireCalls } = freshApp();
+  // Unique slug to avoid collision with other globals seeded in this file.
+  const yaml = TWO_NODE_YAML.replace('id: simple-chain', 'id: chain-promo-fire').replace(
+    'name: Simple Chain',
+    'name: Chain Promo Fire',
+  );
+  const pidA = projectId('PROMO_FIRE_A');
+  const created = await fetchJson(app, 'POST', '/api/workflows', {
+    yaml,
+    projectId: pidA,
+  });
+  const id = (created.data.workflow as { id: string }).id;
+  const { status: promStatus } = await fetchJson(
+    app,
+    'POST',
+    `/api/workflows/${id}/promote-to-global`,
+  );
+  assert.equal(promStatus, 200);
+
+  // Second project sees the global via list.
+  const pidB = projectId('PROMO_FIRE_B');
+  const listed = await fetchJson(app, 'GET', `/api/workflows?projectId=${pidB}`);
+  const rows = listed.data.workflows as Array<{ id: string; slug: string; scope: string }>;
+  const globalRow = rows.find((r) => r.slug === 'chain-promo-fire' && r.scope === 'global');
+  assert.ok(globalRow, 'project B should see the promoted global');
+
+  // Fire it from B — must pass projectId in the body for globals.
+  const fired = await fetchJson(app, 'POST', `/api/workflows/${globalRow!.id}/fire`, {
+    projectId: pidB,
+  });
+  assert.equal(fired.status, 200);
+  assert.equal(fireCalls.length, 1);
+  assert.equal(fireCalls[0]?.projectId, pidB);
+  assert.equal(fireCalls[0]?.def.id, 'chain-promo-fire');
+});
+
+test('19.22(b): soft-delete hides the row from list/get; repo.restoreWorkflow brings it back', async () => {
+  const { app } = freshApp();
+  const pid = projectId('DEL_RESTORE');
+  const created = await fetchJson(app, 'POST', '/api/workflows', {
+    yaml: TWO_NODE_YAML.replace('id: simple-chain', 'id: chain-del-restore'),
+    projectId: pid,
+  });
+  const id = (created.data.workflow as { id: string }).id;
+
+  // Delete.
+  const del = await fetchJson(app, 'DELETE', `/api/workflows/${id}`);
+  assert.equal(del.status, 200);
+
+  // Hidden from the rail's list endpoint.
+  const listed = await fetchJson(app, 'GET', `/api/workflows?projectId=${pid}`);
+  const rows = listed.data.workflows as Array<{ id: string }>;
+  assert.ok(!rows.some((r) => r.id === id), 'soft-deleted row must not appear in list');
+
+  // Hidden from default GET; visible with includeDeleted=1.
+  const goneDefault = await fetchJson(app, 'GET', `/api/workflows/${id}`);
+  assert.equal(goneDefault.status, 404);
+  const includedDeleted = await fetchJson(
+    app,
+    'GET',
+    `/api/workflows/${id}?includeDeleted=1`,
+  );
+  assert.equal(includedDeleted.status, 200);
+  const deletedRow = includedDeleted.data.workflow as { deletedAt: number | null };
+  assert.ok(deletedRow.deletedAt && deletedRow.deletedAt > 0, 'deletedAt must be populated');
+
+  // Restore via the repo (no HTTP route exposed yet — carry-over).
+  const restored = workflowsRepo.restoreWorkflow(id as ULID);
+  assert.ok(restored, 'restoreWorkflow returns the restored row');
+  assert.equal(restored!.deletedAt, null);
+
+  // Visible again post-restore.
+  const back = await fetchJson(app, 'GET', `/api/workflows/${id}`);
+  assert.equal(back.status, 200);
+});
+
+test('19.22(c): Raw YAML edit + fire dispatches the new def (the edit took, not the original)', async () => {
+  const { app, fireCalls } = freshApp();
+  const pid = projectId('YAML_EDIT_FIRE');
+  const created = await fetchJson(app, 'POST', '/api/workflows', {
+    yaml: TWO_NODE_YAML.replace('id: simple-chain', 'id: chain-yaml-edit'),
+    projectId: pid,
+  });
+  const id = (created.data.workflow as { id: string }).id;
+
+  // Edit the node's bash command via PUT { yaml }. Same slug — server's
+  // `expectedSlug` check would 400 otherwise.
+  const editedYaml = TWO_NODE_YAML.replace('id: simple-chain', 'id: chain-yaml-edit').replace(
+    "echo hello",
+    "echo edited-via-raw-yaml",
+  );
+  const put = await fetchJson(app, 'PUT', `/api/workflows/${id}`, { yaml: editedYaml });
+  assert.equal(put.status, 200);
+  const updated = put.data.workflow as {
+    parsedDefinition: { nodes: Array<{ bash?: string }> };
+  };
+  assert.equal(updated.parsedDefinition.nodes[0]?.bash, 'echo edited-via-raw-yaml');
+
+  // Fire. fireWorkflow should receive the EDITED def, not the original.
+  const fired = await fetchJson(app, 'POST', `/api/workflows/${id}/fire`, {});
+  assert.equal(fired.status, 200);
+  assert.equal(fireCalls.length, 1);
+  const firedDef = fireCalls[0]?.def as { nodes: Array<{ bash?: string }> };
+  assert.equal(firedDef?.nodes[0]?.bash, 'echo edited-via-raw-yaml');
+});
+
+test('19.22(d): `workflow-changed` envelope shape stays stable across created / updated / deleted', async () => {
+  const { app, broadcastsTo } = freshApp();
+  const pid = projectId('ENV_SHAPE');
+  // Create.
+  const created = await fetchJson(app, 'POST', '/api/workflows', {
+    yaml: TWO_NODE_YAML.replace('id: simple-chain', 'id: chain-env-shape'),
+    projectId: pid,
+  });
+  const id = (created.data.workflow as { id: string }).id;
+  const createdEnv = broadcastsTo.at(-1)?.msg as {
+    type?: string;
+    change?: string;
+    workflow?: { slug?: string };
+  } | undefined;
+  assert.equal(createdEnv?.type, 'workflow-changed');
+  assert.equal(createdEnv?.change, 'created');
+  assert.equal(createdEnv?.workflow?.slug, 'chain-env-shape');
+
+  // Update.
+  await fetchJson(app, 'PUT', `/api/workflows/${id}`, { disabled: true });
+  const updatedEnv = broadcastsTo.at(-1)?.msg as {
+    type?: string;
+    change?: string;
+    workflow?: { slug?: string };
+  } | undefined;
+  assert.equal(updatedEnv?.type, 'workflow-changed');
+  assert.equal(updatedEnv?.change, 'updated');
+  assert.equal(updatedEnv?.workflow?.slug, 'chain-env-shape');
+
+  // Delete.
+  await fetchJson(app, 'DELETE', `/api/workflows/${id}`);
+  const deletedEnv = broadcastsTo.at(-1)?.msg as {
+    type?: string;
+    change?: string;
+    workflow?: { slug?: string };
+    slug?: string;
+  } | undefined;
+  assert.equal(deletedEnv?.type, 'workflow-changed');
+  assert.equal(deletedEnv?.change, 'deleted');
+  // Deleted envelopes flatten `slug` to the top level (no `workflow` field).
+  assert.equal(deletedEnv?.slug, 'chain-env-shape');
+});
