@@ -17,7 +17,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   api,
-  STOCK_POD_NAMES,
   type CreatePodInput,
   type Pod,
   type Project,
@@ -62,7 +61,7 @@ export function CreatePodModal({
     return globalPool.filter(
       (p) =>
         p.scope === 'global' &&
-        !STOCK_POD_NAMES.has(p.name) &&
+        p.origin !== 'stock' &&
         !projectNamesSet.has(p.name),
     );
   }, [globalPool, projectNamesSet]);

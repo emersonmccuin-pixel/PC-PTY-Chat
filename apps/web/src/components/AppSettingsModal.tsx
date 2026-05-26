@@ -18,7 +18,6 @@ import {
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
   FONT_SCALE_STEP,
-  STOCK_POD_NAMES,
   type GlobalSettings,
   type Pod,
   type Project,
@@ -98,7 +97,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
       .listPods()
       .then((pods) => {
         if (cancelled) return;
-        setStockPods(pods.filter((p) => p.scope === 'global' && STOCK_POD_NAMES.has(p.name)));
+        setStockPods(pods.filter((p) => p.origin === 'stock'));
       })
       .catch((e) => {
         if (!cancelled) setResetErr((e as Error).message);
@@ -112,7 +111,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     void api
       .listPods()
       .then((pods) => {
-        setStockPods(pods.filter((p) => p.scope === 'global' && STOCK_POD_NAMES.has(p.name)));
+        setStockPods(pods.filter((p) => p.origin === 'stock'));
       })
       .catch((e) => setResetErr((e as Error).message));
   }

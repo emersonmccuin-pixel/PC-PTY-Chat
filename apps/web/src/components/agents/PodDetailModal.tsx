@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, STOCK_POD_NAMES, type Pod, type PodBundle } from '@/api/client';
+import { api, type Pod, type PodBundle } from '@/api/client';
 import { ContextTab } from './ContextTab';
 import { SecretsTab } from './SecretsTab';
 import { SettingsTab } from './SettingsTab';
@@ -88,7 +88,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
   const [bundleErr, setBundleErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const isStock = STOCK_POD_NAMES.has(baseline.name);
+  const isStock = baseline.origin === 'stock';
 
   // When the parent passes us a new (or refreshed) Pod, adopt it. Caller
   // controls when the modal unmounts; we don't trap stale snapshots.

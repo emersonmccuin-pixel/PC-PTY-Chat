@@ -10,7 +10,6 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   api,
   resolveModelLabel,
-  STOCK_POD_NAMES,
   type Pod,
   type PodBundle,
   type Project,
@@ -41,7 +40,7 @@ export function AgentsList({ project, events }: AgentsListProps) {
     const stock: Pod[] = [];
     const proj: Pod[] = [];
     for (const pod of pods) {
-      if (pod.scope === 'global' && STOCK_POD_NAMES.has(pod.name)) {
+      if (pod.origin === 'stock') {
         stock.push(pod);
       } else if (pod.scope === 'project') {
         proj.push(pod);
@@ -180,9 +179,7 @@ export function AgentsList({ project, events }: AgentsListProps) {
       {detailModalPod && (
         <PodDetailModal
           pod={detailModalPod}
-          readOnly={
-            detailModalPod.scope === 'global' && STOCK_POD_NAMES.has(detailModalPod.name)
-          }
+          readOnly={detailModalPod.origin === 'stock'}
           onClose={() => setDetailModalPodId(null)}
           onDeleted={() => {
             setDetailModalPodId(null);
@@ -339,7 +336,7 @@ function DetailPane({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
 
-  const isStock = pod.scope === 'global' && STOCK_POD_NAMES.has(pod.name);
+  const isStock = pod.origin === 'stock';
   const isProject = pod.scope === 'project';
 
   const loadBundle = useMemo(() => {

@@ -252,24 +252,11 @@ export type FilePreview =
 // Wire shapes mirror packages/domain/src/pod.ts. valuePlaintext is INTENTIONALLY
 // omitted from PodSecret — the server never echoes it back.
 
-/** Stock pod names. Mirror of `STOCK_POD_NAMES` in
- *  `packages/domain/src/stock-pod-names.ts` — kept here inline so the web
- *  bundle stays free of an `@pc/domain` import (see the file header). The
- *  server-side drift assertion in `apps/server/src/services/stock-pod-seed.ts`
- *  catches "seeded set ≠ domain set" mismatches at boot; if you add a stock
- *  pod here, add it there too. */
-export const STOCK_POD_NAMES: ReadonlySet<string> = new Set([
-  'orchestrator',
-  'researcher',
-  'writer',
-  'code-writer',
-  'reviewer',
-  'planner',
-  'extractor',
-  'agent-designer',
-]);
-
 export type PodScope = 'global' | 'project';
+/** Section 36 — provenance lives on the row now (`agents.origin` column),
+ *  so consumers read `pod.origin === 'stock'` instead of a hand-maintained
+ *  name list. */
+export type PodOrigin = 'stock' | 'user-created';
 export type PodKnowledgeKind = 'knowledge' | 'example';
 export type PodAuditActor = 'orchestrator' | 'user';
 export type PodAuditField =
@@ -281,9 +268,11 @@ export type PodAuditField =
   | 'tools'
   | 'output_destination'
   | 'name'
+  | 'dispatch_guidance'
   | 'knowledge'
   | 'secret'
   | 'mcp_server'
+  | 'scope'
   | 'created'
   | 'deleted';
 
@@ -306,6 +295,12 @@ export interface Pod {
   maxTurns: number | null;
   outputDestination: string | null;
   description: string;
+  /** Section 36 — `'stock'` for PC-seeded pods, `'user-created'` for
+   *  everything else. Drives the protected / editable distinction in the UI. */
+  origin: PodOrigin;
+  /** Section 36 — orchestrator-facing dispatch hint, also surfaced in the
+   *  Specialists tab + Pod detail modal. Null for most user-created pods. */
+  dispatchGuidance: string | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
