@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "main": "./dist/server.mjs",
+  "types": "./src/server.ts",
+  "exports": {
+    ".": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts",
+      "default": "./dist/server.mjs"
+    }
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepare": "node scripts/build.mjs",

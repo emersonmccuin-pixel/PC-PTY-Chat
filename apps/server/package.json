@@ -13,6 +13,7 @@
     "@hono/node-server": "^1.13.7",
     "@pc/db": "workspace:*",
     "@pc/domain": "workspace:*",
+    "@pc/mcp": "workspace:*",
     "@pc/runtime": "workspace:*",
     "@pc/utils": "workspace:*",
     "@pc/workflows": "workspace:*",

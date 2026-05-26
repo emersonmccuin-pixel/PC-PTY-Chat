@@ -31,6 +31,10 @@ const PROJECT_DATA = PROJECT_ID ? resolve(DATA, 'projects', PROJECT_ID) : DATA;
 const LOG = resolve(PROJECT_DATA, 'mcp-log.jsonl');
 const STATUS = resolve(PROJECT_DATA, 'mcp-status.json');
 
+/** Section 36 — derived export consumed by apps/server's
+ *  `pod-tool-catalog.ts` for `mcp__pc-rig__*` wildcard expansion. Replaces
+ *  the hand-maintained flat array that previously had to be kept in sync
+ *  with TOOLS (the catalog-drift trap). `TOOLS` below is the sole source. */
 export const TOOLS = [
   {
     name: 'pc_log',
@@ -983,6 +987,16 @@ export const TOOLS = [
     },
   },
 ] as const;
+
+/** Section 36 — fully-qualified slugs consumed by apps/server's
+ *  `mcp__pc-rig__*` wildcard expansion. Derived from TOOLS so the two can
+ *  never drift; the previous hand-maintained flat array (and its drift test)
+ *  are deleted. The `mcp__pc-rig__` prefix is the MCP server name PC scaffolds
+ *  into every project's .mcp.json — keep it in sync if the server gets
+ *  renamed. */
+export const PC_RIG_TOOL_NAMES: readonly string[] = TOOLS.map(
+  (t) => `mcp__pc-rig__${t.name}` as const,
+);
 
 function projectPath(suffix: string): string {
   if (!PROJECT_ID) throw new Error('PC_PROJECT_ID is required for project-scoped calls');
