@@ -16,9 +16,14 @@
 
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEV = process.env.PC_DESKTOP_DEV === '1';
 const PORT = Number(process.env.PORT ?? 4040);
+// Packaged resource root (electron-builder `extraResources` → `pcserver/`).
+// Mirrors the repo's sub-paths so the server's ROOT-relative resolution
+// (apps/web/dist, templates, packages/mcp/dist, channel-server) just works.
+const PC_ROOT = join(process.resourcesPath, 'pcserver');
 // Dev-run target: default to Vite (:5173 — the live UI the user develops
 // against; it proxies /api + /ws to :4040). Override with PC_DESKTOP_URL to
 // hit the server's own static fallback on :4040 directly.
@@ -32,12 +37,17 @@ let mainWindow: BrowserWindow | null = null;
  * on tsx at runtime. Env (PC_DATA_DIR, ports) is set by the caller first.
  */
 async function startInProcessServer(): Promise<void> {
-  // 1.5 wires this to the unpacked `server.mjs` resource:
-  //   await import(pathToFileURL(join(process.resourcesPath, 'server', 'server.mjs')).href);
-  // For Phase 1.1 the packaged path is not yet built; dev-run is the live mode.
-  throw new Error(
-    'in-process server hosting not wired until Section 10 Phase 1.5 — run with PC_DESKTOP_DEV=1',
-  );
+  // The server reads all its paths from env + ROOT (PC_ROOT). Set them before
+  // importing the bundle — index.ts captures them at module-eval time.
+  process.env.PC_ROOT = PC_ROOT;
+  process.env.PC_DATA_DIR ??= app.getPath('userData'); // 1.3 — per-user data dir
+  process.env.PORT ??= String(PORT);
+  process.env.CHANNEL_PORT ??= '8788';
+  // Importing the bundle runs the full boot sequence (migrations, seeds, the
+  // Hono `serve()` + the :8788 channel listener) inside this process. The
+  // bundle has top-level await, so this resolves once the server is listening.
+  const serverEntry = join(PC_ROOT, 'server.mjs');
+  await import(pathToFileURL(serverEntry).href);
 }
 
 async function createWindow(): Promise<void> {
