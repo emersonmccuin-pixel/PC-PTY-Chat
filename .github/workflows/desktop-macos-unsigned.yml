@@ -1,4 +1,4 @@
-name: Desktop macOS Unsigned Installer
+name: Desktop macOS Unsigned Universal Installer
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: false
         default: "main"
       release_tag:
-        description: "Optional GitHub Release tag to attach unsigned macOS installers to"
+        description: "Optional GitHub Release tag to attach unsigned universal macOS installers to"
         required: false
         default: ""
 
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   macos-unsigned:
-    name: macOS unsigned DMG and ZIP
+    name: macOS unsigned universal DMG and ZIP
     runs-on: macos-latest
     timeout-minutes: 75
     env:
@@ -52,7 +52,7 @@ jobs:
           const fs = require('node:fs');
           const path = 'apps/desktop/package.json';
           const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
-          pkg.build.artifactName = '${productName}-${version}-${os}-${arch}-unsigned.${ext}';
+          pkg.build.artifactName = '${productName}-${version}-${os}-universal-unsigned.${ext}';
           pkg.build.mac = {
             ...pkg.build.mac,
             identity: null,
@@ -62,23 +62,23 @@ jobs:
           fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
           NODE
 
-      - name: Build unsigned macOS installers
-        run: pnpm desktop:dist:mac
+      - name: Build unsigned universal macOS installers
+        run: pnpm --filter @pc/desktop prepackage && pnpm --filter @pc/desktop exec electron-builder --mac dmg zip --universal
 
-      - name: Upload unsigned macOS installers
+      - name: Upload unsigned universal macOS installers
         uses: actions/upload-artifact@v4
         with:
-          name: caisson-macos-unsigned-installer
+          name: caisson-macos-universal-unsigned-installer
           path: |
-            apps/desktop/release/*-unsigned.dmg
-            apps/desktop/release/*-unsigned.zip
-            apps/desktop/release/*-unsigned.dmg.blockmap
-            apps/desktop/release/*-unsigned.zip.blockmap
+            apps/desktop/release/*-universal-unsigned.dmg
+            apps/desktop/release/*-universal-unsigned.zip
+            apps/desktop/release/*-universal-unsigned.dmg.blockmap
+            apps/desktop/release/*-universal-unsigned.zip.blockmap
           if-no-files-found: error
           retention-days: 14
 
   github-release:
-    name: Attach unsigned macOS installers to GitHub Release
+    name: Attach unsigned universal macOS installers to GitHub Release
     if: inputs.release_tag != ''
     needs:
       - macos-unsigned
@@ -87,11 +87,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Download unsigned macOS artifacts
+      - name: Download unsigned universal macOS artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/installers
-          pattern: caisson-macos-unsigned-installer
+          pattern: caisson-macos-universal-unsigned-installer
           merge-multiple: true
 
       - name: Create or update GitHub Release
