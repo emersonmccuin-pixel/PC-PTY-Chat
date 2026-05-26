@@ -413,6 +413,9 @@ export interface GlobalSettings {
   /** Section 27 — when true, kanban + table views hide cancelled-stage
    *  columns by default. Per-project `cancelledVisibility` overrides. */
   hideCancelledStage: boolean;
+  /** Section 10 Phase 2 — ISO timestamp the first-run onboarding wizard was
+   *  completed/skipped. `null` = never → the wizard gate shows on boot. */
+  onboardingCompletedAt: string | null;
 }
 
 export const FONT_SCALE_MIN = 0.85;

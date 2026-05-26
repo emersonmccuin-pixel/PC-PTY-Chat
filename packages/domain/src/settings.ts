@@ -64,6 +64,13 @@ export interface GlobalSettings {
    */
   claudeExe: string | null;
   /**
+   * Section 10 Phase 2 — ISO timestamp of when the first-run onboarding wizard
+   * was completed (or skipped). `null` = never completed → the wizard gate
+   * shows on app boot. Once set, the gate stays out of the way. The dev
+   * `?onboarding=force` switch bypasses this for testing.
+   */
+  onboardingCompletedAt: string | null;
+  /**
    * Default parent dir for new projects. Used by the create-project folder
    * picker as the initial path. Hot-reloadable — no restart required.
    */
@@ -104,6 +111,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     dataDir,
     telemetryOptIn: false,
     claudeExe: null,
+    onboardingCompletedAt: null,
     projectsFolder: joinPath(homeDir, 'Projects'),
     activityPanel: {
       open: true,
@@ -172,6 +180,7 @@ export function withSettingsDefaults(
     dataDir: stored.dataDir ?? defaults.dataDir,
     telemetryOptIn: stored.telemetryOptIn ?? defaults.telemetryOptIn,
     claudeExe: stored.claudeExe ?? defaults.claudeExe,
+    onboardingCompletedAt: stored.onboardingCompletedAt ?? defaults.onboardingCompletedAt,
     projectsFolder: stored.projectsFolder ?? defaults.projectsFolder,
     activityPanel: {
       open: stored.activityPanel?.open ?? defaults.activityPanel.open,
