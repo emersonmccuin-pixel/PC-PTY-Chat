@@ -62,6 +62,17 @@ export type { ReplaceFieldSchemasInput } from './repos/field-schemas.ts';
 // Access as workflowRunsV2Repo.createRun(...), .appendEvent(...), etc.
 export * as workflowRunsV2Repo from './repos/workflow-runs-v2.ts';
 
+// Section 19.16 — promoted workflows table + audit log. Access as
+// workflowsRepo.createWorkflow(...), .listWorkflows(...), etc.
+export * as workflowsRepo from './repos/workflows.ts';
+export { buildWorkflowAuditRow, listWorkflowAudit } from './repos/workflow-audit.ts';
+export type {
+  BuildWorkflowAuditRowInput,
+  ListWorkflowAuditOptions,
+  WorkflowAuditInput,
+  WorkflowAuditRowValues,
+} from './repos/workflow-audit.ts';
+
 export {
   getActiveWorktreeByName,
   listActiveWorktrees,

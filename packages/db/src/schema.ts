@@ -24,6 +24,7 @@ import type {
   WorkItemHistoryEntry,
   WorkItemStatus,
   WorkItemType,
+  WorkflowAuditField,
   WorkflowV2,
   WorktreeStatus,
 } from '@pc/domain';
@@ -164,33 +165,88 @@ export const workItems = sqliteTable(
 );
 
 /**
- * Scaffolded for the file-backed workflow registry to land in here later.
- * Today the runtime still loads YAMLs from `workspace/.project-companion/workflows/`
- * via the `@pc/workflows` registry; this table is empty until the sync hook is
- * wired in a follow-up sub-slice.
+ * Section 19.16 — workflows are DB-resident. Replaces the YAML-on-disk model
+ * v2 used through 19.11. Mirrors `agents`: scope ('global' | 'project'), per-
+ * scope partial UNIQUE name indices, soft-delete via `deleted_at`. 19.13's
+ * one-shot importer reads each project's `.project-companion/workflows/*.yaml`
+ * and inserts as scope='project' rows; the YAML files survive the import boot
+ * as a backup and are deleted on the next boot if the DB rows look healthy.
+ *
+ * `origin` is carried for forward compat with the agents pattern. v1 has no
+ * stock workflows (every row is user-created), but the column lets a future
+ * pass seed default workflows without a schema migration.
  */
 export const workflows = sqliteTable(
   'workflows',
   {
     /** Slug from the YAML's `id:` field. String, not ULID — author-readable. */
     id: text('id').primaryKey(),
+    scope: text('scope').notNull().default('project').$type<PodScope>(),
+    /** NULL when `scope === 'global'`; required when `scope === 'project'`.
+     *  App-enforced; sqlite doesn't constrain by enum-of-scope. */
     projectId: text('project_id')
-      .notNull()
-      .$type<ULID>()
+      .$type<ULID | null>()
       .references(() => projects.id),
     name: text('name').notNull(),
+    /** Optional pretty name surfaced in the rail when set; defaults to `name`. */
+    displayName: text('display_name'),
+    description: text('description'),
     yaml: text('yaml').notNull(),
     yamlHash: text('yaml_hash').notNull(),
-    /** Parsed DAG (the @pc/domain `Workflow` shape, JSON-encoded). */
+    /** Parsed DAG (the @pc/domain `WorkflowV2.Workflow` shape, JSON-encoded). */
     parsedDefinition: text('parsed_definition', { mode: 'json' }),
     status: text('status', { enum: ['active', 'invalid'] }).notNull().default('active'),
     parseError: text('parse_error'),
-    sourceFilename: text('source_filename').notNull().default(''),
+    /** Lifted out of YAML so disable/enable is a cheap DB write that doesn't
+     *  re-parse the workflow. */
+    disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
+    /** v1: always 'user-created'. Column reserved for stock-workflow seeding. */
+    origin: text('origin')
+      .notNull()
+      .default('user-created')
+      .$type<'stock' | 'user-created'>(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
   },
-  (t) => [index('workflows_project_idx').on(t.projectId)],
+  (t) => [
+    index('workflows_scope_project_idx').on(t.scope, t.projectId),
+    /** Unique global workflow name (live rows only). */
+    uniqueIndex('workflows_global_name_idx')
+      .on(t.name)
+      .where(sql`scope = 'global' AND deleted_at IS NULL`),
+    /** Unique per-project workflow name (live rows only). */
+    uniqueIndex('workflows_project_name_idx')
+      .on(t.projectId, t.name)
+      .where(sql`scope = 'project' AND deleted_at IS NULL`),
+  ],
+);
+
+/**
+ * Section 19.16 — workflow audit log. Mirrors `agent_audit`: every mutation
+ * in repos/workflows.ts writes a row in the same tx. Powers the future
+ * History tab on the workflow detail pane.
+ */
+export const workflowAudit = sqliteTable(
+  'workflow_audit',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    workflowId: text('workflow_id')
+      .notNull()
+      .references(() => workflows.id),
+    changeSetId: text('change_set_id').$type<ULID | null>(),
+    actor: text('actor').notNull().$type<PodAuditActor>(),
+    field: text('field').notNull().$type<WorkflowAuditField>(),
+    fieldRef: text('field_ref'),
+    priorValue: text('prior_value'),
+    newValue: text('new_value'),
+    reason: text('reason'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    index('workflow_audit_workflow_idx').on(t.workflowId),
+    index('workflow_audit_change_set_idx').on(t.changeSetId),
+  ],
 );
 
 /**

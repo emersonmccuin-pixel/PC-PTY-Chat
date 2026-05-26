@@ -93,6 +93,14 @@ export type {
 // WorkflowV2.AgentNode, WorkflowV2.WORKFLOW_NODE_KINDS, etc.
 export * as WorkflowV2 from './workflow-v2.ts';
 export type {
+  WorkflowAuditField,
+  WorkflowAuditRow,
+  WorkflowOrigin,
+  WorkflowRow,
+  WorkflowRowStatus,
+} from './workflow-row.ts';
+export { WORKFLOW_AUDIT_FIELDS } from './workflow-row.ts';
+export type {
   OrchestratorSession,
   ProviderId,
   SessionEndedReason,

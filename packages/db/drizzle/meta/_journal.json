@@ -183,6 +183,13 @@
       "when": 1780704000000,
       "tag": "0025_drop_v1_workflow_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1780790400000,
+      "tag": "0026_workflows_table_promotion",
+      "breakpoints": true
     }
   ]
 }
