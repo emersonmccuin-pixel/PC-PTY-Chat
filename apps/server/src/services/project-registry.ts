@@ -5,8 +5,7 @@
 import type { Project, ULID } from '@pc/domain';
 import { getProjectById, listProjects } from '@pc/db';
 
-import { ProjectRuntime } from './project-runtime.ts';
-import type { BroadcastFn } from './workflow-runtime.ts';
+import { ProjectRuntime, type BroadcastFn } from './project-runtime.ts';
 
 export interface ProjectRegistryDeps {
   dataDir: string;

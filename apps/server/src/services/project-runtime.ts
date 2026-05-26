@@ -24,7 +24,6 @@ import {
 } from '@pc/db';
 import { jsonlPathFor, PtySession } from '@pc/runtime';
 import {
-  WorkflowRegistry,
   WorkflowV2Registry,
   selectStageEntryWorkflows,
   serializeWorkflowV2,
@@ -35,18 +34,20 @@ import {
 import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import { WorktreeService } from './worktree.ts';
-import { WorkflowRuntime, type BroadcastFn } from './workflow-runtime.ts';
 import {
   fireDagWorkflow,
   applyV2ReviewDecision,
   type DagRunServiceOptions,
 } from './dag-run-service.ts';
-import { evaluateBoolean } from './output-substitution.ts';
-import { migrateWorkflowsInPlace } from './workflow-boot-migration.ts';
 import { WorkItemService } from './work-item.ts';
 import { AttachmentService } from './attachment.ts';
 import { FieldSchemaService } from './field-schema.ts';
 import { getWorkItem, listFieldSchemas } from '@pc/db';
+
+/** WS broadcast bound to a single project. Was originally exported from the
+ *  now-deleted workflow-runtime.ts; lives here so consumers don't need to
+ *  drag in a defunct module just for the type alias. */
+export type BroadcastFn = (event: unknown) => void;
 
 export interface ProjectRuntimeOptions {
   /** Trunk data dir. Per-project subpaths derived from this. */
@@ -77,20 +78,12 @@ export class ProjectRuntime {
   private workflowBuilderPrep: PodSpawnPrep | null = null;
   private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
-  private workflow: WorkflowRuntime | null = null;
   private worktreesSvc: WorktreeService | null = null;
-  private registry: WorkflowRegistry | null = null;
   private registryV2: WorkflowV2Registry | null = null;
   private workItemSvc: WorkItemService | null = null;
   private attachmentSvc: AttachmentService | null = null;
   private fieldSchemaSvc: FieldSchemaService | null = null;
   private hooksRefreshed = false;
-  /** Section 4h.8 / D80. Boot-time mandatory typed-edge migration runs once
-   *  per ProjectRuntime lifecycle, the first time the workflow registry is
-   *  initialised. Flag survives subsequent registry resets — re-running the
-   *  scan is cheap (per-file idempotence) but pointless once a project has
-   *  been migrated within the current process. */
-  private workflowMigrationRan = false;
   /** Section 19.9 — v2 workflow-builder drafts keyed by transient PC_SESSION_ID.
    *  Populated by `pc_save_workflow_draft` mid-interview; consumed by the
    *  visualizer via the `workflow-builder-draft` WS envelope. Cleared on
@@ -140,27 +133,11 @@ export class ProjectRuntime {
     if (slugChanged) this.worktreesSvc = null;
   }
 
-  /** Lazy: workflow YAML registry rooted at `<folder>/.project-companion/workflows/`.
-   *  First access runs the 4h.8 typed-edge migration in place — failures
-   *  throw, preventing the registry from ever loading legacy-shape YAML. */
-  workflowRegistry(): WorkflowRegistry {
-    if (!this.registry) {
-      const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
-      this.runWorkflowBootMigration(dir);
-      this.registry = new WorkflowRegistry(dir);
-      this.registry.reload();
-    }
-    return this.registry;
-  }
-
-  /** Lazy: v2 workflow registry over the SAME dir as v1. The boot migration
-   *  (run via `workflowRegistry()`) skips `version: 2` files, so it's safe to
-   *  prime the v1 registry first. Both coexist until the 19.13 cutover. */
+  /** Lazy: v2 workflow registry rooted at `<folder>/.project-companion/workflows/`.
+   *  19.12 — v1 registry + 4h.8 typed-edge boot-migration removed. */
   workflowV2Registry(): WorkflowV2Registry {
     if (!this.registryV2) {
       const dir = resolve(this.project.folderPath, '.project-companion', 'workflows');
-      // Ensure the v1 boot migration has run (it skips v2 files) before we scan.
-      this.workflowRegistry();
       this.registryV2 = new WorkflowV2Registry(dir);
       this.registryV2.reload();
     }
@@ -191,23 +168,6 @@ export class ProjectRuntime {
     return this.workflowV2Registry().reload();
   }
 
-  /** Section 4h.8 / D80. Runs the boot-time migration on this project's
-   *  workflows dir once per ProjectRuntime lifecycle. Delegates the actual
-   *  scan + rewrite to `migrateWorkflowsInPlace` in
-   *  `workflow-boot-migration.ts`. Logs each rewritten file so the user
-   *  has a paper trail; rethrows on any failure so the registry never
-   *  loads legacy YAML by accident. */
-  private runWorkflowBootMigration(dir: string): void {
-    if (this.workflowMigrationRan) return;
-    this.workflowMigrationRan = true;
-    const stats = migrateWorkflowsInPlace(dir);
-    for (const path of stats.migrated) {
-      console.log(
-        `[project-runtime] migrated workflow to typed-edge shape: ${path} (backup at ${path}.pre-4h.bak)`,
-      );
-    }
-  }
-
   /**
    * Lazy: WorktreeService bound to this project's repo + per-project baseDir
    * under `<data_dir>/worktrees/<slug>/`.
@@ -217,26 +177,6 @@ export class ProjectRuntime {
       this.worktreesSvc = new WorktreeService(this.project.folderPath, this.worktreeBaseDir);
     }
     return this.worktreesSvc;
-  }
-
-  /** Lazy: WorkflowRuntime — instantiated on first work-item / workflow API call. */
-  workflowRuntime(): WorkflowRuntime {
-    if (!this.workflow) {
-      this.workflow = new WorkflowRuntime({
-        workspaceDir: this.project.folderPath,
-        projectId: this.project.id,
-        channelPort: this.opts.channelPort,
-        evaluateBoolean,
-        broadcast: this.opts.broadcast,
-        registry: this.workflowRegistry(),
-        worktrees: this.worktrees(),
-        workItemService: this.workItemService(),
-        attachmentService: this.attachmentService(),
-        getProject: () => this.project,
-        subagentSessionDirFor: (pcSessionId) => this.sessionDataPath(pcSessionId),
-      });
-    }
-    return this.workflow;
   }
 
   /** Section 19.4f — assemble the live deps options for the v2 DAG executor
@@ -586,9 +526,8 @@ export class ProjectRuntime {
     this.workflowBuilder = null;
     this.workflowBuilderPrep = null;
     this.workflowBuilderSessionId = null;
-    this.workflow = null;
     this.worktreesSvc = null;
-    this.registry = null;
+    this.registryV2 = null;
     this.workItemSvc = null;
     this.attachmentSvc = null;
     this.fieldSchemaSvc = null;
