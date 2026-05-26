@@ -140,6 +140,12 @@ export function InitiativeInspector({
             events={events}
             onNavigate={onNavigate}
           />
+        ) : tab === 'activity' ? (
+          <ActivityTab
+            project={project}
+            workItem={workItem}
+            events={events}
+          />
         ) : (
           <ComingSoonPane tab={tab} />
         )}
@@ -209,13 +215,13 @@ function InspectorTabButton({
 }
 
 function ComingSoonPane({ tab }: { tab: InspectorTab }) {
-  const phase = tab === 'documents' ? '37.11' : '37.12';
-  const label = tab === 'documents' ? 'Documents' : 'Activity';
+  // Only Documents (37.11) is unimplemented at this point; Activity wired in 37.12.
+  if (tab !== 'documents') return null;
   return (
     <div className="grid h-full place-items-center text-muted-foreground">
       <div className="text-center">
         <div className="text-[11px] uppercase tracking-[0.12em] text-[var(--fg-dim)]">
-          {label} · coming in {phase}
+          Documents · coming in 37.11
         </div>
       </div>
     </div>
@@ -579,4 +585,283 @@ function formatRelative(ts: number): string {
   else if (abs < week) value = `${Math.round(abs / day)}d ago`;
   else value = `${Math.round(abs / week)}w ago`;
   return future ? `in ${value.replace(' ago', '')}` : value;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Activity tab (37.12)
+//
+// Day-grouped reverse-chronological feed pulled from three sources:
+//   1. workItem.history          (server-persisted, survives refresh)
+//   2. attachments               (treated as "X attached Y")
+//   3. live WS work-items-changed events for this item (current session only)
+// Out-of-scope for v1: descendant events. The buildout proposes them but each
+// row would need a recursive fetch; defer until the Children tab pushes a
+// concrete need.
+
+type ActivityActor = 'human' | 'agent' | 'orchestrator' | 'system';
+
+interface ActivityRow {
+  ts: number;
+  actor: ActivityActor;
+  actorLabel: string;
+  text: string;
+}
+
+function ActivityTab({
+  project,
+  workItem,
+  events,
+}: {
+  project: Project;
+  workItem: WorkItem;
+  events: WsEnvelope[];
+}) {
+  const [attachments, setAttachments] = useState<
+    { id: string; createdAt: number; name: string; kind: string; runId: string | null; createdBySessionId: string | null }[]
+  >([]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listAttachments(project.id, workItem.id)
+      .then((list) => {
+        if (alive) setAttachments(list);
+      })
+      .catch(() => {
+        if (alive) setAttachments([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [project.id, workItem.id]);
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const last = events[events.length - 1];
+    if (last?.type === 'attachment-changed' && last.workItemId === workItem.id) {
+      api
+        .listAttachments(project.id, workItem.id)
+        .then(setAttachments)
+        .catch(() => {
+          /* leave the existing list */
+        });
+    }
+  }, [events, project.id, workItem.id]);
+
+  const stageNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of project.stages) m.set(s.id, s.name);
+    return m;
+  }, [project.stages]);
+
+  const rows = useMemo<ActivityRow[]>(() => {
+    const out: ActivityRow[] = [];
+    out.push({
+      ts: workItem.createdAt,
+      actor: 'system',
+      actorLabel: 'system',
+      text: `Created in stage "${stageNameById.get(workItem.stageId) ?? workItem.stageId}"`,
+    });
+    for (const entry of workItem.history) {
+      const ts = Date.parse(entry.ts);
+      if (!Number.isFinite(ts)) continue;
+      const built = renderHistoryEntry(entry, stageNameById);
+      if (built) out.push({ ts, ...built });
+    }
+    for (const a of attachments) {
+      out.push({
+        ts: a.createdAt,
+        actor: a.runId ? 'agent' : a.createdBySessionId ? 'orchestrator' : 'human',
+        actorLabel: a.runId
+          ? `run ${a.runId.slice(-8)}`
+          : a.createdBySessionId
+            ? 'orchestrator'
+            : 'you',
+        text: `Attached ${a.name} · ${a.kind}`,
+      });
+    }
+    if (workItem.deletedAt) {
+      out.push({
+        ts: workItem.deletedAt,
+        actor: 'system',
+        actorLabel: 'system',
+        text: 'Archived',
+      });
+    }
+    for (const env of events) {
+      if (env.type === 'work-items-changed') {
+        const wi = (env as { workItem?: WorkItem }).workItem;
+        if (wi?.id === workItem.id) {
+          const change = (env as { change?: string }).change ?? 'updated';
+          if (change === 'created') continue;
+          out.push({
+            ts: wi.updatedAt,
+            actor: 'human',
+            actorLabel: 'edit',
+            text: `${change} · v${wi.version}`,
+          });
+        }
+      }
+    }
+    out.sort((a, b) => b.ts - a.ts);
+    const seen = new Set<string>();
+    return out.filter((r) => {
+      const key = `${r.ts}:${r.actorLabel}:${r.text}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [workItem, attachments, events, stageNameById]);
+
+  const grouped = useMemo(() => groupByDay(rows), [rows]);
+
+  if (rows.length === 0) {
+    return (
+      <div className="grid h-full place-items-center text-muted-foreground">
+        <div className="text-center text-[12px]">No activity yet.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-[820px] px-7 py-7 pb-16">
+      {grouped.map((g) => (
+        <div key={g.label} className="mb-6">
+          <div className="mb-2 border-b border-dashed border-border/30 pb-1 text-[10px] uppercase tracking-[0.1em] text-[var(--fg-dim)]">
+            {g.label}
+          </div>
+          <ul className="flex flex-col">
+            {g.rows.map((row, idx) => (
+              <li
+                key={`${row.ts}-${idx}`}
+                className="grid grid-cols-[80px_1fr_60px] gap-3 border-b border-dashed border-border/20 py-2 text-[12px] last:border-b-0"
+              >
+                <span className={`truncate text-right text-[11px] font-semibold ${actorColor(row.actor)}`}>
+                  {row.actorLabel}
+                </span>
+                <span className="text-foreground">{row.text}</span>
+                <span className="text-right text-[10px] text-[var(--fg-dim)]" title={new Date(row.ts).toLocaleString()}>
+                  {formatRelative(row.ts)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function actorColor(actor: ActivityActor): string {
+  switch (actor) {
+    case 'human':
+      return 'text-[var(--cream)]';
+    case 'orchestrator':
+      return 'text-primary';
+    case 'agent':
+      return 'text-accent';
+    case 'system':
+      return 'text-[var(--fg-dim)]';
+  }
+}
+
+function renderHistoryEntry(
+  entry: WorkItem['history'][number],
+  stageNameById: Map<string, string>,
+): { actor: ActivityActor; actorLabel: string; text: string } | null {
+  const stageLabel = (id: string | undefined) =>
+    id ? stageNameById.get(id) ?? id : '?';
+  switch (entry.kind) {
+    case 'move':
+      return {
+        actor: 'human',
+        actorLabel: 'moved',
+        text: `${stageLabel(entry.from)} → ${stageLabel(entry.to)}`,
+      };
+    case 'update': {
+      const fields = entry.fields ? Object.keys(entry.fields).join(', ') : '';
+      return {
+        actor: 'human',
+        actorLabel: 'edit',
+        text: fields ? `Updated ${fields}` : 'Updated',
+      };
+    }
+    case 'agent-invoke':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.note ?? 'Invoked',
+      };
+    case 'agent-ask-orchestrator':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.note ?? 'Asked orchestrator',
+      };
+    case 'agent-ask-user':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.note ?? 'Asked you',
+      };
+    case 'agent-approval-request':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.note ?? 'Requested approval',
+      };
+    case 'agent-answer':
+      return {
+        actor: entry.answeredBy === 'user' ? 'human' : 'orchestrator',
+        actorLabel: entry.answeredBy ?? 'answer',
+        text: entry.note ?? 'Answered',
+      };
+    case 'agent-completed':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.note ?? 'Completed',
+      };
+    case 'agent-failed':
+      return {
+        actor: 'agent',
+        actorLabel: entry.agentName ?? 'agent',
+        text: entry.cause ? `Failed: ${entry.cause}` : 'Failed',
+      };
+    default:
+      return null;
+  }
+}
+
+function groupByDay(rows: ActivityRow[]): { label: string; rows: ActivityRow[] }[] {
+  const groups = new Map<string, ActivityRow[]>();
+  const order: string[] = [];
+  const todayKey = dayKey(Date.now());
+  const yesterdayKey = dayKey(Date.now() - 86_400_000);
+  for (const row of rows) {
+    const k = dayKey(row.ts);
+    if (!groups.has(k)) {
+      groups.set(k, []);
+      order.push(k);
+    }
+    groups.get(k)!.push(row);
+  }
+  return order.map((k) => ({
+    label:
+      k === todayKey
+        ? 'Today'
+        : k === yesterdayKey
+          ? 'Yesterday'
+          : new Date(k).toLocaleDateString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            }),
+    rows: groups.get(k)!,
+  }));
+}
+
+function dayKey(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
