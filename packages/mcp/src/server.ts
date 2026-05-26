@@ -593,46 +593,15 @@ export const TOOLS = [
       },
     },
   },
-  {
-    name: 'pc_create_workflow',
-    description:
-      'Create a NEW project-scoped workflow YAML. Used by the conversational workflow-creator modal (4b). `def` is the typed workflow object (matches the on-disk YAML shape, minus the post-parse `kind:` discriminator). Server validates against the same parser the registry uses, serializes to YAML, writes to `<project>/.project-companion/workflows/<def.id>.yaml`, broadcasts project-workflows-changed. 409 on id collision. 400 on validation errors (returned with per-path messages).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        def: {
-          type: 'object',
-          description: 'typed workflow object: { id, triggers?, nodes: [...], ... }',
-          additionalProperties: true,
-        },
-      },
-      required: ['def'],
-    },
-  },
-  {
-    name: 'pc_edit_workflow',
-    description:
-      'Edit an EXISTING project-scoped workflow YAML in place. Pair with `pc_create_workflow`; same `def` shape (typed workflow object). Server runs the same validator + serializer the create path uses — comments + key order survive on round-trip — then writes to `<project>/.project-companion/workflows/<def.id>.yaml` and broadcasts project-workflows-changed. 400 if `def.id` does not match the URL workflow id (renames are a duplicate + delete operation, not an edit). 400 on validation errors with per-path messages. Use this when the workflow-creator session opened in edit mode (initial user message includes `[edit-mode workflowId="..."]`); use `pc_create_workflow` otherwise.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workflowId: {
-          type: 'string',
-          description:
-            'id of the workflow to edit (the URL slug; must match def.id since renames are not supported via edit)',
-        },
-        def: {
-          type: 'object',
-          description: 'typed workflow object: { id, triggers?, nodes: [...], ... }',
-          additionalProperties: true,
-        },
-      },
-      required: ['workflowId', 'def'],
-    },
-  },
-  // 19.17 — `pc_update_workflow_draft` removed. The v1 workflow-creator
-  // session it backed was deleted in 19.12; the v2 builder uses
-  // `pc_save_workflow_draft` (below) keyed by PC_SESSION_ID instead.
+  // 19.23 — `pc_create_workflow` + `pc_edit_workflow` removed. Both routed at
+  // the dead `/api/projects/:projectId/workflows` surface (deleted in 19.17;
+  // the v1 workflow-creator pod that drove them is gone). v2 publish flows
+  // through `pc_publish_workflow` (GET → PUT-or-POST against `/api/workflows`);
+  // drafts flow through `pc_save_workflow_draft` (below). Old tool defs would
+  // 404 on call — pruning so the catalog stops advertising dead surfaces.
+  //
+  // `pc_update_workflow_draft` was already removed in 19.17 for the same
+  // reason (its handler was repointed to a dead v1 route).
   {
     name: 'pc_save_workflow_draft',
     description:
@@ -2575,65 +2544,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    case 'pc_create_workflow': {
-      const def = args.def && typeof args.def === 'object' ? args.def : null;
-      if (!def) {
-        return { content: [{ type: 'text', text: 'pc_create_workflow: def required' }], isError: true };
-      }
-      try {
-        const res = await postServer(projectPath('workflows'), { def });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_create_workflow failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_create_workflow failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_edit_workflow': {
-      const workflowId = typeof args.workflowId === 'string' ? args.workflowId : '';
-      const def = args.def && typeof args.def === 'object' ? args.def : null;
-      if (!workflowId) {
-        return {
-          content: [{ type: 'text', text: 'pc_edit_workflow: workflowId required' }],
-          isError: true,
-        };
-      }
-      if (!def) {
-        return {
-          content: [{ type: 'text', text: 'pc_edit_workflow: def required' }],
-          isError: true,
-        };
-      }
-      try {
-        const res = await putServer(
-          projectPath(`workflows/${encodeURIComponent(workflowId)}`),
-          { def },
-        );
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_edit_workflow failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_edit_workflow failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    // 19.17 — `pc_update_workflow_draft` case removed; v2 builder uses
-    // `pc_save_workflow_draft` (below) instead.
+    // 19.23 — `pc_create_workflow` + `pc_edit_workflow` cases removed; both
+    // were routed at the dead `/api/projects/:projectId/workflows` surface.
+    // v2 publish goes through `pc_publish_workflow`. `pc_update_workflow_draft`
+    // was already removed in 19.17 for the same reason.
 
     case 'pc_save_workflow_draft': {
       const def = args.def && typeof args.def === 'object' ? args.def : null;

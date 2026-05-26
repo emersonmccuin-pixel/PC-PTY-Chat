@@ -200,16 +200,38 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   // dead v1 routes in 19.12; 19.17 prunes the catalog entries so the
   // generated allowlist no longer advertises them. v2 equivalents land
   // under 19.17b's orchestrator-prompt overhaul.
+  //
+  // 19.23 — `pc_create_workflow` + `pc_edit_workflow` likewise removed.
+  // Their handlers also pointed at the dead `/api/projects/:projectId/workflows`
+  // surface; the v2 workflow-builder pod publishes via `pc_publish_workflow`.
+  //
+  // 19.23 — v2 workflow-builder catalog additions. These four are the
+  // live MCP tools the workflow-builder pod actually uses (19.9 + 19.17).
+  // Carried as a carry-over from 19.17 ("left to that thread on purpose")
+  // but the test asserting them has been red since; adding now since the
+  // matching MCP tools are stable.
   {
-    slug: 'mcp__pc-rig__pc_create_workflow',
-    label: 'Create a workflow',
-    description: 'Author a new workflow YAML.',
+    slug: 'mcp__pc-rig__pc_save_workflow_draft',
+    label: 'Save workflow draft',
+    description: 'Push the in-progress draft so the visualizer renders the workflow forming.',
     source: 'pc-rig',
   },
   {
-    slug: 'mcp__pc-rig__pc_edit_workflow',
-    label: 'Edit a workflow',
-    description: "Modify a workflow's YAML (id-immutable).",
+    slug: 'mcp__pc-rig__pc_read_workflow_draft',
+    label: 'Read workflow draft',
+    description: 'Read the current draft back (the user can drag nodes between your turns).',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_get_stages',
+    label: 'Get project stages (v2)',
+    description: "List the project's stages for stage-on-entry triggers.",
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_publish_workflow',
+    label: 'Publish workflow',
+    description: 'Commit the v2 workflow to the project DB (overwrite by slug).',
     source: 'pc-rig',
   },
   {
