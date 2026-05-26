@@ -664,7 +664,7 @@ export const TOOLS = [
   {
     name: 'pc_publish_workflow',
     description:
-      'Section 19.9 — publish the v2 workflow to disk. Validates the graph (cycles, unknown node ids, `when:` grammar, trigger shape, ref integrity), writes the YAML to `<project>/.project-companion/workflows/<def.id>.yaml`, reloads the v2 registry, and broadcasts `project-workflows-changed` so the Workflows tab refreshes. Returns 201 on first-write, 200 on overwrite. 400 on validation errors with per-path `errors:` array — translate to plain English and re-publish after fixing.',
+      'Section 19.17 — publish the v2 workflow to the DB-backed `/api/workflows` surface. Validates the graph (cycles, unknown node ids, `when:` grammar, trigger shape, ref integrity), upserts the row (GET → match by slug → PUT or POST), and broadcasts `workflow-changed` so the Workflows tab refreshes. Returns 201 on first-write, 200 on overwrite. 400 on validation errors with per-path `errors:` array — translate to plain English and re-publish after fixing.',
     inputSchema: {
       type: 'object',
       properties: {

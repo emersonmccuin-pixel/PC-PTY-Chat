@@ -12,8 +12,12 @@
 //   workflow-builder-exit   — session ended
 //   workflow-builder-draft  — { sessionId, def } — pushed by the server when
 //                             the model calls pc_save_workflow_draft
-//   project-workflows-changed — committed; close the modal so WorkflowList
-//                               refreshes.
+//   workflow-changed        — DB-backed `/api/workflows` mutation
+//                             (post-19.17 envelope name; replaces the legacy
+//                             `project-workflows-changed`). Close the modal on
+//                             `change: 'created'` (new mode) OR
+//                             `change: 'updated'` matching the slug we're
+//                             editing (edit mode).
 //
 // Edit mode: when `editingWorkflow` is supplied, the modal opens with the
 // existing def pre-loaded into the visualizer + fires a `[edit-mode
@@ -147,10 +151,21 @@ export function WorkflowBuilderModal({
         if (d.def && typeof d.def === 'object') {
           setDraftDef(d.def);
         }
-      } else if (env.type === 'project-workflows-changed') {
-        const change = env as { change?: string; id?: string };
-        if (isEditMode && editingRef.current && change.id && change.id !== editingRef.current.id) {
-          continue;
+      } else if (env.type === 'workflow-changed') {
+        const e = env as {
+          change?: 'created' | 'updated' | 'deleted';
+          workflow?: { slug?: string };
+          slug?: string;
+        };
+        if (e.change === 'deleted') continue;
+        const changedSlug = e.workflow?.slug ?? e.slug;
+        if (isEditMode && editingRef.current) {
+          // In edit mode, only the row we're editing closes the modal.
+          if (changedSlug && changedSlug !== editingRef.current.id) continue;
+          if (e.change !== 'updated' && e.change !== 'created') continue;
+        } else {
+          // In new mode, close on the create.
+          if (e.change !== 'created') continue;
         }
         closeRef.current();
       }
