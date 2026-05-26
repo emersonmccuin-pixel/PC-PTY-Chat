@@ -19,6 +19,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEV = process.env.PC_DESKTOP_DEV === '1';
+const APP_NAME = DEV ? 'Caisson Dev' : 'Caisson';
+const APP_ID = DEV ? 'com.projectcompanion.app.dev' : 'com.projectcompanion.app';
 const PORT = Number(process.env.PORT ?? 4040);
 // Packaged resource root (electron-builder `extraResources` → `pcserver/`).
 // Mirrors the repo's sub-paths so the server's ROOT-relative resolution
@@ -30,6 +32,9 @@ const PC_ROOT = join(process.resourcesPath, 'pcserver');
 const DEV_URL = process.env.PC_DESKTOP_URL ?? 'http://127.0.0.1:5173';
 
 let mainWindow: BrowserWindow | null = null;
+
+app.setName(APP_NAME);
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 /**
  * Boot the Hono/channel server inside this process. Packaged-mode only —
@@ -52,6 +57,7 @@ async function startInProcessServer(): Promise<void> {
 
 async function createWindow(): Promise<void> {
   const url = DEV ? DEV_URL : `http://127.0.0.1:${PORT}`;
+  const windowIcon = join(__dirname, '..', 'build', DEV ? 'icon-dev.png' : 'icon.png');
 
   // No native File/Edit/View/Window menu — PC's chrome is the web UI. Removing
   // the application menu also drops its default accelerators; copy/paste/etc.
@@ -63,9 +69,10 @@ async function createWindow(): Promise<void> {
     height: 900,
     minWidth: 960,
     minHeight: 600,
+    title: APP_NAME,
     backgroundColor: '#0a0a0a',
     autoHideMenuBar: true,
-    icon: join(__dirname, '..', 'build', 'icon.png'),
+    icon: windowIcon,
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -75,6 +82,10 @@ async function createWindow(): Promise<void> {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+    mainWindow?.setTitle(APP_NAME);
+  });
 
   // External links open in the system browser, not a new Electron window
   // (the OAuth login flow during onboarding relies on this — Phase 2).

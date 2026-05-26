@@ -16,8 +16,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SVG = resolve(__dirname, '..', 'build-src', 'icon.svg');
 const OUT_DIR = resolve(__dirname, '..', 'build');
 const OUT = resolve(OUT_DIR, 'icon.png');
+const DEV_OUT = resolve(OUT_DIR, 'icon-dev.png');
 const ICONSET = resolve(OUT_DIR, 'icon.iconset');
 const ICNS = resolve(OUT_DIR, 'icon.icns');
+
+const DEV_BADGE = Buffer.from(`
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="764" cy="260" r="204" fill="#2563EB"/>
+  <circle cx="764" cy="260" r="204" fill="none" stroke="#F8FAFC" stroke-width="32"/>
+  <text
+    x="764"
+    y="337"
+    text-anchor="middle"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="250"
+    font-weight="900"
+    fill="#FFFFFF">D</text>
+</svg>
+`);
 
 const MAC_ICONSET_ENTRIES = [
   ['icon_16x16.png', 16],
@@ -35,6 +51,13 @@ const MAC_ICONSET_ENTRIES = [
 mkdirSync(OUT_DIR, { recursive: true });
 await sharp(SVG, { density: 384 }).resize(1024, 1024).png().toFile(OUT);
 console.log('icon →', OUT);
+
+await sharp(SVG, { density: 384 })
+  .resize(1024, 1024)
+  .composite([{ input: DEV_BADGE, top: 0, left: 0 }])
+  .png()
+  .toFile(DEV_OUT);
+console.log('dev icon →', DEV_OUT);
 
 if (process.platform === 'darwin') {
   mkdirSync(ICONSET, { recursive: true });
