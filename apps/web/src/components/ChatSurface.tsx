@@ -23,6 +23,7 @@ import type {
   AssistantEvent,
   ChatEvent,
   JsonlEvent,
+  SendAckEnvelope,
   SubagentFailureEvent,
   SystemEvent,
   TaskEndEvent,
@@ -66,24 +67,28 @@ const SUPPRESSED_TOOLS = new Set([
 // having them buried in the collapsed L1 "Tool calls" group.
 const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 
-// Section 28 / 23 — show EVERY system event in chat. The earlier
-// suppression set (stop_hook_summary + turn_duration) violated the
-// "render the firehose, learn what's noise" intent. The turn_duration
-// `durationMs` value still rides the assistant bubble's "· Ns" suffix —
-// that's additive, not a hide.
-//
-// Section 31 exception: subtypes that ALSO emit a typed envelope (their
-// dedicated renderer is the canonical surface) are suppressed here so the
-// chat doesn't double-render the same event as both a system row and the
-// typed shape. The typed envelope still carries `raw` for the expand-for-raw
-// path, so no information is lost.
+// Hide non-actionable Claude Code bookkeeping rows from the main chat.
+// The raw JSONL envelopes still remain in `events` for telemetry, replay,
+// remote-control state, and future debug surfaces; this is render-only.
 const SUPPRESSED_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
+  'bridge_status',
+  'init',
   'session_state_changed',
+  'stop_hook_summary',
   'compact_boundary',
   'microcompact_boundary',
   'turn_duration',
   'post_turn_summary',
 ]);
+
+// CC's `Notification` hook fires for idle prompts, OS-toast messages, and
+// other non-actionable noise. Suppress the ones that have a dedicated UI
+// elsewhere (the prompt-waiting indicator lives in the input footer) — they
+// stay in JSONL for telemetry / OS-level notification routing.
+const SUPPRESSED_NOTIFICATION_PATTERNS: readonly RegExp[] = [
+  /is waiting for your input/i,
+  /is no longer responding to user input/i,
+];
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -155,7 +160,103 @@ type RenderItem =
 
 interface StableEnvelope {
   origIdx: number;
+  key?: string;
   env: WsEnvelope;
+}
+
+type PendingPromptStatus =
+  | 'sending'
+  | 'server-received'
+  | 'waiting-transcript'
+  | 'unconfirmed'
+  | 'failed';
+
+interface PendingPrompt {
+  id: string;
+  text: string;
+  createdAt: number;
+  eventFloor: number;
+  status: PendingPromptStatus;
+  expectsAck: boolean;
+  queued: boolean;
+  failureReason?: string;
+}
+
+interface PendingUserEvent extends UserEvent {
+  pendingStatus: PendingPromptStatus;
+  pendingReason?: string;
+  pendingClientMessageId: string;
+  pendingQueued: boolean;
+}
+
+const SEND_ACK_TIMEOUT_MS = 3_000;
+const TRANSCRIPT_WAITING_TIMEOUT_MS = 15_000;
+
+function createClientMessageId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `cm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function canonicalUserTextFromEnvelope(env: WsEnvelope): string | null {
+  if (env.type === 'jsonl') {
+    const ev = env.event as JsonlEvent | undefined;
+    return ev?.kind === 'jsonl-user' ? ev.text : null;
+  }
+  if (env.type === 'event') {
+    const ev = env.event as ChatEvent | undefined;
+    return ev?.kind === 'user' ? (ev as UserEvent).text : null;
+  }
+  return null;
+}
+
+function confirmedPendingIds(events: WsEnvelope[], pendingPrompts: PendingPrompt[]): Set<string> {
+  const confirmed = new Set<string>();
+  for (let i = 0; i < events.length; i++) {
+    const text = canonicalUserTextFromEnvelope(events[i]!);
+    if (text === null) continue;
+    const match = pendingPrompts.find((pending) => {
+      if (confirmed.has(pending.id) || pending.text !== text) return false;
+      const eventFloor = pending.eventFloor <= events.length ? pending.eventFloor : 0;
+      return i >= eventFloor;
+    });
+    if (match) confirmed.add(match.id);
+  }
+  return confirmed;
+}
+
+function sendAckFromEnvelope(env: WsEnvelope): SendAckEnvelope | null {
+  if (env.type !== 'send-ack') return null;
+  if (typeof env.clientMessageId !== 'string') return null;
+  return env as SendAckEnvelope;
+}
+
+function isPendingUserEvent(event: ChatEvent): event is PendingUserEvent {
+  if (event.kind !== 'user') return false;
+  const candidate = event as Partial<PendingUserEvent>;
+  return (
+    typeof candidate.text === 'string' &&
+    typeof candidate.pendingStatus === 'string' &&
+    typeof candidate.pendingClientMessageId === 'string' &&
+    typeof candidate.pendingQueued === 'boolean'
+  );
+}
+
+function pendingPromptEnvelope(projectId: string, pending: PendingPrompt): WsEnvelope {
+  return {
+    projectId,
+    type: 'event',
+    event: {
+      kind: 'user',
+      text: pending.text,
+      ts: new Date(pending.createdAt).toISOString(),
+      pendingStatus: pending.status,
+      pendingReason: pending.failureReason,
+      pendingClientMessageId: pending.id,
+      pendingQueued: pending.queued,
+    } satisfies PendingUserEvent,
+  };
 }
 
 // ── JSONL→hook normalization + cross-channel dedupe (Section 0) ──────────
@@ -245,8 +346,7 @@ function injectTodoSnapshots(events: WsEnvelope[]): WsEnvelope[] {
 
 /** Convert a jsonl envelope into a hook-shape envelope so the downstream
  *  synthesizer doesn't need to branch on origin. Returns null for jsonl event
- *  kinds that aren't rendered as chat bubbles (queue ops → 0d; sidechain →
- *  Section 6 / Activity panel). */
+ *  kinds that aren't rendered as chat bubbles. */
 function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
   if (env.type !== 'jsonl') return env;
   const ev = env.event as JsonlEvent | undefined;
@@ -306,17 +406,8 @@ function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
         } satisfies SystemEvent,
       };
     case 'jsonl-queue-enqueue':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: { kind: 'queue-enqueue', timestamp: ev.timestamp },
-      };
     case 'jsonl-queue-dequeue':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: { kind: 'queue-dequeue', timestamp: ev.timestamp },
-      };
+      return null;
     // Section 31 — new typed envelopes from the tailer extension. The
     // generic jsonl-system row for the same subtype rides alongside (the
     // tailer emits BOTH so the "expand for raw" surface still works); the
@@ -422,20 +513,21 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
     const entry = entries[i]!;
     const env = entry.env;
     const stableId = entry.origIdx;
+    const stableKey = entry.key ?? `${stableId}`;
     if (env.type === 'ask') {
       flush();
-      items.push({ kind: 'env', key: `env-${stableId}`, env });
+      items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
     if (env.type !== 'event') {
       flush();
-      items.push({ kind: 'env', key: `env-${stableId}`, env });
+      items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
     const ev = (env as WsEnvelope & { event: ChatEvent }).event;
     if (!ev || typeof ev !== 'object' || !('kind' in ev)) {
       flush();
-      items.push({ kind: 'env', key: `env-${stableId}`, env });
+      items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
     if ((ev.kind === 'tool-start' || ev.kind === 'tool-end') &&
@@ -622,7 +714,7 @@ function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
       }
     }
     flush();
-    items.push({ kind: 'env', key: `env-${stableId}`, env });
+    items.push({ kind: 'env', key: `env-${stableKey}`, env });
   }
   flush();
   return items;
@@ -658,7 +750,7 @@ interface ChatSurfaceProps {
    *  Used to filter `ask` envelopes so transient-session asks don't bleed in. */
   currentSessionId: string | null;
   /** Composer send. Wrappers wire to WS (orchestrator) or HTTP (agent-designer). */
-  onSend: (text: string) => boolean;
+  onSend: (text: string, clientMessageId: string) => boolean;
   /** Composer interrupt. */
   onInterrupt: () => boolean;
   /** Optional ask-card reply (orchestrator only — wires to WS `ask-reply`).
@@ -707,6 +799,85 @@ export function ChatSurface({
   emptyState,
   wsStatus,
 }: ChatSurfaceProps) {
+  const [pendingPrompts, setPendingPrompts] = useState<PendingPrompt[]>([]);
+  const eventsRef = useRef(events);
+  useEffect(() => {
+    eventsRef.current = events;
+  }, [events]);
+
+  useEffect(() => {
+    setPendingPrompts((prev) => {
+      const confirmed = confirmedPendingIds(events, prev);
+      if (confirmed.size === 0) return prev;
+      return prev.filter((pending) => !confirmed.has(pending.id));
+    });
+  }, [events]);
+
+  useEffect(() => {
+    setPendingPrompts((prev) => {
+      let changed = false;
+      const next = prev.map((pending) => {
+        if (pending.status === 'failed') return pending;
+        const ack = [...events].reverse().map(sendAckFromEnvelope).find((candidate) => {
+          return candidate?.clientMessageId === pending.id;
+        });
+        if (!ack) return pending;
+        changed = true;
+        if (ack.ok) {
+          return {
+            ...pending,
+            status: 'server-received' as PendingPromptStatus,
+            failureReason: undefined,
+          };
+        }
+        return {
+          ...pending,
+          status: 'failed' as PendingPromptStatus,
+          failureReason: ack.error ?? ack.status,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [events]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      setPendingPrompts((prev) => {
+        let changed = false;
+        const next = prev.map((pending) => {
+          if (pending.status === 'failed') return pending;
+          const elapsed = now - pending.createdAt;
+          if (
+            pending.expectsAck &&
+            pending.status === 'sending' &&
+            elapsed >= SEND_ACK_TIMEOUT_MS
+          ) {
+            changed = true;
+            return { ...pending, status: 'unconfirmed' as PendingPromptStatus };
+          }
+          if (
+            (pending.status === 'sending' ||
+              pending.status === 'server-received' ||
+              pending.status === 'unconfirmed') &&
+            elapsed >= TRANSCRIPT_WAITING_TIMEOUT_MS
+          ) {
+            changed = true;
+            return { ...pending, status: 'waiting-transcript' as PendingPromptStatus };
+          }
+          return pending;
+        });
+        return changed ? next : prev;
+      });
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
+
+  const visiblePendingPrompts = useMemo(() => {
+    const confirmed = confirmedPendingIds(events, pendingPrompts);
+    return pendingPrompts.filter((pending) => !confirmed.has(pending.id));
+  }, [events, pendingPrompts]);
+
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
     // Section 23.5 — derive todos snapshots client-side from JSONL tool-calls
     // (replaces the hook-accumulated tasks.json + snapshot emission). The
@@ -745,8 +916,16 @@ export function ChatSurface({
         }
       }
     }
+    for (let i = 0; i < visiblePendingPrompts.length; i++) {
+      const pending = visiblePendingPrompts[i]!;
+      out.push({
+        origIdx: eventsWithTodos.length + i,
+        key: `pending-${pending.id}`,
+        env: pendingPromptEnvelope(projectId, pending),
+      });
+    }
     return out;
-  }, [events, currentSessionId]);
+  }, [events, currentSessionId, projectId, visiblePendingPrompts]);
 
   const renderItems = useMemo(
     () => synthesizeRenderItems(chatEnvelopes),
@@ -843,6 +1022,7 @@ export function ChatSurface({
   }, [dequeueCount]);
   useEffect(() => {
     setQueuedPrompts([]);
+    setPendingPrompts([]);
     prevDequeueRef.current = 0;
   }, [currentSessionId]);
 
@@ -878,11 +1058,26 @@ export function ChatSurface({
 
   const handleSend = useCallback(
     (text: string): boolean => {
-      const ok = onSend(text);
-      if (ok && isThinking) setQueuedPrompts((prev) => [...prev, text]);
+      const clientMessageId = createClientMessageId();
+      const ok = onSend(text, clientMessageId);
+      if (ok) {
+        setPendingPrompts((prev) => [
+          ...prev,
+          {
+            id: clientMessageId,
+            text,
+            createdAt: Date.now(),
+            eventFloor: eventsRef.current.length,
+            status: 'sending',
+            expectsAck: wsStatus !== undefined,
+            queued: isThinking,
+          },
+        ]);
+        if (isThinking) setQueuedPrompts((prev) => [...prev, text]);
+      }
       return ok;
     },
-    [onSend, isThinking],
+    [onSend, isThinking, wsStatus],
   );
 
   // Conditional auto-follow + jump-to-recent.
@@ -1088,7 +1283,13 @@ export function ChatSurface({
               }
               let sub: string | undefined;
               let status: ChatTurnStatus | undefined;
-              if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
+              let pendingStatus: PendingPromptStatus | undefined;
+              if (isPendingUserEvent(ev)) {
+                pendingStatus = ev.pendingStatus;
+                sub = pendingStatusLabel(ev);
+                status = pendingStatusTone(ev.pendingStatus);
+                bubbleId = `pending-${ev.pendingClientMessageId}`;
+              } else if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
                 sub = formatElapsed(assistantDurationMs);
               } else if (ev.kind === 'approval-required') {
                 sub = 'approval required';
@@ -1117,6 +1318,7 @@ export function ChatSurface({
                   sub={sub}
                   bubbleId={bubbleId}
                   status={status}
+                  pendingStatus={pendingStatus}
                 >
                   <EventBubble
                     event={ev}
@@ -1185,6 +1387,31 @@ function formatChatTime(ts?: string): string | undefined {
 type ChatTurnStatus = 'warning' | 'info' | 'danger';
 type ChatTurnVariant = 'turn' | 'child';
 
+function pendingStatusLabel(event: PendingUserEvent): string {
+  const queuedPrefix = event.pendingQueued ? 'queued · ' : '';
+  switch (event.pendingStatus) {
+    case 'server-received':
+      return event.pendingReason ? `${queuedPrefix}sent · ${event.pendingReason}` : `${queuedPrefix}sent`;
+    case 'waiting-transcript':
+      return event.pendingReason
+        ? `${queuedPrefix}waiting for transcript · ${event.pendingReason}`
+        : `${queuedPrefix}waiting for transcript`;
+    case 'unconfirmed':
+      return `${queuedPrefix}send unconfirmed`;
+    case 'failed':
+      return event.pendingReason ? `${queuedPrefix}not sent · ${event.pendingReason}` : `${queuedPrefix}not sent`;
+    case 'sending':
+    default:
+      return event.pendingQueued ? 'queued' : 'sending';
+  }
+}
+
+function pendingStatusTone(status: PendingPromptStatus): ChatTurnStatus {
+  if (status === 'failed') return 'danger';
+  if (status === 'waiting-transcript' || status === 'unconfirmed') return 'warning';
+  return 'info';
+}
+
 function ChatTurnCard({
   kind,
   ts,
@@ -1192,6 +1419,7 @@ function ChatTurnCard({
   children,
   bubbleId,
   status,
+  pendingStatus,
   variant = 'turn',
 }: {
   kind: 'user' | 'pm';
@@ -1200,6 +1428,7 @@ function ChatTurnCard({
   children: React.ReactNode;
   bubbleId?: string;
   status?: ChatTurnStatus;
+  pendingStatus?: PendingPromptStatus;
   variant?: ChatTurnVariant;
 }) {
   // Child variant: just the smaller card. No avatar / speaker chrome —
@@ -1231,6 +1460,7 @@ function ChatTurnCard({
       className="chat-turn-row"
       data-bubble-id={bubbleId}
       data-role={kind === 'user' ? 'user' : 'assistant'}
+      data-pending-status={pendingStatus}
     >
       <div className={`chat-avatar${kind === 'user' ? ' chat-avatar-user' : ''}`}>
         {avatarText}
@@ -1347,12 +1577,16 @@ function EventBubble({
           }
         />
       );
-    case 'notification':
-      return (
-        <NotificationRow
-          event={event as { message: string; title?: string | null }}
-        />
-      );
+    case 'notification': {
+      const note = event as { message: string; title?: string | null };
+      if (
+        note.message &&
+        SUPPRESSED_NOTIFICATION_PATTERNS.some((re) => re.test(note.message))
+      ) {
+        return null;
+      }
+      return <NotificationRow event={note} />;
+    }
     case 'session-end':
     case 'subagent-stop':
       return null;
