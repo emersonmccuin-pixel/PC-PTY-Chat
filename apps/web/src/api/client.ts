@@ -422,6 +422,33 @@ export const FONT_SCALE_MIN = 0.85;
 export const FONT_SCALE_MAX = 1.5;
 export const FONT_SCALE_STEP = 0.05;
 
+// ── Preflight / onboarding (Section 10) ──────────────────────────────────────
+// Mirror of apps/server/src/services/preflight.ts PreflightReport.
+
+export interface ClaudePreflight {
+  status: 'ok' | 'not-found' | 'version-too-old' | 'unverified';
+  path: string | null;
+  source: string;
+  version: string | null;
+  minVersion: string;
+}
+
+export interface DependencyProbe {
+  name: string;
+  present: boolean;
+  version: string | null;
+  severity: 'hard' | 'soft';
+  note?: string;
+}
+
+export interface PreflightReport {
+  claude: ClaudePreflight;
+  auth: { status: 'unknown' | 'authed' | 'login-required'; note: string };
+  git: DependencyProbe;
+  soft: DependencyProbe[];
+  ok: boolean;
+}
+
 // ── Orchestrator session ───────────────────────────────────────────────────
 
 export interface OrchestratorSession {
@@ -473,6 +500,20 @@ export const api = {
     if (!res.ok || data.ok === false) {
       throw new Error(data.ok === false ? data.error : `browse → ${res.status}`);
     }
+    return { path: data.path, parent: data.parent, entries: data.entries };
+  },
+
+  createFolder: async (input: {
+    parentPath: string;
+    name: string;
+    gateRoot?: string;
+  }): Promise<BrowseResult> => {
+    const data = await postJson<{
+      ok: true;
+      path: string;
+      parent: string | null;
+      entries: BrowseEntry[];
+    }>('/api/fs/mkdir', input);
     return { path: data.path, parent: data.parent, entries: data.entries };
   },
 
@@ -663,6 +704,25 @@ export const api = {
   getSettings: () =>
     getJson<{ ok: true; settings: GlobalSettings }>('/api/settings').then((r) => r.settings),
 
+  // ── Onboarding (Section 10 Phase 2) ──────────────────────────────────────
+  getPreflight: () =>
+    getJson<{ ok: true; preflight: PreflightReport }>('/api/preflight').then((r) => r.preflight),
+
+  /** Install Claude Code via the official installer. Long-running; returns the
+   *  fresh preflight + a log on completion. */
+  installClaude: () =>
+    postJson<{ ok: true; preflight: PreflightReport; log: string }>(
+      '/api/onboarding/install/claude',
+      {},
+    ),
+
+  /** Install git (winget-first, silent-installer fallback). Long-running. */
+  installGit: () =>
+    postJson<{ ok: true; preflight: PreflightReport; log: string }>(
+      '/api/onboarding/install/git',
+      {},
+    ),
+
   getMcpStatus: (projectId?: string) =>
     getJson<{ alive: boolean; toolCount: number; tools: string[] }>(
       projectId
@@ -807,34 +867,6 @@ export const api = {
     return { exists: data.exists === true, empty: data.empty === true };
   },
 
-  // ── Workflow-creator transient session (Section 4b phase 4b.3) ─────────
-  /** Spawn the per-project "+ New workflow" modal's transient PtySession.
-   *  Session is layered with `workflow-creator-prompt.md` and emits its
-   *  events on the `workflow-creator-*` WS envelope kinds. Returns the
-   *  initial state + transient sessionId — the visualizer keys on
-   *  sessionId to pick the right `workflow-creator-draft` broadcasts. */
-  startWorkflowCreator: (projectId: ULID) =>
-    postJson<{ ok: true; state: string; sessionId: string | null }>(
-      `/api/projects/${projectId}/workflow-creator/start`,
-      {},
-    ).then((r) => ({ state: r.state, sessionId: r.sessionId })),
-
-  /** Send a user prompt into the workflow-creator session. */
-  sendWorkflowCreator: (projectId: ULID, text: string) =>
-    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-creator/send`, { text }),
-
-  /** Press Escape on the workflow-creator session. */
-  interruptWorkflowCreator: (projectId: ULID) =>
-    postJson<{ ok: true }>(`/api/projects/${projectId}/workflow-creator/interrupt`, {}),
-
-  /** Kill the workflow-creator session + clear its draft state. Idempotent. */
-  stopWorkflowCreator: async (projectId: ULID): Promise<void> => {
-    const res = await fetch(`/api/projects/${projectId}/workflow-creator`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) throw new Error(`stop workflow-creator → ${res.status}`);
-  },
-
   // ── Workflow-builder (Section 19.9, v2-aware) ─────────────────────────────
   /** Section 19.9 — start the v2 workflow-builder transient session. Returns
    *  the initial state + transient sessionId (used to scope `workflow-builder-
@@ -911,169 +943,12 @@ export const api = {
       `/api/projects/${projectId}/workflow-v2/definitions/${encodeURIComponent(wfId)}`,
     ),
 
-  // ── Workflows (4e) ────────────────────────────────────────────────────
-  /** Full Workflow def for the drawer's Definition tab + raw YAML text for
-   *  4f.2's edit-modal raw-YAML tab. 404 on unknown id. 4h.11a — also returns
-   *  the typed-edge map the graph viewer needs to render structured wires. */
-  getWorkflow: (projectId: ULID, wfId: string) =>
-    getJson<{
-      ok: true;
-      workflow: Workflow;
-      edges?: WorkflowEdges;
-      fileName: string;
-      yamlText?: string;
-    }>(`/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`).then((r) => ({
-      workflow: r.workflow,
-      edges: r.edges ?? {},
-      fileName: r.fileName,
-      yamlText: r.yamlText ?? '',
-    })),
-
-  // ── Workflow lifecycle (4f.2) ─────────────────────────────────────────
-  /** Edit an existing workflow in place. Used by both the conversational
-   *  edit path (when the model commits via a tool that calls PUT) and the
-   *  raw-YAML PM escape hatch. Rejects an id rename with 400 — rename is
-   *  duplicate + delete. Throws WorkflowValidationError on 400 shape errors.
-   *  Accepts either a typed `def` or raw `yamlText`; the latter is the PM
-   *  raw-YAML tab's path and preserves comments + key order on round-trip. */
-  editWorkflow: async (
-    projectId: ULID,
-    wfId: string,
-    payload: { def: unknown } | { yamlText: string },
-  ): Promise<void> => {
-    const res = await fetch(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-    );
-    const data = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      errors?: { path: string; message: string }[];
-    };
-    if (res.status === 400 && data.errors) {
-      throw new WorkflowValidationError(data.error ?? 'invalid workflow', data.errors);
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error ?? `edit workflow → ${res.status}`);
-    }
-  },
-
-  /** Delete a workflow file. 409 → throws WorkflowInFlightRunsError with the
-   *  run-id list; UI surfaces the cancel-runs-and-delete escape. */
-  deleteWorkflow: async (projectId: ULID, wfId: string): Promise<void> => {
-    const res = await fetch(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}`,
-      { method: 'DELETE' },
-    );
-    const data = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      inFlightRunIds?: string[];
-    };
-    if (res.status === 409 && Array.isArray(data.inFlightRunIds)) {
-      throw new WorkflowInFlightRunsError(data.inFlightRunIds);
-    }
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error ?? `delete workflow → ${res.status}`);
-    }
-  },
-
-  /** Cancel every in-flight run for this workflow, then delete the file. */
-  cancelRunsAndDeleteWorkflow: async (
-    projectId: ULID,
-    wfId: string,
-    reason?: string,
-  ): Promise<string[]> => {
-    const res = await fetch(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/cancel-runs-and-delete`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reason ? { reason } : {}),
-      },
-    );
-    const data = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      cancelledRunIds?: string[];
-    };
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error ?? `cancel-and-delete workflow → ${res.status}`);
-    }
-    return data.cancelledRunIds ?? [];
-  },
-
-  /** Duplicate a workflow. Server clones the YAML with `disabled: true` so the
-   *  user doesn't accidentally fire two near-identical workflows. Default newId
-   *  is `<src>-copy[-N]` (server-side); pass an explicit newId to override.
-   *  409 on newId collision is surfaced as a regular Error so the duplicate
-   *  modal can show "name already taken." */
-  duplicateWorkflow: (projectId: ULID, wfId: string, newId?: string) =>
-    postJson<{ ok: true; workflow: { id: string; fileName: string; path: string } }>(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/duplicate`,
-      newId ? { newId } : {},
-    ).then((r) => r.workflow),
-
-  /** 4f.3 / D64. User-initiated manual fire. Body is the resolved card +
-   *  inputs from the RunNowModal. Throws WorkflowFireError carrying the HTTP
-   *  status so the modal can distinguish Work Contract mismatches (400) from
-   *  disabled / locked (409) from unknown (404). The error message is
-   *  plain-English from the server — render verbatim. */
-  fireWorkflow: async (
-    projectId: ULID,
-    wfId: string,
-    body: { workItemId?: string; inputs?: Record<string, unknown> },
-  ): Promise<string> => {
-    const res = await fetch(
-      `/api/projects/${projectId}/workflows/${encodeURIComponent(wfId)}/fire`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-    );
-    const data = (await res.json()) as { ok?: boolean; runId?: string; error?: string };
-    if (res.ok && data.ok === true && typeof data.runId === 'string') {
-      return data.runId;
-    }
-    throw new WorkflowFireError(data.error ?? `fire workflow → ${res.status}`, res.status);
-  },
-
-  /** All runs for this project (across workflows). The drawer filters
-   *  client-side by workflowId. */
-  listWorkflowRuns: (projectId: ULID) =>
-    getJson<{ runs: WorkflowRun[] }>(
-      `/api/projects/${projectId}/workflow-runs`,
-    ).then((r) => r.runs),
-
-  /** Single run with full `nodeOutputs` map. 404 on unknown / cross-project. */
-  getWorkflowRun: (projectId: ULID, runId: string) =>
-    getJson<{ run: WorkflowRun }>(
-      `/api/projects/${projectId}/workflow-runs/${runId}`,
-    ).then((r) => r.run),
-
-  /** Re-fire a failed run from a specific failed node. Server creates a NEW
-   *  run row (history-preserving) and returns its id. 400 if target run is
-   *  not failed/cancelled, target node not failed, or shape errors; 404 for
-   *  unknown / cross-project ids. */
-  retryWorkflowRunFrom: (projectId: ULID, runId: string, nodeId: string) =>
-    postJson<{ ok: true; runId: string }>(
-      `/api/projects/${projectId}/workflow-runs/${runId}/retry-from`,
-      { nodeId },
-    ).then((r) => r.runId),
-
-  /** Cancel a single in-flight workflow run (kills in-flight subagents +
-   *  flips status to `cancelled`). 404 unknown / cross-project; 400 if the
-   *  run is already terminal. Used by the activity panel's Cancel button. */
-  cancelWorkflowRun: (projectId: ULID, runId: string, reason?: string) =>
-    postJson<{ ok: true }>(
-      `/api/projects/${projectId}/workflow-runs/${runId}/cancel`,
-      reason ? { reason } : {},
-    ),
+  // 19.12 — v1 workflow client methods removed (getWorkflow, editWorkflow,
+  // deleteWorkflow, cancelRunsAndDeleteWorkflow, duplicateWorkflow,
+  // fireWorkflow, listWorkflowRuns, getWorkflowRun, retryWorkflowRunFrom,
+  // cancelWorkflowRun). Their server routes are gone; v2 surface lives
+  // under `/workflow-v2/*` (listV2WorkflowDefinitions / listV2WorkflowRuns
+  // / fireV2Workflow / getV2Run / getV2WorkflowDef above).
 
   // ── Agent runs (Section 16b.8) ────────────────────────────────────────
   /** Active agent runs for a project. Server filters terminal-state rows

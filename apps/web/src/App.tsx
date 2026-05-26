@@ -3,11 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type GlobalSettings, type Project } from '@/api/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
+import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
 import { useProjectWs } from '@/hooks/use-project-ws';
-import { useGlobalUsageToday } from '@/hooks/use-global-usage-today';
 import { useRichLinkInvalidator } from '@/hooks/use-rich-link-invalidator';
 import { useStatuslineSync } from '@/hooks/use-statusline-sync';
 import { useActiveCenterTab } from '@/store/active-center-tab';
@@ -31,6 +31,19 @@ export default function App() {
   const [brandMenuOpen, setBrandMenuOpen] = useState(false);
   const brandMenuRef = useRef<HTMLDivElement | null>(null);
   const brandButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // Section 10 Phase 2 — first-run onboarding gate. `?onboarding=force` opens
+  // it with real preflight; `?onboarding=sim` opens it on a faked blank machine
+  // (dev "fresh machine" switch). Otherwise it shows only on a true first run
+  // (marker unset + no projects yet).
+  const onboardingParam = useMemo(
+    () => new URLSearchParams(window.location.search).get('onboarding'),
+    [],
+  );
+  const forceOnboarding = onboardingParam === 'force' || onboardingParam === 'sim';
+  const onboardingSimMode = onboardingParam === 'sim';
+  const [wizardDismissed, setWizardDismissed] = useState(false);
+  const [skipWarning, setSkipWarning] = useState(false);
 
   useEffect(() => {
     if (!brandMenuOpen) return;
@@ -89,7 +102,6 @@ export default function App() {
   const ws = useProjectWs(activeProject);
   useRichLinkInvalidator(ws.events);
   useStatuslineSync(activeProject?.id ?? null, ws.events);
-  const globalUsageToday = useGlobalUsageToday(ws.events);
 
   const persistActivityPanelSetting = useCallback(
     (patch: { open?: boolean }) => {
@@ -159,6 +171,32 @@ export default function App() {
     });
   }, []);
 
+  const finishOnboarding = useCallback(() => {
+    setWizardDismissed(true);
+    setSkipWarning(false);
+    setCreateOpen(true);
+    if (!onboardingSimMode) {
+      void api
+        .patchSettings({ onboardingCompletedAt: new Date().toISOString() })
+        .then((r) => setSettings(r.settings))
+        .catch(() => {});
+    }
+  }, [onboardingSimMode]);
+
+  const skipOnboarding = useCallback(
+    (hardDepsMissing: boolean) => {
+      setWizardDismissed(true);
+      if (hardDepsMissing) setSkipWarning(true);
+      if (!onboardingSimMode) {
+        void api
+          .patchSettings({ onboardingCompletedAt: new Date().toISOString() })
+          .then((r) => setSettings(r.settings))
+          .catch(() => {});
+      }
+    },
+    [onboardingSimMode],
+  );
+
   if (projects === null) {
     return (
       <div
@@ -167,6 +205,21 @@ export default function App() {
       >
         Loading…
       </div>
+    );
+  }
+
+  // First-run gate: render the wizard full-screen instead of the Shell.
+  const showWizard =
+    !wizardDismissed &&
+    (forceOnboarding ||
+      (settings !== null && settings.onboardingCompletedAt === null && projects.length === 0));
+  if (showWizard) {
+    return (
+      <OnboardingWizard
+        simMode={onboardingSimMode}
+        onComplete={finishOnboarding}
+        onSkip={skipOnboarding}
+      />
     );
   }
 
@@ -234,28 +287,6 @@ export default function App() {
               <span className="text-foreground">{telemetryModel}</span>
             </span>
           )}
-          {globalUsageToday.today &&
-            (globalUsageToday.today.inputTokens > 0 ||
-              globalUsageToday.today.outputTokens > 0 ||
-              globalUsageToday.today.costUsd > 0) && (
-              <span
-                className="flex items-center gap-1.5 tabular-nums"
-                title={formatGlobalUsageTooltip(globalUsageToday.today)}
-              >
-                <span className="text-[var(--fg-dim)]">today</span>
-                <span className="text-foreground">
-                  {formatTokens(
-                    globalUsageToday.today.inputTokens +
-                      globalUsageToday.today.outputTokens,
-                  )}
-                </span>
-                <span className="text-[var(--fg-dim)]">·</span>
-                <span className="text-foreground">
-                  {formatCost(globalUsageToday.today.costUsd)}
-                </span>
-                <span className="text-[var(--fg-dim)]">est</span>
-              </span>
-            )}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -279,6 +310,20 @@ export default function App() {
           </span>
           <button
             onClick={() => setRestartRequired(false)}
+            className="text-warning hover:text-foreground"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
+      {skipWarning && (
+        <div className="flex items-center justify-between gap-3 border-b border-warning/60 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+          <span>
+            Setup isn't finished — Claude Code or git is still missing, so chats and
+            projects won't work until you install them.
+          </span>
+          <button
+            onClick={() => setSkipWarning(false)}
             className="text-warning hover:text-foreground"
           >
             dismiss
@@ -362,40 +407,3 @@ export default function App() {
   );
 }
 
-// Anthropic list pricing per 1M tokens (Opus tier). Same constants StatusBar
-// Token + cost formatting for the global usage roll-up in the top-right
-// header. Cost comes pre-computed from CC's statusline (cost.total_cost_usd
-// summed per session at the bucket level); no per-token pricing table needed
-// post-31.11 follow-up.
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k';
-  return (n / 1_000_000).toFixed(2) + 'M';
-}
-
-function formatCost(dollars: number): string {
-  if (dollars === 0) return '$0.00';
-  if (dollars < 0.01) return '<$0.01';
-  if (dollars < 1) return '$' + dollars.toFixed(3);
-  return '$' + dollars.toFixed(2);
-}
-
-function formatGlobalUsageTooltip(b: {
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  sessions: number;
-  bucket: string;
-}): string {
-  const total = b.inputTokens + b.outputTokens;
-  return (
-    `Today (${b.bucket})\n` +
-    `─────────────────────\n` +
-    `input:        ${b.inputTokens.toLocaleString()}\n` +
-    `output:       ${b.outputTokens.toLocaleString()}\n` +
-    `total tokens: ${total.toLocaleString()}\n` +
-    `sessions:     ${b.sessions}\n\n` +
-    `est. API cost (informational — subscription billing):\n` +
-    `  ${formatCost(b.costUsd)}`
-  );
-}
