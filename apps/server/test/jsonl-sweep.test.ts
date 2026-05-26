@@ -107,7 +107,7 @@ test('deletes stale .jsonl files, keeps fresh ones (mtime-based)', async () => {
 test('cutoff boundary: file with mtime == cutoff is kept (>= cutoff)', async () => {
   const root = makeProjectTree();
   try {
-    const now = Date.now();
+    const now = Date.UTC(2026, 0, 31, 0, 0, 0);
     const proj = join(root, '-c-Users-test-edge');
     mkdirSync(proj, { recursive: true });
 
