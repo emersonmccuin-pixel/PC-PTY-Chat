@@ -57,21 +57,9 @@ export type { CreateAttachmentInput } from './repos/attachments.ts';
 export { listFieldSchemas, replaceFieldSchemas } from './repos/field-schemas.ts';
 export type { ReplaceFieldSchemasInput } from './repos/field-schemas.ts';
 
-export {
-  createRun,
-  getActiveRunForWorkItem,
-  getRun,
-  getRunForProject,
-  listActiveRuns,
-  listRuns,
-  listRunsByProject,
-  listRunsByWorkItem,
-  persistRun,
-} from './repos/workflow-runs.ts';
-export type { CreateRunInput } from './repos/workflow-runs.ts';
-// Section 19 — v2 run sidecar + event-log repo. Namespaced to avoid
-// createRun/getRun collisions with the legacy repo above. Access as
-// workflowRunsV2Repo.createRun(...), .appendEvent(...), etc.
+// Section 19 — v2 run sidecar + event-log repo. v1 workflow-runs repo
+// dropped in 19.12 (migration 0025 dropped the underlying table).
+// Access as workflowRunsV2Repo.createRun(...), .appendEvent(...), etc.
 export * as workflowRunsV2Repo from './repos/workflow-runs-v2.ts';
 
 export {

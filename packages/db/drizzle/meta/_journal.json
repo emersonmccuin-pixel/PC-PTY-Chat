@@ -176,6 +176,13 @@
       "when": 1780617600000,
       "tag": "0024_workflow_builder_origin_stock",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1780704000000,
+      "tag": "0025_drop_v1_workflow_runs",
+      "breakpoints": true
     }
   ]
 }

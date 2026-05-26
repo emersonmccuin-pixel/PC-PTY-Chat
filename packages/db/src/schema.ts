@@ -8,7 +8,6 @@ import type {
   ExpectedOutput,
   FieldSchemaType,
   GlobalSettings,
-  NodeOutput,
   PodAuditActor,
   PodAuditField,
   PodKnowledgeKind,
@@ -25,8 +24,6 @@ import type {
   WorkItemHistoryEntry,
   WorkItemStatus,
   WorkItemType,
-  WorkflowRunStatus,
-  WorkflowRunTrigger,
   WorkflowV2,
   WorktreeStatus,
 } from '@pc/domain';
@@ -196,68 +193,12 @@ export const workflows = sqliteTable(
   (t) => [index('workflows_project_idx').on(t.projectId)],
 );
 
-export const workflowRuns = sqliteTable(
-  'workflow_runs',
-  {
-    id: text('id').primaryKey().$type<ULID>(),
-    /** Workflow slug. No FK — runtime uses the file-backed registry; the workflows
-     *  table is scaffolded but not yet synced. */
-    workflowId: text('workflow_id').notNull(),
-    /** Denormalised for the run viewer. */
-    workflowName: text('workflow_name').notNull(),
-    projectId: text('project_id')
-      .notNull()
-      .$type<ULID>()
-      .references(() => projects.id),
-    workItemId: text('work_item_id').$type<ULID | null>(),
-    parentRunId: text('parent_run_id').$type<ULID | null>(),
-    /** Node id (string slug) in the parent that spawned this run. */
-    parentNodeId: text('parent_node_id'),
-    /** stage_id slug if trigger='on_enter'. */
-    stageId: text('stage_id'),
-    trigger: text('trigger').notNull().$type<WorkflowRunTrigger>(),
-    triggeredBySessionId: text('triggered_by_session_id').$type<ULID | null>(),
-    status: text('status').notNull().default('pending').$type<WorkflowRunStatus>(),
-    workflowYamlSnapshot: text('workflow_yaml_snapshot').notNull(),
-    worktreePath: text('worktree_path'),
-    inputs: text('inputs', { mode: 'json' })
-      .notNull()
-      .default(sql`'{}'`)
-      .$type<Record<string, unknown>>(),
-    outputs: text('outputs', { mode: 'json' })
-      .notNull()
-      .default(sql`'{}'`)
-      .$type<Record<string, unknown>>(),
-    /** Per-node status + output map, keyed by node id. */
-    nodeOutputs: text('node_outputs', { mode: 'json' })
-      .notNull()
-      .default(sql`'{}'`)
-      .$type<Record<string, NodeOutput>>(),
-    metadata: text('metadata', { mode: 'json' })
-      .notNull()
-      .default(sql`'{}'`)
-      .$type<Record<string, unknown>>(),
-    lastReason: text('last_reason'),
-    createdAt: integer('created_at').notNull(),
-    startedAt: integer('started_at'),
-    endedAt: integer('ended_at'),
-    lastActivityAt: integer('last_activity_at'),
-  },
-  (t) => [
-    index('workflow_runs_project_idx').on(t.projectId),
-    index('workflow_runs_status_idx').on(t.status),
-    index('workflow_runs_workflow_idx').on(t.workflowId),
-    index('workflow_runs_parent_idx').on(t.parentRunId),
-    index('workflow_runs_work_item_idx').on(t.workItemId),
-  ],
-);
-
 /**
- * Section 19 — v2 workflow run sidecar. Coexists with the legacy `workflow_runs`
- * table above (the old runtime still owns that) until 19.13 cutover renames the
- * old one to `*_v1_archive`. The v2 run IS a work item (`is_workflow_root`);
- * node outputs live on child work items, so this row holds only DAG bookkeeping
- * (per-node state + reject-iteration counts) that isn't derivable from the WIs.
+ * Section 19 — v2 workflow run sidecar. The v1 `workflow_runs` table was
+ * dropped in 19.12 (migration 0025). The v2 run IS a work item
+ * (`is_workflow_root`); node outputs live on child work items, so this row
+ * holds only DAG bookkeeping (per-node state + reject-iteration counts) that
+ * isn't derivable from the WIs.
  * See docs/buildout/workflow-rebuild-port-map.md ("stateless over work items").
  */
 export const workflowRunsV2 = sqliteTable(
@@ -339,16 +280,17 @@ export const workflowRunEvents = sqliteTable(
   (t) => [index('workflow_run_events_run_idx').on(t.runId)],
 );
 
-/** Section 6.6 — activity-panel "Failed recently" region. The 4e Runs tab
+/** Section 6.6 — activity-panel "Failed recently" region. The v2 run viewer
  *  remains the canonical run history; this table only records per-row
- *  dismissals so a user can clear a failure off the at-a-glance list. */
+ *  dismissals so a user can clear a failure off the at-a-glance list. FK
+ *  re-pointed at `workflow_runs_v2` in 19.12 (migration 0025). */
 export const failedRunDismissals = sqliteTable(
   'failed_run_dismissals',
   {
     runId: text('run_id')
       .primaryKey()
       .$type<ULID>()
-      .references(() => workflowRuns.id),
+      .references(() => workflowRunsV2.id),
     dismissedAt: integer('dismissed_at').notNull(),
   },
 );
