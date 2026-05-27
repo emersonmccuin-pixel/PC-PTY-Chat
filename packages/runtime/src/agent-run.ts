@@ -77,6 +77,7 @@ export interface SpawnLike extends EventEmitter {
   send(body: string, echoTimeoutMs?: number): Promise<SendResult>;
   notifyMcpHandshake(): void;
   interrupt(): void;
+  resize?(cols: number, rows: number): void;
   kill(graceMs?: number): void;
   getState(): SpawnState;
   getJsonlPath(): string | null;

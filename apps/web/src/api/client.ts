@@ -477,8 +477,24 @@ export interface OrchestratorSession {
 }
 
 export type SessionReplayItem =
-  | { type: 'jsonl'; event: unknown }
-  | { type: 'event'; event: unknown };
+  | {
+      id?: string;
+      sessionId?: ULID;
+      seq?: number;
+      type: 'jsonl';
+      kind?: string | null;
+      event: unknown;
+      source?: { kind: string; cursor: number | null };
+    }
+  | {
+      id?: string;
+      sessionId?: ULID;
+      seq?: number;
+      type: 'event';
+      kind?: string | null;
+      event: unknown;
+      source?: { kind: string; cursor: number | null };
+    };
 
 export type SessionTransitionKind = 'new-session' | 'resume-session';
 
@@ -486,6 +502,7 @@ export interface SessionTransitionResponse {
   transition: SessionTransitionKind;
   session: OrchestratorSession;
   replay: SessionReplayItem[];
+  highWaterSeq?: number;
 }
 
 export type OrchestratorSendQueueStatus =
@@ -528,6 +545,10 @@ export interface OrchestratorRuntimeSnapshot {
   ptyState: string | null;
   exitCode: number | null;
   exitSignal: string | null;
+  spawnAttemptId: string | null;
+  spawnAttempt: number;
+  lastReadyAt: number | null;
+  nextRetryAt: number | null;
   lastExitAt: number | null;
   lastActivityAt: number | null;
   failureReason: string | null;
@@ -1281,7 +1302,7 @@ export const api = {
    *  demux on `type`. New path: `{type:'jsonl', event}`. Legacy fallback:
    *  `{type:'event', event}` (pre-23 hook-written events.jsonl). */
   getSessionEvents: (projectId: ULID, sessionId: ULID) =>
-    getJson<{ ok: true; events: Array<{ type: 'jsonl' | 'event'; event: unknown }> }>(
+    getJson<{ ok: true; sessionId?: ULID; highWaterSeq?: number; events: SessionReplayItem[] }>(
       `/api/projects/${projectId}/sessions/${sessionId}/events`,
     ).then((r) => r.events),
 

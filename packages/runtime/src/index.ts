@@ -10,9 +10,14 @@ export {
   stripAnsi,
   terminalBufferLooksReady,
 } from './pty-session.ts';
-export type { PtySessionOptions, SessionState } from './pty-session.ts';
+export type {
+  JsonlReplayMeta,
+  JsonlReplaySource,
+  PtySessionOptions,
+  SessionState,
+} from './pty-session.ts';
 export { JsonlTailer } from './jsonl-tailer.ts';
-export type { JsonlEvent, JsonlTailerOptions } from './jsonl-tailer.ts';
+export type { JsonlEvent, JsonlEventMeta, JsonlTailerOptions } from './jsonl-tailer.ts';
 
 // Workflow subagent spawner — the LowLevelSpawn-based default.
 export { spawnSubagent } from './subagent-spawner.ts';

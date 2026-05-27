@@ -16,8 +16,8 @@ import {
   watchFile,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
+import { basename, dirname, join, resolve } from 'node:path';
+import { JsonlTailer, type JsonlEvent, type JsonlEventMeta } from './jsonl-tailer.ts';
 import { claudeProjectsRoot } from './path-resolver.ts';
 import { requireClaudeBinary } from './claude-resolver.ts';
 import { TimedBracketedPasteQueue } from './send-protocol.ts';
@@ -79,12 +79,16 @@ export function encodeCwdForClaude(cwd: string): string {
 
 export function terminalBufferLooksReady(rawBuffer: string): boolean {
   const normalized = collapseAnsiToWhitespace(rawBuffer);
+  const compact = normalized.replace(/\s+/g, '');
   return (
     /Welcome\s*back/i.test(normalized) ||
     /Tips\s*for\s*getting\s*started/i.test(normalized) ||
     /What's\s*new/i.test(normalized) ||
     /Try\s*"/i.test(normalized) ||
-    /\/remote-control\s+is\s+active/i.test(normalized)
+    /\/remote-control\s+is\s+active/i.test(normalized) ||
+    /Remote\s*Control\s*active/i.test(normalized) ||
+    compact.toLowerCase().includes('/remote-controlisactive') ||
+    compact.toLowerCase().includes('remotecontrolactive')
   );
 }
 
@@ -109,6 +113,9 @@ export interface PtySessionOptions {
    *  PC_SESSION_ID through so hooks can route their writes into the
    *  per-session data dir. */
   extraEnv?: Record<string, string>;
+  /** Durable PC session id used in the normalized replay ledger. Defaults to
+   *  the parent directory of `eventsPath` for transient sessions. */
+  pcSessionId?: string;
   /** Root of CC's per-project session dirs. Defaults to
    *  `<homedir>/.claude/projects`. Override only for tests. */
   claudeProjectsDir?: string;
@@ -163,6 +170,45 @@ export interface PtySessionOptions {
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
+
+export interface JsonlReplaySource {
+  kind: 'claude-jsonl';
+  cursor: number | null;
+}
+
+export interface JsonlReplayMeta {
+  id: string;
+  sessionId: string;
+  seq: number;
+  kind: JsonlEvent['kind'];
+  source: JsonlReplaySource;
+}
+
+function nextReplaySeqFromFile(filePath: string): number {
+  try {
+    const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+    let validCount = 0;
+    let maxSeq = 0;
+    for (const line of lines) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== 'object') continue;
+      const row = parsed as { type?: unknown; event?: unknown; seq?: unknown };
+      if (row.type !== 'jsonl' || !row.event || typeof row.event !== 'object') continue;
+      validCount++;
+      if (typeof row.seq === 'number' && Number.isSafeInteger(row.seq) && row.seq > maxSeq) {
+        maxSeq = row.seq;
+      }
+    }
+    return Math.max(validCount, maxSeq) + 1;
+  } catch {
+    return 1;
+  }
+}
 
 export function buildPtySessionArgs(opts: PtySessionOptions): string[] {
   const args: string[] = [
@@ -261,6 +307,8 @@ export class PtySession extends EventEmitter {
    *  retention sweep (Section 18.8); CC's own session JSONL is treated as
    *  ephemeral source-of-truth-on-disk. */
   private jsonlEventsPath: string;
+  private replaySessionId: string;
+  private nextReplaySeq = 1;
   private lastMarkerCount = 0;
   private lastEventCount = 0;
   private workspaceDir: string;
@@ -279,6 +327,8 @@ export class PtySession extends EventEmitter {
     this.stopMarkerPath = resolve(opts.stopMarkerPath);
     this.eventsPath = resolve(opts.eventsPath);
     this.jsonlEventsPath = resolve(dirname(this.eventsPath), 'jsonl-events.jsonl');
+    this.replaySessionId = opts.pcSessionId ?? basename(dirname(this.eventsPath));
+    this.nextReplaySeq = nextReplaySeqFromFile(this.jsonlEventsPath);
     this.workspaceDir = opts.workspaceDir;
     // Honor CLAUDE_CONFIG_DIR (Section 15 lesson + Section 23 follow-up):
     // claude.exe writes its session JSONL under
@@ -534,12 +584,12 @@ export class PtySession extends EventEmitter {
 
   private attachTailer(filePath: string, startLine: number): void {
     this.tailer = new JsonlTailer({ filePath, startLine });
-    this.tailer.on('event', (ev: JsonlEvent) => {
+    this.tailer.on('event', (ev: JsonlEvent, meta?: JsonlEventMeta) => {
       // Section 23: persist before broadcasting so a crash mid-handler can't
       // drop the event from the durable log. The WS broadcast is best-effort;
       // the disk log is the contract.
-      this.persistJsonlEvent(ev);
-      this.emit('jsonl-event', ev);
+      const replay = this.persistJsonlEvent(ev, meta);
+      this.emit('jsonl-event', ev, replay);
       if (ev.kind === 'jsonl-turn-end' && this.state === 'thinking') {
         this.setState('ready');
       }
@@ -556,15 +606,31 @@ export class PtySession extends EventEmitter {
    *  can broadcast each line verbatim without normalization. Append-only,
    *  line-terminated; a crash mid-line leaves a partial line that JSON.parse
    *  rejects during replay → skip + advance. Standard JSONL hygiene. */
-  private persistJsonlEvent(ev: JsonlEvent): void {
+  private persistJsonlEvent(ev: JsonlEvent, meta?: JsonlEventMeta): JsonlReplayMeta {
+    const seq = this.nextReplaySeq++;
+    const replay: JsonlReplayMeta = {
+      id: `${this.replaySessionId}:${seq}`,
+      sessionId: this.replaySessionId,
+      seq,
+      kind: ev.kind,
+      source: {
+        kind: 'claude-jsonl',
+        cursor: meta?.sourceCursor ?? null,
+      },
+    };
     try {
-      const line = JSON.stringify({ type: 'jsonl', event: ev }) + '\n';
+      const line = JSON.stringify({
+        ...replay,
+        type: 'jsonl',
+        event: ev,
+      }) + '\n';
       appendFileSync(this.jsonlEventsPath, line);
     } catch (err) {
       // Best-effort. A failed disk write shouldn't cascade into a dropped live
       // event; surface the error for visibility and continue.
       this.emit('jsonl-persist-error', err);
     }
+    return replay;
   }
 
   /** Debounced — coalesce cursor persistence to ~1Hz to avoid hammering the

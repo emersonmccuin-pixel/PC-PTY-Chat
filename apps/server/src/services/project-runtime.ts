@@ -23,8 +23,13 @@ import {
   reactivateOrchestratorSession,
   workflowsRepo,
 } from '@pc/db';
-import { claudeConfigDirFromJsonlPath, jsonlPathFor, PtySession } from '@pc/runtime';
-import type { SessionState } from '@pc/runtime';
+import {
+  claudeConfigDirFromJsonlPath,
+  InteractiveSession,
+  jsonlPathFor,
+  PtySession,
+} from '@pc/runtime';
+import type { InteractiveSessionState } from '@pc/runtime';
 import { selectStageEntryWorkflows } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
@@ -65,7 +70,7 @@ export interface ProjectRuntimeOptions {
 }
 
 export class ProjectRuntime {
-  private pty: PtySession | null = null;
+  private pty: InteractiveSession | null = null;
   /** 17b.12 — transient agent-designer session that spawns CC with
    *  `--agent agent-designer` + the materialised pod (prompt + tools +
    *  knowledge from the agent-designer pod row). One per project at a time.
@@ -381,9 +386,10 @@ export class ProjectRuntime {
   }
 
   /**
-   * Lazy: PtySession — spawned on first WS connect. cwd is still the user's
-   * project folder, but PC's Claude runtime files are passed explicitly from
-   * the per-session data dir so terminal-launched Claude does not inherit them.
+   * Lazy: InteractiveSession — spawned on first WS connect. cwd is still the
+   * user's project folder, but PC's Claude runtime files are passed explicitly
+   * from the per-session data dir so terminal-launched Claude does not inherit
+   * them.
    *
    * Session continuity: looks up the active OrchestratorSession row for this
    * project. If found → spawn with `--resume <uuid>` so Claude picks up the
@@ -391,8 +397,8 @@ export class ProjectRuntime {
    * `--session-id <uuid>` so the UI's events.jsonl and Claude's session JSONL
    * stay in lockstep.
    */
-  ensurePty(): PtySession {
-    if (this.pty && this.pty.getState() !== 'exited') return this.pty;
+  ensurePty(): InteractiveSession {
+    if (this.pty && !['exited', 'failed'].includes(this.pty.getState())) return this.pty;
     this.refreshProjectCompanionFilesIfStale();
     const session = this.resolveSessionForSpawn();
     const sessionDir = this.sessionDataPath(session.row.id);
@@ -449,53 +455,103 @@ export class ProjectRuntime {
       );
     }
 
-    this.pty = new PtySession({
-      workspaceDir: this.project.folderPath,
-      stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
-      eventsPath: resolve(sessionDir, 'events.jsonl'),
-      transcriptPath: resolve(sessionDir, 'transcript.log'),
-      claudeSessionId: session.providerSessionId,
-      resume: session.resume,
-      extraEnv: {
+    this.pty = new InteractiveSession({
+      pcSessionId: session.row.id,
+      ccProviderSessionId: session.providerSessionId,
+      podDefinition: { name: podPrep.agentCliName },
+      worktreePath: this.project.folderPath,
+      env: {
+        ...(process.env as Record<string, string | undefined>),
         ...podPrep.extraEnv,
         PC_SESSION_ID: session.row.id,
+        PC_AGENT_SESSION_ID: session.providerSessionId,
         ...(session.claudeConfigDir ? { CLAUDE_CONFIG_DIR: session.claudeConfigDir } : {}),
       },
+      mode: session.resume ? 'resume' : 'fresh',
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
-      agentName: podPrep.agentCliName,
       mcpConfigPath: podPrep.mcpConfigPath,
       settingsPath: podPrep.settingsPath,
       settingSources: podPrep.settingSources,
       pluginDirs: [podPrep.pluginDir],
+      transcriptPath: resolve(sessionDir, 'transcript.log'),
+      replayEventsPath: resolve(sessionDir, 'jsonl-events.jsonl'),
+      model: 'opus',
       remoteControl: true,
+      loadDevChannels: true,
+      maxSpawnAttempts: 2,
+      retryBackoffMs: 1500,
+      spawnTimeoutMs: 120_000,
     });
+    this.pty.start();
 
     // Process lifecycle is not chat lifecycle. A claude.exe child can exit
     // because of a transient resume/config problem, a terminal disconnect, or
     // a user-level Ctrl+D. The orchestrator session row stays active until PC
     // explicitly starts another session; the next ensurePty() resumes the same
     // row from its persisted JSONL path.
-    this.pty.once('exit', () => {
+    let cleaned = false;
+    const cleanupPodPrep = () => {
+      if (cleaned) return;
+      cleaned = true;
       try { podPrep.cleanup(); } catch { /* best-effort */ }
-    });
+    };
+    this.pty.once('exit', cleanupPodPrep);
+    this.pty.once('failed', cleanupPodPrep);
 
     return this.pty;
   }
 
-  /** Returns the live PtySession if one is spawned; otherwise null. */
-  ptySession(): PtySession | null {
-    return this.pty && this.pty.getState() !== 'exited' ? this.pty : null;
+  /** Returns the live orchestrator InteractiveSession if one is spawned. */
+  ptySession(): InteractiveSession | null {
+    return this.pty && !['exited', 'failed'].includes(this.pty.getState()) ? this.pty : null;
   }
 
-  /** Returns the current orchestrator PTY state without spawning a process. */
-  orchestratorPtyState(): SessionState | null {
+  /** Returns the current orchestrator process state without spawning. */
+  orchestratorPtyState(): InteractiveSessionState | null {
     return this.pty ? this.pty.getState() : null;
+  }
+
+  orchestratorRuntimeSnapshot(): {
+    spawnAttemptId: string | null;
+    spawnAttempt: number;
+    lastReadyAt: number | null;
+    nextRetryAt: number | null;
+    runtimeFailureReason: string | null;
+  } {
+    const snapshot = this.pty?.getSnapshot();
+    return {
+      spawnAttemptId: snapshot?.spawnAttemptId ?? null,
+      spawnAttempt: snapshot?.spawnAttempt ?? 0,
+      lastReadyAt: snapshot?.lastReadyAt ?? null,
+      nextRetryAt: snapshot?.nextRetryAt ?? null,
+      runtimeFailureReason: snapshot?.failureReason ?? null,
+    };
+  }
+
+  notifyOrchestratorMcpHandshake(providerSessionId: string): boolean {
+    const active = getActiveOrchestratorSession(this.project.id);
+    if (!active || active.providerSessionId !== providerSessionId) return false;
+    if (!this.pty) return false;
+    this.pty.notifyMcpHandshake();
+    return true;
   }
 
   /** Returns the active orchestrator session row, if any. */
   activeSession(): OrchestratorSession | null {
     return getActiveOrchestratorSession(this.project.id);
+  }
+
+  /** Ensure there is a durable active chat row without spawning Claude.
+   *  Used by WS subscribe / send paths so UI replay and queueing are not
+   *  blocked on a slow provider process start. */
+  ensureActiveSession(): OrchestratorSession {
+    const active = getActiveOrchestratorSession(this.project.id);
+    if (active) return active;
+    return createOrchestratorSession({
+      projectId: this.project.id,
+      providerSessionId: randomUUID(),
+    });
   }
 
   /**
@@ -651,6 +707,7 @@ export class ProjectRuntime {
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      pcSessionId: transientId,
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,
@@ -768,6 +825,7 @@ export class ProjectRuntime {
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      pcSessionId: transientId,
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,
@@ -844,6 +902,7 @@ export class ProjectRuntime {
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
       eventsPath: resolve(sessionDir, 'events.jsonl'),
       transcriptPath: resolve(sessionDir, 'transcript.log'),
+      pcSessionId: transientId,
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,

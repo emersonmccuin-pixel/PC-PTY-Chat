@@ -17,7 +17,17 @@ import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 
 export type JsonlEvent =
-  | { kind: 'jsonl-user'; text: string }
+  | {
+      kind: 'jsonl-user';
+      text: string;
+      /** True when CC flagged this entry as a non-conversational meta injection
+       *  (e.g. a webhook channel event written by PC itself). Read-only decode —
+       *  the field is already on-disk; the tailer just surfaces it. */
+      isMeta?: boolean;
+      /** Channel / origin metadata. `kind === 'channel'` identifies messages
+       *  injected via the PC channel server rather than typed by the user. */
+      origin?: { kind?: string; server?: string } | null;
+    }
   | { kind: 'jsonl-queue-enqueue'; timestamp: string | null }
   | { kind: 'jsonl-queue-dequeue'; timestamp: string | null }
   | {
@@ -176,6 +186,13 @@ export interface JsonlTailerOptions {
   pollIntervalMs?: number;
 }
 
+export interface JsonlEventMeta {
+  /** 1-based line cursor in Claude's source JSONL that produced this event.
+   *  Multiple normalized events can share a cursor when one provider row
+   *  expands into tool-call + usage + turn-end events. */
+  sourceCursor: number;
+}
+
 /**
  * One tailer = one JSONL file. Emits:
  *   'event' (JsonlEvent) — one per canonical event derived from a line
@@ -187,6 +204,7 @@ export class JsonlTailer extends EventEmitter {
   private cursor: number;
   private pollIntervalMs: number;
   private poller: ReturnType<typeof setInterval> | null = null;
+  private currentSourceCursor: number | null = null;
 
   constructor(opts: JsonlTailerOptions) {
     super();
@@ -218,6 +236,15 @@ export class JsonlTailer extends EventEmitter {
     return this.cursor;
   }
 
+  override emit(eventName: string | symbol, ...args: unknown[]): boolean {
+    if (eventName === 'event' && args.length === 1 && this.currentSourceCursor !== null) {
+      return super.emit(eventName, args[0], {
+        sourceCursor: this.currentSourceCursor,
+      } satisfies JsonlEventMeta);
+    }
+    return super.emit(eventName, ...args);
+  }
+
   private readTail(): void {
     if (!existsSync(this.filePath)) return;
     let content: string;
@@ -246,12 +273,22 @@ export class JsonlTailer extends EventEmitter {
         // Malformed line — skip but still advance the cursor below.
         continue;
       }
-      this.processEntry(obj);
+      this.processEntry(obj, i + 1);
     }
     this.cursor = completeLines.length;
   }
 
-  private processEntry(obj: unknown): void {
+  private processEntry(obj: unknown, sourceCursor: number): void {
+    const priorSourceCursor = this.currentSourceCursor;
+    this.currentSourceCursor = sourceCursor;
+    try {
+      this.processEntryWithCursor(obj);
+    } finally {
+      this.currentSourceCursor = priorSourceCursor;
+    }
+  }
+
+  private processEntryWithCursor(obj: unknown): void {
     if (!obj || typeof obj !== 'object') return;
     const entry = obj as Record<string, unknown>;
 

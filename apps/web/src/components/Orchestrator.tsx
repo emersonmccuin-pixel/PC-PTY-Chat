@@ -60,6 +60,7 @@ function legacyHealthFromPtyState(state: string | null): OrchestratorRuntimeHeal
       return 'spawning';
     case 'ready':
       return 'ready';
+    case 'busy':
     case 'thinking':
       return 'busy';
     case 'exited':
@@ -194,8 +195,13 @@ export function Orchestrator({
         // live tailer events (jsonl) and legacy pre-23 hook events.
         const wrapped: WsEnvelope[] = raw.map((env) => ({
           projectId: project.id,
+          id: env.id,
+          sessionId: env.sessionId,
+          seq: env.seq,
           type: env.type,
+          kind: env.kind,
           event: env.event as Record<string, unknown>,
+          source: env.source,
         }));
         setPastEvents(wrapped);
       })
@@ -447,11 +453,32 @@ export function Orchestrator({
 
   const runtimeHealth =
     runtimeSnapshot?.health ?? legacyHealthFromPtyState(latestRuntimeState);
+  useEffect(() => {
+    if (isViewingPast) return;
+    if (runtimeHealth !== 'spawning' && runtimeHealth !== 'respawning') return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const runtime = await api.getOrchestratorRuntime(project.id);
+        if (!cancelled) setRuntimeSnapshot(runtime);
+      } catch (err) {
+        console.error('[pc] getOrchestratorRuntime poll', err);
+      }
+    };
+
+    void refresh();
+    const id = setInterval(refresh, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [isViewingPast, project.id, runtimeHealth]);
   const runtimeStarting =
     !isViewingPast &&
     !startingNewSession &&
     (runtimeHealth === 'spawning' || runtimeHealth === 'respawning');
-  const composerHidden = isViewingPast || sessionEnded || startingNewSession;
+  const composerHidden = isViewingPast || sessionEnded;
   const composerAvailability = composerAvailabilityFor({
     wsStatus,
     health: runtimeHealth,
@@ -467,14 +494,18 @@ export function Orchestrator({
     composerAvailability.mode === 'inaccessible'
       ? composerAvailability.reason
       : undefined;
-  const composerPlaceholder = composerAvailability.placeholder;
+  const composerPlaceholder = startingNewSession
+    ? 'Starting a new chat... type while Claude starts'
+    : composerAvailability.placeholder;
   const composerQueueing = composerAvailability.mode === 'queueing';
   const composerSendLabel =
     composerAvailability.mode === 'live' || composerAvailability.mode === 'queueing'
       ? composerAvailability.sendLabel
       : 'Send ↵';
   const composerStatusMessage =
-    composerAvailability.mode === 'queueing'
+    startingNewSession
+      ? 'Starting a new chat; send will unlock when the session is ready.'
+      : composerAvailability.mode === 'queueing'
       ? composerStatusMessageFor(composerAvailability.reason)
       : undefined;
 
@@ -596,6 +627,7 @@ export function Orchestrator({
       composerHistoryKey={project.slug}
       composerHidden={composerHidden}
       composerDisabled={composerDisabled}
+      composerSendDisabled={startingNewSession}
       composerPlaceholder={composerPlaceholder}
       composerDisabledReason={composerDisabledReason}
       composerQueueing={composerQueueing}

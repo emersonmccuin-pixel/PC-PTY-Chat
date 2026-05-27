@@ -5,10 +5,12 @@ import { deriveRuntimeHealth } from '../src/services/orchestrator-runtime-health
 
 test('runtime health maps an absent PTY to not_spawned', () => {
   assert.equal(deriveRuntimeHealth({ ptyState: null }), 'not_spawned');
+  assert.equal(deriveRuntimeHealth({ ptyState: 'stopped' }), 'not_spawned');
 });
 
-test('runtime health maps PTY thinking to busy', () => {
+test('runtime health maps PTY thinking/busy to busy', () => {
   assert.equal(deriveRuntimeHealth({ ptyState: 'thinking' }), 'busy');
+  assert.equal(deriveRuntimeHealth({ ptyState: 'busy' }), 'busy');
 });
 
 test('runtime health distinguishes first spawn from respawn', () => {
@@ -21,6 +23,10 @@ test('runtime health distinguishes first spawn from respawn', () => {
 
 test('runtime health preserves terminal PTY exit', () => {
   assert.equal(deriveRuntimeHealth({ ptyState: 'exited' }), 'exited');
+});
+
+test('runtime health maps failed wrapper state to failed resume health', () => {
+  assert.equal(deriveRuntimeHealth({ ptyState: 'failed' }), 'failed_resume');
 });
 
 test('runtime health failures override transient PTY state', () => {

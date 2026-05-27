@@ -226,8 +226,18 @@ function canonicalUserTextFromEnvelope(env: WsEnvelope): string | null {
 
 function confirmedPendingIds(events: WsEnvelope[], pendingPrompts: PendingPrompt[]): Set<string> {
   const confirmed = new Set<string>();
+  const pendingIds = new Set(pendingPrompts.map((pending) => pending.id));
   for (let i = 0; i < events.length; i++) {
-    const text = canonicalUserTextFromEnvelope(events[i]!);
+    const env = events[i]!;
+    if (env.type === 'send-queue-snapshot') {
+      const snapshot = env as SendQueueSnapshotEnvelope;
+      for (const item of snapshot.items) {
+        if (item.status === 'observed_in_jsonl' && pendingIds.has(item.clientMessageId)) {
+          confirmed.add(item.clientMessageId);
+        }
+      }
+    }
+    const text = canonicalUserTextFromEnvelope(env);
     if (text === null) continue;
     const match = pendingPrompts.find((pending) => {
       if (confirmed.has(pending.id) || pending.text !== text) return false;
@@ -782,6 +792,9 @@ interface ChatSurfaceProps {
    *  spawn / exited states where the composer is structurally present but
    *  input isn't yet (or no longer) accepted. */
   composerDisabled?: boolean;
+  /** Keep the textarea editable, but prevent submitting. Used during a
+   *  new-session transition so drafts don't leak into the previous session. */
+  composerSendDisabled?: boolean;
   /** Override composer placeholder. Defaults to the orchestrator string. */
   composerPlaceholder?: string;
   /** User-facing reason when the composer is disabled but still visible. */
@@ -819,6 +832,7 @@ export function ChatSurface({
   composerHistoryKey,
   composerHidden,
   composerDisabled,
+  composerSendDisabled,
   composerPlaceholder,
   composerDisabledReason,
   composerQueueing,
@@ -1066,7 +1080,7 @@ export function ChatSurface({
   // weren't honoring it). `spawning` covers a respawn after a server restart.
   const isThinking =
     jsonlBusy === null
-      ? liveState === 'thinking'
+      ? liveState === 'thinking' || liveState === 'busy'
       : jsonlBusy &&
         liveState !== 'ready' &&
         liveState !== 'exited' &&
@@ -1527,6 +1541,7 @@ export function ChatSurface({
           onCancelQueueItem={handleCancelQueueItem}
           onRetryQueueItem={handleRetryQueueItem}
           disabled={composerDisabled}
+          sendDisabled={composerSendDisabled}
           placeholder={composerPlaceholder}
           disabledReason={composerDisabledReason}
           statusMessage={composerStatusMessage}
@@ -3332,6 +3347,7 @@ function Composer({
   onCancelQueueItem,
   onRetryQueueItem,
   disabled,
+  sendDisabled,
   placeholder,
   disabledReason,
   statusMessage,
@@ -3344,6 +3360,7 @@ function Composer({
   onCancelQueueItem: (item: ComposerQueueItem) => Promise<boolean>;
   onRetryQueueItem: (item: ComposerQueueItem) => Promise<boolean>;
   disabled?: boolean;
+  sendDisabled?: boolean;
   placeholder?: string;
   disabledReason?: string;
   statusMessage?: string;
@@ -3386,6 +3403,7 @@ function Composer({
   useEffect(() => { resizeTextarea(); }, [text, resizeTextarea]);
 
   function clickInterrupt() {
+    if (sendDisabled) return;
     if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
     const ok = onInterrupt();
     setInterruptFeedback(ok ? 'sent' : 'failed');
@@ -3423,6 +3441,7 @@ function Composer({
   function submit() {
     const trimmed = text.trim();
     if (!trimmed) return;
+    if (sendDisabled) return;
     if (onSend(trimmed)) {
       const hist = historyRef.current;
       if (hist[hist.length - 1] !== trimmed) {
@@ -3610,7 +3629,7 @@ function Composer({
         <button
           type="button"
           onClick={submit}
-          disabled={disabled || !text.trim()}
+          disabled={disabled || sendDisabled || !text.trim()}
           className="bg-primary px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
           {sendLabel}
@@ -3618,7 +3637,7 @@ function Composer({
         <button
           type="button"
           onClick={clickInterrupt}
-          disabled={disabled || interruptFeedback === 'sent'}
+          disabled={disabled || sendDisabled || interruptFeedback === 'sent'}
           title="Stop the current response (sends Escape to the PTY)"
           className={
             'border px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50 ' +

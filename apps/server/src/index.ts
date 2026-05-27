@@ -23,6 +23,7 @@ import {
   claudeConfigDir,
   jsonlPathFor,
   setConfiguredClaudeExe,
+  type JsonlReplayMeta,
 } from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
@@ -76,8 +77,8 @@ import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import {
-  loadSessionReplayEnvelopes,
-  type ReplayEnvelope,
+  loadSessionReplayCheckpoint,
+  type SessionReplayCheckpoint,
 } from './services/session-replay.ts';
 import {
   deriveRuntimeHealth,
@@ -327,6 +328,10 @@ interface PublicRuntimeSnapshot {
   ptyState: string | null;
   exitCode: number | null;
   exitSignal: string | null;
+  spawnAttemptId: string | null;
+  spawnAttempt: number;
+  lastReadyAt: number | null;
+  nextRetryAt: number | null;
   lastExitAt: number | null;
   lastActivityAt: number | null;
   failureReason: string | null;
@@ -419,6 +424,7 @@ function runtimeSnapshotPayload(
   const active = getActiveOrchestratorSession(projectId);
   const lifecycle = runtimeLifecycleFor(projectId);
   const ptyState = runtime.orchestratorPtyState();
+  const runtimeDetails = runtime.orchestratorRuntimeSnapshot();
   const health = deriveRuntimeHealth({
     ptyState,
     lastExitAt: lifecycle.lastExitAt,
@@ -438,9 +444,13 @@ function runtimeSnapshotPayload(
     ptyState,
     exitCode: lifecycle.exitCode,
     exitSignal: lifecycle.exitSignal,
+    spawnAttemptId: runtimeDetails.spawnAttemptId,
+    spawnAttempt: runtimeDetails.spawnAttempt,
+    lastReadyAt: runtimeDetails.lastReadyAt,
+    nextRetryAt: runtimeDetails.nextRetryAt,
     lastExitAt: lifecycle.lastExitAt,
     lastActivityAt: lifecycle.lastActivityAt ?? active?.startedAt ?? null,
-    failureReason: lifecycle.failure?.reason ?? null,
+    failureReason: lifecycle.failure?.reason ?? runtimeDetails.runtimeFailureReason,
     rawJsonlPath,
     rawJsonlExists: rawJsonlPath ? existsSync(rawJsonlPath) : false,
     replayPath,
@@ -483,9 +493,25 @@ function queuedStatusForState(
   return 'queued_busy';
 }
 
+const sendQueueDeliveryInFlight = new Set<ULID>();
+
 function deliverNextQueuedPrompt(projectId: ULID, runtime: ProjectRuntime): void {
   const active = getActiveOrchestratorSession(projectId);
   if (!active) return;
+  if (sendQueueDeliveryInFlight.has(active.id)) return;
+  sendQueueDeliveryInFlight.add(active.id);
+  void deliverNextQueuedPromptOnce(projectId, runtime, active.id).finally(() => {
+    sendQueueDeliveryInFlight.delete(active.id);
+  });
+}
+
+async function deliverNextQueuedPromptOnce(
+  projectId: ULID,
+  runtime: ProjectRuntime,
+  sessionId: ULID,
+): Promise<void> {
+  const active = getActiveOrchestratorSession(projectId);
+  if (!active || active.id !== sessionId) return;
   const live = runtime.ptySession();
   if (!live || live.getState() !== 'ready') {
     broadcastSendQueueSnapshot(projectId, active.id);
@@ -499,8 +525,12 @@ function deliverNextQueuedPrompt(projectId: ULID, runtime: ProjectRuntime): void
   markOrchestratorSendDelivering(next.id);
   broadcastSendQueueSnapshot(projectId, active.id);
   try {
-    live.send(next.text);
-    markOrchestratorSendDelivered(next.id);
+    const result = await live.send(next.text);
+    if (result === 'ok') {
+      markOrchestratorSendDelivered(next.id);
+    } else {
+      markOrchestratorSendFailed(next.id, `send returned ${result}`);
+    }
   } catch (err) {
     markOrchestratorSendFailed(
       next.id,
@@ -522,6 +552,23 @@ function maybeAdvanceSendQueueConfirmation(
   if (observed) broadcastSendQueueSnapshot(projectId, sessionId);
 }
 
+function replayMetaPayload(replay: JsonlReplayMeta | undefined): {
+  id?: string;
+  sessionId?: string;
+  seq?: number;
+  kind?: string;
+  source?: JsonlReplayMeta['source'];
+} {
+  if (!replay) return {};
+  return {
+    id: replay.id,
+    sessionId: replay.sessionId,
+    seq: replay.seq,
+    kind: replay.kind,
+    source: replay.source,
+  };
+}
+
 function ensureOrchestratorPty(
   projectId: ULID,
   runtime: ProjectRuntime,
@@ -538,6 +585,23 @@ function ensureOrchestratorPty(
     broadcastRuntimeSnapshot(projectId, runtime);
     throw err;
   }
+}
+
+function startOrchestratorPtyInBackground(
+  projectId: ULID,
+  runtime: ProjectRuntime,
+): void {
+  setImmediate(() => {
+    try {
+      ensureOrchestratorPty(projectId, runtime);
+    } catch (err) {
+      console.error(
+        `[pc] background orchestrator start failed for ${projectId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  });
 }
 
 const projectScaffold = new ProjectScaffold({
@@ -740,12 +804,20 @@ function attachPtyHandlers(
     broadcastTo(projectId, { type: 'event', event });
     broadcastRuntimeSnapshot(projectId, runtime);
   });
+  session.on('error', (err: unknown) => {
+    noteRuntimeFailure(projectId, err);
+    broadcastRuntimeSnapshot(projectId, runtime);
+  });
+  session.on('failed', (reason: string) => {
+    noteRuntimeFailure(projectId, reason);
+    broadcastRuntimeSnapshot(projectId, runtime);
+  });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
   // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
   // so the chat panel can merge them without ambiguity.
-  session.on('jsonl-event', (event: unknown) => {
+  session.on('jsonl-event', (event: unknown, replay?: JsonlReplayMeta) => {
     noteRuntimeActivity(projectId);
-    broadcastTo(projectId, { type: 'jsonl', event });
+    broadcastTo(projectId, { type: 'jsonl', event, ...replayMetaPayload(replay) });
     maybeAdvanceSendQueueConfirmation(projectId, attachedSessionId, event);
     broadcastRuntimeSnapshot(projectId, runtime);
     // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
@@ -1596,12 +1668,17 @@ app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
   const sessionId = c.req.param('sessionId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const events = loadSessionReplayEnvelopes(runtime.sessionDataPath(sessionId));
-  return c.json({ ok: true, events });
+  const replay = loadSessionReplayCheckpoint(runtime.sessionDataPath(sessionId), sessionId);
+  return c.json({
+    ok: true,
+    sessionId: replay.sessionId,
+    highWaterSeq: replay.highWaterSeq,
+    events: replay.events,
+  });
 });
 
-/** Start a fresh session: end the active row, wipe per-project chat files,
- *  kill the PTY, then immediately respawn so the UI sees a live state. */
+/** Start a fresh session: end the active row, kill the PTY, return the empty
+ *  replay checkpoint immediately, then respawn Claude in the background. */
 app.post('/api/projects/:projectId/sessions/new', (c) => {
   const id = c.req.param('projectId') as ULID;
   const runtime = resolveProject(id);
@@ -1612,20 +1689,20 @@ app.post('/api/projects/:projectId/sessions/new', (c) => {
     broadcastSendQueueSnapshot(id, previous.id);
   }
   const session = runtime.startNewSession();
-  try {
-    ensureOrchestratorPty(id, runtime);
-  } catch (err) {
-    return c.json({
-      ok: false,
-      error: err instanceof Error ? err.message : 'Failed to start Claude',
-    }, 409);
-  }
   const replay = loadSessionReplay(runtime, session.id);
   // Tell every subscriber to clear its local chat state; the next replay will
   // be empty (we just wiped events.jsonl) so the panel starts blank.
   broadcastTo(id, { type: 'session-changed', transition: 'new-session', session });
-  broadcastSessionReplay(id, session.id, replay);
-  return c.json({ ok: true, transition: 'new-session', session, replay });
+  broadcastSessionReplay(id, replay);
+  broadcastSendQueueSnapshot(id, session.id);
+  startOrchestratorPtyInBackground(id, runtime);
+  return c.json({
+    ok: true,
+    transition: 'new-session',
+    session,
+    replay: replay.events,
+    highWaterSeq: replay.highWaterSeq,
+  });
 });
 
 /** Resume a past orchestrator session. Re-activates the target row, respawns
@@ -1649,18 +1726,18 @@ app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
     cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by resume');
     broadcastSendQueueSnapshot(id, previous.id);
   }
-  try {
-    ensureOrchestratorPty(id, runtime);
-  } catch (err) {
-    return c.json({
-      ok: false,
-      error: err instanceof Error ? err.message : 'Failed to resume Claude',
-    }, 409);
-  }
   const replay = loadSessionReplay(runtime, session.id);
   broadcastTo(id, { type: 'session-changed', transition: 'resume-session', session });
-  broadcastSessionReplay(id, session.id, replay);
-  return c.json({ ok: true, transition: 'resume-session', session, replay });
+  broadcastSessionReplay(id, replay);
+  broadcastSendQueueSnapshot(id, session.id);
+  startOrchestratorPtyInBackground(id, runtime);
+  return c.json({
+    ok: true,
+    transition: 'resume-session',
+    session,
+    replay: replay.events,
+    highWaterSeq: replay.highWaterSeq,
+  });
 });
 
 app.post('/api/projects/:projectId/send-queue/:sendId/cancel', (c) => {
@@ -1735,8 +1812,11 @@ app.post('/api/projects/:projectId/send-queue/:sendId/retry', (c) => {
   return c.json({ ok: true, item: publicSendQueueItem(retried) });
 });
 
-function loadSessionReplay(runtime: ProjectRuntime, sessionId: ULID): ReplayEnvelope[] {
-  return loadSessionReplayEnvelopes(runtime.sessionDataPath(sessionId));
+function loadSessionReplay(
+  runtime: ProjectRuntime,
+  sessionId: ULID,
+): SessionReplayCheckpoint {
+  return loadSessionReplayCheckpoint(runtime.sessionDataPath(sessionId), sessionId);
 }
 
 /** Send a session's normalized event log as one checkpoint. This keeps
@@ -1745,10 +1825,14 @@ function loadSessionReplay(runtime: ProjectRuntime, sessionId: ULID): ReplayEnve
  *  individual WS messages that can race local navigation state. */
 function broadcastSessionReplay(
   projectId: ULID,
-  sessionId: ULID,
-  events: ReplayEnvelope[],
+  replay: SessionReplayCheckpoint,
 ): void {
-  broadcastTo(projectId, { type: 'session-replay', sessionId, events });
+  broadcastTo(projectId, {
+    type: 'session-replay',
+    sessionId: replay.sessionId,
+    highWaterSeq: replay.highWaterSeq,
+    events: replay.events,
+  });
 }
 
 // ── Agent-designer transient session (17b.12) ─────────────────────────────
@@ -3250,6 +3334,10 @@ app.post('/api/internal/mcp-handshake', async (c) => {
   if (notifyWorkflowSubagentHandshake(body.agentSessionId)) {
     return c.json({ ok: true, found: true, transport: 'workflow' });
   }
+  const runtime = resolveProject(body.projectId);
+  if (runtime?.notifyOrchestratorMcpHandshake(body.agentSessionId)) {
+    return c.json({ ok: true, found: true, transport: 'orchestrator' });
+  }
   return c.json({ ok: true, found: false });
 });
 
@@ -3760,26 +3848,19 @@ wss.on('connection', (ws, req) => {
 
   const detachSubscriber = wsHub.subscribe(projectId, ws);
 
-  // Spawn the PtySession on first subscriber. Bind event forwarders.
-  let session: ReturnType<ProjectRuntime['ensurePty']>;
-  try {
-    session = ensureOrchestratorPty(projectId, runtime);
-  } catch (err) {
-    try {
-      ws.send(JSON.stringify({
-        projectId,
-        ...runtimeSnapshotPayload(projectId, runtime),
-      }));
-      ws.close(1011, err instanceof Error ? err.message : 'Failed to start Claude');
-    } catch {
-      /* best effort */
-    }
-    return;
-  }
+  // Replay and session metadata must not block on Claude startup. Ensure the
+  // durable PC session row exists, send the checkpoint surfaces synchronously,
+  // then start the transient PTY in the background.
+  const activeSession = runtime.ensureActiveSession();
 
   // P14: tag direct-to-client sends with projectId, same as broadcastTo does
   // for fan-out paths. Keeps the envelope contract uniform.
-  ws.send(JSON.stringify({ projectId, type: 'state', state: session.getState() }));
+  ws.send(JSON.stringify({ projectId, type: 'session-changed', session: activeSession }));
+  const liveSession = runtime.ptySession();
+  if (liveSession) {
+    attachPtyHandlers(projectId, runtime, liveSession);
+    ws.send(JSON.stringify({ projectId, type: 'state', state: liveSession.getState() }));
+  }
   ws.send(JSON.stringify({ projectId, ...runtimeSnapshotPayload(projectId, runtime) }));
 
   // Section 23 — replay the active session's normalized event log so a
@@ -3787,19 +3868,20 @@ wss.on('connection', (ws, req) => {
   // jsonl-events.jsonl (canonical post-23) with a fallback to the legacy
   // events.jsonl for pre-23 sessions. Past sessions render via
   // GET /api/projects/:id/sessions/:sessionId/events, not the WS replay.
-  const activeSession = getActiveOrchestratorSession(projectId);
   if (activeSession) {
-    const events = loadSessionReplayEnvelopes(runtime.sessionDataPath(activeSession.id));
+    const replay = loadSessionReplay(runtime, activeSession.id);
     ws.send(JSON.stringify({
       projectId,
       type: 'session-replay',
-      sessionId: activeSession.id,
-      events,
+      sessionId: replay.sessionId,
+      highWaterSeq: replay.highWaterSeq,
+      events: replay.events,
     }));
     ws.send(JSON.stringify({ projectId, ...sendQueueSnapshotPayload(activeSession.id) }));
   }
+  startOrchestratorPtyInBackground(projectId, runtime);
 
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
     let msg: { type?: string; text?: string; clientMessageId?: unknown; cols?: number; rows?: number };
     try {
       msg = JSON.parse(raw.toString());
@@ -3833,14 +3915,12 @@ wss.on('connection', (ws, req) => {
           typeof msg.clientMessageId === 'string' && msg.clientMessageId
             ? msg.clientMessageId
             : newId();
-        const active = getActiveOrchestratorSession(projectId);
+        let active = getActiveOrchestratorSession(projectId);
         if (!active) {
-          sendAck(msg.clientMessageId, {
-            ok: false,
-            status: 'no-session',
-            error: 'No active orchestrator session is attached',
-          });
-          break;
+          active = runtime.ensureActiveSession();
+          broadcastTo(projectId, { type: 'session-changed', session: active });
+          broadcastSessionReplay(projectId, loadSessionReplay(runtime, active.id));
+          broadcastSendQueueSnapshot(projectId, active.id);
         }
         let live = runtime.ptySession();
         if (!live) {
@@ -3885,7 +3965,15 @@ wss.on('connection', (ws, req) => {
           break;
         }
         try {
-          live.send(msg.text);
+          const result = await live.send(msg.text);
+          if (result !== 'ok') {
+            sendAck(msg.clientMessageId, {
+              ok: false,
+              status: 'error',
+              error: `send returned ${result}`,
+            });
+            break;
+          }
           const row = recordDeliveredOrchestratorSend({
             projectId,
             sessionId: active.id,

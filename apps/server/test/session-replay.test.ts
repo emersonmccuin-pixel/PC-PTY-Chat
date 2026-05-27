@@ -16,7 +16,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadSessionReplayEnvelopes } from '../src/services/session-replay.ts';
+import {
+  loadSessionReplayCheckpoint,
+  loadSessionReplayEnvelopes,
+} from '../src/services/session-replay.ts';
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'pc-session-replay-'));
@@ -51,8 +54,53 @@ test('new path: jsonl-events.jsonl present → returns {type:"jsonl", event} env
     assert.equal(got.length, 4);
     for (let i = 0; i < got.length; i++) {
       assert.equal(got[i]?.type, 'jsonl');
+      assert.equal(got[i]?.seq, i + 1);
+      assert.equal(got[i]?.id, `${got[i]?.sessionId}:${i + 1}`);
+      assert.equal(got[i]?.source.kind, 'claude-jsonl');
       assert.deepEqual(got[i]?.event, events[i]?.event);
     }
+  } finally { cleanup(dir); }
+});
+
+test('checkpoint exposes highWaterSeq and preserves stored sequence order', () => {
+  const dir = makeTempDir();
+  try {
+    const file = join(dir, 'jsonl-events.jsonl');
+    appendFileSync(
+      file,
+      JSON.stringify({
+        id: 'session-a:2',
+        sessionId: 'session-a',
+        seq: 2,
+        type: 'jsonl',
+        kind: 'jsonl-user',
+        event: { kind: 'jsonl-user', text: 'second' },
+        source: { kind: 'claude-jsonl', cursor: 8 },
+      }) + '\n',
+    );
+    appendFileSync(file, '{ malformed partial\n');
+    appendFileSync(
+      file,
+      JSON.stringify({
+        id: 'session-a:1',
+        sessionId: 'session-a',
+        seq: 1,
+        type: 'jsonl',
+        kind: 'jsonl-user',
+        event: { kind: 'jsonl-user', text: 'first' },
+        source: { kind: 'claude-jsonl', cursor: 7 },
+      }) + '\n',
+    );
+
+    const got = loadSessionReplayCheckpoint(dir, 'session-a');
+    assert.equal(got.sessionId, 'session-a');
+    assert.equal(got.highWaterSeq, 2);
+    assert.deepEqual(got.events.map((event) => event.seq), [1, 2]);
+    assert.deepEqual(
+      got.events.map((event) => (event.event as { text?: string }).text),
+      ['first', 'second'],
+    );
+    assert.equal(got.events[1]?.source.cursor, 8);
   } finally { cleanup(dir); }
 });
 
@@ -70,8 +118,11 @@ test('legacy fallback: only events.jsonl present → returns {type:"event", even
     const got = loadSessionReplayEnvelopes(dir);
     assert.equal(got.length, 2);
     assert.equal(got[0]?.type, 'event');
+    assert.equal(got[0]?.seq, 1);
+    assert.equal(got[0]?.source.kind, 'legacy-events-jsonl');
     assert.deepEqual(got[0]?.event, events[0]);
     assert.equal(got[1]?.type, 'event');
+    assert.equal(got[1]?.seq, 2);
     assert.deepEqual(got[1]?.event, events[1]);
   } finally { cleanup(dir); }
 });
@@ -118,6 +169,8 @@ test('malformed lines in jsonl-events.jsonl are skipped, valid lines pass throug
 
     const got = loadSessionReplayEnvelopes(dir);
     assert.equal(got.length, 2);
+    assert.deepEqual(got.map((event) => event.seq), [1, 2]);
+    assert.deepEqual(got.map((event) => event.source.cursor), [1, 3]);
     assert.deepEqual(got[0]?.event, { kind: 'jsonl-user', text: 'first' });
     assert.deepEqual(got[1]?.event, { kind: 'jsonl-user', text: 'second' });
   } finally { cleanup(dir); }

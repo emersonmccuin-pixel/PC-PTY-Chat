@@ -22,6 +22,17 @@ test('detects resume-mode cursor-forward rendering of remote-control prompt', ()
   assert.equal(terminalBufferLooksReady(resumePainting), true);
 });
 
+test('detects resume repaint when cursor-forward splits words', () => {
+  const resumePainting =
+    '/remot\x1b[1Ce-contro\x1b[1Cl is active · Continue here';
+
+  assert.equal(terminalBufferLooksReady(resumePainting), true);
+});
+
+test('detects remote-control status line as ready', () => {
+  assert.equal(terminalBufferLooksReady('Remote Control active'), true);
+});
+
 test('does not mark unrelated output ready', () => {
   assert.equal(terminalBufferLooksReady('Loading development channels'), false);
 });

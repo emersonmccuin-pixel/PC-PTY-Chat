@@ -14,7 +14,7 @@
 // around reconnects. Active-session history now arrives as one
 // `session-replay` checkpoint instead of a burst of individual WS messages.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import type {
   OrchestratorRuntimeSnapshot,
@@ -23,6 +23,13 @@ import type {
   SessionTransitionKind,
   SessionTransitionResponse,
 } from '@/api/client';
+import {
+  chatSessionReducer,
+  createChatSessionState,
+  materializeChatSessionEvents,
+  replayEventsFromEnvelope,
+  replayEventsFromItems,
+} from '@/hooks/chat-session-reducer';
 
 export interface WsEnvelope {
   projectId: string;
@@ -71,6 +78,7 @@ export interface RuntimeStateEnvelope extends WsEnvelope, OrchestratorRuntimeSna
 export interface SessionReplayEnvelope extends WsEnvelope {
   type: 'session-replay';
   sessionId: string;
+  highWaterSeq?: number;
   events: SessionReplayItem[];
 }
 
@@ -532,17 +540,6 @@ interface UseProjectWsResult {
   applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
-// 2026-05-20 — bumped 500 → 10_000 to fix "chat history disappears mid-session"
-// (user description: "the entire chat disappears and it looks like a fresh
-// session with no history"). PC's chat panel ingests TWO streams per logical
-// event (Hook + JSONL tailer), and both halves of every tool call (start +
-// end) land here before any dedup. A turn with 30 tool calls is ~150
-// envelopes; a few busy turns blew past the prior 500 cap and slid the
-// oldest user/assistant entries off the front of the buffer. Refreshing the
-// page rehydrates from events.jsonl on disk, which is why the chat came back
-// on reload. The 10k ceiling gives multi-hour comfort without the dual-stream
-// dedupe refactor.
-const MAX_BUFFERED = 10_000;
 /** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
 export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
 
@@ -550,28 +547,6 @@ function eventTimestamp(env: WsEnvelope): string | null {
   if (env.type !== 'event') return null;
   const inner = (env.event as { ts?: unknown } | undefined) ?? {};
   return typeof inner.ts === 'string' ? inner.ts : null;
-}
-
-function replayEventsFromEnvelope(env: WsEnvelope, projectId: string): WsEnvelope[] {
-  if (env.type !== 'session-replay') return [];
-  const rawEvents = (env as Partial<SessionReplayEnvelope>).events;
-  return replayEventsFromItems(rawEvents, projectId);
-}
-
-function replayEventsFromItems(rawEvents: unknown, projectId: string): WsEnvelope[] {
-  if (!Array.isArray(rawEvents)) return [];
-  const out: WsEnvelope[] = [];
-  for (const candidate of rawEvents) {
-    if (!candidate || typeof candidate !== 'object') continue;
-    const type = (candidate as { type?: unknown }).type;
-    if (type !== 'jsonl' && type !== 'event') continue;
-    out.push({
-      projectId,
-      type,
-      event: (candidate as { event?: unknown }).event,
-    });
-  }
-  return out;
 }
 
 function sessionTransitionKind(env: WsEnvelope): SessionTransitionKind | null {
@@ -582,34 +557,6 @@ function sessionTransitionKind(env: WsEnvelope): SessionTransitionKind | null {
     : null;
 }
 
-function sessionIdFromSessionChanged(env: WsEnvelope): string | null {
-  if (env.type !== 'session-changed') return null;
-  const session = (env as Partial<SessionChangedEnvelope>).session;
-  if (!session || typeof session !== 'object') return null;
-  const id = (session as { id?: unknown }).id;
-  return typeof id === 'string' ? id : null;
-}
-
-function sessionIdFromSessionReplay(env: WsEnvelope): string | null {
-  if (env.type !== 'session-replay') return null;
-  const id = (env as Partial<SessionReplayEnvelope>).sessionId;
-  return typeof id === 'string' ? id : null;
-}
-
-function latestRuntimeForSession(
-  events: WsEnvelope[],
-  sessionId: string | null,
-): RuntimeStateEnvelope | null {
-  if (!sessionId) return null;
-  for (let i = events.length - 1; i >= 0; i--) {
-    const candidate = events[i]!;
-    if (candidate.type !== 'runtime-state') continue;
-    const runtime = candidate as RuntimeStateEnvelope;
-    if (runtime.sessionId === sessionId) return runtime;
-  }
-  return null;
-}
-
 export function nextBackoffMs(prevDelay: number): number {
   const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
   if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
@@ -617,13 +564,24 @@ export function nextBackoffMs(prevDelay: number): number {
 }
 
 export function useProjectWs(project: Project | null): UseProjectWsResult {
-  const [events, setEvents] = useState<WsEnvelope[]>([]);
+  const [sessionState, dispatchSession] = useReducer(
+    chatSessionReducer,
+    null,
+    () => createChatSessionState(null),
+  );
+  const events = useMemo(
+    () =>
+      project && sessionState.projectId === project.id
+        ? materializeChatSessionEvents(sessionState)
+        : [],
+    [project, sessionState],
+  );
   const [status, setStatus] = useState<WsStatus>('idle');
   const wsRef = useRef<WebSocket | null>(null);
   const seenTsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    setEvents([]);
+    dispatchSession({ type: 'reset-project', projectId: project?.id ?? null });
     seenTsRef.current.clear();
     if (!project) {
       setStatus('idle');
@@ -679,56 +637,26 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           }
         }
         const final = env;
-        // New session is a hard reset. Resume is a soft checkpoint: keep the
-        // current buffer visible until the replay snapshot lands.
         if (final.type === 'session-changed') {
           const transition = sessionTransitionKind(final);
-          if (transition === 'resume-session') {
-            setEvents((prev) => {
-              const next = [...prev, final];
-              return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
-            });
-          } else {
+          if (transition === 'new-session') {
             seenTsRef.current.clear();
-            const changedSessionId = sessionIdFromSessionChanged(final);
-            setEvents((prev) => {
-              const latestRuntime = latestRuntimeForSession(prev, changedSessionId);
-              return latestRuntime ? [latestRuntime, final] : [final];
-            });
           }
+          dispatchSession({ type: 'envelope', env: final });
           return;
         }
         if (final.type === 'session-replay') {
           const replay = replayEventsFromEnvelope(final, project!.id);
-          const replaySessionId = sessionIdFromSessionReplay(final);
           const seenTs = seenTsRef.current;
           seenTs.clear();
           for (const replayEnv of replay) {
             const ts = eventTimestamp(replayEnv);
             if (ts) seenTs.add(ts);
           }
-          setEvents((prev) => {
-            const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
-            const latestRuntime = latestRuntimeForSession(prev, replaySessionId);
-            const latestSessionChanged = [...prev]
-              .reverse()
-              .find((candidate) => candidate.type === 'session-changed');
-            const checkpoints = [
-              ...(latestState ? [latestState] : []),
-              ...(latestRuntime ? [latestRuntime] : []),
-              ...(latestSessionChanged ? [latestSessionChanged] : []),
-            ];
-            const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);
-            const replaySlice =
-              replay.length > replayLimit ? replay.slice(replay.length - replayLimit) : replay;
-            return [...checkpoints, ...replaySlice];
-          });
+          dispatchSession({ type: 'envelope', env: final });
           return;
         }
-        setEvents((prev) => {
-          const next = [...prev, final];
-          return next.length > MAX_BUFFERED ? next.slice(next.length - MAX_BUFFERED) : next;
-        });
+        dispatchSession({ type: 'envelope', env: final });
       });
     }
 
@@ -763,33 +691,21 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     (transition: SessionTransitionResponse): void => {
       if (!project || transition.session.projectId !== project.id) return;
 
-      const replay = replayEventsFromItems(transition.replay, project.id);
-      const checkpoint: SessionChangedEnvelope = {
-        projectId: project.id,
-        type: 'session-changed',
-        transition: transition.transition,
-        session: transition.session,
-      };
-
+      const replay = replayEventsFromItems(
+        transition.replay,
+        project.id,
+        transition.session.id,
+      );
       const seenTs = seenTsRef.current;
       seenTs.clear();
       for (const replayEnv of replay) {
         const ts = eventTimestamp(replayEnv);
         if (ts) seenTs.add(ts);
       }
-
-      setEvents((prev) => {
-        const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
-        const latestRuntime = latestRuntimeForSession(prev, transition.session.id);
-        const checkpoints = [
-          ...(transition.transition === 'resume-session' && latestState ? [latestState] : []),
-          ...(latestRuntime ? [latestRuntime] : []),
-          checkpoint,
-        ];
-        const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);
-        const replaySlice =
-          replay.length > replayLimit ? replay.slice(replay.length - replayLimit) : replay;
-        return [...checkpoints, ...replaySlice];
+      dispatchSession({
+        type: 'session-transition',
+        projectId: project.id,
+        transition,
       });
     },
     [project],
@@ -800,7 +716,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     status,
     clear: () => {
       seenTsRef.current.clear();
-      setEvents([]);
+      dispatchSession({ type: 'reset-project', projectId: project?.id ?? null });
     },
     send,
     applySessionTransition,

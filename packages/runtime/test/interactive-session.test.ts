@@ -1,12 +1,15 @@
 // Pin the InteractiveSession state machine.
 //
 // Simpler than AgentRun (no queue, no cap, no pause). The interesting
-// transitions are: spawning → ready (gate opens) → running (user send) →
-// ready (turn-end JSONL) → ... → exited (close or spawn exit).
+// transitions are: stopped → spawning → ready (gate opens) → busy
+// (user send) → ready (normalized turn-end JSONL) → ... → exited/failed.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   InteractiveSession,
   type InteractiveSessionInput,
@@ -24,6 +27,7 @@ class StubSpawn extends EventEmitter implements SpawnLike {
   started = false;
   killed = false;
   interrupts = 0;
+  resizes: Array<{ cols: number; rows: number }> = [];
   sent: string[] = [];
   sendResult: SendResult = 'ok';
   private readyResolve!: (ts: ReadyTimestamps) => void;
@@ -51,6 +55,9 @@ class StubSpawn extends EventEmitter implements SpawnLike {
   notifyMcpHandshake(): void {}
   interrupt(): void {
     this.interrupts++;
+  }
+  resize(cols: number, rows: number): void {
+    this.resizes.push({ cols, rows });
   }
   kill(): void {
     this.killed = true;
@@ -82,13 +89,9 @@ class StubSpawn extends EventEmitter implements SpawnLike {
   }
   fireTurnEnd(): void {
     this.emit('jsonl-event', {
-      row: {
-        type: 'assistant',
-        message: {
-          content: [{ type: 'text', text: 'reply' }],
-          stop_reason: 'end_turn',
-        },
-      },
+      kind: 'jsonl-turn-end',
+      text: 'reply',
+      stopReason: 'end_turn',
     } as unknown as JsonlEvent);
   }
   fireExit(): void {
@@ -119,10 +122,11 @@ function makeSession(
   return { session, stub };
 }
 
-test('happy path: spawning → ready on gate, no initialInput leaves state ready', async () => {
+test('happy path: stopped → spawning → ready on gate, no initialInput leaves state ready', async () => {
   const { session, stub } = makeSession();
   const states: string[] = [];
   session.on('state', (s: string) => states.push(s));
+  assert.equal(session.getState(), 'stopped');
   session.start();
   await tick();
   assert.equal(session.getState(), 'spawning');
@@ -130,45 +134,45 @@ test('happy path: spawning → ready on gate, no initialInput leaves state ready
   stub.fireReady();
   await tick();
   assert.equal(session.getState(), 'ready');
-  assert.deepEqual(states, ['ready']);
+  assert.deepEqual(states, ['spawning', 'ready']);
   assert.deepEqual(stub.sent, []);
 });
 
-test('initialInput is sent on ready and transitions to running', async () => {
+test('initialInput is sent on ready and transitions to busy', async () => {
   const { session, stub } = makeSession({ initialInput: 'Hi orchestrator' });
   session.start();
   await tick();
   stub.fireReady();
   await tick();
   assert.deepEqual(stub.sent, ['Hi orchestrator']);
-  assert.equal(session.getState(), 'running');
+  assert.equal(session.getState(), 'busy');
 });
 
-test('user send (post-ready) transitions ready → running', async () => {
+test('user send (post-ready) transitions ready → busy', async () => {
   const { session, stub } = makeSession();
   session.start();
   await tick();
   stub.fireReady();
   await tick();
   await session.send('what is up');
-  assert.equal(session.getState(), 'running');
+  assert.equal(session.getState(), 'busy');
   assert.deepEqual(stub.sent, ['what is up']);
 });
 
-test('turn-end JSONL while running transitions back to ready', async () => {
+test('normalized turn-end JSONL while busy transitions back to ready', async () => {
   const { session, stub } = makeSession();
   session.start();
   await tick();
   stub.fireReady();
   await tick();
   await session.send('a question');
-  assert.equal(session.getState(), 'running');
+  assert.equal(session.getState(), 'busy');
   stub.fireTurnEnd();
   await tick();
   assert.equal(session.getState(), 'ready');
 });
 
-test('ready ⇌ running cycle across multiple turns', async () => {
+test('ready ⇌ busy cycle across multiple turns', async () => {
   const { session, stub } = makeSession();
   session.start();
   await tick();
@@ -187,11 +191,11 @@ test('ready ⇌ running cycle across multiple turns', async () => {
   stub.fireTurnEnd();
   await tick();
   assert.deepEqual(stateLog, [
-    'running',
+    'busy',
     'ready',
-    'running',
+    'busy',
     'ready',
-    'running',
+    'busy',
     'ready',
   ]);
 });
@@ -263,18 +267,18 @@ test('unexpected spawn exit transitions to exited', async () => {
   assert.equal(exitedFired, 1);
 });
 
-test('ready-gate failure → exited + error event', async () => {
+test('ready-gate failure → failed + error event', async () => {
   const { session, stub } = makeSession();
   session.start();
   await tick();
-  let exitedFired = 0;
+  let failedFired = 0;
   let errFired = 0;
-  session.on('exited', () => exitedFired++);
+  session.on('failed', () => failedFired++);
   session.on('error', () => errFired++);
   stub.fireReadyFail();
   await tick();
-  assert.equal(session.getState(), 'exited');
-  assert.equal(exitedFired, 1);
+  assert.equal(session.getState(), 'failed');
+  assert.equal(failedFired, 1);
   assert.equal(errFired, 1);
 });
 
@@ -287,6 +291,16 @@ test('interrupt() forwards to spawn', async () => {
   session.interrupt();
   session.interrupt();
   assert.equal(stub.interrupts, 2);
+});
+
+test('resize() forwards to spawn', async () => {
+  const { session, stub } = makeSession();
+  session.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  session.resize(140, 38);
+  assert.deepEqual(stub.resizes, [{ cols: 140, rows: 38 }]);
 });
 
 test('start() twice throws', () => {
@@ -335,4 +349,103 @@ test('jsonl-event is re-emitted on the session', async () => {
   session.on('jsonl-event', (e: JsonlEvent) => events.push(e));
   stub.fireTurnEnd();
   assert.equal(events.length, 1);
+});
+
+test('legacy assistant-shaped event does not drive turn-end state', async () => {
+  const { session, stub } = makeSession();
+  session.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  await session.send('a question');
+  assert.equal(session.getState(), 'busy');
+  stub.emit('jsonl-event', {
+    row: {
+      type: 'assistant',
+      message: { stop_reason: 'end_turn' },
+    },
+  } as unknown as JsonlEvent);
+  await tick();
+  assert.equal(session.getState(), 'busy');
+});
+
+test('ready failure retries with a new spawn attempt before failing', async () => {
+  const first = new StubSpawn();
+  const second = new StubSpawn();
+  const stubs = [first, second];
+  const attempts: string[] = [];
+  const session = new InteractiveSession(makeInput({
+    maxSpawnAttempts: 2,
+    retryBackoffMs: 0,
+  }), {
+    now: () => 42,
+    attemptIdFactory: (attempt) => `attempt-${attempt}`,
+    spawnFactory: () => stubs.shift()!,
+  });
+  session.on('state', (state: string) => attempts.push(state));
+  session.on('error', () => {});
+  session.start();
+  await tick();
+  first.fireReadyFail();
+  await tick();
+  await tick();
+  assert.equal(first.killed, true);
+  assert.equal(second.started, true);
+  second.fireReady();
+  await tick();
+  assert.equal(session.getState(), 'ready');
+  assert.deepEqual(attempts, ['spawning', 'ready']);
+  assert.deepEqual(session.getSnapshot(), {
+    state: 'ready',
+    spawnAttempt: 2,
+    spawnAttemptId: 'attempt-2',
+    lastReadyAt: 42,
+    nextRetryAt: null,
+    failureReason: null,
+  });
+});
+
+test('replayEventsPath persists sequenced JSONL events before re-emitting', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-interactive-replay-'));
+  try {
+    const replayEventsPath = join(dir, 'jsonl-events.jsonl');
+    const { session, stub } = makeSession({ replayEventsPath });
+    session.start();
+    await tick();
+    stub.fireReady();
+    await tick();
+    const replayMetas: unknown[] = [];
+    session.on('jsonl-event', (_event: JsonlEvent, replay: unknown) => replayMetas.push(replay));
+    stub.emit('jsonl-event', {
+      kind: 'jsonl-user',
+      text: 'hello',
+    } satisfies JsonlEvent, { sourceCursor: 3 });
+    await tick();
+    const rows = readFileSync(replayEventsPath, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as {
+        id: string;
+        sessionId: string;
+        seq: number;
+        kind: string;
+        source: { cursor: number | null };
+        event: JsonlEvent;
+      });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.id, 'sess-1:1');
+    assert.equal(rows[0]!.sessionId, 'sess-1');
+    assert.equal(rows[0]!.seq, 1);
+    assert.equal(rows[0]!.kind, 'jsonl-user');
+    assert.equal(rows[0]!.source.cursor, 3);
+    assert.deepEqual(replayMetas[0], {
+      id: 'sess-1:1',
+      sessionId: 'sess-1',
+      seq: 1,
+      kind: 'jsonl-user',
+      source: { kind: 'claude-jsonl', cursor: 3 },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -54,3 +54,22 @@ test('buildLowLevelSpawnArgs preserves session-local settings and empty setting 
   ]);
   assert.deepEqual(args.slice(-2), ['--resume', '00000000-0000-4000-8000-000000000000']);
 });
+
+test('buildLowLevelSpawnArgs can request orchestrator remote-control and dev channel', () => {
+  const args = buildLowLevelSpawnArgs(input({
+    podDefinition: { name: 'pc-runtime:orchestrator' },
+    model: 'opus',
+    remoteControl: true,
+    loadDevChannels: true,
+  }));
+
+  assert.ok(args.includes('--remote-control'));
+  assert.deepEqual(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2), [
+    '--model',
+    'opus',
+  ]);
+  assert.deepEqual(args.slice(-2), [
+    '--dangerously-load-development-channels',
+    'server:webhook',
+  ]);
+});

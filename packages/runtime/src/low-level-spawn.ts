@@ -19,7 +19,7 @@ import pty from 'node-pty';
 import { EventEmitter } from 'node:events';
 import { existsSync, createWriteStream, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { dirname } from 'node:path';
-import { JsonlTailer, type JsonlEvent } from './jsonl-tailer.ts';
+import { JsonlTailer, type JsonlEvent, type JsonlEventMeta } from './jsonl-tailer.ts';
 import { scrubIdeEnv } from './env-scrub.ts';
 import { stripAnsiPreserveSpacing, collapseAnsiToWhitespace } from './ansi.ts';
 import { jsonlPathFor } from './path-resolver.ts';
@@ -56,6 +56,12 @@ export interface LowLevelSpawnInput {
    *  --resume (resume). CC writes JSONL at the deterministic path. */
   ccProviderSessionId: string;
   mode: 'fresh' | 'resume';
+  /** Pre-resolved CC JSONL path. Orchestrator resumes pass the persisted path
+   *  so CLAUDE_CONFIG_DIR changes in the host process cannot retarget replay. */
+  jsonlPath?: string;
+  /** Initial source JSONL line cursor. When omitted, resume mode skips the
+   *  existing file tail and fresh mode starts at 0. */
+  jsonlStartLine?: number;
   /** First user turn body — pasted via bracketed paste + echo-ack after the
    *  ready gate opens. Fresh only; never used on resume (resume continues
    *  the in-progress conversation). */
@@ -76,6 +82,15 @@ export interface LowLevelSpawnInput {
   /** Per-spawn override of the claude binary path. Omit to let
    *  `requireClaudeBinary` resolve (config → CLAUDE_EXE → PATH → ~/.local/bin). */
   claudeExe?: string;
+  /** Optional model override. Orchestrator passes opus; workers may omit and
+   *  inherit Claude's/default pod behavior. */
+  model?: string;
+  /** Enables Claude's remote-control banner and makes the ready gate require
+   *  the init-complete signal. Used by the main orchestrator chat. */
+  remoteControl?: boolean;
+  /** Load the webhook dev channel. Main orchestrator needs this; dispatched
+   *  agents leave it off. */
+  loadDevChannels?: boolean;
   /** Optional handshake timeout. Default 60s. */
   handshakeTimeoutMs?: number;
   /** Optional ready timeout. Default 60s. */
@@ -99,8 +114,8 @@ export interface SpawnEvents {
   raw: (bytes: string) => void;
   /** State transitions only. NOT lifecycle state (wrapper's responsibility). */
   state: (s: SpawnState) => void;
-  /** Parsed JSONL line from CC's on-disk session file. */
-  'jsonl-event': (ev: JsonlEvent) => void;
+  /** Parsed JSONL event from CC's on-disk session file plus source cursor. */
+  'jsonl-event': (ev: JsonlEvent, meta?: JsonlEventMeta) => void;
   /** Fires once when the configured ready-gate signals are in. */
   ready: (ts: ReadyTimestamps) => void;
   /** PTY exit. */
@@ -125,6 +140,7 @@ export class LowLevelSpawn extends EventEmitter {
   private state: SpawnState = 'spawning';
   private rawBuffer = '';
   private trustConfirmSent = false;
+  private channelConfirmSent = false;
   private readonly input: LowLevelSpawnInput;
   private readonly gate: ReadyGate;
   private tailer: JsonlTailer | null = null;
@@ -143,7 +159,7 @@ export class LowLevelSpawn extends EventEmitter {
     this.input = input;
     // Subagents must not use Claude remote-control; they are disposable worker
     // sessions. Their ready gate uses the banner-independent signals only.
-    this.gate = new ReadyGate({ requireInitComplete: false });
+    this.gate = new ReadyGate({ requireInitComplete: input.remoteControl ?? false });
     this.gate.on('ready', (ts) => this.handleGateOpen(ts));
     this.gate.on('aborted', (reason: string) => this.handleGateAbort(reason));
 
@@ -161,10 +177,9 @@ export class LowLevelSpawn extends EventEmitter {
     const claudeExe = requireClaudeBinary(this.input.claudeExe);
     const mcpConfigPath = this.input.mcpConfigPath ?? '.mcp.json';
 
-    this.resolvedJsonlPath = jsonlPathFor(
-      this.input.worktreePath,
-      this.input.ccProviderSessionId,
-    );
+    this.resolvedJsonlPath =
+      this.input.jsonlPath ??
+      jsonlPathFor(this.input.worktreePath, this.input.ccProviderSessionId);
 
     if (this.input.transcriptPath) {
       mkdirSync(dirname(this.input.transcriptPath), { recursive: true });
@@ -241,6 +256,11 @@ export class LowLevelSpawn extends EventEmitter {
   interrupt(): void {
     if (!this.child || this.state === 'exited') return;
     this.child.write('\x1b');
+  }
+
+  resize(cols: number, rows: number): void {
+    if (!this.child || this.state === 'exited') return;
+    this.child.resize(cols, rows);
   }
 
   /** Kill the child. Sends Ctrl-C first, then SIGKILL after a grace window
@@ -328,6 +348,23 @@ export class LowLevelSpawn extends EventEmitter {
       }
     }
 
+    if ((this.input.loadDevChannels ?? false) && !this.channelConfirmSent) {
+      const cleanAll = collapseAnsiToWhitespace(this.rawBuffer);
+      if (
+        /local\s*development/i.test(cleanAll) ||
+        /Loading\s*development\s*channels/i.test(cleanAll) ||
+        /Enter\s*to\s*confirm/i.test(cleanAll) ||
+        /I\s*am\s*using\s*this/i.test(cleanAll)
+      ) {
+        this.channelConfirmSent = true;
+        try {
+          this.child?.write('\r');
+        } catch {
+          /* exited mid-press */
+        }
+      }
+    }
+
     this.gate.feedChunk(data);
   }
 
@@ -401,7 +438,9 @@ export class LowLevelSpawn extends EventEmitter {
       if (this.tailer || this.state === 'exited') return;
       if (existsSync(path)) {
         let startLine = 0;
-        if (this.input.mode === 'resume') {
+        if (this.input.jsonlStartLine !== undefined) {
+          startLine = this.input.jsonlStartLine;
+        } else if (this.input.mode === 'resume') {
           try {
             const existing = readFileSync(path, 'utf-8');
             startLine = existing.split('\n').filter(Boolean).length;
@@ -413,7 +452,9 @@ export class LowLevelSpawn extends EventEmitter {
           }
         }
         this.tailer = new JsonlTailer({ filePath: path, startLine });
-        this.tailer.on('event', (ev: JsonlEvent) => this.emit('jsonl-event', ev));
+        this.tailer.on('event', (ev: JsonlEvent, meta?: JsonlEventMeta) =>
+          this.emit('jsonl-event', ev, meta),
+        );
         this.tailer.start();
         return;
       }
@@ -442,6 +483,12 @@ export function buildLowLevelSpawnArgs(
     mcpConfigPath,
     '--strict-mcp-config',
   ];
+  if (input.model) {
+    args.push('--model', input.model);
+  }
+  if (input.remoteControl) {
+    args.push('--remote-control');
+  }
   if (input.settingsPath) {
     args.push('--settings', input.settingsPath);
   }
@@ -456,6 +503,10 @@ export function buildLowLevelSpawnArgs(
     args.push('--session-id', input.ccProviderSessionId);
   } else {
     args.push('--resume', input.ccProviderSessionId);
+  }
+
+  if (input.loadDevChannels ?? false) {
+    args.push('--dangerously-load-development-channels', 'server:webhook');
   }
 
   return args;
