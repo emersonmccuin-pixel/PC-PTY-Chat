@@ -106,6 +106,27 @@ test('gate can open without init-complete when remote-control is disabled', asyn
   assert.equal(ts.initCompleteAt, null);
 });
 
+test('gate can open without MCP handshake for historical resume sessions', async () => {
+  const clock = { now: 0 };
+  const gate = new ReadyGate({
+    now: () => clock.now,
+    requireHandshake: false,
+    requireInitComplete: true,
+  });
+
+  const ready = collectReady(gate, () => {
+    clock.now = 400;
+    gate.feedChunk(BRACKETED_PASTE_ON);
+    clock.now = 900;
+    gate.feedChunk('/remote-control is active');
+  });
+
+  const ts = await ready;
+  assert.equal(ts.composerReadyAt, 400);
+  assert.equal(ts.handshakeAt, null);
+  assert.equal(ts.initCompleteAt, 900);
+});
+
 test('init-complete substring matches resume-mode cursor-move-right painting', async () => {
   const clock = { now: 0 };
   const gate = makeGate(clock);
@@ -122,6 +143,40 @@ test('init-complete substring matches resume-mode cursor-move-right painting', a
     gate.feedChunk(BRACKETED_PASTE_ON);
     clock.now = 1400;
     gate.feedChunk(resumePainting);
+  });
+
+  const ts = await ready;
+  assert.equal(ts.initCompleteAt, 1400);
+});
+
+test('init-complete accepts remote-control status line painting', async () => {
+  const clock = { now: 0 };
+  const gate = makeGate(clock);
+
+  const ready = collectReady(gate, () => {
+    clock.now = 700;
+    gate.notifyHandshake();
+    clock.now = 1100;
+    gate.feedChunk(BRACKETED_PASTE_ON);
+    clock.now = 1400;
+    gate.feedChunk('Remote Control active');
+  });
+
+  const ts = await ready;
+  assert.equal(ts.initCompleteAt, 1400);
+});
+
+test('init-complete accepts regular Claude composer footer without remote-control', async () => {
+  const clock = { now: 0 };
+  const gate = makeGate(clock);
+
+  const ready = collectReady(gate, () => {
+    clock.now = 700;
+    gate.notifyHandshake();
+    clock.now = 1100;
+    gate.feedChunk(BRACKETED_PASTE_ON);
+    clock.now = 1400;
+    gate.feedChunk('bypass permissions on (shift+tab to cycle) · ← for agents');
   });
 
   const ts = await ready;

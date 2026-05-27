@@ -73,8 +73,10 @@ export interface InteractiveSessionInput {
   replayEventsPath?: string;
   model?: string;
   remoteControl?: boolean;
+  requireReadySignal?: boolean;
   loadDevChannels?: boolean;
   handshakeTimeoutMs?: number;
+  requireMcpHandshake?: boolean;
   readyTimeoutMs?: number;
   /** Wrapper-level spawn timeout, separate from LowLevelSpawn's ready gate. */
   spawnTimeoutMs?: number;
@@ -256,8 +258,10 @@ export class InteractiveSession extends EventEmitter {
       transcriptPath: this.input.transcriptPath,
       model: this.input.model,
       remoteControl: this.input.remoteControl,
+      requireReadySignal: this.input.requireReadySignal,
       loadDevChannels: this.input.loadDevChannels,
       handshakeTimeoutMs: this.input.handshakeTimeoutMs,
+      requireMcpHandshake: this.input.requireMcpHandshake,
       readyTimeoutMs: this.input.readyTimeoutMs,
     };
     const spawn = this.deps.spawnFactory(llsInput);
@@ -277,6 +281,8 @@ export class InteractiveSession extends EventEmitter {
     spawn.on('ready', (ts: ReadyTimestamps) => this.emit('ready', ts));
 
     spawn.start();
+    const jsonlPath = spawn.getJsonlPath();
+    if (jsonlPath) this.emit('jsonl-path-resolved', jsonlPath);
     this.armSpawnTimeout(attempt);
 
     spawn
@@ -346,6 +352,10 @@ export class InteractiveSession extends EventEmitter {
   private onJsonlEvent(ev: JsonlEvent, meta?: JsonlEventMeta): void {
     const replay = this.persistJsonlEvent(ev, meta);
     this.emit('jsonl-event', ev, replay);
+    const jsonlPath = this.spawn?.getJsonlPath();
+    if (jsonlPath && meta?.sourceCursor !== undefined) {
+      this.emit('jsonl-cursor-tick', jsonlPath, meta.sourceCursor);
+    }
     if (ev.kind === 'jsonl-turn-end' && this.state === 'busy') {
       // Turn cycle complete; session goes back to ready awaiting next user input.
       this.setState('ready');

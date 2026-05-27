@@ -136,6 +136,23 @@ test('echo-ack: probe uses leading 12 chars, normalized', async () => {
   assert.equal(result, 'ok');
 });
 
+test('echo-ack: accepts lossy ConPTY cursor repaint when enough body words echo', async () => {
+  const deps = makeDeps();
+  setTimeout(() => {
+    deps.buffer.value +=
+      'We n\x1b[1Ced to make\x1b[1Csure you have\x1b[1Cbash,\x1b[1Cedit,\x1b[1Cwrite.';
+  }, 10);
+
+  const result = await sendBracketedPaste(
+    deps,
+    'We need to make sure you have bash, edit, write.',
+    1000,
+  );
+
+  assert.equal(result, 'ok');
+  assert.equal(deps.writes[1], '\r');
+});
+
 test('echo-ack: empty body returns ok immediately and still sends Enter', async () => {
   const deps = makeDeps();
   // Empty body → probe is empty → match is trivially true → Enter sent.

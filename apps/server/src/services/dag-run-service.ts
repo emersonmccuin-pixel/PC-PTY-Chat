@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Project, ULID, WorkflowV2 } from '@pc/domain';
 import { substituteRefs, type RefResolver, type ReviewDecision, type RunStatus } from '@pc/workflows';
-import { getWorkItem, workflowRunsV2Repo } from '@pc/db';
+import { getWorkItem, moveWorkItemStage, workflowRunsV2Repo } from '@pc/db';
 import { spawnSubagent, type SubagentSpawnHandle, type SubagentSpawnRequest } from '@pc/runtime';
 import { DagExecutor, type DagExecutorDeps, type DagNodeContext, type NodeOutcome } from './dag-executor.ts';
 import { createAgentWorkItem } from './agent-work-item.ts';
@@ -124,6 +124,16 @@ export function makeExecutorDeps(
   const resolveRef =
     (state: WorkflowV2.WorkflowDagState): RefResolver =>
     (nodeId, field) => {
+      // Reserved synthetic ref: $root.output → run-root card body;
+      // $root.output.<field> → run-root card fields[field].
+      if (nodeId === 'root') {
+        const rootWi = run.workItemId ? getWorkItem(run.workItemId) : null;
+        if (!rootWi) return '';
+        if (!field) return rootWi.body ?? '';
+        const v = rootWi.fields?.[field];
+        if (v == null) return '';
+        return typeof v === 'string' ? v : JSON.stringify(v);
+      }
       const rec = state.nodes[nodeId];
       // Bash/script nodes have no work item — they expose captured stdout via
       // `rec.output` (F#1). Field-form refs on a bash node have nothing to read
@@ -244,6 +254,37 @@ export function makeExecutorDeps(
     return { state: 'completed', ...(r.stdout !== undefined ? { output: r.stdout } : {}) };
   };
 
+  const moveWorkItem = async (
+    node: WorkflowV2.MoveWorkItemNode,
+    _ctx: DagNodeContext
+  ): Promise<NodeOutcome> => {
+    if (!run.workItemId) {
+      return { state: 'failed', error: 'move-work-item: run has no root work item' };
+    }
+    const project = opts.getProject();
+    const stages = project.stages ?? [];
+    const targetStage = stages.find((s) => s.id === node.to_stage);
+    if (!targetStage) {
+      return {
+        state: 'failed',
+        error: `move-work-item node "${node.id}": stage "${node.to_stage}" not found in project`,
+      };
+    }
+    const wi = getWorkItem(run.workItemId);
+    if (!wi) {
+      return { state: 'failed', error: `move-work-item: run root work item ${run.workItemId} not found` };
+    }
+    moveWorkItemStage(run.workItemId, node.to_stage);
+    opts.broadcast({
+      type: 'work-items-changed',
+      projectId: opts.projectId,
+      change: 'moved',
+      workItemId: run.workItemId,
+      toStage: node.to_stage,
+    });
+    return { state: 'completed', output: node.to_stage };
+  };
+
   const requestReview = async (
     node: WorkflowV2.HumanReviewNode | WorkflowV2.OrchestratorReviewNode,
     _ctx: DagNodeContext,
@@ -292,6 +333,7 @@ export function makeExecutorDeps(
     resolveRef,
     dispatchAgent,
     runCommand,
+    moveWorkItem,
     requestReview,
     persist,
     event: (ev) => {
@@ -323,30 +365,48 @@ export interface FireResult {
 }
 
 /**
- * Fire a v2 workflow: create the run-root work item, acquire a worktree, write
- * the sidecar run row, and start the executor. `done` resolves at the first
- * pause/terminal; callers that don't want to block (HTTP route) ignore it.
+ * Fire a v2 workflow.
+ *
+ * When `triggerWorkItemId` is supplied (stage-on-entry path): the existing card
+ * becomes the run root — no new work item is minted, its stage is unchanged, and
+ * `isWorkflowRoot` is not set on it. Child-node `parentWorkItemId` and the
+ * worktree acquire still hang off that card.
+ *
+ * When absent (manual fire / HTTP route): a blank root work item is created in
+ * stage[0] with `isWorkflowRoot: true`, preserving the previous behaviour.
+ *
+ * `done` resolves at the first pause/terminal; callers that don't want to block
+ * (HTTP route) ignore it.
  */
 export async function fireDagWorkflow(
   workflow: WorkflowV2.Workflow,
   trigger: WorkflowV2.WorkflowTrigger,
-  opts: DagRunServiceOptions
+  opts: DagRunServiceOptions,
+  triggerWorkItemId?: ULID,
 ): Promise<FireResult> {
-  const project = opts.getProject();
-  const stages = (project.stages ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const stageId = stages[0]?.id;
-  if (!stageId) throw new Error('project has no stages — cannot create a workflow run root');
+  let rootWiId: ULID;
 
-  const rootWi = opts.workItemService.create({
-    title: workflow.name,
-    stageId,
-    body: `Workflow run — ${workflow.name}`,
-    isWorkflowRoot: true,
-  });
+  if (triggerWorkItemId) {
+    const existing = getWorkItem(triggerWorkItemId);
+    if (!existing) throw new Error(`trigger work item not found: ${triggerWorkItemId}`);
+    rootWiId = triggerWorkItemId;
+  } else {
+    const project = opts.getProject();
+    const stages = (project.stages ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const stageId = stages[0]?.id;
+    if (!stageId) throw new Error('project has no stages — cannot create a workflow run root');
+    const rootWi = opts.workItemService.create({
+      title: workflow.name,
+      stageId,
+      body: `Workflow run — ${workflow.name}`,
+      isWorkflowRoot: true,
+    });
+    rootWiId = rootWi.id as ULID;
+  }
 
   let worktreePath: string | null = null;
   if (workflow.worktree !== 'none') {
-    const wt = await opts.worktrees.ensureWorktree(`wf-${rootWi.id.slice(-8)}`);
+    const wt = await opts.worktrees.ensureWorktree(`wf-${rootWiId.slice(-8)}`);
     worktreePath = wt.path;
   }
 
@@ -357,24 +417,24 @@ export async function fireDagWorkflow(
     workflowYamlSnapshot: JSON.stringify(workflow),
     trigger: trigger.kind,
     ...(trigger.kind === 'stage-on-entry' ? { stageId: trigger.stage } : {}),
-    workItemId: rootWi.id as ULID,
+    workItemId: rootWiId,
     worktreePath,
     status: 'running',
   });
   workflowRunsV2Repo.markStarted(run.id);
 
   const deps = makeExecutorDeps(
-    { id: run.id, workItemId: rootWi.id as ULID, worktreePath },
+    { id: run.id, workItemId: rootWiId, worktreePath },
     workflow,
     opts
   );
   const exec = DagExecutor.start(workflow, deps, {
     runId: run.id,
-    rootWorkItemId: rootWi.id as ULID,
+    rootWorkItemId: rootWiId,
     worktreePath,
   });
 
-  return { runId: run.id, rootWorkItemId: rootWi.id as ULID, done: exec.advance() };
+  return { runId: run.id, rootWorkItemId: rootWiId, done: exec.advance() };
 }
 
 /**

@@ -8,7 +8,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '@/api/client';
-import type { OrchestratorRuntimeHealth } from '@/api/client';
+import type {
+  OrchestratorRuntimeHealth,
+  OrchestratorRuntimeSnapshot,
+  OrchestratorRuntimeWaitPoint,
+} from '@/api/client';
 import type { WsStatus } from '@/hooks/use-project-ws';
 
 // Re-export so other call sites still importing { UsageTotals } from this
@@ -26,6 +30,7 @@ interface StatusBarProps {
   projectName: string | null;
   wsStatus: WsStatus;
   runtimeHealth?: OrchestratorRuntimeHealth | null;
+  runtimeSnapshot?: OrchestratorRuntimeSnapshot | null;
 }
 
 const WS_PILL: Record<WsStatus, { dot: string; label: string; title: string }> = {
@@ -78,12 +83,69 @@ const RUNTIME_PILL: Record<OrchestratorRuntimeHealth, { dot: string; label: stri
   },
 };
 
-export function StatusBar({ projectId, wsStatus, runtimeHealth }: StatusBarProps) {
+const WAIT_LABEL: Record<OrchestratorRuntimeWaitPoint, string> = {
+  session: 'session',
+  queue: 'queue',
+  spawn: 'spawn',
+  jsonl: 'jsonl',
+  provider_resume: 'resume',
+  ready_state: 'turn',
+  none: 'ready',
+};
+
+function runtimeLabel(
+  baseLabel: string,
+  snapshot: OrchestratorRuntimeSnapshot | null | undefined,
+): string {
+  if (!snapshot) return baseLabel;
+  if (snapshot.waitPoint === 'none') return baseLabel;
+  if (snapshot.waitPoint === 'queue') return `queue ${snapshot.queueDepth}`;
+  if (snapshot.waitPoint === 'spawn' && snapshot.spawnAttempt > 0) {
+    return `spawn ${snapshot.spawnAttempt}`;
+  }
+  return WAIT_LABEL[snapshot.waitPoint];
+}
+
+function formatDiagnosticTime(value: number | null | undefined): string {
+  if (!value) return 'never';
+  return new Date(value).toLocaleTimeString();
+}
+
+function runtimeTitle(
+  baseTitle: string,
+  snapshot: OrchestratorRuntimeSnapshot | null | undefined,
+): string {
+  if (!snapshot) return baseTitle;
+  const parts = [
+    `wait: ${WAIT_LABEL[snapshot.waitPoint]}`,
+    `session: ${snapshot.sessionId ?? 'none'}`,
+    `queue: ${snapshot.queueDepth}`,
+    `spawn: ${snapshot.spawnAttemptId ?? snapshot.spawnAttempt}`,
+    `replay seq: ${snapshot.replayHighWaterSeq}`,
+    `jsonl cursor: ${snapshot.rawJsonlCursor ?? 0}`,
+    `last jsonl: ${formatDiagnosticTime(snapshot.lastJsonlAt)}`,
+  ];
+  if (snapshot.failureReason) parts.push(`failure: ${snapshot.failureReason}`);
+  return `${baseTitle} (${parts.join(' | ')})`;
+}
+
+export function StatusBar({
+  projectId,
+  wsStatus,
+  runtimeHealth,
+  runtimeSnapshot,
+}: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [showMcp, setShowMcp] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
-  const runtimePill = runtimeHealth ? RUNTIME_PILL[runtimeHealth] : null;
+  const effectiveRuntimeHealth = runtimeSnapshot?.health ?? runtimeHealth ?? null;
+  const runtimePill = effectiveRuntimeHealth ? RUNTIME_PILL[effectiveRuntimeHealth] : null;
+  const runtimePillLabel = runtimeLabel(runtimePill?.label ?? 'unknown', runtimeSnapshot);
+  const runtimePillTitle = runtimeTitle(
+    runtimePill?.title ?? 'Claude runtime status unavailable',
+    runtimeSnapshot,
+  );
 
   useEffect(() => {
     if (!projectId) {
@@ -152,9 +214,13 @@ export function StatusBar({ projectId, wsStatus, runtimeHealth }: StatusBarProps
 
         <span
           className="flex items-center gap-1.5"
-          title={runtimePill?.title ?? 'Claude runtime status unavailable'}
+          title={runtimePillTitle}
           data-testid="runtime-pill"
-          data-runtime-health={runtimeHealth ?? 'unknown'}
+          data-runtime-health={effectiveRuntimeHealth ?? 'unknown'}
+          data-runtime-wait-point={runtimeSnapshot?.waitPoint ?? 'unknown'}
+          data-runtime-queue-depth={runtimeSnapshot?.queueDepth ?? 0}
+          data-runtime-replay-high-water={runtimeSnapshot?.replayHighWaterSeq ?? 0}
+          data-runtime-jsonl-cursor={runtimeSnapshot?.rawJsonlCursor ?? 0}
         >
           <span
             className={`inline-block h-1.5 w-1.5 rounded-full ${
@@ -164,7 +230,7 @@ export function StatusBar({ projectId, wsStatus, runtimeHealth }: StatusBarProps
           />
           <span className="text-foreground/50">runtime</span>
           <span className="tabular-nums text-foreground">
-            {runtimePill?.label ?? 'unknown'}
+            {runtimePillLabel}
           </span>
         </span>
 

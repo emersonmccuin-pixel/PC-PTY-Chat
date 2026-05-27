@@ -258,12 +258,17 @@ export class ProjectRuntime {
 
   /** Fire a v2 workflow. Returns once the run is set up (root WI + sidecar);
    *  the run itself proceeds in the background (the executor advances on its
-   *  own and broadcasts state). Errors after setup are logged, not thrown. */
+   *  own and broadcasts state). Errors after setup are logged, not thrown.
+   *
+   *  When `triggerWorkItemId` is supplied (stage-on-entry path) the existing
+   *  card is used as the run root — no new work item is minted and the card's
+   *  stage is left unchanged. Without it (manual fire) a blank root is created. */
   async fireV2Workflow(
     workflow: WorkflowV2.Workflow,
     trigger: WorkflowV2.WorkflowTrigger = { kind: 'manual' },
+    triggerWorkItemId?: ULID,
   ): Promise<{ runId: ULID; rootWorkItemId: ULID }> {
-    const res = await fireDagWorkflow(workflow, trigger, this.dagRunOptions());
+    const res = await fireDagWorkflow(workflow, trigger, this.dagRunOptions(), triggerWorkItemId);
     res.done.catch((err: Error) => {
       console.error(`[dag-run] run ${res.runId} failed:`, err.message);
     });
@@ -324,7 +329,11 @@ export class ProjectRuntime {
       });
       for (const workflow of matches) {
         try {
-          await this.fireV2Workflow(workflow, { kind: 'stage-on-entry', stage: args.toStage });
+          await this.fireV2Workflow(
+            workflow,
+            { kind: 'stage-on-entry', stage: args.toStage },
+            args.id as ULID,
+          );
         } catch (err) {
           console.error(
             `[project-runtime] v2 fire failed (workflow=${workflow.id} stage=${args.toStage}):`,
@@ -477,8 +486,14 @@ export class ProjectRuntime {
       transcriptPath: resolve(sessionDir, 'transcript.log'),
       replayEventsPath: resolve(sessionDir, 'jsonl-events.jsonl'),
       model: 'opus',
-      remoteControl: true,
+      // Reliability over phone handoff: local PC chat writes directly through
+      // the PTY, so the Claude remote-control bridge is not required. Keep a
+      // regular composer-ready signal so historical resumes that skip MCP
+      // handshake do not deliver into the dev-channel confirmation prompt.
+      remoteControl: false,
+      requireReadySignal: true,
       loadDevChannels: true,
+      requireMcpHandshake: !session.resume,
       maxSpawnAttempts: 2,
       retryBackoffMs: 1500,
       spawnTimeoutMs: 120_000,
@@ -496,7 +511,11 @@ export class ProjectRuntime {
       cleaned = true;
       try { podPrep.cleanup(); } catch { /* best-effort */ }
     };
-    this.pty.once('exit', cleanupPodPrep);
+    // LowLevelSpawn emits `exit` for every child attempt. InteractiveSession may
+    // legitimately retry after an early child exit, and those retries still need
+    // the session-local settings/plugin files. Clean up only once the wrapper is
+    // terminal, not between attempts.
+    this.pty.once('exited', cleanupPodPrep);
     this.pty.once('failed', cleanupPodPrep);
 
     return this.pty;
@@ -505,6 +524,16 @@ export class ProjectRuntime {
   /** Returns the live orchestrator InteractiveSession if one is spawned. */
   ptySession(): InteractiveSession | null {
     return this.pty && !['exited', 'failed'].includes(this.pty.getState()) ? this.pty : null;
+  }
+
+  /** Smoke-test hook: kill the orchestrator child and detach the wrapper
+   *  without ending the durable session row. The next send/subscribe can
+   *  respawn against the same PC session. */
+  killOrchestratorForSmoke(): boolean {
+    if (!this.pty) return false;
+    try { this.pty.kill(); } catch { /* best-effort */ }
+    this.pty = null;
+    return true;
   }
 
   /** Returns the current orchestrator process state without spawning. */
@@ -577,14 +606,17 @@ export class ProjectRuntime {
    * current active row (if different), kills the current PtySession,
    * flips the target's status back to 'active' + bumps its startedAt so it
    * sorts to the top of the Sessions list. Next ensurePty() picks up the
-   * re-activated row and spawns claude.exe with --resume <uuid>.
+   * re-activated row and spawns claude.exe with --resume <uuid> when its raw
+   * provider transcript still exists. Legacy rows that predate durable JSONL
+   * path capture are still re-opened; their next spawn mints a fresh provider
+   * transcript for the same PC session instead of failing the chat.
    *
    * Identity is preserved — same row id, same title, same conversation. The
    * chat panel re-renders by tailing the existing JSONL from its start.
    *
-   * Errors if the target doesn't exist, belongs to another project, has no
-   * providerSessionId, or has no JSONL on disk (would fail at spawn anyway).
-   * If the target is already the active row, returns it unchanged (no-op).
+   * Errors if the target doesn't exist, belongs to another project, or has no
+   * providerSessionId. If the target is already the active row, returns it
+   * unchanged (no-op).
    */
   resumeSession(targetId: ULID): OrchestratorSession {
     const target = getOrchestratorSession(targetId);
@@ -596,19 +628,10 @@ export class ProjectRuntime {
       throw new Error('session has no claude.exe conversation associated');
     }
     if (target.status === 'active') return target;
-    // Prefer the JSONL path the tailer actually stored at write time —
-    // that's the ground-truth location on disk. Compute via path-resolver
-    // as a fallback for sessions that pre-dated jsonl-path persistence.
-    // (Without this preference, sessions spawned with CLAUDE_CONFIG_DIR
-    // unset still get a recomputed path under whatever env the current
-    // server process has, which can miss legitimate transcripts.)
-    const jsonlPath =
-      target.jsonlPath ?? jsonlPathFor(this.project.folderPath, target.providerSessionId);
-    if (!existsSync(jsonlPath)) {
-      throw new Error(
-        'no transcript on disk for this conversation (claude.exe never wrote it)',
-      );
-    }
+    // Do not reject missing raw JSONL here. resolveSessionForSpawn() does the
+    // provider-side decision later: if the transcript exists it uses
+    // `--resume`; otherwise it uses `--session-id` to make this legacy PC row
+    // writable with a fresh provider transcript.
     const active = getActiveOrchestratorSession(this.project.id);
     if (active && active.id !== targetId) {
       endOrchestratorSession(active.id, 'user_ended');

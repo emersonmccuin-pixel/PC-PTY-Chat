@@ -37,7 +37,7 @@ interface Fixture {
   runtime: InstanceType<typeof ProjectRuntime>;
   project: Project;
   workItemId: ULID;
-  fired: { workflowId: string; trigger: WorkflowV2.WorkflowTrigger }[];
+  fired: { workflowId: string; trigger: WorkflowV2.WorkflowTrigger; triggerWorkItemId?: ULID }[];
 }
 
 let seq = 0;
@@ -79,13 +79,14 @@ function mkFixture(opts: { yamls?: { id: string; body: string }[] } = {}): Fixtu
   // imports any YAMLs the fixture wrote to disk into DB rows.
   runtime.bootstrap();
 
-  const fired: { workflowId: string; trigger: WorkflowV2.WorkflowTrigger }[] = [];
+  const fired: { workflowId: string; trigger: WorkflowV2.WorkflowTrigger; triggerWorkItemId?: ULID }[] = [];
   runtime.fireV2Workflow = (async (
     workflow: WorkflowV2.Workflow,
     trigger: WorkflowV2.WorkflowTrigger = { kind: 'manual' },
+    triggerWorkItemId?: ULID,
   ) => {
-    fired.push({ workflowId: workflow.id, trigger });
-    return { runId: 'fake-run' as ULID, rootWorkItemId: 'fake-root' as ULID };
+    fired.push({ workflowId: workflow.id, trigger, triggerWorkItemId });
+    return { runId: 'fake-run' as ULID, rootWorkItemId: triggerWorkItemId ?? ('fake-root' as ULID) };
   }) as InstanceType<typeof ProjectRuntime>['fireV2Workflow'];
 
   return { runtime, project, workItemId: workItem.id as ULID, fired };
@@ -208,6 +209,15 @@ test('moveAndFireV2: disabled workflows never fire', async () => {
 
   await f.runtime.moveAndFireV2({ id: f.workItemId, toStage: 'review', expectedVersion: 1 });
   assert.equal(f.fired.length, 0);
+});
+
+test('moveAndFireV2: passes the moved card id as triggerWorkItemId', async () => {
+  const f = mkFixture({ yamls: [{ id: 'review-v2', body: REVIEW_V2_YAML }] });
+
+  await f.runtime.moveAndFireV2({ id: f.workItemId, toStage: 'review', expectedVersion: 1 });
+
+  assert.equal(f.fired.length, 1);
+  assert.equal(f.fired[0]!.triggerWorkItemId, f.workItemId);
 });
 
 test('moveAndFireV2: a single fire failure does not block the move or the remaining matches', async () => {

@@ -309,11 +309,11 @@ test('start() twice throws', () => {
   assert.throws(() => session.start(), /start\(\) called twice/);
 });
 
-test('mode=resume passes through to spawn factory', async () => {
-  let factoryInput: { mode?: string } | null = null;
+test('mode and readiness options pass through to spawn factory', async () => {
+  let factoryInput: { mode?: string; remoteControl?: boolean; requireReadySignal?: boolean } | null = null;
   const stub = new StubSpawn();
   const session = new InteractiveSession(
-    makeInput({ mode: 'resume' }),
+    makeInput({ mode: 'resume', remoteControl: false, requireReadySignal: true }),
     {
       spawnFactory: (input) => {
         factoryInput = input;
@@ -324,6 +324,8 @@ test('mode=resume passes through to spawn factory', async () => {
   session.start();
   await tick();
   assert.equal(factoryInput!.mode, 'resume');
+  assert.equal(factoryInput!.remoteControl, false);
+  assert.equal(factoryInput!.requireReadySignal, true);
 });
 
 test('notifyMcpHandshake forwards to spawn', async () => {
@@ -349,6 +351,26 @@ test('jsonl-event is re-emitted on the session', async () => {
   session.on('jsonl-event', (e: JsonlEvent) => events.push(e));
   stub.fireTurnEnd();
   assert.equal(events.length, 1);
+});
+
+test('jsonl path and source cursor diagnostics are emitted', async () => {
+  const { session, stub } = makeSession();
+  const paths: string[] = [];
+  const cursorTicks: Array<{ path: string; cursor: number }> = [];
+  session.on('jsonl-path-resolved', (path: string) => paths.push(path));
+  session.on('jsonl-cursor-tick', (path: string, cursor: number) => {
+    cursorTicks.push({ path, cursor });
+  });
+  session.start();
+  await tick();
+  stub.emit('jsonl-event', {
+    kind: 'jsonl-user',
+    text: 'hello',
+  } satisfies JsonlEvent, { sourceCursor: 7 });
+  await tick();
+
+  assert.deepEqual(paths, ['/fake/jsonl.jsonl']);
+  assert.deepEqual(cursorTicks, [{ path: '/fake/jsonl.jsonl', cursor: 7 }]);
 });
 
 test('legacy assistant-shaped event does not drive turn-end state', async () => {

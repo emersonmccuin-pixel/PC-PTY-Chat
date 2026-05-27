@@ -536,12 +536,22 @@ export type OrchestratorRuntimeHealth =
   | 'failed_resume'
   | 'provider_missing';
 
+export type OrchestratorRuntimeWaitPoint =
+  | 'session'
+  | 'queue'
+  | 'spawn'
+  | 'jsonl'
+  | 'provider_resume'
+  | 'ready_state'
+  | 'none';
+
 export interface OrchestratorRuntimeSnapshot {
   type: 'runtime-state';
   sessionId: ULID | null;
   provider: 'claude';
   providerSessionId: string | null;
   health: OrchestratorRuntimeHealth;
+  waitPoint: OrchestratorRuntimeWaitPoint;
   ptyState: string | null;
   exitCode: number | null;
   exitSignal: string | null;
@@ -550,13 +560,17 @@ export interface OrchestratorRuntimeSnapshot {
   lastReadyAt: number | null;
   nextRetryAt: number | null;
   lastExitAt: number | null;
+  lastJsonlAt: number | null;
   lastActivityAt: number | null;
   failureReason: string | null;
   rawJsonlPath: string | null;
   rawJsonlExists: boolean;
+  rawJsonlCursor: number | null;
   replayPath: string | null;
   replayExists: boolean;
   replayLineCount: number;
+  replayHighWaterSeq: number;
+  queueDepth: number;
   queue: OrchestratorSendQueueItem[];
 }
 

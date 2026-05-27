@@ -8,10 +8,13 @@
 //
 // Send sequence:
 //   1. Write `\x1b[200~<body>\x1b[201~` to the PTY.
-//   2. Poll raw stdout buffer for an ANSI-normalized substring of the body.
-//      CC echoes the first 12 characters of the paste into the composer
-//      within 5–50ms. The substring is normalized so the resume-mode
-//      cursor-move-right painting also matches (see ansi.ts).
+//   2. Poll raw stdout buffer for an ANSI-normalized echo of the body.
+//      CC usually echoes the first 12 characters of the paste into the
+//      composer within 5–50ms. Windows ConPTY can repaint that leading slice
+//      with cursor moves that drop/overwrite a character in our transcript, so
+//      we also accept a small quorum of significant body words in the post-send
+//      tail. This keeps Enter gated on evidence that the paste landed without
+//      stranding a valid prompt in the composer.
 //   3. After echo lands, write `\r`.
 //
 // The 5s ceiling is defense — if the echo never lands the spawn is in a bad
@@ -41,6 +44,8 @@ const ECHO_POLL_MS = 25;
  *  hit rate while staying short enough to avoid spuriously matching pre-paste
  *  prompt content. */
 const ECHO_PROBE_LEN = 12;
+const ECHO_WORD_SCAN_LEN = 160;
+const ECHO_MIN_WORD_LEN = 3;
 
 const defaultSleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -135,6 +140,39 @@ export class TimedBracketedPasteQueue {
   }
 }
 
+function echoMatched(body: string, tail: string): boolean {
+  const normalizedBody = collapseAnsiToWhitespace(body);
+  const normalizedTail = collapseAnsiToWhitespace(tail);
+  const probe = normalizedBody.slice(0, ECHO_PROBE_LEN);
+  if (probe.length === 0 || normalizedTail.includes(probe)) return true;
+
+  const compactProbe = probe.replace(/\s+/g, '').toLowerCase();
+  const compactTail = normalizedTail.replace(/\s+/g, '').toLowerCase();
+  if (compactProbe.length >= ECHO_MIN_WORD_LEN && compactTail.includes(compactProbe)) {
+    return true;
+  }
+
+  const words = Array.from(
+    new Set(
+      normalizedBody
+        .slice(0, ECHO_WORD_SCAN_LEN)
+        .toLowerCase()
+        .match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? [],
+    ),
+  );
+  if (words.length === 0) return false;
+
+  const required = words.length === 1 ? 1 : Math.min(3, words.length);
+  let hits = 0;
+  const lowerTail = normalizedTail.toLowerCase();
+  for (const word of words) {
+    if (!lowerTail.includes(word)) continue;
+    hits++;
+    if (hits >= required) return true;
+  }
+  return false;
+}
+
 /** Send a body through the bracketed-paste + echo-ack protocol. */
 export async function sendBracketedPaste(
   deps: SendDeps,
@@ -146,7 +184,6 @@ export async function sendBracketedPaste(
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? defaultSleep;
 
-  const probe = collapseAnsiToWhitespace(body.slice(0, ECHO_PROBE_LEN));
   const markBefore = deps.getRawBuffer().length;
 
   deps.write(`\x1b[200~${body}\x1b[201~`);
@@ -155,7 +192,7 @@ export async function sendBracketedPaste(
   while (now() - startedAt < timeoutMs) {
     if (deps.isExited()) return 'exited';
     const tail = deps.getRawBuffer().slice(markBefore);
-    if (probe.length === 0 || collapseAnsiToWhitespace(tail).includes(probe)) {
+    if (echoMatched(body, tail)) {
       deps.write('\r');
       return 'ok';
     }

@@ -5,7 +5,7 @@
 // session-ended banner) and the StatusBar. All chat rendering + composer +
 // thinking-indicator + scroll machinery lives in ChatSurface.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import {
   api,
@@ -50,7 +50,12 @@ function composerPlaceholderForSessionState(state: string | null): string | unde
 
 type ComposerAvailability =
   | { mode: 'live'; sendLabel: 'Send ↵'; placeholder?: string }
-  | { mode: 'queueing'; sendLabel: 'Queue ↵'; reason: 'busy' | 'spawning' | 'respawning'; placeholder: string }
+  | {
+      mode: 'queueing';
+      sendLabel: 'Queue ↵';
+      reason: 'busy' | 'spawning' | 'respawning' | 'queue' | 'jsonl';
+      placeholder: string;
+    }
   | { mode: 'reconnecting'; disabled: true; reason: string; placeholder: string }
   | { mode: 'inaccessible'; disabled: true; reason: string; placeholder: string };
 
@@ -73,6 +78,8 @@ function legacyHealthFromPtyState(state: string | null): OrchestratorRuntimeHeal
 function composerAvailabilityFor(input: {
   wsStatus: WsStatus;
   health: OrchestratorRuntimeHealth | null;
+  waitPoint: OrchestratorRuntimeSnapshot['waitPoint'] | null;
+  queueDepth: number;
   latestSessionState: string | null;
   failureReason: string | null;
 }): ComposerAvailability {
@@ -84,6 +91,25 @@ function composerAvailabilityFor(input: {
         ? 'Reconnecting to local app'
         : 'Local app connection unavailable',
       placeholder: 'Reconnecting to the local app...',
+    };
+  }
+
+  if (input.waitPoint === 'queue') {
+    const count = Math.max(1, input.queueDepth);
+    return {
+      mode: 'queueing',
+      reason: 'queue',
+      sendLabel: 'Queue ↵',
+      placeholder: `${count} queued prompt${count === 1 ? '' : 's'}... type to queue`,
+    };
+  }
+
+  if (input.waitPoint === 'jsonl') {
+    return {
+      mode: 'queueing',
+      reason: 'jsonl',
+      sendLabel: 'Queue ↵',
+      placeholder: 'Waiting for transcript... type to queue',
     };
   }
 
@@ -147,14 +173,29 @@ function composerAvailabilityFor(input: {
   }
 }
 
-function composerStatusMessageFor(reason: 'busy' | 'spawning' | 'respawning'): string {
+function composerStatusMessageFor(
+  reason: 'busy' | 'spawning' | 'respawning' | 'queue' | 'jsonl',
+  runtimeSnapshot: OrchestratorRuntimeSnapshot | null,
+): string {
   switch (reason) {
     case 'busy':
-      return 'Claude is working; new messages will queue.';
+      return runtimeSnapshot?.waitPoint === 'ready_state'
+        ? 'Waiting on Claude turn; new messages will queue.'
+        : 'Claude is working; new messages will queue.';
     case 'spawning':
-      return 'Claude is starting; you can type and queue a message.';
+      return runtimeSnapshot?.spawnAttempt
+        ? `Waiting on Claude spawn attempt ${runtimeSnapshot.spawnAttempt}; you can queue a message.`
+        : 'Claude is starting; you can type and queue a message.';
     case 'respawning':
-      return 'Claude is restarting; you can type and queue a message.';
+      return runtimeSnapshot?.spawnAttempt
+        ? `Waiting on Claude respawn attempt ${runtimeSnapshot.spawnAttempt}; you can queue a message.`
+        : 'Claude is restarting; you can type and queue a message.';
+    case 'queue':
+      return `Waiting on queue: ${Math.max(1, runtimeSnapshot?.queueDepth ?? 1)} prompt${
+        (runtimeSnapshot?.queueDepth ?? 1) === 1 ? '' : 's'
+      } pending.`;
+    case 'jsonl':
+      return 'Waiting for Claude transcript JSONL; new messages will queue.';
   }
 }
 
@@ -425,32 +466,6 @@ export function Orchestrator({
     }
   }
 
-  const cancelQueuedSend = useCallback(
-    async (queueItemId: string): Promise<boolean> => {
-      try {
-        await api.cancelQueuedOrchestratorSend(project.id, queueItemId);
-        return true;
-      } catch (err) {
-        alert(`Couldn't cancel queued prompt: ${(err as Error).message}`);
-        return false;
-      }
-    },
-    [project.id],
-  );
-
-  const retryQueuedSend = useCallback(
-    async (queueItemId: string): Promise<boolean> => {
-      try {
-        await api.retryOrchestratorSend(project.id, queueItemId);
-        return true;
-      } catch (err) {
-        alert(`Couldn't retry queued prompt: ${(err as Error).message}`);
-        return false;
-      }
-    },
-    [project.id],
-  );
-
   const runtimeHealth =
     runtimeSnapshot?.health ?? legacyHealthFromPtyState(latestRuntimeState);
   useEffect(() => {
@@ -482,6 +497,8 @@ export function Orchestrator({
   const composerAvailability = composerAvailabilityFor({
     wsStatus,
     health: runtimeHealth,
+    waitPoint: runtimeSnapshot?.waitPoint ?? null,
+    queueDepth: runtimeSnapshot?.queueDepth ?? 0,
     latestSessionState,
     failureReason: runtimeSnapshot?.failureReason ?? null,
   });
@@ -506,7 +523,7 @@ export function Orchestrator({
     startingNewSession
       ? 'Starting a new chat; send will unlock when the session is ready.'
       : composerAvailability.mode === 'queueing'
-      ? composerStatusMessageFor(composerAvailability.reason)
+      ? composerStatusMessageFor(composerAvailability.reason, runtimeSnapshot)
       : undefined;
 
   const headerSlot = (
@@ -595,6 +612,7 @@ export function Orchestrator({
       projectName={project.name}
       wsStatus={wsStatus}
       runtimeHealth={runtimeHealth}
+      runtimeSnapshot={runtimeSnapshot}
     />
   );
 
@@ -619,8 +637,6 @@ export function Orchestrator({
       currentSessionId={session?.id ?? null}
       onSend={(text, clientMessageId) => send({ type: 'send', text, clientMessageId })}
       onInterrupt={() => send({ type: 'interrupt' })}
-      onCancelQueuedSend={cancelQueuedSend}
-      onRetryQueuedSend={retryQueuedSend}
       onAskReply={(toolUseId, answer) =>
         send({ type: 'ask-reply', toolUseId, answer })
       }

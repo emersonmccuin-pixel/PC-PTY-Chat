@@ -288,18 +288,23 @@ export const TOOLS = [
   {
     name: 'pc_update_work_item',
     description:
-      'Admin only — manually merge fields into a work item. `id` accepts ULID or callsign (e.g. `pc-2.1`).',
+      'Merge fields and/or set body/title on a work item. At least one of fields, body, or title is required. `id` accepts ULID or callsign (e.g. `pc-2.1`).',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'work item id (ULID or callsign like pc-2.1)' },
+        title: { type: 'string', description: 'new title for the work item' },
+        body: {
+          type: 'string',
+          description: 'new body / spec for the work item (replaces current body)',
+        },
         fields: {
           type: 'object',
           description: 'fields to merge into workItem.fields (shallow merge)',
           additionalProperties: true,
         },
       },
-      required: ['id', 'fields'],
+      required: ['id'],
     },
   },
   // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow` removed.
@@ -731,6 +736,134 @@ export const TOOLS = [
     description:
       'List the project\'s custom work-item field schemas. Use this BEFORE authoring a create-work-item / update-work-item step that sets `fields`, so the keys are real (not invented). Returns { ok: true, schemas: [{ key, label, type, options?, required, ... }, ...] }. The `key` is what goes into the step\'s `fields` object. No arguments; PC_PROJECT_ID env is the implicit scope.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pc_create_workflow',
+    description:
+      'Create a new workflow in this project. Body: { yaml?, def?, scope? }. `scope` defaults to "project" (PC_PROJECT_ID is the implicit owner). Either `yaml` (raw YAML string) or `def` (workflow graph object) is required. Returns the created workflow row including `status` and `parseError` so the caller sees invalid-YAML feedback immediately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        yaml: {
+          type: 'string',
+          description: 'raw YAML workflow definition (preferred for plain-text authoring)',
+        },
+        def: {
+          type: 'object',
+          description: 'workflow graph object (alternative to yaml)',
+          additionalProperties: true,
+        },
+        scope: {
+          type: 'string',
+          enum: ['project', 'global'],
+          description: 'default "project" — owned by PC_PROJECT_ID. Pass "global" only when the workflow should be reusable across every project.',
+        },
+      },
+    },
+  },
+  {
+    name: 'pc_update_workflow',
+    description:
+      'Update an existing workflow by DB id (ULID). Pass `yaml` or `def` to replace the definition; omit both to patch metadata only (`disabled`, display name). Slug is immutable — rename by duplicate + delete. Returns the updated row including `status` / `parseError` so the caller sees feedback on invalid definitions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'workflow DB ULID' },
+        yaml: { type: 'string', description: 'new YAML definition' },
+        def: {
+          type: 'object',
+          description: 'new workflow graph object',
+          additionalProperties: true,
+        },
+        disabled: {
+          type: 'boolean',
+          description: 'when true the workflow is disabled (will not fire)',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'pc_delete_workflow',
+    description:
+      'Soft-delete a workflow by DB id (ULID). Returns 409 when in-flight runs exist unless `cancel: true` is passed (cancels them first). Use `pc_list_workflows` to find the id; prefer `pc_get_workflow` to read-before-delete.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'workflow DB ULID' },
+        cancel: {
+          type: 'boolean',
+          description: 'cancel in-flight runs before deleting (appends ?cancel=1 to the request)',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'pc_get_workflow',
+    description:
+      'Fetch the full workflow row by DB id (ULID), including the yaml text. Use this to read-before-edit so you don\'t clobber unknown fields. Returns { ok: true, workflow: { id, slug, yaml, status, parseError, ... } } or 404.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'workflow DB ULID' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'pc_replace_stages',
+    description:
+      'Bulk-replace a project\'s stages. The server validates uniqueness, flag constraints, and in-use stage safety. When a removed stage still has work items, the server returns 409 STAGE_HAS_ITEMS with an `orphans` array — surface this to the caller instead of swallowing. Pass `force: true` + `fallbackStageId` (a retained stage id) to force-remove and reassign orphaned items. Always call `pc_request_approval` before removing, reordering, or re-flagging stages.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stages: {
+          type: 'array',
+          description: 'full replacement stage list. Each stage needs id + name; order defaults to array index.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'stage slug id (e.g. "backlog")' },
+              name: { type: 'string', description: 'display name' },
+              order: { type: 'number', description: 'sort order (defaults to array index)' },
+              isDone: { type: 'boolean', description: 'marks the terminal-success stage (at most one)' },
+              isCancelled: { type: 'boolean', description: 'marks the terminal-abandon stage (at most one)' },
+              isNew: { type: 'boolean', description: 'marks the intake/new stage (at most one)' },
+            },
+            required: ['id', 'name'],
+          },
+        },
+        force: {
+          type: 'boolean',
+          description: 'force removal of stages that still have items. Requires fallbackStageId.',
+        },
+        fallbackStageId: {
+          type: 'string',
+          description: 'stage id to reassign orphaned items to when force=true.',
+        },
+      },
+      required: ['stages'],
+    },
+  },
+  {
+    name: 'pc_replace_field_schemas',
+    description:
+      'Bulk-replace a project\'s custom work-item field schemas. PUT /api/projects/:projectId/field-schemas. Returns { ok: true, items: [...] }. Call pc_list_field_schemas first to read current state before replacing. Always call pc_request_approval before replacing schemas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'full replacement field schema list. Each item: { key, label, type, options?, required? }.',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+          },
+        },
+      },
+      required: ['items'],
+    },
   },
   {
     name: 'pc_attach_to_work_item',
@@ -1838,8 +1971,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'pc_update_work_item': {
       const ref = typeof args.id === 'string' ? args.id : '';
       const fields = args.fields && typeof args.fields === 'object' ? args.fields : null;
-      if (!ref || !fields) {
-        return { content: [{ type: 'text', text: 'pc_update_work_item: id and fields required' }], isError: true };
+      const bodyText = typeof args.body === 'string' ? args.body : undefined;
+      const titleText = typeof args.title === 'string' ? args.title : undefined;
+      if (!ref) {
+        return { content: [{ type: 'text', text: 'pc_update_work_item: id required' }], isError: true };
+      }
+      if (!fields && bodyText === undefined && titleText === undefined) {
+        return {
+          content: [{ type: 'text', text: 'pc_update_work_item: at least one of fields, body, or title required' }],
+          isError: true,
+        };
       }
       const id = await resolveWorkItemIdViaServer(ref);
       if (!id) {
@@ -1849,7 +1990,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
-        const res = await postServer(projectPath('work-items/update'), { id, fields });
+        const payload: Record<string, unknown> = { id };
+        if (fields) payload.fields = fields;
+        if (bodyText !== undefined) payload.body = bodyText;
+        if (titleText !== undefined) payload.title = titleText;
+        const res = await postServer(projectPath('work-items/update'), payload);
         if (res.status >= 200 && res.status < 300) {
           return { content: [{ type: 'text', text: res.body }] };
         }
@@ -3381,6 +3526,197 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             { type: 'text', text: `pc_answer_pending failed: ${(err as Error).message}` },
           ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_create_workflow': {
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_create_workflow: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const hasDef = args.def && typeof args.def === 'object';
+      const hasYaml = typeof args.yaml === 'string' && (args.yaml as string).trim().length > 0;
+      if (!hasDef && !hasYaml) {
+        return {
+          content: [{ type: 'text', text: 'pc_create_workflow: either yaml or def required' }],
+          isError: true,
+        };
+      }
+      const scope = args.scope === 'global' ? 'global' : 'project';
+      try {
+        const payload: Record<string, unknown> = {
+          scope,
+          actor: 'orchestrator',
+          reason: 'mcp-create',
+          ...(scope === 'project' ? { projectId: PROJECT_ID } : {}),
+        };
+        if (hasYaml) payload.yaml = args.yaml;
+        if (hasDef) payload.def = args.def;
+        const res = await postServer('/api/workflows', payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_create_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_create_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_update_workflow': {
+      const workflowId = typeof args.id === 'string' ? args.id.trim() : '';
+      if (!workflowId) {
+        return {
+          content: [{ type: 'text', text: 'pc_update_workflow: id required' }],
+          isError: true,
+        };
+      }
+      try {
+        const payload: Record<string, unknown> = {
+          actor: 'orchestrator',
+          reason: 'mcp-update',
+        };
+        if (typeof args.yaml === 'string') payload.yaml = args.yaml;
+        if (args.def && typeof args.def === 'object') payload.def = args.def;
+        if (typeof args.disabled === 'boolean') payload.disabled = args.disabled;
+        const res = await putServer(`/api/workflows/${encodeURIComponent(workflowId)}`, payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_update_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_update_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_delete_workflow': {
+      const workflowId = typeof args.id === 'string' ? args.id.trim() : '';
+      if (!workflowId) {
+        return {
+          content: [{ type: 'text', text: 'pc_delete_workflow: id required' }],
+          isError: true,
+        };
+      }
+      try {
+        const cancel = args.cancel === true;
+        const qs = cancel ? '?cancel=1&actor=orchestrator&reason=mcp-delete' : '?actor=orchestrator&reason=mcp-delete';
+        const res = await deleteServer(`/api/workflows/${encodeURIComponent(workflowId)}${qs}`);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_delete_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_delete_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_get_workflow': {
+      const workflowId = typeof args.id === 'string' ? args.id.trim() : '';
+      if (!workflowId) {
+        return {
+          content: [{ type: 'text', text: 'pc_get_workflow: id required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await getServer(`/api/workflows/${encodeURIComponent(workflowId)}`);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_get_workflow failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_get_workflow failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_replace_stages': {
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_replace_stages: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const stages = Array.isArray(args.stages) ? args.stages : null;
+      if (!stages) {
+        return {
+          content: [{ type: 'text', text: 'pc_replace_stages: stages array required' }],
+          isError: true,
+        };
+      }
+      try {
+        const payload: Record<string, unknown> = { stages };
+        if (args.force === true) payload.force = true;
+        if (typeof args.fallbackStageId === 'string') payload.fallbackStageId = args.fallbackStageId;
+        const res = await patchServer(`/api/projects/${PROJECT_ID}/stages`, payload);
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        // Surface 409 STAGE_HAS_ITEMS verbatim so the caller can react.
+        return {
+          content: [{ type: 'text', text: `pc_replace_stages failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_replace_stages failed: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_replace_field_schemas': {
+      if (!PROJECT_ID) {
+        return {
+          content: [{ type: 'text', text: 'pc_replace_field_schemas: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const items = Array.isArray(args.items) ? args.items : null;
+      if (!items) {
+        return {
+          content: [{ type: 'text', text: 'pc_replace_field_schemas: items array required' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await putServer(`/api/projects/${PROJECT_ID}/field-schemas`, { items });
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [{ type: 'text', text: `pc_replace_field_schemas failed (${res.status}): ${res.body}` }],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_replace_field_schemas failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

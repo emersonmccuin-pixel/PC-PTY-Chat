@@ -199,6 +199,201 @@ test('bash node runs via exec; failure fails the run', async () => {
   assert.equal(status, 'failed');
 });
 
+test('fireDagWorkflow with triggerWorkItemId uses existing card as run root — no new WI minted, stage unchanged', async () => {
+  // Create a card that will enter a stage and trigger the workflow.
+  const triggerWi = optsBase.workItemService.create({
+    stageId: 'backlog',
+    title: 'Brief Card',
+    body: 'the brief body',
+  });
+  const rootsBeforeFire = createdBodies.filter((w) => w.title === 'Test WF').length;
+
+  const opts = { ...optsBase, spawner: fakeSpawner, verify: passVerify };
+  const res = await fireDagWorkflow(
+    wf([agent('a', 'do a')]),
+    { kind: 'stage-on-entry', stage: 'backlog' },
+    opts,
+    triggerWi.id as ULID,
+  );
+  const status = await res.done;
+
+  assert.equal(status, 'completed');
+  // Run root is the trigger card.
+  assert.equal(res.rootWorkItemId, triggerWi.id);
+  // No new WI with the workflow name was minted as a root.
+  const rootsAfterFire = createdBodies.filter((w) => w.title === 'Test WF').length;
+  assert.equal(rootsAfterFire, rootsBeforeFire);
+  // Trigger card's stage is unchanged.
+  const wi = getWorkItem(triggerWi.id as ULID)!;
+  assert.equal(wi.stageId, 'backlog');
+  // isWorkflowRoot must NOT be set on the trigger card.
+  assert.ok(!wi.isWorkflowRoot);
+});
+
+test('$root.output and $root.output.<field> resolve from the run-root card', async () => {
+  const triggerWi = optsBase.workItemService.create({
+    stageId: 'backlog',
+    title: 'Root Card',
+    body: 'root body text',
+    fields: { tag: 'alpha' },
+  });
+  // Reset captures so we only see WIs created during this test's run.
+  createdBodies = [];
+
+  const opts = { ...optsBase, spawner: fakeSpawner, verify: passVerify };
+  await (await fireDagWorkflow(
+    wf([agent('read', 'body=$root.output tag=$root.output.tag')]),
+    { kind: 'stage-on-entry', stage: 'backlog' },
+    opts,
+    triggerWi.id as ULID,
+  )).done;
+
+  const readCreated = createdBodies.find((w) => w.title.endsWith('· read'))!;
+  assert.ok(readCreated, 'agent node child WI should have been created');
+  assert.match(readCreated.body, /body=root body text/);
+  assert.match(readCreated.body, /tag=alpha/);
+});
+
+test('move-work-item node moves run-root card to target stage and returns stage id as output', async () => {
+  // Build a project with two stages so there is somewhere to move to.
+  const twoStages: Stage[] = [
+    { id: 'build', name: 'Build', order: 0 },
+    { id: 'review', name: 'Review', order: 1 },
+  ];
+  const p2 = createProject({
+    slug: `dag-mv-${Math.random().toString(36).slice(2, 8)}`,
+    name: 'move-test',
+    stages: twoStages,
+    folderPath: tmpDir,
+  }) as unknown as Project;
+  const workItemService2 = new WorkItemService({
+    projectId: p2.id as ULID,
+    getProject: () => p2,
+    getFieldSchemas: () => [],
+    broadcast: () => {},
+  });
+  const broadcastEvents: unknown[] = [];
+  const opts: DagRunServiceOptions = {
+    ...optsBase,
+    projectId: p2.id as ULID,
+    getProject: () => p2,
+    workItemService: workItemService2,
+    broadcast: (ev: unknown) => broadcastEvents.push(ev),
+    spawner: fakeSpawner,
+    verify: passVerify,
+  };
+
+  // Trigger card starts in 'build'.
+  const triggerWi = workItemService2.create({ stageId: 'build', title: 'Card', body: 'brief' });
+
+  const moveWf: WorkflowV2.Workflow = {
+    id: 'move-wf',
+    name: 'Move WF',
+    triggers: [{ kind: 'manual' }],
+    worktree: 'none',
+    nodes: [{ kind: 'move-work-item', id: 'mv', to_stage: 'review' } as WorkflowV2.WorkflowNode],
+  };
+  const res = await fireDagWorkflow(moveWf, { kind: 'manual' }, opts, triggerWi.id as ULID);
+  const status = await res.done;
+
+  assert.equal(status, 'completed');
+
+  // The run-root card is now in 'review'.
+  const moved = getWorkItem(triggerWi.id as ULID)!;
+  assert.equal(moved.stageId, 'review');
+
+  // The node output is the destination stage id.
+  const run = workflowRunsV2Repo.getRun(res.runId)!;
+  assert.equal(run.dagState.nodes.mv!.state, 'completed');
+  assert.equal(run.dagState.nodes.mv!.output, 'review');
+
+  // A work-items-changed broadcast was emitted (UI sync).
+  assert.ok(broadcastEvents.some((e) => (e as { type: string }).type === 'work-items-changed'));
+});
+
+test('move-work-item does NOT invoke the spawner (no stage-on-entry fire)', async () => {
+  // If moveWorkItemStage (non-firing path) is used instead of moveAndFireV2,
+  // the spawner should never be called for a pure move-work-item workflow.
+  const twoStages: Stage[] = [
+    { id: 'build2', name: 'Build', order: 0 },
+    { id: 'review2', name: 'Review', order: 1 },
+  ];
+  const p3 = createProject({
+    slug: `dag-mv2-${Math.random().toString(36).slice(2, 8)}`,
+    name: 'move-no-fire',
+    stages: twoStages,
+    folderPath: tmpDir,
+  }) as unknown as Project;
+  const workItemService3 = new WorkItemService({
+    projectId: p3.id as ULID,
+    getProject: () => p3,
+    getFieldSchemas: () => [],
+    broadcast: () => {},
+  });
+
+  let spawnerCallCount = 0;
+  const countingSpawner: Spawner = (req) => {
+    spawnerCallCount++;
+    return fakeSpawner(req);
+  };
+
+  const opts: DagRunServiceOptions = {
+    ...optsBase,
+    projectId: p3.id as ULID,
+    getProject: () => p3,
+    workItemService: workItemService3,
+    spawner: countingSpawner,
+    verify: passVerify,
+  };
+
+  const triggerWi = workItemService3.create({ stageId: 'build2', title: 'Card', body: 'brief' });
+  const moveWf: WorkflowV2.Workflow = {
+    id: 'move-wf2',
+    name: 'Move WF2',
+    triggers: [{ kind: 'manual' }],
+    worktree: 'none',
+    nodes: [{ kind: 'move-work-item', id: 'mv', to_stage: 'review2' } as WorkflowV2.WorkflowNode],
+  };
+  const res = await fireDagWorkflow(moveWf, { kind: 'manual' }, opts, triggerWi.id as ULID);
+  await res.done;
+
+  // No agent spawned — purely a stage move.
+  assert.equal(spawnerCallCount, 0);
+});
+
+test('move-work-item with unknown stage fails the node and the run', async () => {
+  const opts: DagRunServiceOptions = {
+    ...optsBase,
+    spawner: fakeSpawner,
+    verify: passVerify,
+  };
+  const triggerWi = optsBase.workItemService.create({ stageId: 'backlog', title: 'Card', body: 'brief' });
+  const moveWf: WorkflowV2.Workflow = {
+    id: 'move-fail-wf',
+    name: 'Move Fail',
+    triggers: [{ kind: 'manual' }],
+    worktree: 'none',
+    nodes: [{ kind: 'move-work-item', id: 'mv', to_stage: 'no-such-stage' } as WorkflowV2.WorkflowNode],
+  };
+  const res = await fireDagWorkflow(moveWf, { kind: 'manual' }, opts, triggerWi.id as ULID);
+  const status = await res.done;
+
+  assert.equal(status, 'failed');
+  const run = workflowRunsV2Repo.getRun(res.runId)!;
+  assert.equal(run.dagState.nodes.mv!.state, 'failed');
+  assert.match(run.dagState.nodes.mv!.error ?? '', /no-such-stage/);
+});
+
+test('manual fire (no triggerWorkItemId) mints a blank isWorkflowRoot card (regression)', async () => {
+  const opts = { ...optsBase, spawner: fakeSpawner, verify: passVerify };
+  const res = await fireDagWorkflow(wf([agent('a', 'do a')]), { kind: 'manual' }, opts);
+  await res.done;
+
+  const root = getWorkItem(res.rootWorkItemId)!;
+  assert.equal(root.isWorkflowRoot, true);
+  assert.equal(root.title, 'Test WF');
+});
+
 test('bash node stdout feeds $nodeId.output in a downstream agent task (F#1)', async () => {
   // Pre-F#1: bash nodes had no workItemId, the resolver returned '' for
   // `$bash.output`, and downstream tasks rendered with empty substitutions.

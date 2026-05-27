@@ -6,10 +6,10 @@
 //      route can flip the flag.
 //   2. Composer-ready — CC emitted `\x1b[?2004h` (bracketed-paste-mode-on)
 //      into the PTY. One-shot ANSI sequence. Banner-immune.
-//   3. Optional init-complete — CC emitted the `/remote-control is active` substring
-//      somewhere in raw stdout. Matched after running the buffer through
-//      collapseAnsiToWhitespace so the resume-mode cursor-move-right
-//      rendering also matches.
+//   3. Optional init-complete — CC emitted a stable composer-ready UI marker
+//      somewhere in raw stdout. Remote-control markers count when enabled, but
+//      the regular Claude footer counts too so the phone bridge is not a
+//      dependency for interactive readiness.
 //
 // Subagents deliberately do not use `--remote-control`, so their gate requires
 // only the first two signals. The orchestrator can require the remote-control
@@ -25,11 +25,29 @@ import { EventEmitter } from 'node:events';
 import { collapseAnsiToWhitespace } from './ansi.ts';
 
 const INIT_COMPLETE_SUBSTRING = '/remote-control is active';
+const INIT_COMPLETE_STATUS_RE = /Remote\s*Control\s*active/i;
+const CLAUDE_FOOTER_READY_RE = /bypass\s+permissions\s+on/i;
+const CLAUDE_START_READY_RE =
+  /Welcome\s*back|Tips\s*for\s*getting\s*started|What's\s*new|Try\s*"/i;
 const BRACKETED_PASTE_ON = '\x1b[?2004h';
 
+function looksInitComplete(rawBuffer: string): boolean {
+  const normalized = collapseAnsiToWhitespace(rawBuffer);
+  const compact = normalized.replace(/\s+/g, '').toLowerCase();
+  return (
+    normalized.includes(INIT_COMPLETE_SUBSTRING) ||
+    INIT_COMPLETE_STATUS_RE.test(normalized) ||
+    CLAUDE_FOOTER_READY_RE.test(normalized) ||
+    CLAUDE_START_READY_RE.test(normalized) ||
+    compact.includes('/remote-controlisactive') ||
+    compact.includes('remotecontrolactive')
+  );
+}
+
 export interface ReadyTimestamps {
-  /** ms since epoch — when notifyHandshake() was called. */
-  handshakeAt: number;
+  /** ms since epoch — when notifyHandshake() was called.
+   *  Null when the gate was configured not to require the MCP handshake. */
+  handshakeAt: number | null;
   /** ms since epoch — when `\x1b[?2004h` was first observed. */
   composerReadyAt: number;
   /** ms since epoch — when "/remote-control is active" first matched.
@@ -44,13 +62,15 @@ export class ReadyGate extends EventEmitter {
   private rawBuffer = '';
   private settled = false;
   private readonly requireInitComplete: boolean;
+  private readonly requireHandshake: boolean;
   /** Optional override so tests can advance time deterministically. */
   private readonly now: () => number;
 
-  constructor(opts: { now?: () => number; requireInitComplete?: boolean } = {}) {
+  constructor(opts: { now?: () => number; requireInitComplete?: boolean; requireHandshake?: boolean } = {}) {
     super();
     this.now = opts.now ?? Date.now;
     this.requireInitComplete = opts.requireInitComplete ?? true;
+    this.requireHandshake = opts.requireHandshake ?? true;
   }
 
   /** Feed a raw stdout chunk from the PTY. Idempotent once the gate opens. */
@@ -62,10 +82,7 @@ export class ReadyGate extends EventEmitter {
       this.composerReadyAt = this.now();
     }
 
-    if (
-      this.initCompleteAt === null &&
-      collapseAnsiToWhitespace(this.rawBuffer).includes(INIT_COMPLETE_SUBSTRING)
-    ) {
+    if (this.initCompleteAt === null && looksInitComplete(this.rawBuffer)) {
       this.initCompleteAt = this.now();
     }
 
@@ -84,7 +101,7 @@ export class ReadyGate extends EventEmitter {
   /** Returns the three timestamps if all signals have fired, else null. */
   snapshot(): ReadyTimestamps | null {
     if (
-      this.handshakeAt === null ||
+      (this.requireHandshake && this.handshakeAt === null) ||
       this.composerReadyAt === null ||
       (this.requireInitComplete && this.initCompleteAt === null)
     ) {

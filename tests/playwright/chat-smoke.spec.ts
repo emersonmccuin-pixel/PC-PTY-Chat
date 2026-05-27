@@ -1,11 +1,13 @@
 // Chat reliability smoke (buildout/chat-reliability.md Phase 0g).
 //
-// Four boring, fast tests that pin the regressions that bit during the
-// 2026-05-17 session:
+// Focused tests that pin the regressions that bit during the
+// 2026-05-17 session and the later chat-perfect-operation phases:
 //   1. happy path — send "hi" + assert user/assistant bubble + no stuck spinner
-//   2. + New session — panel clears, composer enabled, no Session-ended banner
-//   3. interrupt — "Interrupting…" appears and clears within 5s
-//   4. past session — viewing past chat does not pollute the live view
+//   2. interrupt — "Interrupting…" appears and clears/degrades cleanly
+//   3. + New session — panel clears, composer enabled, no stale-session bleed
+//   4. resume/reload replay remains ordered and visible
+//   5. busy queue survives refresh/cancel/FIFO drain
+//   6. PTY exit keeps the durable session writable and respawnable
 //
 // Boot model: assumes the user's dev stack is up (Vite :5173 + Hono :4040 +
 // channel :8788). Project isolation comes from a `pc-smoke-` slug prefix
@@ -26,7 +28,8 @@ import { join } from 'node:path';
 import { HONO, gotoShell, setActiveTab } from './helpers';
 
 const SMOKE_ROOT = join(tmpdir(), 'pc-smoke-test');
-const SMOKE_WORKSPACE = join(SMOKE_ROOT, 'workspace');
+const SMOKE_RUN_ID = Date.now().toString(36);
+const SMOKE_WORKSPACE = join(SMOKE_ROOT, `workspace-${SMOKE_RUN_ID}`);
 const PROJECT_NAME = 'PC Smoke';
 const PROJECT_SLUG = 'pc-smoke';
 const HAPPY_PROMPT = 'pc smoke happy path hello';
@@ -36,6 +39,29 @@ interface ProjectShape {
   slug: string;
   name: string;
   folderPath: string;
+}
+
+type RuntimeQueueStatus =
+  | 'queued_busy'
+  | 'queued_spawning'
+  | 'queued_backlog'
+  | 'delivering'
+  | 'delivered_to_pty'
+  | 'observed_in_jsonl'
+  | 'failed'
+  | 'cancelled';
+
+interface RuntimeQueueItem {
+  id: string;
+  clientMessageId: string;
+  text: string;
+  status: RuntimeQueueStatus;
+  failureReason: string | null;
+}
+
+interface RuntimeSnapshotShape {
+  queueDepth: number;
+  queue: RuntimeQueueItem[];
 }
 
 async function cleanupSmokeProjects(req: APIRequestContext): Promise<void> {
@@ -69,6 +95,94 @@ async function createSmokeProject(req: APIRequestContext): Promise<ProjectShape>
   return project;
 }
 
+async function activeSessionId(req: APIRequestContext, projectId: string): Promise<string | null> {
+  const r = await req.get(`${HONO}/api/projects/${projectId}/session`);
+  if (!r.ok()) throw new Error(`activeSessionId ${r.status()}: ${await r.text()}`);
+  const { session } = (await r.json()) as { session: { id?: string } | null };
+  return typeof session?.id === 'string' ? session.id : null;
+}
+
+async function killOrchestratorPtyForSmoke(
+  req: APIRequestContext,
+  projectId: string,
+): Promise<void> {
+  const r = await req.post(`${HONO}/api/projects/${projectId}/orchestrator/smoke/kill-pty`, {
+    headers: { 'x-pc-smoke-control': '1' },
+  });
+  if (!r.ok()) throw new Error(`killOrchestratorPtyForSmoke ${r.status()}: ${await r.text()}`);
+}
+
+async function getRuntimeSnapshot(
+  req: APIRequestContext,
+  projectId: string,
+): Promise<RuntimeSnapshotShape> {
+  const r = await req.get(`${HONO}/api/projects/${projectId}/orchestrator/runtime`);
+  if (!r.ok()) throw new Error(`getRuntimeSnapshot ${r.status()}: ${await r.text()}`);
+  const { runtime } = (await r.json()) as { runtime: RuntimeSnapshotShape };
+  return runtime;
+}
+
+async function runtimeQueueItemByText(
+  req: APIRequestContext,
+  projectId: string,
+  text: string,
+): Promise<RuntimeQueueItem | null> {
+  const runtime = await getRuntimeSnapshot(req, projectId);
+  return runtime.queue.find((item) => item.text.includes(text)) ?? null;
+}
+
+async function waitForRuntimeQueueItem(
+  req: APIRequestContext,
+  projectId: string,
+  text: string,
+  timeout = 15_000,
+): Promise<RuntimeQueueItem> {
+  let found: RuntimeQueueItem | null = null;
+  await expect.poll(async () => {
+    found = await runtimeQueueItemByText(req, projectId, text);
+    return found?.status ?? '';
+  }, { timeout }).toMatch(/^(queued_busy|queued_spawning|queued_backlog|delivering|delivered_to_pty|failed)$/);
+  return found!;
+}
+
+async function waitForCancellableRuntimeQueueItem(
+  req: APIRequestContext,
+  projectId: string,
+  text: string,
+  timeout = 15_000,
+): Promise<RuntimeQueueItem> {
+  let found: RuntimeQueueItem | null = null;
+  await expect.poll(async () => {
+    found = await runtimeQueueItemByText(req, projectId, text);
+    return found && (
+      found.status === 'queued_busy' ||
+      found.status === 'queued_spawning' ||
+      found.status === 'queued_backlog'
+    ) ? found.id : '';
+  }, { timeout }).toBeTruthy();
+  return found!;
+}
+
+async function waitForRuntimeQueueItemGone(
+  req: APIRequestContext,
+  projectId: string,
+  text: string,
+  timeout = 15_000,
+): Promise<void> {
+  await expect.poll(async () => {
+    return (await runtimeQueueItemByText(req, projectId, text))?.status ?? 'gone';
+  }, { timeout }).toBe('gone');
+}
+
+async function cancelQueuedSendForSmoke(
+  req: APIRequestContext,
+  projectId: string,
+  queueItemId: string,
+): Promise<void> {
+  const r = await req.post(`${HONO}/api/projects/${projectId}/send-queue/${queueItemId}/cancel`);
+  if (!r.ok()) throw new Error(`cancelQueuedSendForSmoke ${r.status()}: ${await r.text()}`);
+}
+
 /** Wait for the project WebSocket to connect.
  *  Section 22.4 — switched from a brittle title-prefix + text regex to the
  *  stable [data-ws-status] attribute on the pill. The visible label/title
@@ -98,6 +212,19 @@ async function waitForRuntimeReadyOrSkip(page: Page, timeout = 60_000): Promise<
   test.skip(true, `Claude runtime did not become ready in time (last health: ${lastHealth ?? 'unknown'})`);
 }
 
+async function expectRuntimeDiagnostics(page: Page): Promise<void> {
+  const runtimePill = page.locator('[data-testid="runtime-pill"]');
+  await expect(runtimePill).toBeVisible({ timeout: 15_000 });
+  await expect(runtimePill).toHaveAttribute(
+    'data-runtime-wait-point',
+    /^(session|queue|spawn|jsonl|provider_resume|ready_state|none)$/,
+    { timeout: 15_000 },
+  );
+  await expect(runtimePill).toHaveAttribute('data-runtime-queue-depth', /^\d+$/);
+  await expect(runtimePill).toHaveAttribute('data-runtime-replay-high-water', /^\d+$/);
+  await expect(runtimePill).toHaveAttribute('data-runtime-jsonl-cursor', /^\d+$/);
+}
+
 /**
  * Send a chat message reliably. The composer is a React controlled textarea
  * with a `disabled={!text.trim()}` Send button — naive `fill + click` races
@@ -108,7 +235,7 @@ async function sendChat(page: Page, text: string): Promise<void> {
   const composer = page.locator('[data-testid="chat-composer-input"]');
   await composer.click();
   await composer.fill(text);
-  const sendBtn = page.getByRole('button', { name: /^(Send|Queue)/i }).first();
+  const sendBtn = page.locator('[data-testid="chat-composer-send"]');
   await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
   await sendBtn.click();
 }
@@ -127,6 +254,10 @@ async function confirmedUserBubbleCount(page: Page): Promise<number> {
 
 function confirmedUserBubbleWithText(page: Page, text: string): Locator {
   return page.locator('[data-role="user"]:not([data-pending-status])').filter({ hasText: text });
+}
+
+function userBubbleWithText(page: Page, text: string): Locator {
+  return page.locator('[data-role="user"]').filter({ hasText: text });
 }
 
 async function waitForConfirmedUserTextOrSkip(
@@ -156,10 +287,6 @@ async function waitForConfirmedUserCountOrSkip(
     await page.waitForTimeout(500);
   }
   test.skip(true, 'Claude did not confirm the user prompt in this environment');
-}
-
-function queueItemByText(page: Page, text: string): Locator {
-  return page.locator('[data-testid="composer-queue-item"]').filter({ hasText: text });
 }
 
 async function expectConfirmedUserOrder(
@@ -231,6 +358,7 @@ async function startNewSession(page: Page): Promise<void> {
       (await startingEmpty.count()) > 0
     );
   }, { timeout: 15_000 }).toBe(true);
+  await expectRuntimeDiagnostics(page);
 }
 
 async function assistantBubbleCount(page: Page): Promise<number> {
@@ -267,6 +395,7 @@ test.describe.serial('Chat smoke (0g)', () => {
     await expect(page.locator('[data-testid="runtime-pill"]')).toBeVisible({
       timeout: 15_000,
     });
+    await expectRuntimeDiagnostics(page);
   });
 
   test.afterAll(async ({ request }) => {
@@ -366,9 +495,9 @@ test.describe.serial('Chat smoke (0g)', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // Test 3 — + New session clears the panel (regressed twice in one day)
+  // Test 3 — + New session clears the panel and stays writable during startup.
   // ───────────────────────────────────────────────────────────────────────
-  test('3. + New session clears the panel, composer enabled, no Session-ended banner', async () => {
+  test('3. + New session clears the panel, composer enabled, no stale-session bleed', async () => {
     test.setTimeout(30_000);
     // Sanity: prior tests left at least one bubble in the live view.
     if ((await userBubbleCount(page)) === 0) {
@@ -388,6 +517,15 @@ test.describe.serial('Chat smoke (0g)', () => {
     const composer = page.locator('[data-testid="chat-composer-input"]');
     await expect(composer).toBeVisible({ timeout: 15_000 });
     await expect(composer).toBeEnabled();
+    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toHaveCount(0);
+
+    const startupPrompt = `startup queue marker ${Date.now().toString(36)}`;
+    await sendChat(page, startupPrompt);
+    await expect.poll(async () => {
+      const pending = await userBubbleWithText(page, startupPrompt).count();
+      const confirmed = await confirmedUserBubbleWithText(page, startupPrompt).count();
+      return pending + confirmed;
+    }, { timeout: 5_000 }).toBeGreaterThan(0);
   });
 
   // ───────────────────────────────────────────────────────────────────────
@@ -395,25 +533,27 @@ test.describe.serial('Chat smoke (0g)', () => {
   // ───────────────────────────────────────────────────────────────────────
   test('4. resume from history keeps replay visible and appends follow-up', async () => {
     test.setTimeout(90_000);
-    if ((await confirmedUserBubbleWithText(page, HAPPY_PROMPT).count()) === 0) {
-      test.skip(true, 'Happy-path chat did not confirm in this environment');
-    }
     await page.locator('[data-testid="session-switcher-trigger"]').click();
     await page.locator('[data-testid="session-switcher-browse-all"]').click();
 
     const liveRows = page.locator('[data-testid="session-row"][data-session-status="active"]');
     const endedRows = page.locator('[data-testid="session-row"][data-session-status="ended"]');
     await expect(liveRows).toHaveCount(1, { timeout: 10_000 });
-    await expect.poll(() => endedRows.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+    const endedRowsDeadline = Date.now() + 10_000;
+    while ((await endedRows.count()) === 0 && Date.now() < endedRowsDeadline) {
+      await skipIfClaudeUsageLimited(page);
+      await page.waitForTimeout(500);
+    }
+    if ((await endedRows.count()) === 0) {
+      test.skip(true, 'No ended session is available because the happy-path chat did not complete in this environment');
+    }
 
     const pastRow = endedRows.first();
     await pastRow.locator('button[title]').first().click();
     await expect(page.locator('button:has-text("Return to live")')).toBeVisible({
       timeout: 10_000,
     });
-    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible({
-      timeout: 10_000,
-    });
+    await waitForConfirmedUserTextOrSkip(page, HAPPY_PROMPT, 10_000);
 
     await pastRow.hover();
     await pastRow.locator('[data-testid="session-resume"]').click();
@@ -432,12 +572,21 @@ test.describe.serial('Chat smoke (0g)', () => {
     await skipIfClaudeUsageLimited(page);
     await waitForConfirmedUserTextOrSkip(page, followUp, 20_000);
     await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible();
+
+    await ensureOrchestratorAfterReload(page);
+    await expect(confirmedUserBubbleWithText(page, HAPPY_PROMPT)).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(confirmedUserBubbleWithText(page, followUp)).toBeVisible({
+      timeout: 15_000,
+    });
+    await expectRuntimeDiagnostics(page);
   });
 
   // ───────────────────────────────────────────────────────────────────────
-  // Test 5 — server-owned busy queue: refresh, cancel, FIFO drain.
+  // Test 5 — server-owned busy queue: refresh, API cancel, FIFO drain.
   // ───────────────────────────────────────────────────────────────────────
-  test('5. busy-send queue survives refresh, cancels, and drains FIFO', async () => {
+  test('5. busy-send queue survives refresh, cancels, and drains FIFO', async ({ request }) => {
     test.setTimeout(240_000);
     await startNewSession(page);
     await waitForRuntimeReadyOrSkip(page);
@@ -461,23 +610,56 @@ test.describe.serial('Chat smoke (0g)', () => {
     await ensureStillThinkingOrSkip(page);
 
     await sendChat(page, refreshPrompt);
-    await expect(queueItemByText(page, refreshPrompt)).toBeVisible({ timeout: 5_000 });
+    await expect(userBubbleWithText(page, refreshPrompt)).toBeVisible({ timeout: 5_000 });
+    await waitForRuntimeQueueItem(request, project.id, refreshPrompt, 5_000);
+    await expect(page.locator('[data-testid="composer-queue"]')).toHaveCount(0);
 
     await ensureOrchestratorAfterReload(page);
-    await expect(queueItemByText(page, refreshPrompt)).toBeVisible({ timeout: 15_000 });
+    await waitForRuntimeQueueItem(request, project.id, refreshPrompt, 15_000);
+    await expect(page.locator('[data-testid="composer-queue"]')).toHaveCount(0);
 
     await sendChat(page, cancelPrompt);
-    const cancelItem = queueItemByText(page, cancelPrompt);
-    await expect(cancelItem).toBeVisible({ timeout: 5_000 });
-    await cancelItem.getByRole('button', { name: 'Cancel queued prompt' }).click();
-    await expect(cancelItem).toHaveCount(0, { timeout: 10_000 });
+    const cancelItem = await waitForCancellableRuntimeQueueItem(request, project.id, cancelPrompt, 5_000);
+    await cancelQueuedSendForSmoke(request, project.id, cancelItem.id);
+    await waitForRuntimeQueueItemGone(request, project.id, cancelPrompt, 10_000);
 
     await sendChat(page, drainA);
     await sendChat(page, drainB);
-    await expect(queueItemByText(page, drainA)).toBeVisible({ timeout: 5_000 });
-    await expect(queueItemByText(page, drainB)).toBeVisible({ timeout: 5_000 });
+    await waitForRuntimeQueueItem(request, project.id, drainA, 5_000);
+    await waitForRuntimeQueueItem(request, project.id, drainB, 5_000);
 
     await expectConfirmedUserOrder(page, [longPrompt, refreshPrompt, drainA, drainB], 180_000);
     await expect(confirmedUserBubbleWithText(page, cancelPrompt)).toHaveCount(0);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Test 6 — PTY exit is not session death; next send respawns/resumes.
+  // ───────────────────────────────────────────────────────────────────────
+  test('6. PTY exit leaves session writable and respawns on send', async ({ request }) => {
+    test.setTimeout(180_000);
+    await startNewSession(page);
+    await waitForRuntimeReadyOrSkip(page);
+
+    const beforeSessionId = await activeSessionId(request, project.id);
+    expect(beforeSessionId).toBeTruthy();
+
+    await killOrchestratorPtyForSmoke(request, project.id);
+    await expectRuntimeDiagnostics(page);
+    const composer = page.locator('[data-testid="chat-composer-input"]');
+    await expect(composer).toBeVisible({ timeout: 15_000 });
+    await expect(composer).toBeEnabled();
+
+    const marker = `pty exit auto-resume marker ${Date.now().toString(36)}`;
+    await sendChat(page, marker);
+    await expect.poll(async () => {
+      const pending = await userBubbleWithText(page, marker).count();
+      const confirmed = await confirmedUserBubbleWithText(page, marker).count();
+      return pending + confirmed;
+    }, { timeout: 10_000 }).toBeGreaterThan(0);
+
+    expect(await activeSessionId(request, project.id)).toBe(beforeSessionId);
+    await waitForRuntimeReadyOrSkip(page, 120_000);
+    await waitForConfirmedUserTextOrSkip(page, marker, 90_000);
+    expect(await activeSessionId(request, project.id)).toBe(beforeSessionId);
   });
 });

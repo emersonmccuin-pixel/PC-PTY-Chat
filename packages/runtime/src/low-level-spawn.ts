@@ -85,14 +85,21 @@ export interface LowLevelSpawnInput {
   /** Optional model override. Orchestrator passes opus; workers may omit and
    *  inherit Claude's/default pod behavior. */
   model?: string;
-  /** Enables Claude's remote-control banner and makes the ready gate require
-   *  the init-complete signal. Used by the main orchestrator chat. */
+  /** Enables Claude's remote-control phone bridge/banner. */
   remoteControl?: boolean;
+  /** Require a stable Claude composer-ready UI marker in addition to
+   *  bracketed-paste/handshake signals. Used by the main orchestrator chat
+   *  without depending on the remote-control phone bridge. */
+  requireReadySignal?: boolean;
   /** Load the webhook dev channel. Main orchestrator needs this; dispatched
    *  agents leave it off. */
   loadDevChannels?: boolean;
   /** Optional handshake timeout. Default 60s. */
   handshakeTimeoutMs?: number;
+  /** Main resume spawns can load historical Claude sessions that do not honor
+   *  the current dev-channel MCP config. In that case remote-control composer
+   *  readiness is enough to accept typed sends. Default true. */
+  requireMcpHandshake?: boolean;
   /** Optional ready timeout. Default 60s. */
   readyTimeoutMs?: number;
   /** Optional forensic transcript file. Raw bytes append. The wrapper
@@ -159,7 +166,10 @@ export class LowLevelSpawn extends EventEmitter {
     this.input = input;
     // Subagents must not use Claude remote-control; they are disposable worker
     // sessions. Their ready gate uses the banner-independent signals only.
-    this.gate = new ReadyGate({ requireInitComplete: input.remoteControl ?? false });
+    this.gate = new ReadyGate({
+      requireHandshake: input.requireMcpHandshake ?? true,
+      requireInitComplete: input.requireReadySignal ?? input.remoteControl ?? false,
+    });
     this.gate.on('ready', (ts) => this.handleGateOpen(ts));
     this.gate.on('aborted', (reason: string) => this.handleGateAbort(reason));
 

@@ -57,6 +57,8 @@ export interface DagExecutorDeps {
   dispatchAgent(node: WorkflowV2.AgentNode, ctx: DagNodeContext): Promise<NodeOutcome>;
   /** Run a bash/script node in the worktree; resolve when done. */
   runCommand(node: WorkflowV2.BashNode | WorkflowV2.ScriptNode, ctx: DagNodeContext): Promise<NodeOutcome>;
+  /** Move the run-root card to `node.to_stage` without firing stage-on-entry workflows. */
+  moveWorkItem(node: WorkflowV2.MoveWorkItemNode, ctx: DagNodeContext): Promise<NodeOutcome>;
   /** Post the review gate (orchestrator channel event / Human Review inbox). */
   requestReview(
     node: WorkflowV2.HumanReviewNode | WorkflowV2.OrchestratorReviewNode,
@@ -204,6 +206,8 @@ export class DagExecutor {
             const outcome =
               node.kind === 'agent'
                 ? await this.deps.dispatchAgent(node, this.ctx(resolve, carry))
+                : node.kind === 'move-work-item'
+                ? await this.deps.moveWorkItem(node, this.ctx(resolve, carry))
                 : await this.deps.runCommand(
                     node as WorkflowV2.BashNode | WorkflowV2.ScriptNode,
                     this.ctx(resolve, carry)

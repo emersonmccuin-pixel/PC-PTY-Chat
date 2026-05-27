@@ -23,13 +23,14 @@ import type { VerificationTier } from './work-item-contract.ts';
 // Node kinds
 // ---------------------------------------------------------------------------
 
-/** v1 node set. Five kinds. `loop` + `cancel` dropped (locks 3 + 13). */
+/** v1 node set. Five kinds + move-work-item. `loop` + `cancel` dropped (locks 3 + 13). */
 export const WORKFLOW_NODE_KINDS = [
   'agent',
   'bash',
   'script',
   'human-review',
   'orchestrator-review',
+  'move-work-item',
 ] as const;
 export type WorkflowNodeKind = (typeof WORKFLOW_NODE_KINDS)[number];
 
@@ -203,12 +204,22 @@ export interface OrchestratorReviewNode extends WorkflowNodeBase {
   reject?: RejectEdge;
 }
 
+/** Moves the run-root work item to a different stage. Does NOT fire
+ *  stage-on-entry workflows on the destination (avoids trigger loops).
+ *  On success the node's `output` is the new stage id. */
+export interface MoveWorkItemNode extends WorkflowNodeBase {
+  kind: 'move-work-item';
+  /** Destination stage id (required, non-empty). */
+  to_stage: string;
+}
+
 export type WorkflowNode =
   | AgentNode
   | BashNode
   | ScriptNode
   | HumanReviewNode
-  | OrchestratorReviewNode;
+  | OrchestratorReviewNode
+  | MoveWorkItemNode;
 
 // Type guards
 export function isAgentNode(n: WorkflowNode): n is AgentNode {

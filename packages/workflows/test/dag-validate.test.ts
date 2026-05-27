@@ -126,6 +126,29 @@ test('empty workflow (no nodes, no name)', () => {
   expectError(r, /name is required/);
 });
 
+test('node id "root" is reserved', () => {
+  expectError(validateWorkflowV2(wf([{ ...agent('root'), id: 'root' } as Node])), /node id "root" is reserved/);
+});
+
+test('move-work-item node with to_stage passes', () => {
+  const r = validateWorkflowV2(wf([{ kind: 'move-work-item', id: 'mv', to_stage: 'review' } as unknown as Node]));
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('move-work-item node missing to_stage is rejected', () => {
+  expectError(
+    validateWorkflowV2(wf([{ kind: 'move-work-item', id: 'mv' } as unknown as Node])),
+    /move-work-item node "mv": missing "to_stage"/
+  );
+});
+
+test('move-work-item node with empty to_stage is rejected', () => {
+  expectError(
+    validateWorkflowV2(wf([{ kind: 'move-work-item', id: 'mv', to_stage: '' } as unknown as Node])),
+    /move-work-item node "mv": missing "to_stage"/
+  );
+});
+
 test('collects multiple errors at once', () => {
   const r = validateWorkflowV2(wf([agent('a', ['ghost']), { kind: 'bash', id: 'a' } as unknown as Node]));
   // duplicate id + missing bash + unknown next target — at least 3 distinct errors

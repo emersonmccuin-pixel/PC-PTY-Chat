@@ -68,6 +68,10 @@ function recorder(opts: { agentOutcome?: (id: string, call: number) => NodeOutco
       cmdCalls.push(node.id);
       return { state: 'completed' };
     },
+    moveWorkItem: async (node) => {
+      cmdCalls.push(node.id);
+      return { state: 'completed', output: node.to_stage };
+    },
     requestReview: async (node) => {
       reviewRequests.push(node.id);
     },

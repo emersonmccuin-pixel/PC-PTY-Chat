@@ -17,7 +17,7 @@ export interface ValidationResult {
   errors: string[];
 }
 
-const NODE_KINDS = new Set(['agent', 'bash', 'script', 'human-review', 'orchestrator-review']);
+const NODE_KINDS = new Set(['agent', 'bash', 'script', 'human-review', 'orchestrator-review', 'move-work-item']);
 const TRIGGER_KINDS = new Set(['manual', 'stage-on-entry', 'schedule', 'event']);
 const SCRIPT_RUNTIMES = new Set(['node', 'python']);
 const REVIEW_KINDS = new Set(['human-review', 'orchestrator-review']);
@@ -55,6 +55,7 @@ export function validateWorkflowV2(workflow: WorkflowV2.Workflow): ValidationRes
       continue;
     }
     if (ids.has(id)) errors.push(`duplicate node id "${id}"`);
+    if (id === 'root') errors.push(`node id "root" is reserved`);
     ids.add(id);
 
     const kind = n.kind as string;
@@ -73,6 +74,8 @@ export function validateWorkflowV2(workflow: WorkflowV2.Workflow): ValidationRes
       if (!SCRIPT_RUNTIMES.has(n.runtime as string))
         errors.push(`script node "${id}": runtime must be "node" or "python"`);
     }
+    if (kind === 'move-work-item' && (typeof n.to_stage !== 'string' || n.to_stage === ''))
+      errors.push(`move-work-item node "${id}": missing "to_stage"`);
   }
 
   // ── ref integrity ──

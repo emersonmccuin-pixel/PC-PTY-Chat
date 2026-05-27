@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -82,7 +82,9 @@ import {
 } from './services/session-replay.ts';
 import {
   deriveRuntimeHealth,
+  deriveRuntimeWaitPoint,
   type RuntimeHealth,
+  type RuntimeWaitPoint,
 } from './services/orchestrator-runtime-health.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
@@ -313,6 +315,7 @@ interface RuntimeFailureState {
 
 interface RuntimeLifecycleState {
   lastActivityAt: number | null;
+  lastJsonlAt: number | null;
   lastExitAt: number | null;
   exitCode: number | null;
   exitSignal: string | null;
@@ -325,6 +328,7 @@ interface PublicRuntimeSnapshot {
   provider: 'claude';
   providerSessionId: string | null;
   health: RuntimeHealth;
+  waitPoint: RuntimeWaitPoint;
   ptyState: string | null;
   exitCode: number | null;
   exitSignal: string | null;
@@ -333,13 +337,17 @@ interface PublicRuntimeSnapshot {
   lastReadyAt: number | null;
   nextRetryAt: number | null;
   lastExitAt: number | null;
+  lastJsonlAt: number | null;
   lastActivityAt: number | null;
   failureReason: string | null;
   rawJsonlPath: string | null;
   rawJsonlExists: boolean;
+  rawJsonlCursor: number | null;
   replayPath: string | null;
   replayExists: boolean;
   replayLineCount: number;
+  replayHighWaterSeq: number;
+  queueDepth: number;
   queue: PublicSendQueueItem[];
 }
 
@@ -363,6 +371,7 @@ function runtimeLifecycleFor(projectId: ULID): RuntimeLifecycleState {
   if (!state) {
     state = {
       lastActivityAt: null,
+      lastJsonlAt: null,
       lastExitAt: null,
       exitCode: null,
       exitSignal: null,
@@ -377,8 +386,22 @@ function noteRuntimeActivity(projectId: ULID): void {
   runtimeLifecycleFor(projectId).lastActivityAt = Date.now();
 }
 
+function noteRuntimeJsonl(projectId: ULID): void {
+  const state = runtimeLifecycleFor(projectId);
+  const now = Date.now();
+  state.lastActivityAt = now;
+  state.lastJsonlAt = now;
+}
+
 function clearRuntimeFailure(projectId: ULID): void {
   runtimeLifecycleFor(projectId).failure = null;
+}
+
+function clearRuntimeExit(projectId: ULID): void {
+  const state = runtimeLifecycleFor(projectId);
+  state.lastExitAt = null;
+  state.exitCode = null;
+  state.exitSignal = null;
 }
 
 function noteRuntimeFailure(projectId: ULID, err: unknown): void {
@@ -417,6 +440,15 @@ function countJsonlLines(filePath: string): number {
   }
 }
 
+function fileMtimeMs(filePath: string | null): number | null {
+  if (!filePath) return null;
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 function runtimeSnapshotPayload(
   projectId: ULID,
   runtime: ProjectRuntime,
@@ -433,7 +465,22 @@ function runtimeSnapshotPayload(
   const rawJsonlPath = active?.jsonlPath
     ?? (active?.providerSessionId ? jsonlPathFor(runtime.folderPath, active.providerSessionId) : null);
   const replayPath = active ? resolve(runtime.sessionDataPath(active.id), 'jsonl-events.jsonl') : null;
+  const rawJsonlExists = rawJsonlPath ? existsSync(rawJsonlPath) : false;
   const replayExists = replayPath ? existsSync(replayPath) : false;
+  const replay = active ? loadSessionReplay(runtime, active.id) : null;
+  const queue = active
+    ? listVisibleOrchestratorSendsForSession(active.id).map(publicSendQueueItem)
+    : [];
+  const queueDepth = queue.filter((item) => item.status !== 'failed').length;
+  const rawJsonlCursor = active ? active.jsonlLineCursor : null;
+  const lastJsonlAt = lifecycle.lastJsonlAt ?? fileMtimeMs(rawJsonlPath);
+  const waitPoint = deriveRuntimeWaitPoint({
+    sessionId: active?.id ?? null,
+    health,
+    queueDepth,
+    rawJsonlExists,
+    lastJsonlAt,
+  });
 
   return {
     type: 'runtime-state',
@@ -441,6 +488,7 @@ function runtimeSnapshotPayload(
     provider: 'claude',
     providerSessionId: active?.providerSessionId ?? null,
     health,
+    waitPoint,
     ptyState,
     exitCode: lifecycle.exitCode,
     exitSignal: lifecycle.exitSignal,
@@ -449,16 +497,18 @@ function runtimeSnapshotPayload(
     lastReadyAt: runtimeDetails.lastReadyAt,
     nextRetryAt: runtimeDetails.nextRetryAt,
     lastExitAt: lifecycle.lastExitAt,
-    lastActivityAt: lifecycle.lastActivityAt ?? active?.startedAt ?? null,
+    lastJsonlAt,
+    lastActivityAt: lifecycle.lastActivityAt ?? lastJsonlAt ?? active?.startedAt ?? null,
     failureReason: lifecycle.failure?.reason ?? runtimeDetails.runtimeFailureReason,
     rawJsonlPath,
-    rawJsonlExists: rawJsonlPath ? existsSync(rawJsonlPath) : false,
+    rawJsonlExists,
+    rawJsonlCursor,
     replayPath,
     replayExists,
     replayLineCount: replayExists && replayPath ? countJsonlLines(replayPath) : 0,
-    queue: active
-      ? listVisibleOrchestratorSendsForSession(active.id).map(publicSendQueueItem)
-      : [],
+    replayHighWaterSeq: replay?.highWaterSeq ?? 0,
+    queueDepth,
+    queue,
   };
 }
 
@@ -576,6 +626,7 @@ function ensureOrchestratorPty(
   try {
     const pty = runtime.ensurePty();
     clearRuntimeFailure(projectId);
+    if (pty.getState() === 'ready') clearRuntimeExit(projectId);
     noteRuntimeActivity(projectId);
     attachPtyHandlers(projectId, runtime, pty);
     broadcastRuntimeSnapshot(projectId, runtime);
@@ -787,6 +838,10 @@ function attachPtyHandlers(
   });
   session.on('state', (state: string) => {
     noteRuntimeActivity(projectId);
+    if (state === 'ready') {
+      clearRuntimeFailure(projectId);
+      clearRuntimeExit(projectId);
+    }
     broadcastTo(projectId, { type: 'state', state });
     broadcastRuntimeSnapshot(projectId, runtime);
     if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
@@ -816,8 +871,11 @@ function attachPtyHandlers(
   // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
   // so the chat panel can merge them without ambiguity.
   session.on('jsonl-event', (event: unknown, replay?: JsonlReplayMeta) => {
-    noteRuntimeActivity(projectId);
+    noteRuntimeJsonl(projectId);
     broadcastTo(projectId, { type: 'jsonl', event, ...replayMetaPayload(replay) });
+    if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
+      setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
+    }
     maybeAdvanceSendQueueConfirmation(projectId, attachedSessionId, event);
     broadcastRuntimeSnapshot(projectId, runtime);
     // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
@@ -850,6 +908,11 @@ function attachPtyHandlers(
     broadcastRuntimeSnapshot(projectId, runtime);
     console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
   });
+  const currentJsonlPath = session.getJsonlPath();
+  if (currentJsonlPath) {
+    const active = getActiveOrchestratorSession(projectId);
+    if (active) setOrchestratorSessionJsonlPath(active.id, currentJsonlPath);
+  }
   flag.__pcHandlersAttached = true;
 }
 
@@ -1651,6 +1714,28 @@ app.get('/api/projects/:projectId/orchestrator/runtime', (c) => {
   return c.json({ ok: true, runtime: runtimeSnapshotPayload(id, runtime) });
 });
 
+/** Smoke-only PTY control. Guarded by a header and the pc-smoke project prefix
+ *  so browser tests can pin process-exit recovery without exposing a normal
+ *  destructive control for user projects. */
+app.post('/api/projects/:projectId/orchestrator/smoke/kill-pty', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  if (
+    c.req.header('x-pc-smoke-control') !== '1' ||
+    !runtime.project.slug.startsWith('pc-smoke')
+  ) {
+    return c.json({ ok: false, error: 'smoke control is not available' }, 404);
+  }
+  const killed = runtime.killOrchestratorForSmoke();
+  broadcastRuntimeSnapshot(id, runtime);
+  return c.json({
+    ok: true,
+    killed,
+    runtime: runtimeSnapshotPayload(id, runtime),
+  });
+});
+
 /** Full history of orchestrator sessions for the project (most recent first).
  *  Feeds the "previous sessions" rail tab. */
 app.get('/api/projects/:projectId/sessions', (c) => {
@@ -2207,18 +2292,45 @@ app.post('/api/projects/:projectId/work-items/move', async (c) => {
   }
 });
 
-/** Legacy fields-merge endpoint. Used by MCP `pc_update_work_item`. The new
+/** Legacy fields-merge endpoint. Used by MCP `pc_update_work_item`. Also
+ *  accepts optional `body` and `title` — those flow through WorkItemService
+ *  .patch() (reads current version to avoid optimistic-lock conflicts). The new
  *  `PATCH /work-items/:wiId` is the version-checked UI path. */
 app.post('/api/projects/:projectId/work-items/update', async (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ id?: string; fields?: Record<string, unknown> }>();
+  const body = await c.req.json<{
+    id?: string;
+    fields?: Record<string, unknown>;
+    body?: string;
+    title?: string;
+  }>();
   const wiId = typeof body.id === 'string' ? body.id.trim() : '';
   const fields = body.fields && typeof body.fields === 'object' ? body.fields : null;
-  if (!wiId || !fields) return c.json({ ok: false, error: 'id and fields required' }, 400);
+  const bodyText = typeof body.body === 'string' ? body.body : undefined;
+  const titleText = typeof body.title === 'string' ? body.title : undefined;
+  if (!wiId) return c.json({ ok: false, error: 'id required' }, 400);
+  if (!fields && bodyText === undefined && titleText === undefined) {
+    return c.json({ ok: false, error: 'at least one of fields, body, or title required' }, 400);
+  }
   try {
-    const workItem = dbUpdateWorkItemFields(wiId as ULID, fields);
+    if (bodyText !== undefined || titleText !== undefined) {
+      // body/title changes use WorkItemService.patch (reads current version first).
+      const current = runtime.workItemService().get(wiId as ULID);
+      if (!current) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
+      const patchInput: Parameters<ReturnType<typeof runtime.workItemService>['patch']>[1] = {
+        expectedVersion: current.version,
+      };
+      if (titleText !== undefined) patchInput.title = titleText;
+      if (bodyText !== undefined) patchInput.body = bodyText;
+      if (fields) patchInput.fields = fields;
+      const workItem = runtime.workItemService().patch(wiId as ULID, patchInput);
+      broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });
+      return c.json({ ok: true, workItem });
+    }
+    // Fields-only path — legacy unchecked merge.
+    const workItem = dbUpdateWorkItemFields(wiId as ULID, fields!);
     if (!workItem) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
     void runtime;
     broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });

@@ -76,3 +76,24 @@ test('YAML parse error reports as an error, not notV2', () => {
   assert.equal(r.ok, false);
   if (!r.ok) assert.notEqual(r.notV2, true);
 });
+
+test('move-work-item node: to_stage round-trips through serialize/parse', () => {
+  const wfWithMove: WorkflowV2.Workflow = {
+    id: 'move-test',
+    name: 'Move test',
+    triggers: [{ kind: 'manual' }],
+    nodes: [
+      { kind: 'move-work-item', id: 'mv', to_stage: 'review' } as WorkflowV2.WorkflowNode,
+    ],
+  };
+  const yaml = serializeWorkflowV2(wfWithMove);
+  assert.match(yaml, /kind: move-work-item/);
+  assert.match(yaml, /to_stage: review/);
+  const r = parseWorkflowV2Text(yaml);
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const mvNode = r.workflow.nodes[0] as WorkflowV2.MoveWorkItemNode;
+    assert.equal(mvNode.kind, 'move-work-item');
+    assert.equal(mvNode.to_stage, 'review');
+  }
+});

@@ -8,6 +8,15 @@ export type RuntimeHealth =
   | 'failed_resume'
   | 'provider_missing';
 
+export type RuntimeWaitPoint =
+  | 'session'
+  | 'queue'
+  | 'spawn'
+  | 'jsonl'
+  | 'provider_resume'
+  | 'ready_state'
+  | 'none';
+
 export type PtyLifecycleState =
   | 'stopped'
   | 'spawning'
@@ -22,6 +31,14 @@ export interface RuntimeHealthInput {
   ptyState: PtyLifecycleState;
   lastExitAt?: number | null;
   failureHealth?: 'failed_resume' | 'provider_missing' | null;
+}
+
+export interface RuntimeWaitPointInput {
+  sessionId?: string | null;
+  health: RuntimeHealth;
+  queueDepth?: number;
+  rawJsonlExists?: boolean;
+  lastJsonlAt?: number | null;
 }
 
 export function deriveRuntimeHealth(input: RuntimeHealthInput): RuntimeHealth {
@@ -44,4 +61,29 @@ export function deriveRuntimeHealth(input: RuntimeHealthInput): RuntimeHealth {
     case null:
       return 'not_spawned';
   }
+}
+
+export function deriveRuntimeWaitPoint(input: RuntimeWaitPointInput): RuntimeWaitPoint {
+  if (!input.sessionId) return 'session';
+
+  if (input.health === 'provider_missing' || input.health === 'failed_resume') {
+    return 'provider_resume';
+  }
+
+  if ((input.queueDepth ?? 0) > 0) return 'queue';
+
+  if (
+    input.health === 'not_spawned' ||
+    input.health === 'spawning' ||
+    input.health === 'respawning' ||
+    input.health === 'exited'
+  ) {
+    return 'spawn';
+  }
+
+  if (input.health === 'busy') {
+    return input.rawJsonlExists && input.lastJsonlAt ? 'ready_state' : 'jsonl';
+  }
+
+  return 'none';
 }
