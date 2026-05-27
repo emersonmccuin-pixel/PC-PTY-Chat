@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -26,7 +26,6 @@ import {
 } from '@pc/domain';
 import {
   claudeConfigDir,
-  jsonlPathFor,
   setConfiguredClaudeExe,
   type JsonlReplayMeta,
 } from '@pc/runtime';
@@ -79,12 +78,6 @@ import {
   type SessionReplayCheckpoint,
 } from './services/session-replay.ts';
 import {
-  deriveRuntimeHealth,
-  deriveRuntimeWaitPoint,
-  type RuntimeHealth,
-  type RuntimeWaitPoint,
-} from './services/orchestrator-runtime-health.ts';
-import {
   deliverNextQueuedPrompt,
   maybeAdvanceSendQueueConfirmation,
   publicSendQueueItem,
@@ -92,6 +85,7 @@ import {
   sendQueueSnapshotPayload,
   type PublicSendQueueItem,
 } from './services/orchestrator-send-queue-delivery.ts';
+import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
 import { installClaude, installGit } from './services/onboarding-install.ts';
@@ -307,198 +301,10 @@ type SendAckStatus =
   | 'no-session'
   | 'error';
 
-interface RuntimeFailureState {
-  health: 'failed_resume' | 'provider_missing';
-  reason: string;
-  at: number;
-}
-
-interface RuntimeLifecycleState {
-  lastActivityAt: number | null;
-  lastJsonlAt: number | null;
-  lastExitAt: number | null;
-  exitCode: number | null;
-  exitSignal: string | null;
-  failure: RuntimeFailureState | null;
-}
-
-interface PublicRuntimeSnapshot {
-  type: 'runtime-state';
-  sessionId: ULID | null;
-  provider: 'claude';
-  providerSessionId: string | null;
-  health: RuntimeHealth;
-  waitPoint: RuntimeWaitPoint;
-  ptyState: string | null;
-  exitCode: number | null;
-  exitSignal: string | null;
-  spawnAttemptId: string | null;
-  spawnAttempt: number;
-  lastReadyAt: number | null;
-  nextRetryAt: number | null;
-  lastExitAt: number | null;
-  lastJsonlAt: number | null;
-  lastActivityAt: number | null;
-  failureReason: string | null;
-  rawJsonlPath: string | null;
-  rawJsonlExists: boolean;
-  rawJsonlCursor: number | null;
-  replayPath: string | null;
-  replayExists: boolean;
-  replayLineCount: number;
-  replayHighWaterSeq: number;
-  queueDepth: number;
-  queue: PublicSendQueueItem[];
-}
-
-const runtimeLifecycle = new Map<ULID, RuntimeLifecycleState>();
-
-function runtimeLifecycleFor(projectId: ULID): RuntimeLifecycleState {
-  let state = runtimeLifecycle.get(projectId);
-  if (!state) {
-    state = {
-      lastActivityAt: null,
-      lastJsonlAt: null,
-      lastExitAt: null,
-      exitCode: null,
-      exitSignal: null,
-      failure: null,
-    };
-    runtimeLifecycle.set(projectId, state);
-  }
-  return state;
-}
-
-function noteRuntimeActivity(projectId: ULID): void {
-  runtimeLifecycleFor(projectId).lastActivityAt = Date.now();
-}
-
-function noteRuntimeJsonl(projectId: ULID): void {
-  const state = runtimeLifecycleFor(projectId);
-  const now = Date.now();
-  state.lastActivityAt = now;
-  state.lastJsonlAt = now;
-}
-
-function clearRuntimeFailure(projectId: ULID): void {
-  runtimeLifecycleFor(projectId).failure = null;
-}
-
-function clearRuntimeExit(projectId: ULID): void {
-  const state = runtimeLifecycleFor(projectId);
-  state.lastExitAt = null;
-  state.exitCode = null;
-  state.exitSignal = null;
-}
-
-function noteRuntimeFailure(projectId: ULID, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  runtimeLifecycleFor(projectId).failure = {
-    health: classifyRuntimeFailure(message),
-    reason: message,
-    at: Date.now(),
-  };
-}
-
-function classifyRuntimeFailure(message: string): RuntimeFailureState['health'] {
-  return /no transcript|conversation found|provider session|jsonl|transcript/i.test(message)
-    ? 'provider_missing'
-    : 'failed_resume';
-}
-
-function noteRuntimeExit(
-  projectId: ULID,
-  code: number | undefined,
-  signal: string | undefined,
-): void {
-  const state = runtimeLifecycleFor(projectId);
-  const now = Date.now();
-  state.lastActivityAt = now;
-  state.lastExitAt = now;
-  state.exitCode = code ?? null;
-  state.exitSignal = signal ?? null;
-}
-
-function countJsonlLines(filePath: string): number {
-  try {
-    return readFileSync(filePath, 'utf-8').split('\n').filter(Boolean).length;
-  } catch {
-    return 0;
-  }
-}
-
-function fileMtimeMs(filePath: string | null): number | null {
-  if (!filePath) return null;
-  try {
-    return statSync(filePath).mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
-function runtimeSnapshotPayload(
-  projectId: ULID,
-  runtime: ProjectRuntime,
-): PublicRuntimeSnapshot {
-  const active = getActiveOrchestratorSession(projectId);
-  const lifecycle = runtimeLifecycleFor(projectId);
-  const ptyState = runtime.orchestratorPtyState();
-  const runtimeDetails = runtime.orchestratorRuntimeSnapshot();
-  const health = deriveRuntimeHealth({
-    ptyState,
-    lastExitAt: lifecycle.lastExitAt,
-    failureHealth: lifecycle.failure?.health ?? null,
-  });
-  const rawJsonlPath = active?.jsonlPath
-    ?? (active?.providerSessionId ? jsonlPathFor(runtime.folderPath, active.providerSessionId) : null);
-  const replayPath = active ? resolve(runtime.sessionDataPath(active.id), 'jsonl-events.jsonl') : null;
-  const rawJsonlExists = rawJsonlPath ? existsSync(rawJsonlPath) : false;
-  const replayExists = replayPath ? existsSync(replayPath) : false;
-  const replay = active ? loadSessionReplay(runtime, active.id) : null;
-  const queue = active ? sendQueueSnapshotPayload(active.id).items : [];
-  const queueDepth = queue.filter((item) => item.status !== 'failed').length;
-  const rawJsonlCursor = active ? active.jsonlLineCursor : null;
-  const lastJsonlAt = lifecycle.lastJsonlAt ?? fileMtimeMs(rawJsonlPath);
-  const waitPoint = deriveRuntimeWaitPoint({
-    sessionId: active?.id ?? null,
-    health,
-    queueDepth,
-    rawJsonlExists,
-    lastJsonlAt,
-  });
-
-  return {
-    type: 'runtime-state',
-    sessionId: active?.id ?? null,
-    provider: 'claude',
-    providerSessionId: active?.providerSessionId ?? null,
-    health,
-    waitPoint,
-    ptyState,
-    exitCode: lifecycle.exitCode,
-    exitSignal: lifecycle.exitSignal,
-    spawnAttemptId: runtimeDetails.spawnAttemptId,
-    spawnAttempt: runtimeDetails.spawnAttempt,
-    lastReadyAt: runtimeDetails.lastReadyAt,
-    nextRetryAt: runtimeDetails.nextRetryAt,
-    lastExitAt: lifecycle.lastExitAt,
-    lastJsonlAt,
-    lastActivityAt: lifecycle.lastActivityAt ?? lastJsonlAt ?? active?.startedAt ?? null,
-    failureReason: lifecycle.failure?.reason ?? runtimeDetails.runtimeFailureReason,
-    rawJsonlPath,
-    rawJsonlExists,
-    rawJsonlCursor,
-    replayPath,
-    replayExists,
-    replayLineCount: replayExists && replayPath ? countJsonlLines(replayPath) : 0,
-    replayHighWaterSeq: replay?.highWaterSeq ?? 0,
-    queueDepth,
-    queue,
-  };
-}
+const runtimeSnapshots = new OrchestratorRuntimeSnapshots();
 
 function broadcastRuntimeSnapshot(projectId: ULID, runtime: ProjectRuntime): void {
-  broadcastTo(projectId, runtimeSnapshotPayload(projectId, runtime));
+  broadcastTo(projectId, runtimeSnapshots.payload(projectId, runtime));
 }
 
 function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {
@@ -530,14 +336,14 @@ function ensureOrchestratorPty(
 ): ReturnType<ProjectRuntime['ensurePty']> {
   try {
     const pty = runtime.ensurePty();
-    clearRuntimeFailure(projectId);
-    if (pty.getState() === 'ready') clearRuntimeExit(projectId);
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.clearFailure(projectId);
+    if (pty.getState() === 'ready') runtimeSnapshots.clearExit(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     attachPtyHandlers(projectId, runtime, pty);
     broadcastRuntimeSnapshot(projectId, runtime);
     return pty;
   } catch (err) {
-    noteRuntimeFailure(projectId, err);
+    runtimeSnapshots.noteFailure(projectId, err);
     broadcastRuntimeSnapshot(projectId, runtime);
     throw err;
   }
@@ -739,7 +545,7 @@ function attachPtyHandlers(
   const attachedSessionId = getActiveOrchestratorSession(projectId)?.id ?? null;
   let terminalSeq = 0;
   session.on('raw', (text: string) => {
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     terminalSeq += 1;
     broadcastTo(projectId, {
       type: 'raw',
@@ -749,10 +555,10 @@ function attachPtyHandlers(
     });
   });
   session.on('state', (state: string) => {
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     if (state === 'ready') {
-      clearRuntimeFailure(projectId);
-      clearRuntimeExit(projectId);
+      runtimeSnapshots.clearFailure(projectId);
+      runtimeSnapshots.clearExit(projectId);
     }
     broadcastTo(projectId, { type: 'state', state });
     broadcastRuntimeSnapshot(projectId, runtime);
@@ -764,28 +570,28 @@ function attachPtyHandlers(
     // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
     // marked still-running across an orchestrator turn boundary). v2 DAG
     // runs are self-contained with their own idle + wall-clock timeouts.
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     broadcastTo(projectId, { type: 'turn-end' });
     broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('event', (event: unknown) => {
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     broadcastTo(projectId, { type: 'event', event });
     broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('error', (err: unknown) => {
-    noteRuntimeFailure(projectId, err);
+    runtimeSnapshots.noteFailure(projectId, err);
     broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('failed', (reason: string) => {
-    noteRuntimeFailure(projectId, reason);
+    runtimeSnapshots.noteFailure(projectId, reason);
     broadcastRuntimeSnapshot(projectId, runtime);
   });
   // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
   // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
   // so the chat panel can merge them without ambiguity.
   session.on('jsonl-event', (event: unknown, replay?: JsonlReplayMeta) => {
-    noteRuntimeJsonl(projectId);
+    runtimeSnapshots.noteJsonl(projectId);
     broadcastTo(projectId, { type: 'jsonl', event, ...replayMetaPayload(replay) });
     if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
       setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
@@ -815,7 +621,7 @@ function attachPtyHandlers(
   session.on('jsonl-path-resolved', (jsonlPath: string) => {
     const active = getActiveOrchestratorSession(projectId);
     if (active) setOrchestratorSessionJsonlPath(active.id, jsonlPath);
-    noteRuntimeActivity(projectId);
+    runtimeSnapshots.noteActivity(projectId);
     broadcastRuntimeSnapshot(projectId, runtime);
   });
   session.on('jsonl-cursor-tick', (_path: string, cursor: number) => {
@@ -823,7 +629,7 @@ function attachPtyHandlers(
     if (active) setOrchestratorSessionJsonlCursor(active.id, cursor);
   });
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    noteRuntimeExit(projectId, code, signal);
+    runtimeSnapshots.noteExit(projectId, code, signal);
     broadcastTo(projectId, { type: 'exit', code, signal });
     broadcastRuntimeSnapshot(projectId, runtime);
     console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
@@ -1635,7 +1441,7 @@ app.get('/api/projects/:projectId/orchestrator/runtime', (c) => {
   const id = c.req.param('projectId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ ok: true, runtime: runtimeSnapshotPayload(id, runtime) });
+  return c.json({ ok: true, runtime: runtimeSnapshots.payload(id, runtime) });
 });
 
 /** Smoke-only PTY control. Guarded by a header and the pc-smoke project prefix
@@ -1656,7 +1462,7 @@ app.post('/api/projects/:projectId/orchestrator/smoke/kill-pty', (c) => {
   return c.json({
     ok: true,
     killed,
-    runtime: runtimeSnapshotPayload(id, runtime),
+    runtime: runtimeSnapshots.payload(id, runtime),
   });
 });
 
@@ -4039,7 +3845,7 @@ wss.on('connection', (ws, req) => {
     attachPtyHandlers(projectId, runtime, liveSession);
     ws.send(JSON.stringify({ projectId, type: 'state', state: liveSession.getState() }));
   }
-  ws.send(JSON.stringify({ projectId, ...runtimeSnapshotPayload(projectId, runtime) }));
+  ws.send(JSON.stringify({ projectId, ...runtimeSnapshots.payload(projectId, runtime) }));
 
   // Section 23 — replay the active session's normalized event log so a
   // reloaded tab doesn't lose its chat panel. Sources from PC-owned
