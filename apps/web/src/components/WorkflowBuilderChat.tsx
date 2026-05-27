@@ -35,6 +35,7 @@ interface WorkflowBuilderChatProps {
   sessionId: string | null;
   /** Reply to an AskUserQuestion pick — wired to the modal's WS `ask-reply`. */
   onAskReply: (toolUseId: string, answer: string) => boolean;
+  initialState?: WorkflowBuilderState;
   title: string;
   subtitle: string;
   statusLabel?: string;
@@ -56,9 +57,10 @@ function adaptWorkflowBuilderEvents(
   events: WsEnvelope[],
   projectId: string,
   sessionId: string | null,
+  initialState: WorkflowBuilderState,
 ): AdapterResult {
   const out: WsEnvelope[] = [];
-  let state: WorkflowBuilderState = 'spawning';
+  let state = initialState;
   let skipNextAssistant = false;
   for (const env of events) {
     if (env.type === 'workflow-builder-state') {
@@ -122,6 +124,7 @@ export function WorkflowBuilderChat({
   events,
   sessionId,
   onAskReply,
+  initialState = 'spawning',
   title,
   subtitle,
   statusLabel,
@@ -129,8 +132,8 @@ export function WorkflowBuilderChat({
   onSurfaceModeChange,
 }: WorkflowBuilderChatProps) {
   const { envelopes, state } = useMemo(
-    () => adaptWorkflowBuilderEvents(events, projectId, sessionId),
-    [events, projectId, sessionId],
+    () => adaptWorkflowBuilderEvents(events, projectId, sessionId, initialState),
+    [events, projectId, sessionId, initialState],
   );
 
   const emptyState =
@@ -184,6 +187,7 @@ export function WorkflowBuilderChat({
       onAskReply={onAskReply}
       composerHistoryKey={`workflow-builder:${projectId}`}
       composerDisabled={state === 'spawning' || state === 'exited'}
+      terminalWritable={state === 'ready'}
       composerPlaceholder={composerPlaceholder}
       emptyState={emptyState}
       onSurfaceModeChange={onSurfaceModeChange}

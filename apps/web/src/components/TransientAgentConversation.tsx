@@ -25,6 +25,7 @@ interface TransientAgentConversationProps {
   onAskReply?: (toolUseId: string, answer: string) => boolean;
   composerHistoryKey: string;
   composerDisabled?: boolean;
+  terminalWritable?: boolean;
   composerPlaceholder?: string;
   emptyState?: ReactNode;
   onSurfaceModeChange?: (mode: OrchestratorSurfacePreference) => void;
@@ -47,6 +48,7 @@ export function TransientAgentConversation({
   onAskReply,
   composerHistoryKey,
   composerDisabled,
+  terminalWritable,
   composerPlaceholder,
   emptyState,
   onSurfaceModeChange,
@@ -78,6 +80,7 @@ export function TransientAgentConversation({
       composerHistoryKey={composerHistoryKey}
       defaultOrchestratorSurface="terminal"
       composerDisabled={composerDisabled}
+      terminalWritable={terminalWritable}
       composerPlaceholder={composerPlaceholder}
       headerSlot={headerSlot}
       emptyState={emptyState}

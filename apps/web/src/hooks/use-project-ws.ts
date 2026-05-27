@@ -529,7 +529,8 @@ export type WsOutbound =
   | { type: 'terminal-input'; data: string }
   | { type: 'interrupt' }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'ask-reply'; toolUseId: string; answer: string };
+  | { type: 'ask-reply'; toolUseId: string; answer: string }
+  | { type: 'client-ping'; nonce: string; sentAt: number };
 
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
@@ -543,6 +544,8 @@ interface UseProjectWsResult {
 
 /** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
 export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
+export const WS_HEARTBEAT_INTERVAL_MS = 15_000;
+export const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
 
 function eventTimestamp(env: WsEnvelope): string | null {
   if (env.type !== 'event') return null;
@@ -562,6 +565,24 @@ export function nextBackoffMs(prevDelay: number): number {
   const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
   if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
   return RECONNECT_SCHEDULE_MS[idx + 1]!;
+}
+
+export function heartbeatTimedOut(
+  lastInboundAt: number,
+  now = Date.now(),
+  timeoutMs = WS_HEARTBEAT_TIMEOUT_MS,
+): boolean {
+  return now - lastInboundAt >= timeoutMs;
+}
+
+export function createHeartbeatPing(
+  now = Date.now(),
+): Extract<WsOutbound, { type: 'client-ping' }> {
+  return {
+    type: 'client-ping',
+    nonce: `${now}-${Math.random().toString(36).slice(2)}`,
+    sentAt: now,
+  };
 }
 
 export function useProjectWs(project: Project | null): UseProjectWsResult {
@@ -591,6 +612,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let activeHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let delay: number = RECONNECT_SCHEDULE_MS[0];
 
     function connect(): void {
@@ -600,20 +622,65 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
       const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(project!.id)}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
+      let disconnected = false;
+      let lastInboundAt = Date.now();
+      let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-      ws.addEventListener('open', () => {
-        if (cancelled) return;
-        setStatus('open');
-        delay = RECONNECT_SCHEDULE_MS[0];
-      });
+      function clearHeartbeat(): void {
+        if (heartbeatTimer !== null) {
+          clearInterval(heartbeatTimer);
+          if (activeHeartbeatTimer === heartbeatTimer) activeHeartbeatTimer = null;
+          heartbeatTimer = null;
+        }
+      }
 
-      ws.addEventListener('close', () => {
-        if (cancelled) return;
-        wsRef.current = null;
+      function scheduleReconnect(): void {
+        if (cancelled || disconnected) return;
+        disconnected = true;
+        clearHeartbeat();
+        if (wsRef.current === ws) wsRef.current = null;
         setStatus('closed');
         const wait = delay;
         delay = nextBackoffMs(delay);
         retryTimer = setTimeout(connect, wait);
+      }
+
+      function forceReconnect(): void {
+        try { ws.close(4000, 'heartbeat-timeout'); } catch { /* best-effort */ }
+        scheduleReconnect();
+      }
+
+      function startHeartbeat(): void {
+        clearHeartbeat();
+        heartbeatTimer = setInterval(() => {
+          if (cancelled || disconnected) return;
+          if (ws.readyState !== WebSocket.OPEN) {
+            scheduleReconnect();
+            return;
+          }
+          if (heartbeatTimedOut(lastInboundAt)) {
+            forceReconnect();
+            return;
+          }
+          try {
+            ws.send(JSON.stringify(createHeartbeatPing()));
+          } catch {
+            forceReconnect();
+          }
+        }, WS_HEARTBEAT_INTERVAL_MS);
+        activeHeartbeatTimer = heartbeatTimer;
+      }
+
+      ws.addEventListener('open', () => {
+        if (cancelled) return;
+        lastInboundAt = Date.now();
+        setStatus('open');
+        delay = RECONNECT_SCHEDULE_MS[0];
+        startHeartbeat();
+      });
+
+      ws.addEventListener('close', () => {
+        scheduleReconnect();
       });
 
       ws.addEventListener('error', () => {
@@ -622,6 +689,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
 
       ws.addEventListener('message', (e) => {
         if (cancelled) return;
+        lastInboundAt = Date.now();
         let env: WsEnvelope | null = null;
         try {
           env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
@@ -629,6 +697,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           return;
         }
         if (!env || env.projectId !== project!.id) return;
+        if (env.type === 'server-pong') return;
         if (env.type === 'event') {
           const ts = eventTimestamp(env);
           if (ts) {
@@ -668,6 +737,10 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
       if (retryTimer !== null) {
         clearTimeout(retryTimer);
         retryTimer = null;
+      }
+      if (activeHeartbeatTimer !== null) {
+        clearInterval(activeHeartbeatTimer);
+        activeHeartbeatTimer = null;
       }
       const ws = wsRef.current;
       wsRef.current = null;

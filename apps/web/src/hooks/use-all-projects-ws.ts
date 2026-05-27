@@ -20,8 +20,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/api/client';
 import {
+  createHeartbeatPing,
+  heartbeatTimedOut,
   nextBackoffMs,
   RECONNECT_SCHEDULE_MS,
+  WS_HEARTBEAT_INTERVAL_MS,
   type WsEnvelope,
   type WsStatus,
 } from './use-project-ws';
@@ -106,8 +109,16 @@ function openWithBackoff(
   let cancelled = false;
   let ws: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let delay: number = RECONNECT_SCHEDULE_MS[0];
   const seenTs = new Set<string>();
+
+  function clearHeartbeat(): void {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
 
   function connect(): void {
     if (cancelled) return;
@@ -116,20 +127,51 @@ function openWithBackoff(
     const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(projectId)}`;
     const sock = new WebSocket(url);
     ws = sock;
+    let disconnected = false;
+    let lastInboundAt = Date.now();
 
-    sock.addEventListener('open', () => {
-      if (cancelled) return;
-      onStatus('open');
-      delay = RECONNECT_SCHEDULE_MS[0];
-    });
-
-    sock.addEventListener('close', () => {
-      if (cancelled) return;
-      ws = null;
+    function scheduleReconnect(): void {
+      if (cancelled || disconnected) return;
+      disconnected = true;
+      clearHeartbeat();
+      if (ws === sock) ws = null;
       onStatus('closed');
       const wait = delay;
       delay = nextBackoffMs(delay);
       retryTimer = setTimeout(connect, wait);
+    }
+
+    function forceReconnect(): void {
+      try { sock.close(4000, 'heartbeat-timeout'); } catch { /* best-effort */ }
+      scheduleReconnect();
+    }
+
+    sock.addEventListener('open', () => {
+      if (cancelled) return;
+      lastInboundAt = Date.now();
+      onStatus('open');
+      delay = RECONNECT_SCHEDULE_MS[0];
+      clearHeartbeat();
+      heartbeatTimer = setInterval(() => {
+        if (cancelled || disconnected) return;
+        if (sock.readyState !== WebSocket.OPEN) {
+          scheduleReconnect();
+          return;
+        }
+        if (heartbeatTimedOut(lastInboundAt)) {
+          forceReconnect();
+          return;
+        }
+        try {
+          sock.send(JSON.stringify(createHeartbeatPing()));
+        } catch {
+          forceReconnect();
+        }
+      }, WS_HEARTBEAT_INTERVAL_MS);
+    });
+
+    sock.addEventListener('close', () => {
+      scheduleReconnect();
     });
 
     sock.addEventListener('error', () => {
@@ -138,6 +180,7 @@ function openWithBackoff(
 
     sock.addEventListener('message', (e) => {
       if (cancelled) return;
+      lastInboundAt = Date.now();
       let env: WsEnvelope | null = null;
       try {
         env = JSON.parse(typeof e.data === 'string' ? e.data : '') as WsEnvelope;
@@ -145,6 +188,7 @@ function openWithBackoff(
         return;
       }
       if (!env || env.projectId !== projectId) return;
+      if (env.type === 'server-pong') return;
       if (env.type === 'event') {
         const inner = (env.event as { ts?: unknown } | undefined) ?? {};
         if (typeof inner.ts === 'string') {
@@ -165,6 +209,7 @@ function openWithBackoff(
         clearTimeout(retryTimer);
         retryTimer = null;
       }
+      clearHeartbeat();
       if (ws) {
         try { ws.close(); } catch { /* best-effort */ }
         ws = null;

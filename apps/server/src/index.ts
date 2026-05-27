@@ -2022,6 +2022,7 @@ app.post('/api/projects/:projectId/agent-designer/start', (c) => {
     const session = runtime.startAgentDesigner();
     const sessionId = runtime.agentDesignerSession();
     attachAgentDesignerHandlers(id, session, sessionId);
+    broadcastTo(id, { type: 'agent-designer-state', sessionId, state: session.getState() });
     return c.json({ ok: true, state: session.getState(), sessionId });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
@@ -2139,6 +2140,7 @@ app.post('/api/projects/:projectId/workflow-builder/start', (c) => {
     const session = runtime.startWorkflowBuilder();
     const sessionId = runtime.workflowBuilderSession();
     attachWorkflowBuilderHandlers(id, session, sessionId);
+    broadcastTo(id, { type: 'workflow-builder-state', sessionId, state: session.getState() });
     return c.json({
       ok: true,
       state: session.getState(),
@@ -2253,6 +2255,7 @@ app.post('/api/projects/:projectId/setup-wizard/start', (c) => {
   const session = runtime.startSetupWizard();
   const sessionId = runtime.setupWizardSession();
   attachSetupWizardHandlers(id, session, sessionId);
+  broadcastTo(id, { type: 'setup-wizard-state', sessionId, state: session.getState() });
   return c.json({ ok: true, state: session.getState(), sessionId });
 });
 
@@ -4160,6 +4163,8 @@ wss.on('connection', (ws, req) => {
       clientMessageId?: unknown;
       cols?: number;
       rows?: number;
+      nonce?: unknown;
+      sentAt?: unknown;
     };
     try {
       msg = JSON.parse(raw.toString());
@@ -4180,6 +4185,17 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ projectId, type: 'send-ack', clientMessageId, ...ack }));
     };
     switch (msg.type) {
+      case 'client-ping':
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({
+            projectId,
+            type: 'server-pong',
+            nonce: typeof msg.nonce === 'string' ? msg.nonce : undefined,
+            sentAt: typeof msg.sentAt === 'number' ? msg.sentAt : undefined,
+            serverTime: Date.now(),
+          }));
+        }
+        break;
       case 'send':
         if (typeof msg.text !== 'string') {
           sendAck(msg.clientMessageId, {

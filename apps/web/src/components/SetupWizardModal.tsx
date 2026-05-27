@@ -18,6 +18,20 @@ interface SetupWizardModalProps {
 
 type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
+function isSessionState(value: unknown): value is SessionState {
+  return (
+    value === 'spawning' ||
+    value === 'ready' ||
+    value === 'thinking' ||
+    value === 'exited'
+  );
+}
+
+function mergeSessionState(prev: SessionState, next: SessionState): SessionState {
+  if (prev !== 'spawning' && next === 'spawning') return prev;
+  return next;
+}
+
 interface AdapterResult {
   envelopes: WsEnvelope[];
   state: SessionState;
@@ -90,7 +104,10 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
       .then((r) => {
         if (cancelled) return;
         setSessionId(r.sessionId);
-        setState(r.state as SessionState);
+        const nextState = r.state;
+        if (isSessionState(nextState)) {
+          setState((prev) => mergeSessionState(prev, nextState));
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) setError((e as Error).message);
@@ -113,7 +130,7 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
       if (env.type === 'setup-wizard-state') {
         if (!belongsToSession(env, sessionId)) continue;
         const s = (env as { state?: string }).state;
-        if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
+        if (isSessionState(s)) {
           setState(s);
         }
       } else if (env.type === 'setup-wizard-exit') {
@@ -195,6 +212,7 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
           }}
           composerHistoryKey={`setup-wizard:${projectId}`}
           composerDisabled={adapted.state === 'spawning' || adapted.state === 'exited'}
+          terminalWritable={adapted.state === 'ready'}
           composerPlaceholder={composerPlaceholder}
           emptyState={emptyState}
         />
