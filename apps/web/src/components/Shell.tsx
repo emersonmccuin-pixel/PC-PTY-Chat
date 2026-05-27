@@ -17,7 +17,12 @@ import type {
   Project,
   SessionTransitionResponse,
 } from '@/api/client';
-import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
+import type {
+  WsDiagnostics,
+  WsEnvelope,
+  WsOutbound,
+  WsStatus,
+} from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
@@ -51,6 +56,7 @@ interface ShellProps {
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
+  wsDiagnostics: WsDiagnostics;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
   defaultOrchestratorSurface: OrchestratorSurfacePreference;
 }
@@ -66,6 +72,7 @@ export function Shell({
   wsEvents,
   wsSend,
   wsStatus,
+  wsDiagnostics,
   applySessionTransition,
   defaultOrchestratorSurface,
 }: ShellProps) {
@@ -107,6 +114,7 @@ export function Shell({
             wsEvents={wsEvents}
             wsSend={wsSend}
             wsStatus={wsStatus}
+            wsDiagnostics={wsDiagnostics}
             applySessionTransition={applySessionTransition}
             onCreateProject={onCreateProject}
             onProjectUpdated={onProjectUpdated}
@@ -187,6 +195,7 @@ function Center({
   wsEvents,
   wsSend,
   wsStatus,
+  wsDiagnostics,
   applySessionTransition,
   onCreateProject,
   onProjectUpdated,
@@ -198,6 +207,7 @@ function Center({
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
+  wsDiagnostics: WsDiagnostics;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
   onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
@@ -223,6 +233,7 @@ function Center({
             events={wsEvents}
             send={wsSend}
             wsStatus={wsStatus}
+            wsDiagnostics={wsDiagnostics}
             applySessionTransition={applySessionTransition}
             defaultOrchestratorSurface={defaultOrchestratorSurface}
           />

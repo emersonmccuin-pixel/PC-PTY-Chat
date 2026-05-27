@@ -370,6 +370,7 @@ export default function App() {
           wsEvents={ws.events}
           wsSend={ws.send}
           wsStatus={ws.status}
+          wsDiagnostics={ws.diagnostics}
           applySessionTransition={ws.applySessionTransition}
           defaultOrchestratorSurface={settings?.defaultOrchestratorSurface ?? 'chat'}
         />

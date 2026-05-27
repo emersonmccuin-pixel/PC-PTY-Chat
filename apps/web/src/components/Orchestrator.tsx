@@ -18,6 +18,7 @@ import {
 } from '@/api/client';
 import type {
   JsonlEvent,
+  WsDiagnostics,
   WsEnvelope,
   WsOutbound,
   WsStatus,
@@ -36,6 +37,7 @@ interface OrchestratorProps {
   events: WsEnvelope[];
   send: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
+  wsDiagnostics: WsDiagnostics;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
   defaultOrchestratorSurface: OrchestratorSurfacePreference;
 }
@@ -210,6 +212,7 @@ export function Orchestrator({
   events,
   send,
   wsStatus,
+  wsDiagnostics,
   applySessionTransition,
   defaultOrchestratorSurface,
 }: OrchestratorProps) {
@@ -617,6 +620,7 @@ export function Orchestrator({
       projectId={project.id}
       projectName={project.name}
       wsStatus={wsStatus}
+      wsDiagnostics={wsDiagnostics}
       runtimeHealth={runtimeHealth}
       runtimeSnapshot={runtimeSnapshot}
     />

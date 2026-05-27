@@ -534,9 +534,21 @@ export type WsOutbound =
 
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
+export interface WsDiagnostics {
+  reconnectCount: number;
+  lastOpenAt: number | null;
+  lastCloseAt: number | null;
+  lastInboundAt: number | null;
+  lastInboundType: string | null;
+  lastHeartbeatSentAt: number | null;
+  lastPongAt: number | null;
+  lastHeartbeatTimeoutAt: number | null;
+}
+
 interface UseProjectWsResult {
   events: WsEnvelope[];
   status: WsStatus;
+  diagnostics: WsDiagnostics;
   clear: () => void;
   send: (msg: WsOutbound) => boolean;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
@@ -585,6 +597,19 @@ export function createHeartbeatPing(
   };
 }
 
+function emptyWsDiagnostics(): WsDiagnostics {
+  return {
+    reconnectCount: 0,
+    lastOpenAt: null,
+    lastCloseAt: null,
+    lastInboundAt: null,
+    lastInboundType: null,
+    lastHeartbeatSentAt: null,
+    lastPongAt: null,
+    lastHeartbeatTimeoutAt: null,
+  };
+}
+
 export function useProjectWs(project: Project | null): UseProjectWsResult {
   const [sessionState, dispatchSession] = useReducer(
     chatSessionReducer,
@@ -599,12 +624,14 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     [project, sessionState],
   );
   const [status, setStatus] = useState<WsStatus>('idle');
+  const [diagnostics, setDiagnostics] = useState<WsDiagnostics>(() => emptyWsDiagnostics());
   const wsRef = useRef<WebSocket | null>(null);
   const seenTsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     dispatchSession({ type: 'reset-project', projectId: project?.id ?? null });
     seenTsRef.current.clear();
+    setDiagnostics(emptyWsDiagnostics());
     if (!project) {
       setStatus('idle');
       return;
@@ -640,12 +667,21 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
         clearHeartbeat();
         if (wsRef.current === ws) wsRef.current = null;
         setStatus('closed');
+        setDiagnostics((prev) => ({
+          ...prev,
+          reconnectCount: prev.reconnectCount + 1,
+          lastCloseAt: Date.now(),
+        }));
         const wait = delay;
         delay = nextBackoffMs(delay);
         retryTimer = setTimeout(connect, wait);
       }
 
       function forceReconnect(): void {
+        setDiagnostics((prev) => ({
+          ...prev,
+          lastHeartbeatTimeoutAt: Date.now(),
+        }));
         try { ws.close(4000, 'heartbeat-timeout'); } catch { /* best-effort */ }
         scheduleReconnect();
       }
@@ -663,7 +699,12 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
             return;
           }
           try {
-            ws.send(JSON.stringify(createHeartbeatPing()));
+            const ping = createHeartbeatPing();
+            setDiagnostics((prev) => ({
+              ...prev,
+              lastHeartbeatSentAt: ping.sentAt,
+            }));
+            ws.send(JSON.stringify(ping));
           } catch {
             forceReconnect();
           }
@@ -675,6 +716,12 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
         if (cancelled) return;
         lastInboundAt = Date.now();
         setStatus('open');
+        setDiagnostics((prev) => ({
+          ...prev,
+          lastOpenAt: lastInboundAt,
+          lastInboundAt,
+          lastInboundType: 'open',
+        }));
         delay = RECONNECT_SCHEDULE_MS[0];
         startHeartbeat();
       });
@@ -697,6 +744,12 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           return;
         }
         if (!env || env.projectId !== project!.id) return;
+        setDiagnostics((prev) => ({
+          ...prev,
+          lastInboundAt,
+          lastInboundType: env.type,
+          lastPongAt: env.type === 'server-pong' ? lastInboundAt : prev.lastPongAt,
+        }));
         if (env.type === 'server-pong') return;
         if (env.type === 'event') {
           const ts = eventTimestamp(env);
@@ -788,6 +841,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
   return {
     events,
     status,
+    diagnostics,
     clear: () => {
       seenTsRef.current.clear();
       dispatchSession({ type: 'reset-project', projectId: project?.id ?? null });
