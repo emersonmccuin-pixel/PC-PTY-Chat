@@ -20,6 +20,7 @@ Implemented slices:
 - Runtime-host WebSocket connect replay and message handling extracted into `apps/server/src/features/runtime-host/websocket-connect.ts` and `websocket-message.ts`, with ordering and send/queue tests.
 - Runtime-host orchestrator PTY handler orchestration extracted into `apps/server/src/features/runtime-host/pty-handlers.ts`, with focused tests for ready-state queue drain, JSONL replay metadata/cursor/queue confirmation, JSONL path persistence, and exit lifecycle broadcasts.
 - Runtime-host WebSocket server setup shell extracted into `apps/server/src/features/runtime-host/websocket-server.ts`, with focused tests for connection rejection, connect snapshot ordering, message delegation, and subscriber detach.
+- Transient-session start/send/interrupt/terminal-input/resize/stop routes for agent designer, workflow builder, and setup wizard extracted into `apps/server/src/features/transient-sessions/routes.ts`, with focused tests for shared wire envelopes, idempotent handler attachment, controls, and error responses.
 
 ## Executive Decision
 
@@ -490,8 +491,8 @@ Minimum tests to add before deeper refactors:
 ## Immediate Next Actions
 
 1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
-2. Create `apps/server/src/features/transient-sessions` and unify agent-designer/workflow-builder/setup-wizard handling.
-3. Split MCP tools enough to make the tool catalog drift explicit and fix the current missing catalog entries or mark them deprecated/internal.
+2. Split MCP tools enough to make the tool catalog drift explicit and fix the current missing catalog entries or mark them deprecated/internal.
+3. Continue Phase 1 route extraction from `apps/server/src/index.ts`: projects, files, settings/onboarding, work-items, and agent-runs remain.
 4. Only then start deeper chat UI decomposition.
 
 ## Non-Goals
