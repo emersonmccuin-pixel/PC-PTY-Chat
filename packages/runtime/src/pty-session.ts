@@ -655,8 +655,8 @@ export class PtySession extends EventEmitter {
 
   /** Send a user message. Serializes paste/Enter pairs so rapid sends cannot
    *  merge in Claude's composer before the first delayed Enter fires. */
-  send(text: string) {
-    if (this.state === 'exited') throw new Error('session exited');
+  send(text: string): 'ok' | 'exited' {
+    if (this.state === 'exited') return 'exited';
     // Multi-line inputs (Section 4d's subagent dispatch envelope is always
     // multi-line) must use bracketed paste mode, or claude.exe's TUI
     // interprets each embedded `\n` as a submit and fragments the prompt
@@ -664,8 +664,9 @@ export class PtySession extends EventEmitter {
     // but guarantees the next prompt is not written until the prior Enter has
     // gone through.
     const result = this.sendQueue.enqueue(text);
-    if (result === 'exited') throw new Error('session exited');
+    if (result === 'exited') return 'exited';
     this.setState('thinking');
+    return 'ok';
   }
 
   /** Stop the current turn. In claude.exe interactive mode, Escape (\x1b) is

@@ -610,7 +610,12 @@ function maybeAdvanceSendQueueConfirmation(
   const ev = event as { kind?: string; text?: unknown };
   if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
   const observed = markNextDeliveredOrchestratorSendObservedInJsonl(sessionId, ev.text);
-  if (observed) broadcastSendQueueSnapshot(projectId, sessionId);
+  if (!observed) return;
+  broadcastSendQueueSnapshot(projectId, sessionId);
+  const runtime = resolveProject(projectId);
+  if (runtime?.ptySession()?.getState() === 'ready') {
+    deliverNextQueuedPrompt(projectId, runtime);
+  }
 }
 
 function replayMetaPayload(replay: JsonlReplayMeta | undefined): {
