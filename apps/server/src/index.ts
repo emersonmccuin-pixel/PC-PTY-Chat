@@ -145,6 +145,7 @@ import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
+import { sendRuntimeHostConnectSnapshot } from './features/runtime-host/websocket-connect.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -3607,38 +3608,14 @@ wss.on('connection', (ws, req) => {
 
   const detachSubscriber = wsHub.subscribe(projectId, ws);
 
-  // Replay and session metadata must not block on Claude startup. Ensure the
-  // durable PC session row exists, send the checkpoint surfaces synchronously,
-  // then start the transient PTY in the background.
-  const activeSession = runtime.ensureActiveSession();
-
-  // P14: tag direct-to-client sends with projectId, same as broadcastTo does
-  // for fan-out paths. Keeps the envelope contract uniform.
-  ws.send(JSON.stringify({ projectId, type: 'session-changed', session: activeSession }));
-  const liveSession = runtime.ptySession();
-  if (liveSession) {
-    attachPtyHandlers(projectId, runtime, liveSession);
-    ws.send(JSON.stringify({ projectId, type: 'state', state: liveSession.getState() }));
-  }
-  ws.send(JSON.stringify({ projectId, ...runtimeSnapshots.payload(projectId, runtime) }));
-
-  // Section 23 — replay the active session's normalized event log so a
-  // reloaded tab doesn't lose its chat panel. Sources from PC-owned
-  // jsonl-events.jsonl (canonical post-23) with a fallback to the legacy
-  // events.jsonl for pre-23 sessions. Past sessions render via
-  // GET /api/projects/:id/sessions/:sessionId/events, not the WS replay.
-  if (activeSession) {
-    const replay = loadSessionReplay(runtime, activeSession.id);
-    ws.send(JSON.stringify({
-      projectId,
-      type: 'session-replay',
-      sessionId: replay.sessionId,
-      highWaterSeq: replay.highWaterSeq,
-      events: replay.events,
-    }));
-    ws.send(JSON.stringify({ projectId, ...sendQueueSnapshotPayload(activeSession.id) }));
-  }
-  startOrchestratorPtyInBackground(projectId, runtime);
+  sendRuntimeHostConnectSnapshot({
+    projectId,
+    runtime,
+    send: (envelope) => ws.send(JSON.stringify(envelope)),
+    attachPtyHandlers,
+    runtimeSnapshotPayload: (id, targetRuntime) => runtimeSnapshots.payload(id, targetRuntime),
+    startOrchestratorPtyInBackground,
+  });
 
   ws.on('message', async (raw) => {
     let msg: {
