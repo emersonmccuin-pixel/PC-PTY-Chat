@@ -6,7 +6,6 @@ import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WebSocketServer } from 'ws';
 
 import { homedir } from 'node:os';
 
@@ -135,8 +134,7 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { createRuntimeHostPtyController } from './features/runtime-host/pty-handlers.ts';
 import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
-import { sendRuntimeHostConnectSnapshot } from './features/runtime-host/websocket-connect.ts';
-import { handleRuntimeHostWsMessage } from './features/runtime-host/websocket-message.ts';
+import { registerRuntimeHostWebSocketServer } from './features/runtime-host/websocket-server.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -3403,57 +3401,23 @@ const server = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (i
   console.log(`[pc] http://127.0.0.1:${info.port}`);
 });
 
-// ── WebSocket: /ws?projectId=<ULID> ────────────────────────────────────────
-
-const wss = new WebSocketServer({ server: server as never, path: '/ws' });
-
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url ?? '/ws', 'http://127.0.0.1');
-  const projectId = url.searchParams.get('projectId') as ULID | null;
-  if (!projectId) {
-    try { ws.close(1008, 'projectId query param required'); } catch { /* best effort */ }
-    return;
-  }
-  const runtime = resolveProject(projectId);
-  if (!runtime) {
-    try { ws.close(1008, `unknown project: ${projectId}`); } catch { /* best effort */ }
-    return;
-  }
-
-  const detachSubscriber = wsHub.subscribe(projectId, ws);
-
-  sendRuntimeHostConnectSnapshot({
-    projectId,
-    runtime,
-    send: (envelope) => ws.send(JSON.stringify(envelope)),
-    attachPtyHandlers,
-    runtimeSnapshotPayload: (id, targetRuntime) => runtimeSnapshots.payload(id, targetRuntime),
-    startOrchestratorPtyInBackground,
-  });
-
-  ws.on('message', (raw) => {
-    void handleRuntimeHostWsMessage({
-      projectId,
-      runtime,
-      raw: raw.toString(),
-      send: (envelope) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(envelope));
-      },
-      broadcastTo,
-      broadcastSendQueueSnapshot,
-      ensureOrchestratorPty,
-      resolvePendingAsk: (id, answer) => {
-        if (!pendingAsks.has(id)) return;
-        const resolveFn = pendingAsks.get(id)!;
-        pendingAsks.delete(id);
-        resolveFn(answer);
-      },
-    });
-  });
-
-  ws.on('close', () => {
-    detachSubscriber();
-  });
+registerRuntimeHostWebSocketServer<ReturnType<ProjectRuntime['ensurePty']>, ProjectRuntime>({
+  server,
+  path: '/ws',
+  wsHub,
+  resolveProject,
+  attachPtyHandlers,
+  runtimeSnapshotPayload: (id, targetRuntime) => runtimeSnapshots.payload(id, targetRuntime),
+  startOrchestratorPtyInBackground,
+  broadcastTo,
+  broadcastSendQueueSnapshot,
+  ensureOrchestratorPty,
+  resolvePendingAsk: (id, answer) => {
+    if (!pendingAsks.has(id)) return;
+    const resolveFn = pendingAsks.get(id)!;
+    pendingAsks.delete(id);
+    resolveFn(answer);
+  },
 });
 
 process.on('SIGINT', () => {
