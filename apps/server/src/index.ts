@@ -42,8 +42,6 @@ import {
   dismissFailedRun,
   getAgentRunRow,
   insertPostTurnSummary,
-  listOpenOrchestratorSendsForSession,
-  listQueuedOrchestratorSendsForSession,
   listVisibleOrchestratorSendsForSession,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
@@ -60,10 +58,6 @@ import {
   runMigrations,
   setGlobalSettings,
   hasOpenOrchestratorSendsForSession,
-  markOrchestratorSendDelivered,
-  markOrchestratorSendDelivering,
-  markOrchestratorSendFailed,
-  markNextDeliveredOrchestratorSendObservedInJsonl,
   recordDeliveredOrchestratorSend,
   retryFailedOrchestratorSend,
   setOrchestratorSessionJsonlCursor,
@@ -92,6 +86,11 @@ import {
   type RuntimeHealth,
   type RuntimeWaitPoint,
 } from './services/orchestrator-runtime-health.ts';
+import {
+  deliverNextQueuedPrompt,
+  maybeAdvanceSendQueueConfirmation,
+  queuedStatusForState,
+} from './services/orchestrator-send-queue-delivery.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
 import { installClaude, installGit } from './services/onboarding-install.ts';
@@ -545,79 +544,6 @@ function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {
   if (runtime) broadcastRuntimeSnapshot(projectId, runtime);
 }
 
-function queuedStatusForState(
-  state: string,
-  hasBacklog: boolean,
-): 'queued_busy' | 'queued_spawning' | 'queued_backlog' {
-  if (hasBacklog) return 'queued_backlog';
-  if (state === 'spawning') return 'queued_spawning';
-  return 'queued_busy';
-}
-
-const sendQueueDeliveryInFlight = new Set<ULID>();
-
-function deliverNextQueuedPrompt(projectId: ULID, runtime: ProjectRuntime): void {
-  const active = getActiveOrchestratorSession(projectId);
-  if (!active) return;
-  if (sendQueueDeliveryInFlight.has(active.id)) return;
-  sendQueueDeliveryInFlight.add(active.id);
-  void deliverNextQueuedPromptOnce(projectId, runtime, active.id).finally(() => {
-    sendQueueDeliveryInFlight.delete(active.id);
-  });
-}
-
-async function deliverNextQueuedPromptOnce(
-  projectId: ULID,
-  runtime: ProjectRuntime,
-  sessionId: ULID,
-): Promise<void> {
-  const active = getActiveOrchestratorSession(projectId);
-  if (!active || active.id !== sessionId) return;
-  const live = runtime.ptySession();
-  if (!live || live.getState() !== 'ready') {
-    broadcastSendQueueSnapshot(projectId, active.id);
-    return;
-  }
-  const [next] = listQueuedOrchestratorSendsForSession(active.id);
-  if (!next) {
-    broadcastSendQueueSnapshot(projectId, active.id);
-    return;
-  }
-  markOrchestratorSendDelivering(next.id);
-  broadcastSendQueueSnapshot(projectId, active.id);
-  try {
-    const result = await live.send(next.text);
-    if (result === 'ok') {
-      markOrchestratorSendDelivered(next.id);
-    } else {
-      markOrchestratorSendFailed(next.id, `send returned ${result}`);
-    }
-  } catch (err) {
-    markOrchestratorSendFailed(
-      next.id,
-      err instanceof Error ? err.message : 'Failed to deliver queued prompt',
-    );
-  }
-  broadcastSendQueueSnapshot(projectId, active.id);
-}
-
-function maybeAdvanceSendQueueConfirmation(
-  projectId: ULID,
-  sessionId: ULID | null,
-  event: unknown,
-): void {
-  if (!sessionId || !event || typeof event !== 'object') return;
-  const ev = event as { kind?: string; text?: unknown };
-  if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
-  const observed = markNextDeliveredOrchestratorSendObservedInJsonl(sessionId, ev.text);
-  if (!observed) return;
-  broadcastSendQueueSnapshot(projectId, sessionId);
-  const runtime = resolveProject(projectId);
-  if (runtime?.ptySession()?.getState() === 'ready') {
-    deliverNextQueuedPrompt(projectId, runtime);
-  }
-}
-
 function replayMetaPayload(replay: JsonlReplayMeta | undefined): {
   id?: string;
   sessionId?: string;
@@ -867,7 +793,9 @@ function attachPtyHandlers(
     }
     broadcastTo(projectId, { type: 'state', state });
     broadcastRuntimeSnapshot(projectId, runtime);
-    if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
+    if (state === 'ready') {
+      deliverNextQueuedPrompt(projectId, runtime, broadcastSendQueueSnapshot);
+    }
   });
   session.on('turn-end', () => {
     // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
@@ -899,7 +827,13 @@ function attachPtyHandlers(
     if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
       setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
     }
-    maybeAdvanceSendQueueConfirmation(projectId, attachedSessionId, event);
+    maybeAdvanceSendQueueConfirmation(
+      projectId,
+      attachedSessionId,
+      event,
+      runtime,
+      broadcastSendQueueSnapshot,
+    );
     broadcastRuntimeSnapshot(projectId, runtime);
     // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
     // row carries rich per-turn metadata; we log every one to the DB. Surface
@@ -1943,7 +1877,9 @@ app.post('/api/projects/:projectId/send-queue/:sendId/retry', (c) => {
   }
 
   broadcastSendQueueSnapshot(id, active.id);
-  if (state === 'ready') deliverNextQueuedPrompt(id, runtime);
+  if (state === 'ready') {
+    deliverNextQueuedPrompt(id, runtime, broadcastSendQueueSnapshot);
+  }
   return c.json({ ok: true, item: publicSendQueueItem(retried) });
 });
 
@@ -4253,7 +4189,9 @@ wss.on('connection', (ws, req) => {
               queueItem: publicSendQueueItem(row),
             });
             broadcastSendQueueSnapshot(projectId, active.id);
-            if (state === 'ready') deliverNextQueuedPrompt(projectId, runtime);
+            if (state === 'ready') {
+              deliverNextQueuedPrompt(projectId, runtime, broadcastSendQueueSnapshot);
+            }
           } catch (err) {
             sendAck(msg.clientMessageId, {
               ok: false,
