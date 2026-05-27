@@ -32,7 +32,6 @@ import {
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
-  enqueueOrchestratorSend,
   getActiveOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
@@ -50,8 +49,6 @@ import {
   reorderProjects,
   runMigrations,
   setGlobalSettings,
-  hasOpenOrchestratorSendsForSession,
-  recordDeliveredOrchestratorSend,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
@@ -68,16 +65,9 @@ import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import {
-  loadSessionReplayCheckpoint,
-  type SessionReplayCheckpoint,
-} from './services/session-replay.ts';
-import {
   deliverNextQueuedPrompt,
   maybeAdvanceSendQueueConfirmation,
-  publicSendQueueItem,
-  queuedStatusForState,
   sendQueueSnapshotPayload,
-  type PublicSendQueueItem,
 } from './services/orchestrator-send-queue-delivery.ts';
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
@@ -146,6 +136,7 @@ import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
 import { sendRuntimeHostConnectSnapshot } from './features/runtime-host/websocket-connect.ts';
+import { handleRuntimeHostWsMessage } from './features/runtime-host/websocket-message.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -287,13 +278,6 @@ function broadcastTo(projectId: ULID, msg: unknown): void {
 function broadcastAll(msg: unknown): void {
   wsHub.broadcastAll(msg);
 }
-
-type SendAckStatus =
-  | 'received'
-  | 'queued'
-  | 'invalid-message'
-  | 'no-session'
-  | 'error';
 
 const runtimeSnapshots = new OrchestratorRuntimeSnapshots();
 
@@ -1427,29 +1411,6 @@ app.get('/api/projects/:projectId', (c) => {
   if (!project) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
   return c.json(project);
 });
-
-function loadSessionReplay(
-  runtime: ProjectRuntime,
-  sessionId: ULID,
-): SessionReplayCheckpoint {
-  return loadSessionReplayCheckpoint(runtime.sessionDataPath(sessionId), sessionId);
-}
-
-/** Send a session's normalized event log as one checkpoint. This keeps
- *  resume/reconnect deterministic on the client: the live buffer is replaced
- *  once with the replay snapshot, instead of being rebuilt from a burst of
- *  individual WS messages that can race local navigation state. */
-function broadcastSessionReplay(
-  projectId: ULID,
-  replay: SessionReplayCheckpoint,
-): void {
-  broadcastTo(projectId, {
-    type: 'session-replay',
-    sessionId: replay.sessionId,
-    highWaterSeq: replay.highWaterSeq,
-    events: replay.events,
-  });
-}
 
 // ── Agent-designer transient session (17b.12) ─────────────────────────────
 //
@@ -3617,175 +3578,24 @@ wss.on('connection', (ws, req) => {
     startOrchestratorPtyInBackground,
   });
 
-  ws.on('message', async (raw) => {
-    let msg: {
-      type?: string;
-      text?: string;
-      data?: unknown;
-      clientMessageId?: unknown;
-      cols?: number;
-      rows?: number;
-      nonce?: unknown;
-      sentAt?: unknown;
-    };
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
-    const sendAck = (
-      clientMessageId: unknown,
-      ack: {
-        ok: boolean;
-        status: SendAckStatus;
-        error?: string;
-        queueItem?: PublicSendQueueItem;
+  ws.on('message', (raw) => {
+    void handleRuntimeHostWsMessage({
+      projectId,
+      runtime,
+      raw: raw.toString(),
+      send: (envelope) => {
+        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(envelope));
       },
-    ) => {
-      if (typeof clientMessageId !== 'string' || !clientMessageId) return;
-      if (ws.readyState !== ws.OPEN) return;
-      ws.send(JSON.stringify({ projectId, type: 'send-ack', clientMessageId, ...ack }));
-    };
-    switch (msg.type) {
-      case 'client-ping':
-        if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({
-            projectId,
-            type: 'server-pong',
-            nonce: typeof msg.nonce === 'string' ? msg.nonce : undefined,
-            sentAt: typeof msg.sentAt === 'number' ? msg.sentAt : undefined,
-            serverTime: Date.now(),
-          }));
-        }
-        break;
-      case 'send':
-        if (typeof msg.text !== 'string') {
-          sendAck(msg.clientMessageId, {
-            ok: false,
-            status: 'invalid-message',
-            error: 'send.text must be a string',
-          });
-          break;
-        }
-        const clientMessageId =
-          typeof msg.clientMessageId === 'string' && msg.clientMessageId
-            ? msg.clientMessageId
-            : newId();
-        let active = getActiveOrchestratorSession(projectId);
-        if (!active) {
-          active = runtime.ensureActiveSession();
-          broadcastTo(projectId, { type: 'session-changed', session: active });
-          broadcastSessionReplay(projectId, loadSessionReplay(runtime, active.id));
-          broadcastSendQueueSnapshot(projectId, active.id);
-        }
-        let live = runtime.ptySession();
-        if (!live) {
-          try {
-            live = ensureOrchestratorPty(projectId, runtime);
-          } catch (err) {
-            sendAck(msg.clientMessageId, {
-              ok: false,
-              status: 'no-session',
-              error: err instanceof Error
-                ? err.message
-                : 'No live orchestrator session is attached',
-            });
-            break;
-          }
-        }
-        const state = live.getState();
-        const hasBacklog = hasOpenOrchestratorSendsForSession(active.id);
-        if (state !== 'ready' || hasBacklog) {
-          try {
-            const row = enqueueOrchestratorSend({
-              projectId,
-              sessionId: active.id,
-              clientMessageId,
-              text: msg.text,
-              status: queuedStatusForState(state, hasBacklog),
-            });
-            sendAck(msg.clientMessageId, {
-              ok: true,
-              status: 'queued',
-              queueItem: publicSendQueueItem(row),
-            });
-            broadcastSendQueueSnapshot(projectId, active.id);
-            if (state === 'ready') {
-              deliverNextQueuedPrompt(projectId, runtime, broadcastSendQueueSnapshot);
-            }
-          } catch (err) {
-            sendAck(msg.clientMessageId, {
-              ok: false,
-              status: 'error',
-              error: err instanceof Error ? err.message : 'Failed to queue prompt',
-            });
-          }
-          break;
-        }
-        try {
-          const result = await live.send(msg.text);
-          if (result !== 'ok') {
-            sendAck(msg.clientMessageId, {
-              ok: false,
-              status: 'error',
-              error: `send returned ${result}`,
-            });
-            break;
-          }
-          const row = recordDeliveredOrchestratorSend({
-            projectId,
-            sessionId: active.id,
-            clientMessageId,
-            text: msg.text,
-          });
-          sendAck(msg.clientMessageId, {
-            ok: true,
-            status: 'received',
-            queueItem: publicSendQueueItem(row),
-          });
-          broadcastSendQueueSnapshot(projectId, active.id);
-        } catch (err) {
-          sendAck(msg.clientMessageId, {
-            ok: false,
-            status: 'error',
-            error: err instanceof Error ? err.message : 'Failed to send prompt',
-          });
-        }
-        break;
-      case 'interrupt':
-        runtime.ptySession()?.interrupt();
-        break;
-      case 'terminal-input': {
-        const result = forwardTerminalInput(runtime, msg.data);
-        if (!result.ok && ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify({
-            projectId,
-            type: 'terminal-input-ack',
-            ok: false,
-            status: result.status,
-            error: result.error,
-          }));
-        }
-        break;
-      }
-      case 'resize':
-        {
-          if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-            runtime.resizeOrchestrator(msg.cols, msg.rows);
-          }
-        }
-        break;
-      case 'ask-reply': {
-        const id = (msg as { toolUseId?: string }).toolUseId;
-        const answer = (msg as { answer?: string }).answer ?? '';
-        if (id && pendingAsks.has(id)) {
-          const resolveFn = pendingAsks.get(id)!;
-          pendingAsks.delete(id);
-          resolveFn(answer);
-        }
-        break;
-      }
-    }
+      broadcastTo,
+      broadcastSendQueueSnapshot,
+      ensureOrchestratorPty,
+      resolvePendingAsk: (id, answer) => {
+        if (!pendingAsks.has(id)) return;
+        const resolveFn = pendingAsks.get(id)!;
+        pendingAsks.delete(id);
+        resolveFn(answer);
+      },
+    });
   });
 
   ws.on('close', () => {
