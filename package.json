@@ -10,7 +10,7 @@
     "pnpm": ">=10.33.0"
   },
   "scripts": {
-    "dev": "pnpm --filter @pc/server dev",
+    "dev": "pnpm --filter @pc/server --filter @pc/mcp --parallel dev",
     "start": "pnpm --filter @pc/server start",
     "build": "pnpm --filter @pc/web build",
     "typecheck": "pnpm -r typecheck",
