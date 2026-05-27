@@ -526,6 +526,7 @@ export type JsonlEvent =
 
 export type WsOutbound =
   | { type: 'send'; text: string; clientMessageId?: string }
+  | { type: 'terminal-input'; data: string }
   | { type: 'interrupt' }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'ask-reply'; toolUseId: string; answer: string };

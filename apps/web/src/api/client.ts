@@ -403,12 +403,15 @@ export interface ActivityPanelSettings {
   showAllProjects: boolean;
 }
 
+export type OrchestratorSurfacePreference = 'chat' | 'terminal';
+
 export interface GlobalSettings {
   dataDir: string;
   telemetryOptIn: boolean;
   /** Section 33 — override for which Claude account/profile PC uses. `null` =
    *  inherit the shell env that launched the server. */
   claudeConfigDir: string | null;
+  defaultOrchestratorSurface: OrchestratorSurfacePreference;
   projectsFolder: string;
   activityPanel: ActivityPanelSettings;
   bugLogTargetProjectId: ULID | null;
@@ -497,6 +500,14 @@ export type SessionReplayItem =
     };
 
 export type SessionTransitionKind = 'new-session' | 'resume-session';
+
+export interface TerminalTranscriptResponse {
+  ok: true;
+  sessionId: string;
+  bytes: string;
+  truncated: boolean;
+  mtimeMs: number | null;
+}
 
 export interface SessionTransitionResponse {
   transition: SessionTransitionKind;
@@ -857,6 +868,11 @@ export const api = {
       '/api/settings',
       patch,
       'PATCH',
+    ),
+
+  getTerminalTranscript: (projectId: ULID, sessionId: ULID, tailBytes = 1024 * 1024) =>
+    getJson<TerminalTranscriptResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/terminal-transcript?tailBytes=${encodeURIComponent(String(tailBytes))}`,
     ),
 
   /** Section 33 — resolved Claude profile PC is using right now (effective

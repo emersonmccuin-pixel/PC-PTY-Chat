@@ -14,11 +14,16 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Copy as CopyIcon } from 'lucide-react';
+import {
+  Copy as CopyIcon,
+  MessagesSquare,
+  Terminal as TerminalIcon,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
+import type { OrchestratorSurfacePreference } from '@/api/client';
 import type {
   ApprovalRequiredEvent,
   AssistantEvent,
@@ -43,6 +48,7 @@ import { useChatComposerPrefill } from '@/store/chat-composer-prefill';
 import { useChatScrollTarget } from '@/store/chat-scroll-target';
 import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { AskCard } from '@/components/AskCard';
+import { TerminalModePanel } from '@/components/TerminalModePanel';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
 import { LiveRichLink } from '@/components/LiveRichLink';
@@ -765,12 +771,17 @@ interface ChatSurfaceProps {
   onSend: (text: string, clientMessageId: string) => boolean;
   /** Composer interrupt. */
   onInterrupt: () => boolean;
+  /** Raw xterm input. Present only on the live orchestrator surface. */
+  onTerminalInput?: (data: string) => boolean;
+  /** Terminal resize. Present only on the live orchestrator surface. */
+  onTerminalResize?: (cols: number, rows: number) => boolean;
   /** Optional ask-card reply (orchestrator only — wires to WS `ask-reply`).
    *  When omitted, ask cards never appear because the session-id filter drops
    *  them; safe to leave undefined for agent-designer surface. */
   onAskReply?: (toolUseId: string, answer: string) => boolean;
   /** localStorage partition for prompt history (per-project / per-surface). */
   composerHistoryKey: string;
+  defaultOrchestratorSurface?: OrchestratorSurfacePreference;
   /** Hide composer entirely — past-session view. */
   composerHidden?: boolean;
   /** Disable composer input + send/interrupt buttons. Used for agent-designer
@@ -811,8 +822,11 @@ export function ChatSurface({
   currentSessionId,
   onSend,
   onInterrupt,
+  onTerminalInput,
+  onTerminalResize,
   onAskReply,
   composerHistoryKey,
+  defaultOrchestratorSurface = 'chat',
   composerHidden,
   composerDisabled,
   composerSendDisabled,
@@ -828,6 +842,14 @@ export function ChatSurface({
   wsStatus,
 }: ChatSurfaceProps) {
   const [pendingPrompts, setPendingPrompts] = useState<PendingPrompt[]>([]);
+  const terminalEligible = Boolean(
+    onTerminalInput &&
+      onTerminalResize &&
+      currentSessionId &&
+      !composerHidden,
+  );
+  const [surfaceMode, setSurfaceMode] =
+    useState<OrchestratorSurfacePreference>('chat');
   const eventsRef = useRef(events);
   useEffect(() => {
     eventsRef.current = events;
@@ -1098,6 +1120,25 @@ export function ChatSurface({
     setPendingPrompts([]);
   }, [currentSessionId]);
 
+  useEffect(() => {
+    if (!terminalEligible || !currentSessionId) {
+      setSurfaceMode('chat');
+      return;
+    }
+    const stored = readTerminalMode(projectId, currentSessionId);
+    setSurfaceMode(stored ?? defaultOrchestratorSurface);
+  }, [projectId, currentSessionId, terminalEligible, defaultOrchestratorSurface]);
+
+  const terminalActive = terminalEligible && surfaceMode === 'terminal';
+  const setTerminalMode = useCallback(
+    (next: OrchestratorSurfacePreference) => {
+      if (!terminalEligible || !currentSessionId) return;
+      setSurfaceMode(next);
+      writeTerminalMode(projectId, currentSessionId, next);
+    },
+    [projectId, currentSessionId, terminalEligible],
+  );
+
   // Thinking elapsed timer.
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -1216,7 +1257,10 @@ export function ChatSurface({
         <div
           ref={scrollerRef}
           onScroll={handleChatScroll}
-          className="h-full overflow-y-auto px-4 py-3"
+          className={
+            'h-full overflow-y-auto px-4 py-3 ' +
+            (terminalActive ? 'pointer-events-none invisible' : '')
+          }
         >
           <div className="flex flex-col gap-3">
             {renderItems.map((item, idx) => {
@@ -1419,18 +1463,35 @@ export function ChatSurface({
             )}
           </div>
         </div>
-        {!pinnedToBottom && (
+        {!pinnedToBottom && (!terminalEligible || !terminalActive) && (
           <button
             onClick={jumpToBottom}
-            className="absolute bottom-3 right-4 z-10 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground/80 shadow-md hover:bg-accent hover:text-accent-foreground"
+            className="absolute bottom-3 right-4 z-30 rounded-full px-3.5 py-1.5 text-xs font-bold opacity-100"
+            style={{
+              backgroundColor: '#f0d080',
+              color: '#080604',
+              border: '2px solid #080604',
+              boxShadow: '0 0 0 1px #f5e8c8, 0 10px 30px rgba(0, 0, 0, 0.7)',
+            }}
             title="Scroll to the latest messages"
           >
-            ↓ Jump to recent
+            ↓ Jump to present
           </button>
+        )}
+        {terminalEligible && onTerminalInput && onTerminalResize && (
+          <TerminalModePanel
+            projectId={projectId}
+            sessionId={currentSessionId}
+            events={events}
+            visible={terminalActive}
+            writable={terminalActive && wsStatus === 'open'}
+            onInput={onTerminalInput}
+            onResize={onTerminalResize}
+          />
         )}
       </div>
       {bannerSlot}
-      {!composerHidden && (
+      {!composerHidden && !terminalActive && (
         <Composer
           historyKey={composerHistoryKey}
           onSend={handleSend}
@@ -1443,9 +1504,88 @@ export function ChatSurface({
           sendLabel={resolvedComposerSendLabel}
         />
       )}
+      {terminalEligible && (
+        <div className="shrink-0 border-t border-border bg-card px-3 py-1.5">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={terminalActive}
+              data-testid="chat-mode-toggle"
+              aria-label={terminalActive ? 'Terminal mode enabled' : 'Terminal mode disabled'}
+              title={terminalActive ? 'Switch to chat mode' : 'Switch to terminal mode'}
+              onClick={() => setTerminalMode(terminalActive ? 'chat' : 'terminal')}
+              className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-2.5 text-xs font-medium shadow-sm hover:border-primary/60"
+            >
+              <span
+                className={
+                  'inline-flex items-center gap-1.5 ' +
+                  (terminalActive ? 'text-muted-foreground' : 'text-foreground')
+                }
+              >
+                <MessagesSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Chat</span>
+              </span>
+              <span
+                aria-hidden="true"
+                className={
+                  'relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ' +
+                  (terminalActive
+                    ? 'border-primary bg-primary'
+                    : 'border-border bg-muted')
+                }
+              >
+                <span
+                  className={
+                    'h-4 w-4 rounded-full bg-background shadow-sm transition-transform ' +
+                    (terminalActive ? 'translate-x-4' : 'translate-x-0.5')
+                  }
+                />
+              </span>
+              <span
+                className={
+                  'inline-flex items-center gap-1.5 ' +
+                  (terminalActive ? 'text-foreground' : 'text-muted-foreground')
+                }
+              >
+                <TerminalIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Terminal</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
       {footerSlot}
     </div>
   );
+}
+
+function terminalModeStorageKey(projectId: string, sessionId: string): string {
+  return `pc.terminal-mode.${projectId}.${sessionId}`;
+}
+
+function readTerminalMode(
+  projectId: string,
+  sessionId: string,
+): OrchestratorSurfacePreference | null {
+  try {
+    const value = localStorage.getItem(terminalModeStorageKey(projectId, sessionId));
+    return value === 'chat' || value === 'terminal' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTerminalMode(
+  projectId: string,
+  sessionId: string,
+  value: OrchestratorSurfacePreference,
+): void {
+  try {
+    localStorage.setItem(terminalModeStorageKey(projectId, sessionId), value);
+  } catch {
+    /* storage disabled */
+  }
 }
 
 // AskCard reply contract: the parent owns ask reply (WS send for orchestrator,

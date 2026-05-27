@@ -11,6 +11,7 @@ import type {
 // Keep the long-lived chat comfort window from the legacy raw buffer while
 // the reducer owns ordering/deduplication by session sequence.
 const MAX_TIMELINE_ENTRIES = 10_000;
+const MAX_TERMINAL_RAW_ENTRIES = 2_000;
 
 type TimelineEntry =
   | { kind: 'env'; key: string }
@@ -36,6 +37,7 @@ export interface ChatSessionReducerState {
   timeline: TimelineEntry[];
   sequenced: SequencedEntry[];
   unsequenced: EnvEntry[];
+  terminalRaw: EnvEntry[];
 }
 
 export type ChatSessionReducerAction =
@@ -52,6 +54,7 @@ export function createChatSessionState(projectId: string | null): ChatSessionRed
     timeline: [],
     sequenced: [],
     unsequenced: [],
+    terminalRaw: [],
   };
 }
 
@@ -78,6 +81,9 @@ export function materializeChatSessionEvents(state: ChatSessionReducerState): Ws
       ? sequenced.get(entry.key)
       : unsequenced.get(entry.key);
     if (env) out.push(env);
+  }
+  for (const entry of state.terminalRaw) {
+    out.push(entry.env);
   }
   return out;
 }
@@ -135,6 +141,8 @@ function applyEnvelope(
         return (candidate as Partial<SendAckEnvelope>).clientMessageId ===
           (env as Partial<SendAckEnvelope>).clientMessageId;
       });
+    case 'raw':
+      return appendTerminalRaw(state, env);
     case 'session-title-updated':
       return applySessionMetadata(state, env);
     default:
@@ -169,6 +177,7 @@ export function applySnapshot(
     sequenced,
     timeline: preserved.timeline,
     unsequenced: preserved.unsequenced,
+    terminalRaw: preserveTerminalRaw(state, sessionId),
   };
 
   for (const entry of sequenced) {
@@ -308,6 +317,7 @@ function applySessionChanged(
         sequenced: [],
         timeline: preserved.timeline,
         unsequenced: preserved.unsequenced,
+        terminalRaw: [],
       },
       env,
       (candidate) => candidate.type === 'session-changed',
@@ -372,6 +382,35 @@ function appendUnsequenced(
   });
 }
 
+function appendTerminalRaw(
+  state: ChatSessionReducerState,
+  env: WsEnvelope,
+): ChatSessionReducerState {
+  const scopedSessionId = sessionIdFromEnvelope(env);
+  if (
+    state.activeSessionId &&
+    scopedSessionId &&
+    scopedSessionId !== state.activeSessionId
+  ) {
+    return state;
+  }
+  const sessionId = scopedSessionId ?? state.activeSessionId;
+  const key = `raw-${state.nextOrdinal}`;
+  const terminalRaw = [
+    ...state.terminalRaw,
+    {
+      key,
+      env: sessionId ? { ...env, sessionId } : env,
+    },
+  ].slice(-MAX_TERMINAL_RAW_ENTRIES);
+  return {
+    ...state,
+    nextOrdinal: state.nextOrdinal + 1,
+    activeSessionId: state.activeSessionId ?? sessionId ?? null,
+    terminalRaw,
+  };
+}
+
 function preserveAcrossSnapshot(
   state: ChatSessionReducerState,
   sessionId: string,
@@ -405,6 +444,13 @@ function preserveProjectEventsForSessionReset(state: ChatSessionReducerState): {
     timeline: state.timeline.filter((entry) => entry.kind === 'env' && keepKeys.has(entry.key)),
     unsequenced,
   };
+}
+
+function preserveTerminalRaw(
+  state: ChatSessionReducerState,
+  sessionId: string,
+): EnvEntry[] {
+  return state.terminalRaw.filter((entry) => sessionIdFromEnvelope(entry.env) === sessionId);
 }
 
 function shouldPreserveUnsequencedAcrossSnapshot(

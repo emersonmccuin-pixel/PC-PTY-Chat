@@ -51,6 +51,8 @@ export interface InteractiveSessionInput {
   podDefinition: PodDescriptor;
   worktreePath: string;
   env: Record<string, string | undefined>;
+  /** Optional post-scrub env overrides passed to LowLevelSpawn. */
+  envOverrides?: Record<string, string | undefined>;
   /** 'fresh' = mint a new conversation; 'resume' = continue an existing
    *  on-disk session by --resume <uuid>. */
   mode?: 'fresh' | 'resume';
@@ -84,6 +86,9 @@ export interface InteractiveSessionInput {
   maxSpawnAttempts?: number;
   /** Delay before a retry attempt. Default 1s. */
   retryBackoffMs?: number;
+  /** PTY dimensions. Defaults live in LowLevelSpawn. */
+  cols?: number;
+  rows?: number;
 }
 
 export interface InteractiveSessionDeps {
@@ -163,6 +168,16 @@ export class InteractiveSession extends EventEmitter {
       this.setState('busy');
     }
     return result;
+  }
+
+  /** Raw terminal input. Bypasses chat send queue, bracketed paste, prompt
+   *  history, echo ack, and ready/busy accounting. */
+  writeRaw(bytes: string): boolean {
+    if (!this.spawn) return false;
+    if (this.state === 'exited' || this.state === 'failed' || this.state === 'stopped') {
+      return false;
+    }
+    return this.spawn.writeRaw?.(bytes) ?? false;
   }
 
   /** Send escape — CC's stop-streaming key. */
@@ -246,6 +261,7 @@ export class InteractiveSession extends EventEmitter {
       podDefinition: this.input.podDefinition,
       worktreePath: this.input.worktreePath,
       env: this.input.env,
+      envOverrides: this.input.envOverrides,
       ccProviderSessionId: this.input.ccProviderSessionId,
       mode,
       jsonlPath: this.input.jsonlPath,
@@ -263,6 +279,8 @@ export class InteractiveSession extends EventEmitter {
       handshakeTimeoutMs: this.input.handshakeTimeoutMs,
       requireMcpHandshake: this.input.requireMcpHandshake,
       readyTimeoutMs: this.input.readyTimeoutMs,
+      cols: this.input.cols,
+      rows: this.input.rows,
     };
     const spawn = this.deps.spawnFactory(llsInput);
     this.spawn = spawn;

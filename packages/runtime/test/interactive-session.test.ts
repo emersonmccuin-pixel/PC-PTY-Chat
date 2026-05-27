@@ -29,6 +29,7 @@ class StubSpawn extends EventEmitter implements SpawnLike {
   interrupts = 0;
   resizes: Array<{ cols: number; rows: number }> = [];
   sent: string[] = [];
+  rawWrites: string[] = [];
   sendResult: SendResult = 'ok';
   private readyResolve!: (ts: ReadyTimestamps) => void;
   private readyReject!: (err: Error) => void;
@@ -51,6 +52,10 @@ class StubSpawn extends EventEmitter implements SpawnLike {
   async send(body: string): Promise<SendResult> {
     this.sent.push(body);
     return this.sendResult;
+  }
+  writeRaw(bytes: string): boolean {
+    this.rawWrites.push(bytes);
+    return true;
   }
   notifyMcpHandshake(): void {}
   interrupt(): void {
@@ -303,17 +308,54 @@ test('resize() forwards to spawn', async () => {
   assert.deepEqual(stub.resizes, [{ cols: 140, rows: 38 }]);
 });
 
+test('writeRaw() forwards exact bytes without changing ready/busy state', async () => {
+  const { session, stub } = makeSession();
+  session.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  assert.equal(session.getState(), 'ready');
+  assert.equal(session.writeRaw('/help\r'), true);
+  assert.equal(session.writeRaw('\x1b[A\x03'), true);
+  assert.equal(session.getState(), 'ready');
+  assert.deepEqual(stub.rawWrites, ['/help\r', '\x1b[A\x03']);
+  assert.deepEqual(stub.sent, []);
+});
+
+test('writeRaw() returns false before start and after close', async () => {
+  const { session, stub } = makeSession();
+  assert.equal(session.writeRaw('before'), false);
+  session.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  session.close();
+  await tick();
+  assert.equal(session.writeRaw('after'), false);
+  assert.deepEqual(stub.rawWrites, []);
+});
+
 test('start() twice throws', () => {
   const { session } = makeSession();
   session.start();
   assert.throws(() => session.start(), /start\(\) called twice/);
 });
 
-test('mode and readiness options pass through to spawn factory', async () => {
-  let factoryInput: { mode?: string; remoteControl?: boolean; requireReadySignal?: boolean } | null = null;
+test('mode, env overrides, and readiness options pass through to spawn factory', async () => {
+  let factoryInput: {
+    mode?: string;
+    envOverrides?: Record<string, string | undefined>;
+    remoteControl?: boolean;
+    requireReadySignal?: boolean;
+  } | null = null;
   const stub = new StubSpawn();
   const session = new InteractiveSession(
-    makeInput({ mode: 'resume', remoteControl: false, requireReadySignal: true }),
+    makeInput({
+      mode: 'resume',
+      envOverrides: { TERM: 'xterm-256color', FORCE_COLOR: '3' },
+      remoteControl: false,
+      requireReadySignal: true,
+    }),
     {
       spawnFactory: (input) => {
         factoryInput = input;
@@ -324,6 +366,7 @@ test('mode and readiness options pass through to spawn factory', async () => {
   session.start();
   await tick();
   assert.equal(factoryInput!.mode, 'resume');
+  assert.deepEqual(factoryInput!.envOverrides, { TERM: 'xterm-256color', FORCE_COLOR: '3' });
   assert.equal(factoryInput!.remoteControl, false);
   assert.equal(factoryInput!.requireReadySignal, true);
 });

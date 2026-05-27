@@ -51,6 +51,8 @@ export interface JsonlSettings {
 export const JSONL_RETENTION_DAYS_MIN = 1;
 export const JSONL_RETENTION_DAYS_MAX = 3650;
 
+export type OrchestratorSurfacePreference = 'chat' | 'terminal';
+
 export interface GlobalSettings {
   /** Active data dir at last write. */
   dataDir: string;
@@ -81,6 +83,8 @@ export interface GlobalSettings {
    * `?onboarding=force` switch bypasses this for testing.
    */
   onboardingCompletedAt: string | null;
+  /** Default live orchestrator surface when no per-session local override exists. */
+  defaultOrchestratorSurface: OrchestratorSurfacePreference;
   /**
    * Default parent dir for new projects. Used by the create-project folder
    * picker as the initial path. Hot-reloadable — no restart required.
@@ -138,6 +142,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     claudeExe: null,
     claudeConfigDir: null,
     onboardingCompletedAt: null,
+    defaultOrchestratorSurface: 'chat',
     projectsFolder: joinPath(homeDir, 'Projects'),
     activityPanel: {
       open: true,
@@ -191,6 +196,13 @@ export function normalizeJsonlRetention(v: unknown): number | 'never' {
   return Math.floor(v);
 }
 
+export function normalizeOrchestratorSurfacePreference(
+  value: unknown,
+  fallback: OrchestratorSurfacePreference = 'chat',
+): OrchestratorSurfacePreference {
+  return value === 'terminal' || value === 'chat' ? value : fallback;
+}
+
 /**
  * Backfill any fields a stored envelope is missing — old `settings_global`
  * rows predate the Q10 envelope. Mutates a shallow copy so the row at rest
@@ -208,6 +220,10 @@ export function withSettingsDefaults(
     claudeExe: stored.claudeExe ?? defaults.claudeExe,
     claudeConfigDir: stored.claudeConfigDir ?? defaults.claudeConfigDir,
     onboardingCompletedAt: stored.onboardingCompletedAt ?? defaults.onboardingCompletedAt,
+    defaultOrchestratorSurface: normalizeOrchestratorSurfacePreference(
+      (stored as { defaultOrchestratorSurface?: unknown }).defaultOrchestratorSurface,
+      defaults.defaultOrchestratorSurface,
+    ),
     projectsFolder: stored.projectsFolder ?? defaults.projectsFolder,
     activityPanel: {
       open: stored.activityPanel?.open ?? defaults.activityPanel.open,

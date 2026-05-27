@@ -52,6 +52,13 @@ import { getWorkItem, listFieldSchemas } from '@pc/db';
  *  drag in a defunct module just for the type alias. */
 export type BroadcastFn = (event: unknown) => void;
 
+const CLAUDE_TERMINAL_ENV: Readonly<Record<string, string>> = {
+  TERM: 'xterm-256color',
+  COLORTERM: 'truecolor',
+  FORCE_COLOR: '3',
+  CLAUDE_CODE_NO_FLICKER: '1',
+};
+
 export interface ProjectRuntimeOptions {
   /** Trunk data dir. Per-project subpaths derived from this. */
   dataDir: string;
@@ -85,6 +92,8 @@ export class ProjectRuntime {
   private setupWizard: PtySession | null = null;
   private setupWizardCleanup: (() => void) | null = null;
   private worktreesSvc: WorktreeService | null = null;
+  private orchestratorCols = 120;
+  private orchestratorRows = 30;
   /** Section 19.13 — one-shot YAML→DB import per ProjectRuntime lifetime.
    *  ProjectRegistry calls `bootstrap()` right after construct; the flag
    *  keeps the second call a no-op (defends against hot-reload + ensure()
@@ -476,6 +485,7 @@ export class ProjectRuntime {
         PC_AGENT_SESSION_ID: session.providerSessionId,
         ...(session.claudeConfigDir ? { CLAUDE_CONFIG_DIR: session.claudeConfigDir } : {}),
       },
+      envOverrides: { ...CLAUDE_TERMINAL_ENV },
       mode: session.resume ? 'resume' : 'fresh',
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
@@ -497,6 +507,8 @@ export class ProjectRuntime {
       maxSpawnAttempts: 2,
       retryBackoffMs: 1500,
       spawnTimeoutMs: 120_000,
+      cols: this.orchestratorCols,
+      rows: this.orchestratorRows,
     });
     this.pty.start();
 
@@ -524,6 +536,16 @@ export class ProjectRuntime {
   /** Returns the live orchestrator InteractiveSession if one is spawned. */
   ptySession(): InteractiveSession | null {
     return this.pty && !['exited', 'failed'].includes(this.pty.getState()) ? this.pty : null;
+  }
+
+  /** Remember the requested terminal geometry so future respawns for the same
+   *  live runtime start at the user's current panel size. */
+  resizeOrchestrator(cols: number, rows: number): void {
+    const safeCols = Math.max(20, Math.min(400, Math.trunc(cols)));
+    const safeRows = Math.max(5, Math.min(200, Math.trunc(rows)));
+    this.orchestratorCols = safeCols;
+    this.orchestratorRows = safeRows;
+    this.ptySession()?.resize(safeCols, safeRows);
   }
 
   /** Smoke-test hook: kill the orchestrator child and detach the wrapper

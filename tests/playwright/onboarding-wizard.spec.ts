@@ -13,6 +13,9 @@ test.describe('Section 10 Phase 2 — onboarding wizard', () => {
 
     await expect(page.getByRole('heading', { name: 'Welcome to Caisson' })).toBeVisible();
     await page.getByRole('button', { name: 'Get started' }).click();
+    await expect(page.getByRole('heading', { name: 'Choose your default view' })).toBeVisible();
+    await page.getByRole('button', { name: 'Terminal' }).click();
+    await page.getByRole('button', { name: 'Continue' }).click();
 
     // Claude step — not installed in the fake machine.
     await expect(page.getByRole('heading', { name: 'Install Claude Code' })).toBeVisible();
@@ -39,6 +42,8 @@ test.describe('Section 10 Phase 2 — onboarding wizard', () => {
 
     // Done.
     await expect(page.getByRole('heading', { name: "You're all set" })).toBeVisible();
+    await expect(page.getByText('Default view:')).toBeVisible();
+    await expect(page.getByText('Terminal')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create your first project' })).toBeEnabled();
   });
 
@@ -46,6 +51,8 @@ test.describe('Section 10 Phase 2 — onboarding wizard', () => {
     await page.goto('/?onboarding=force');
     await expect(page.getByRole('heading', { name: 'Welcome to Caisson' })).toBeVisible();
     await page.getByRole('button', { name: 'Get started' }).click();
+    await expect(page.getByRole('heading', { name: 'Choose your default view' })).toBeVisible();
+    await page.getByRole('button', { name: 'Continue' }).click();
     // Dev box already has Claude → the step reports it found (no install button).
     await expect(page.getByText(/Claude Code .*found/i)).toBeVisible({ timeout: 6000 });
     await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();

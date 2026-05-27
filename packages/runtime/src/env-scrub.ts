@@ -46,9 +46,8 @@ export function scrubIdeEnv(
     if (IDE_INTEGRATION_ENV_KEYS.has(k)) continue;
     out[k] = v;
   }
-  // FORCE_COLOR=0 keeps CC's ANSI output to the bracketed set we recognize.
-  // Higher values introduce 256-color and 24-bit sequences the stripper
-  // doesn't normalize for the gate's substring matches.
+  // Default to low-ANSI output for non-terminal consumers. Interactive xterm
+  // sessions can override this through `extra` after the IDE scrub completes.
   out.FORCE_COLOR = '0';
   for (const [k, v] of Object.entries(extra)) {
     if (v !== undefined) out[k] = v;

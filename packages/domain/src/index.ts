@@ -111,6 +111,7 @@ export type {
   AgentDispatchSettings,
   GlobalSettings,
   JsonlSettings,
+  OrchestratorSurfacePreference,
 } from './settings.ts';
 export {
   AGENT_ACK_TIMEOUT_MS_MAX,
@@ -126,6 +127,7 @@ export {
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
   normalizeJsonlRetention,
+  normalizeOrchestratorSurfacePreference,
   resolveClaudeConfigDirEnv,
   withSettingsDefaults,
 } from './settings.ts';

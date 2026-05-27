@@ -75,6 +75,7 @@ export interface SpawnLike extends EventEmitter {
   start(): void;
   awaitReady(): Promise<ReadyTimestamps>;
   send(body: string, echoTimeoutMs?: number): Promise<SendResult>;
+  writeRaw?(bytes: string): boolean;
   notifyMcpHandshake(): void;
   interrupt(): void;
   resize?(cols: number, rows: number): void;

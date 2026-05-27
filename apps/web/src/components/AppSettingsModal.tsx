@@ -183,6 +183,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     draft.bugLogTargetProjectId !== settings.bugLogTargetProjectId ||
     draft.fontScale !== settings.fontScale ||
     draft.hideCancelledStage !== settings.hideCancelledStage ||
+    draft.defaultOrchestratorSurface !== settings.defaultOrchestratorSurface ||
     draft.claudeConfigDir !== settings.claudeConfigDir;
 
   async function saveGeneral() {
@@ -196,6 +197,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         bugLogTargetProjectId: draft.bugLogTargetProjectId,
         fontScale: draft.fontScale,
         hideCancelledStage: draft.hideCancelledStage,
+        defaultOrchestratorSurface: draft.defaultOrchestratorSurface,
         claudeConfigDir: draft.claudeConfigDir,
       };
       const r = await api.patchSettings(patch);
@@ -470,6 +472,32 @@ function GeneralTab({
           <code className="flex-1 truncate border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground">
             {draft.projectsFolder}
           </code>
+        </div>
+      </FieldRow>
+
+      <FieldRow
+        label="Default orchestrator surface"
+        help="Choose what new live project sessions open to when there is no session-specific override."
+      >
+        <div className="inline-flex self-start border border-border bg-background p-0.5">
+          {(['chat', 'terminal'] as const).map((surface) => {
+            const active = draft.defaultOrchestratorSurface === surface;
+            return (
+              <button
+                key={surface}
+                type="button"
+                onClick={() => onDraftChange({ defaultOrchestratorSurface: surface })}
+                className={
+                  'px-3 py-1 text-xs font-medium capitalize ' +
+                  (active
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground')
+                }
+              >
+                {surface}
+              </button>
+            );
+          })}
         </div>
       </FieldRow>
 

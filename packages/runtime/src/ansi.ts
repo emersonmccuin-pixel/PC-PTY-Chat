@@ -18,8 +18,8 @@ export function collapseAnsiToWhitespace(s: string): string {
       .replace(/\x1b\[\d*C/g, ' ')
       // Strip remaining CSI sequences.
       .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-      // Strip OSC sequences (window titles etc).
-      .replace(/\x1b\][^\x07]*\x07/g, '')
+      // Strip OSC sequences (window titles etc), whether terminated by BEL or ST.
+      .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
       // Strip the simple two-byte ESC-set commands.
       .replace(/\x1b[>=()]/g, '')
       // Collapse all whitespace runs to a single space.
@@ -35,6 +35,6 @@ export function stripAnsiPreserveSpacing(s: string): string {
   return s
     .replace(/\x1b\[(\d*)C/g, (_, n) => ' '.repeat(parseInt(n || '1', 10)))
     .replace(/\x1b\[[\d;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b[>=()]/g, '');
 }

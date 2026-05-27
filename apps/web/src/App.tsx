@@ -193,6 +193,19 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const handleDefaultSurfaceChange = useCallback(
+    (surface: GlobalSettings['defaultOrchestratorSurface']) => {
+      setSettings((prev) =>
+        prev ? { ...prev, defaultOrchestratorSurface: surface } : prev,
+      );
+      void api
+        .patchSettings({ defaultOrchestratorSurface: surface })
+        .then((r) => setSettings(r.settings))
+        .catch(() => {});
+    },
+    [],
+  );
+
   const skipOnboarding = useCallback(
     (hardDepsMissing: boolean) => {
       setWizardDismissed(true);
@@ -228,7 +241,9 @@ export default function App() {
       <OnboardingWizard
         simMode={onboardingSimMode}
         initialProjectsFolder={settings?.projectsFolder ?? ''}
+        initialDefaultSurface={settings?.defaultOrchestratorSurface ?? 'chat'}
         onProjectsFolderChange={handleProjectsFolderChange}
+        onDefaultSurfaceChange={handleDefaultSurfaceChange}
         onComplete={finishOnboarding}
         onSkip={skipOnboarding}
       />
@@ -356,6 +371,7 @@ export default function App() {
           wsSend={ws.send}
           wsStatus={ws.status}
           applySessionTransition={ws.applySessionTransition}
+          defaultOrchestratorSurface={settings?.defaultOrchestratorSurface ?? 'chat'}
         />
       </div>
       {sessionSwitcherOpen && activeProject && (

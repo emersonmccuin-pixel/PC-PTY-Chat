@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 
 import {
   defaultGlobalSettings,
+  normalizeOrchestratorSurfacePreference,
   resolveClaudeConfigDirEnv,
   withSettingsDefaults,
 } from '../src/settings.ts';
@@ -19,10 +20,39 @@ test('defaultGlobalSettings seeds claudeConfigDir as null (inherit shell)', () =
   assert.equal(defaultGlobalSettings(DATA, HOME).claudeConfigDir, null);
 });
 
+test('defaultGlobalSettings seeds defaultOrchestratorSurface as chat', () => {
+  assert.equal(defaultGlobalSettings(DATA, HOME).defaultOrchestratorSurface, 'chat');
+});
+
 test('withSettingsDefaults backfills claudeConfigDir on a pre-Section-33 envelope', () => {
   // Old row that predates the field entirely.
   const merged = withSettingsDefaults({ telemetryOptIn: true }, DATA, HOME);
   assert.equal(merged.claudeConfigDir, null);
+});
+
+test('withSettingsDefaults backfills defaultOrchestratorSurface on old envelopes', () => {
+  const merged = withSettingsDefaults({ telemetryOptIn: true }, DATA, HOME);
+  assert.equal(merged.defaultOrchestratorSurface, 'chat');
+});
+
+test('withSettingsDefaults preserves valid defaultOrchestratorSurface values', () => {
+  assert.equal(
+    withSettingsDefaults({ defaultOrchestratorSurface: 'terminal' }, DATA, HOME)
+      .defaultOrchestratorSurface,
+    'terminal',
+  );
+  assert.equal(
+    withSettingsDefaults({ defaultOrchestratorSurface: 'chat' }, DATA, HOME)
+      .defaultOrchestratorSurface,
+    'chat',
+  );
+});
+
+test('normalizeOrchestratorSurfacePreference rejects invalid values', () => {
+  assert.equal(normalizeOrchestratorSurfacePreference('terminal', 'chat'), 'terminal');
+  assert.equal(normalizeOrchestratorSurfacePreference('chat', 'terminal'), 'chat');
+  assert.equal(normalizeOrchestratorSurfacePreference('bogus', 'terminal'), 'terminal');
+  assert.equal(normalizeOrchestratorSurfacePreference(undefined, 'chat'), 'chat');
 });
 
 test('withSettingsDefaults preserves a stored override', () => {

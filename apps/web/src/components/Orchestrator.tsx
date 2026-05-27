@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import {
   api,
+  type OrchestratorSurfacePreference,
   type OrchestratorRuntimeHealth,
   type OrchestratorRuntimeSnapshot,
   type OrchestratorSession,
@@ -32,6 +33,7 @@ interface OrchestratorProps {
   send: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
+  defaultOrchestratorSurface: OrchestratorSurfacePreference;
 }
 
 /** Section 31.3 — pick a composer placeholder hint from CC's latest
@@ -205,6 +207,7 @@ export function Orchestrator({
   send,
   wsStatus,
   applySessionTransition,
+  defaultOrchestratorSurface,
 }: OrchestratorProps) {
   // Viewing a past session? When set, the chat panel renders that session's
   // events.jsonl in read-only mode (composer hidden, "Return to live" button).
@@ -637,9 +640,12 @@ export function Orchestrator({
       currentSessionId={session?.id ?? null}
       onSend={(text, clientMessageId) => send({ type: 'send', text, clientMessageId })}
       onInterrupt={() => send({ type: 'interrupt' })}
+      onTerminalInput={(data) => send({ type: 'terminal-input', data })}
+      onTerminalResize={(cols, rows) => send({ type: 'resize', cols, rows })}
       onAskReply={(toolUseId, answer) =>
         send({ type: 'ask-reply', toolUseId, answer })
       }
+      defaultOrchestratorSurface={defaultOrchestratorSurface}
       composerHistoryKey={project.slug}
       composerHidden={composerHidden}
       composerDisabled={composerDisabled}

@@ -11,7 +11,12 @@
 import { useEffect, useMemo } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
-import type { AgentRunRecord, Project, SessionTransitionResponse } from '@/api/client';
+import type {
+  AgentRunRecord,
+  OrchestratorSurfacePreference,
+  Project,
+  SessionTransitionResponse,
+} from '@/api/client';
 import type { WsEnvelope, WsOutbound, WsStatus } from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
@@ -47,6 +52,7 @@ interface ShellProps {
   wsSend: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
   applySessionTransition: (transition: SessionTransitionResponse) => void;
+  defaultOrchestratorSurface: OrchestratorSurfacePreference;
 }
 
 export function Shell({
@@ -61,6 +67,7 @@ export function Shell({
   wsSend,
   wsStatus,
   applySessionTransition,
+  defaultOrchestratorSurface,
 }: ShellProps) {
   const activityRef = usePanelRef();
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -104,6 +111,7 @@ export function Shell({
             onCreateProject={onCreateProject}
             onProjectUpdated={onProjectUpdated}
             onProjectDeleted={onProjectDeleted}
+            defaultOrchestratorSurface={defaultOrchestratorSurface}
           />
         </Panel>
         <Separator className="w-px bg-border" />
@@ -183,6 +191,7 @@ function Center({
   onCreateProject,
   onProjectUpdated,
   onProjectDeleted,
+  defaultOrchestratorSurface,
 }: {
   activeProject: Project | null;
   projectCount: number;
@@ -193,6 +202,7 @@ function Center({
   onCreateProject: () => void;
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
+  defaultOrchestratorSurface: OrchestratorSurfacePreference;
 }) {
   const tab = useActiveCenterTab((s) => s.tab);
   const setTab = useActiveCenterTab((s) => s.setTab);
@@ -214,6 +224,7 @@ function Center({
             send={wsSend}
             wsStatus={wsStatus}
             applySessionTransition={applySessionTransition}
+            defaultOrchestratorSurface={defaultOrchestratorSurface}
           />
         ) : tab === 'workflows' ? (
           <WorkflowsList project={activeProject} events={wsEvents} send={wsSend} />

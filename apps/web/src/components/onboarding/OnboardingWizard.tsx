@@ -12,15 +12,20 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api, type PreflightReport } from '@/api/client';
+import {
+  api,
+  type OrchestratorSurfacePreference,
+  type PreflightReport,
+} from '@/api/client';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
 
-type StepId = 'welcome' | 'claude' | 'git' | 'auth' | 'projects' | 'done';
+type StepId = 'welcome' | 'experience' | 'claude' | 'git' | 'auth' | 'projects' | 'done';
 
-const STEP_ORDER: StepId[] = ['welcome', 'claude', 'git', 'auth', 'projects', 'done'];
+const STEP_ORDER: StepId[] = ['welcome', 'experience', 'claude', 'git', 'auth', 'projects', 'done'];
 
 const STEP_TITLES: Record<StepId, string> = {
   welcome: 'Welcome',
+  experience: 'Default view',
   claude: 'Claude Code',
   git: 'Git',
   auth: 'Sign in',
@@ -34,8 +39,10 @@ interface OnboardingWizardProps {
   simMode: boolean;
   /** Current default parent dir for new projects (GlobalSettings.projectsFolder). */
   initialProjectsFolder: string;
+  initialDefaultSurface: OrchestratorSurfacePreference;
   /** Persist a new projects folder (App PATCHes settings + updates its state). */
   onProjectsFolderChange: (path: string) => void;
+  onDefaultSurfaceChange: (surface: OrchestratorSurfacePreference) => void;
   /** Finish: persist the marker + drop into Create-your-first-project. */
   onComplete: () => void;
   /** Skip-for-now escape hatch: persist the marker, close, leave a banner if a
@@ -71,7 +78,9 @@ function delay(ms: number): Promise<void> {
 export function OnboardingWizard({
   simMode,
   initialProjectsFolder,
+  initialDefaultSurface,
   onProjectsFolderChange,
+  onDefaultSurfaceChange,
   onComplete,
   onSkip,
 }: OnboardingWizardProps) {
@@ -84,6 +93,8 @@ export function OnboardingWizard({
   const [log, setLog] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [projectsFolder, setProjectsFolder] = useState(initialProjectsFolder);
+  const [defaultSurface, setDefaultSurface] =
+    useState<OrchestratorSurfacePreference>(initialDefaultSurface);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const simPreflight = useRef<PreflightReport>(freshMachinePreflight());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -132,6 +143,8 @@ export function OnboardingWizard({
       switch (s) {
         case 'welcome':
           return step !== 'welcome';
+        case 'experience':
+          return step !== 'welcome' && step !== 'experience';
         case 'claude':
           return claudeOk;
         case 'git':
@@ -274,6 +287,11 @@ export function OnboardingWizard({
     onProjectsFolderChange(path);
   }
 
+  function handleDefaultSurface(surface: OrchestratorSurfacePreference) {
+    setDefaultSurface(surface);
+    onDefaultSurfaceChange(surface);
+  }
+
   const hardDepsMissing = !claudeOk || !gitOk;
 
   return (
@@ -322,6 +340,14 @@ export function OnboardingWizard({
           ) : (
             <>
               {step === 'welcome' && <WelcomeStep onNext={goNext} />}
+
+              {step === 'experience' && (
+                <ExperienceStep
+                  selected={defaultSurface}
+                  onSelect={handleDefaultSurface}
+                  onNext={goNext}
+                />
+              )}
 
               {step === 'claude' && (
                 <DependencyStep
@@ -387,6 +413,7 @@ export function OnboardingWizard({
                 <DoneStep
                   softDeps={preflight.soft}
                   hardDepsMissing={hardDepsMissing}
+                  defaultSurface={defaultSurface}
                   onComplete={onComplete}
                 />
               )}
@@ -450,6 +477,122 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
       </p>
       <div className="mt-auto pt-6">
         <PrimaryButton onClick={onNext}>Get started</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function ExperienceStep({
+  selected,
+  onSelect,
+  onNext,
+}: {
+  selected: OrchestratorSurfacePreference;
+  onSelect: (surface: OrchestratorSurfacePreference) => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col">
+      <h1 className="text-2xl font-semibold tracking-tight">Choose your default view</h1>
+      <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted-foreground">
+        Start new project sessions in the surface that matches how you prefer to
+        drive Claude Code.
+      </p>
+
+      <div className="mt-6 grid min-h-0 flex-1 grid-cols-[260px_1fr] gap-5">
+        <div className="flex flex-col gap-2">
+          <SurfaceChoice
+            surface="chat"
+            selected={selected === 'chat'}
+            title="Chat"
+            blurb="Structured conversation, clearer history, work-item links."
+            onSelect={onSelect}
+          />
+          <SurfaceChoice
+            surface="terminal"
+            selected={selected === 'terminal'}
+            title="Terminal"
+            blurb="Native Claude Code screen, slash commands, raw CLI behavior."
+            onSelect={onSelect}
+          />
+        </div>
+        <SurfacePreview surface={selected} />
+      </div>
+
+      <div className="mt-auto pt-6">
+        <PrimaryButton onClick={onNext}>Continue</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function SurfaceChoice({
+  surface,
+  selected,
+  title,
+  blurb,
+  onSelect,
+}: {
+  surface: OrchestratorSurfacePreference;
+  selected: boolean;
+  title: string;
+  blurb: string;
+  onSelect: (surface: OrchestratorSurfacePreference) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(surface)}
+      className={
+        'border px-3 py-3 text-left transition-colors ' +
+        (selected
+          ? 'border-primary bg-primary/10 text-foreground'
+          : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground')
+      }
+    >
+      <div className="text-sm font-semibold">{title}</div>
+      <div className="mt-1 text-xs leading-relaxed">{blurb}</div>
+    </button>
+  );
+}
+
+function SurfacePreview({ surface }: { surface: OrchestratorSurfacePreference }) {
+  if (surface === 'terminal') {
+    return (
+      <div className="flex min-h-0 flex-col border border-border bg-background p-3">
+        <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span>Terminal</span>
+          <span>120x30</span>
+        </div>
+        <div className="flex-1 overflow-hidden bg-[#050505] p-3 font-mono text-xs leading-5 text-[#d6f5d6]">
+          <div>$ claude</div>
+          <div className="text-[#9bd4ff]">/help</div>
+          <div>Commands</div>
+          <div>  /model  choose a model</div>
+          <div>  /memory edit memory files</div>
+          <div className="mt-2">Thinking...</div>
+          <div className="inline-block h-4 w-2 animate-pulse bg-[#d6f5d6]" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 flex-col border border-border bg-background p-3">
+      <div className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">Chat</div>
+      <div className="flex flex-1 flex-col gap-3 overflow-hidden">
+        <div className="ml-auto max-w-[70%] border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
+          Plan the first milestone.
+        </div>
+        <div className="max-w-[78%] border border-border bg-card px-3 py-2 text-xs">
+          I will map the repo, create work items, and propose the first slice.
+        </div>
+        <div className="max-w-[62%] border border-border bg-muted/30 px-3 py-2 text-xs">
+          Read docs/buildout
+        </div>
+        <div className="max-w-[72%] border border-success/50 bg-success/10 px-3 py-2 text-xs">
+          Linked TASK-12 and TASK-13.
+        </div>
       </div>
     </div>
   );
@@ -628,10 +771,12 @@ function ProjectsFolderStep({
 function DoneStep({
   softDeps,
   hardDepsMissing,
+  defaultSurface,
   onComplete,
 }: {
   softDeps: PreflightReport['soft'];
   hardDepsMissing: boolean;
+  defaultSurface: OrchestratorSurfacePreference;
   onComplete: () => void;
 }) {
   const missingSoft = softDeps.filter((d) => !d.present).map((d) => d.name);
@@ -651,6 +796,11 @@ function DoneStep({
           run code — you can add {missingSoft.length === 1 ? 'it' : 'them'} later.
         </div>
       )}
+
+      <div className="mt-4 max-w-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        Default view:{' '}
+        <span className="font-medium capitalize text-foreground">{defaultSurface}</span>
+      </div>
 
       <div className="mt-auto pt-6">
         <PrimaryButton onClick={onComplete} disabled={hardDepsMissing}>

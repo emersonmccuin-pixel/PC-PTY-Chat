@@ -49,9 +49,12 @@ export interface LowLevelSpawnInput {
   podDefinition: PodDescriptor;
   /** Absolute path to the bound worktree. Becomes the spawn cwd. */
   worktreePath: string;
-  /** Process env. We scrub IDE-integration markers and inject FORCE_COLOR=0
-   *  defensively even if the caller already scrubbed. */
+  /** Process env. We scrub IDE-integration markers defensively even if the
+   *  caller already scrubbed. */
   env: Record<string, string | undefined>;
+  /** Optional post-scrub env overrides. Used by the live terminal surface to
+   *  advertise xterm color support without reintroducing IDE integration env. */
+  envOverrides?: Record<string, string | undefined>;
   /** UUID. Caller mints up-front; we pass via --session-id (fresh) or
    *  --resume (resume). CC writes JSONL at the deterministic path. */
   ccProviderSessionId: string;
@@ -200,7 +203,7 @@ export class LowLevelSpawn extends EventEmitter {
 
     const args = buildLowLevelSpawnArgs(this.input, mcpConfigPath);
 
-    const env = scrubIdeEnv(this.input.env);
+    const env = scrubIdeEnv(this.input.env, this.input.envOverrides);
 
     this.child = pty.spawn(claudeExe, args, {
       cwd: this.input.worktreePath,
@@ -259,6 +262,19 @@ export class LowLevelSpawn extends EventEmitter {
     );
     if (result === 'ok') this.setState('running');
     return result;
+  }
+
+  /** Raw terminal input for xterm-style interactive use. This deliberately
+   *  avoids the chat send protocol: no bracketed paste wrapper, no echo ack,
+   *  no ready/busy state transition, and no prompt history accounting. */
+  writeRaw(bytes: string): boolean {
+    if (!this.child || this.state === 'exited') return false;
+    try {
+      this.child.write(bytes);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Graceful interrupt — Escape is CC's stop-streaming key in interactive

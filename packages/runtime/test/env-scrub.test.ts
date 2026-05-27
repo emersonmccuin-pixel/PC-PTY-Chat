@@ -26,7 +26,7 @@ test('scrubs every key in IDE_INTEGRATION_ENV_KEYS', () => {
   assert.equal(out.USER, 'me');
 });
 
-test('always sets FORCE_COLOR=0', () => {
+test('defaults FORCE_COLOR to 0', () => {
   const out = scrubIdeEnv({});
   assert.equal(out.FORCE_COLOR, '0');
 });
@@ -34,11 +34,12 @@ test('always sets FORCE_COLOR=0', () => {
 test('extra env wins over base env, FORCE_COLOR included', () => {
   const out = scrubIdeEnv(
     { FOO: 'base', PATH: '/usr/bin' },
-    { FOO: 'override', PC_SESSION_ID: 'abc' },
+    { FOO: 'override', PC_SESSION_ID: 'abc', FORCE_COLOR: '3' },
   );
   assert.equal(out.FOO, 'override');
   assert.equal(out.PATH, '/usr/bin');
   assert.equal(out.PC_SESSION_ID, 'abc');
+  assert.equal(out.FORCE_COLOR, '3');
 });
 
 test('undefined values are dropped from both base and extra', () => {

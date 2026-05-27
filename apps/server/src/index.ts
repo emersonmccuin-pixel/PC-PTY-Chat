@@ -18,7 +18,12 @@ import type {
   ULID,
   WorkItemType,
 } from '@pc/domain';
-import { isWorkItemType, resolveClaudeConfigDirEnv, withSettingsDefaults } from '@pc/domain';
+import {
+  isWorkItemType,
+  normalizeOrchestratorSurfacePreference,
+  resolveClaudeConfigDirEnv,
+  withSettingsDefaults,
+} from '@pc/domain';
 import {
   claudeConfigDir,
   jsonlPathFor,
@@ -33,6 +38,7 @@ import {
   enqueueOrchestratorSend,
   getOrchestratorSendQueueRow,
   getActiveOrchestratorSession,
+  getOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
   insertPostTurnSummary,
@@ -130,6 +136,11 @@ import {
   readMemoryFile,
   writeMemoryFile,
 } from './services/memory-files.ts';
+import {
+  forwardTerminalInput,
+  normalizeTerminalTranscriptTailBytes,
+  readTerminalTranscriptTail,
+} from './services/terminal-mode.ts';
 import {
   browseFolder,
   BrowseError,
@@ -832,9 +843,16 @@ function attachPtyHandlers(
   const flag = session as unknown as { __pcHandlersAttached?: boolean };
   if (flag.__pcHandlersAttached) return;
   const attachedSessionId = getActiveOrchestratorSession(projectId)?.id ?? null;
+  let terminalSeq = 0;
   session.on('raw', (text: string) => {
     noteRuntimeActivity(projectId);
-    broadcastTo(projectId, { type: 'raw', text });
+    terminalSeq += 1;
+    broadcastTo(projectId, {
+      type: 'raw',
+      sessionId: attachedSessionId,
+      terminalSeq,
+      text,
+    });
   });
   session.on('state', (state: string) => {
     noteRuntimeActivity(projectId);
@@ -1156,6 +1174,10 @@ app.patch('/api/settings', async (c) => {
           : typeof body.onboardingCompletedAt === 'string' && body.onboardingCompletedAt.trim()
             ? body.onboardingCompletedAt.trim()
             : null,
+      defaultOrchestratorSurface: normalizeOrchestratorSurfacePreference(
+        (body as { defaultOrchestratorSurface?: unknown }).defaultOrchestratorSurface,
+        current.defaultOrchestratorSurface,
+      ),
       projectsFolder:
         typeof body.projectsFolder === 'string' && body.projectsFolder.trim()
           ? body.projectsFolder.trim()
@@ -1760,6 +1782,24 @@ app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
     highWaterSeq: replay.highWaterSeq,
     events: replay.events,
   });
+});
+
+/** Tail of the raw PTY transcript for the terminal renderer. This is a debug
+ *  terminal surface only; chat replay remains jsonl-events.jsonl. */
+app.get('/api/projects/:projectId/sessions/:sessionId/terminal-transcript', (c) => {
+  const id = c.req.param('projectId') as ULID;
+  const sessionId = c.req.param('sessionId') as ULID;
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const result = readTerminalTranscriptTail({
+    projectId: id,
+    sessionId,
+    session: getOrchestratorSession(sessionId),
+    runtime,
+    tailBytes: normalizeTerminalTranscriptTailBytes(c.req.query('tailBytes')),
+  });
+  if (!result.ok) return c.json({ ok: false, error: result.error }, result.status);
+  return c.json(result);
 });
 
 /** Start a fresh session: end the active row, kill the PTY, return the empty
@@ -3994,7 +4034,14 @@ wss.on('connection', (ws, req) => {
   startOrchestratorPtyInBackground(projectId, runtime);
 
   ws.on('message', async (raw) => {
-    let msg: { type?: string; text?: string; clientMessageId?: unknown; cols?: number; rows?: number };
+    let msg: {
+      type?: string;
+      text?: string;
+      data?: unknown;
+      clientMessageId?: unknown;
+      cols?: number;
+      rows?: number;
+    };
     try {
       msg = JSON.parse(raw.toString());
     } catch {
@@ -4109,11 +4156,23 @@ wss.on('connection', (ws, req) => {
       case 'interrupt':
         runtime.ptySession()?.interrupt();
         break;
+      case 'terminal-input': {
+        const result = forwardTerminalInput(runtime, msg.data);
+        if (!result.ok && ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({
+            projectId,
+            type: 'terminal-input-ack',
+            ok: false,
+            status: result.status,
+            error: result.error,
+          }));
+        }
+        break;
+      }
       case 'resize':
         {
-          const live = runtime.ptySession();
-          if (live && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-            live.resize(msg.cols, msg.rows);
+          if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+            runtime.resizeOrchestrator(msg.cols, msg.rows);
           }
         }
         break;
