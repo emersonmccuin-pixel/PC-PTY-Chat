@@ -32,12 +32,8 @@ import {
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
-  cancelOpenOrchestratorSendsForSession,
-  cancelQueuedOrchestratorSend,
   enqueueOrchestratorSend,
-  getOrchestratorSendQueueRow,
   getActiveOrchestratorSession,
-  getOrchestratorSession,
   dismissFailedRun,
   getAgentRunRow,
   insertPostTurnSummary,
@@ -46,7 +42,6 @@ import {
   getGlobalSettings,
   getProjectById,
   listFailedRunDismissalsForProject,
-  listOrchestratorSessionsForProject,
   listProjects,
   listWorkItems as dbListWorkItems,
   newId,
@@ -57,7 +52,6 @@ import {
   setGlobalSettings,
   hasOpenOrchestratorSendsForSession,
   recordDeliveredOrchestratorSend,
-  retryFailedOrchestratorSend,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
@@ -132,8 +126,6 @@ import {
 } from './services/memory-files.ts';
 import {
   forwardTerminalInput,
-  normalizeTerminalTranscriptTailBytes,
-  readTerminalTranscriptTail,
 } from './services/terminal-mode.ts';
 import {
   browseFolder,
@@ -152,6 +144,7 @@ import { ProjectCreate, type CreateProjectMode } from './services/project-create
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
+import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -1373,6 +1366,16 @@ registerPodRoutes(app, {
   },
 });
 
+registerRuntimeHostRoutes(app, {
+  resolveProject,
+  runtimeSnapshotPayload: (projectId, runtime) => runtimeSnapshots.payload(projectId, runtime),
+  broadcastTo,
+  broadcastRuntimeSnapshot,
+  broadcastSendQueueSnapshot,
+  ensureOrchestratorPty,
+  startOrchestratorPtyInBackground,
+});
+
 /** Custom commands for the Abilities tray. Scans `.claude/commands/*.md` in
  *  both project and `~/.claude/commands/`. Project shadows user on name
  *  collision (CC parity). */
@@ -1422,234 +1425,6 @@ app.get('/api/projects/:projectId', (c) => {
   const project = getProjectById(runtime.project.id);
   if (!project) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
   return c.json(project);
-});
-
-/** Active orchestrator session for the project (the one the chat is bound to).
- *  Returns null if no session exists yet — first ensurePty mints one. */
-app.get('/api/projects/:projectId/session', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const session = getActiveOrchestratorSession(id);
-  return c.json({ ok: true, session });
-});
-
-/** Current orchestrator runtime snapshot. This endpoint is intentionally
- *  no-spawn: it reports whether Claude is live, busy, exited, respawnable, or
- *  inaccessible without creating a child process as a side effect. */
-app.get('/api/projects/:projectId/orchestrator/runtime', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ ok: true, runtime: runtimeSnapshots.payload(id, runtime) });
-});
-
-/** Smoke-only PTY control. Guarded by a header and the pc-smoke project prefix
- *  so browser tests can pin process-exit recovery without exposing a normal
- *  destructive control for user projects. */
-app.post('/api/projects/:projectId/orchestrator/smoke/kill-pty', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  if (
-    c.req.header('x-pc-smoke-control') !== '1' ||
-    !runtime.project.slug.startsWith('pc-smoke')
-  ) {
-    return c.json({ ok: false, error: 'smoke control is not available' }, 404);
-  }
-  const killed = runtime.killOrchestratorForSmoke();
-  broadcastRuntimeSnapshot(id, runtime);
-  return c.json({
-    ok: true,
-    killed,
-    runtime: runtimeSnapshots.payload(id, runtime),
-  });
-});
-
-/** Full history of orchestrator sessions for the project (most recent first).
- *  Feeds the "previous sessions" rail tab. */
-app.get('/api/projects/:projectId/sessions', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ ok: true, sessions: listOrchestratorSessionsForProject(id) });
-});
-
-/** Replay a specific session's normalized event log. Used by the Sessions
- *  tab to render past chats in read-only mode. Returns envelope-shape
- *  objects so the client can demux on `type` (jsonl vs legacy hook event). */
-app.get('/api/projects/:projectId/sessions/:sessionId/events', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const sessionId = c.req.param('sessionId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const replay = loadSessionReplayCheckpoint(runtime.sessionDataPath(sessionId), sessionId);
-  return c.json({
-    ok: true,
-    sessionId: replay.sessionId,
-    highWaterSeq: replay.highWaterSeq,
-    events: replay.events,
-  });
-});
-
-/** Tail of the raw PTY transcript for the terminal renderer. This is a debug
- *  terminal surface only; chat replay remains jsonl-events.jsonl. */
-app.get('/api/projects/:projectId/sessions/:sessionId/terminal-transcript', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const sessionId = c.req.param('sessionId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const persistedSession = getOrchestratorSession(sessionId);
-  const transientSession =
-    !persistedSession && runtime.hasLiveTransientSession(sessionId)
-      ? { id: sessionId, projectId: id }
-      : null;
-  const result = readTerminalTranscriptTail({
-    projectId: id,
-    sessionId,
-    session: persistedSession ?? transientSession,
-    runtime,
-    tailBytes: normalizeTerminalTranscriptTailBytes(c.req.query('tailBytes')),
-  });
-  if (!result.ok) return c.json({ ok: false, error: result.error }, result.status);
-  return c.json(result);
-});
-
-/** Start a fresh session: end the active row, kill the PTY, return the empty
- *  replay checkpoint immediately, then respawn Claude in the background. */
-app.post('/api/projects/:projectId/sessions/new', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const previous = getActiveOrchestratorSession(id);
-  if (previous) {
-    cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by new session');
-    broadcastSendQueueSnapshot(id, previous.id);
-  }
-  const session = runtime.startNewSession();
-  const replay = loadSessionReplay(runtime, session.id);
-  // Tell every subscriber to clear its local chat state; the next replay will
-  // be empty (we just wiped events.jsonl) so the panel starts blank.
-  broadcastTo(id, { type: 'session-changed', transition: 'new-session', session });
-  broadcastSessionReplay(id, replay);
-  broadcastSendQueueSnapshot(id, session.id);
-  startOrchestratorPtyInBackground(id, runtime);
-  return c.json({
-    ok: true,
-    transition: 'new-session',
-    session,
-    replay: replay.events,
-    highWaterSeq: replay.highWaterSeq,
-  });
-});
-
-/** Resume a past orchestrator session. Re-activates the target row, respawns
- *  the PTY with --resume so claude.exe loads the prior context, then sends an
- *  atomic replay snapshot so the chat panel re-populates immediately. Live
- *  JSONL tailing starts at the persisted cursor; replay comes from PC's
- *  durable per-session event log. */
-app.post('/api/projects/:projectId/sessions/:targetId/resume', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const targetId = c.req.param('targetId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const previous = getActiveOrchestratorSession(id);
-  let session;
-  try {
-    session = runtime.resumeSession(targetId);
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 400);
-  }
-  if (previous && previous.id !== session.id) {
-    cancelOpenOrchestratorSendsForSession(previous.id, 'session replaced by resume');
-    broadcastSendQueueSnapshot(id, previous.id);
-  }
-  const replay = loadSessionReplay(runtime, session.id);
-  broadcastTo(id, { type: 'session-changed', transition: 'resume-session', session });
-  broadcastSessionReplay(id, replay);
-  broadcastSendQueueSnapshot(id, session.id);
-  startOrchestratorPtyInBackground(id, runtime);
-  return c.json({
-    ok: true,
-    transition: 'resume-session',
-    session,
-    replay: replay.events,
-    highWaterSeq: replay.highWaterSeq,
-  });
-});
-
-app.post('/api/projects/:projectId/send-queue/:sendId/cancel', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const sendId = c.req.param('sendId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const active = getActiveOrchestratorSession(id);
-  if (!active) return c.json({ ok: false, error: 'No active orchestrator session' }, 404);
-
-  const existing = getOrchestratorSendQueueRow(sendId);
-  if (!existing || existing.projectId !== id || existing.sessionId !== active.id) {
-    return c.json({ ok: false, error: 'Queued prompt not found' }, 404);
-  }
-
-  const cancelled = cancelQueuedOrchestratorSend(sendId, active.id, 'user cancelled');
-  if (!cancelled) {
-    return c.json({
-      ok: false,
-      error: `Queued prompt is already ${existing.status}`,
-    }, 409);
-  }
-
-  broadcastSendQueueSnapshot(id, active.id);
-  return c.json({ ok: true, item: publicSendQueueItem(cancelled) });
-});
-
-app.post('/api/projects/:projectId/send-queue/:sendId/retry', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const sendId = c.req.param('sendId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const active = getActiveOrchestratorSession(id);
-  if (!active) return c.json({ ok: false, error: 'No active orchestrator session' }, 404);
-
-  const existing = getOrchestratorSendQueueRow(sendId);
-  if (!existing || existing.projectId !== id || existing.sessionId !== active.id) {
-    return c.json({ ok: false, error: 'Queued prompt not found' }, 404);
-  }
-  if (existing.status !== 'failed') {
-    return c.json({
-      ok: false,
-      error: `Queued prompt is ${existing.status}, not failed`,
-    }, 409);
-  }
-
-  let live = runtime.ptySession();
-  if (!live) {
-    try {
-      live = ensureOrchestratorPty(id, runtime);
-    } catch (err) {
-      return c.json({
-        ok: false,
-        error: err instanceof Error ? err.message : 'Failed to restart Claude',
-      }, 409);
-    }
-  }
-
-  const state = live.getState();
-  const hasBacklog = hasOpenOrchestratorSendsForSession(active.id);
-  const retried = retryFailedOrchestratorSend(
-    sendId,
-    active.id,
-    queuedStatusForState(state, hasBacklog),
-  );
-  if (!retried) {
-    return c.json({ ok: false, error: 'Failed prompt could not be retried' }, 409);
-  }
-
-  broadcastSendQueueSnapshot(id, active.id);
-  if (state === 'ready') {
-    deliverNextQueuedPrompt(id, runtime, broadcastSendQueueSnapshot);
-  }
-  return c.json({ ok: true, item: publicSendQueueItem(retried) });
 });
 
 function loadSessionReplay(
