@@ -48,13 +48,17 @@ function extractSnapshot(input, pcSessionId) {
       fiveHour: fiveHour
         ? {
             usedPercentage: Number(fiveHour.used_percentage) || 0,
-            resetsAt: String(fiveHour.resets_at || ''),
+            resetsAt: fiveHour.resets_at
+              ? new Date(Number(fiveHour.resets_at) * 1000).toISOString()
+              : '',
           }
         : null,
       sevenDay: sevenDay
         ? {
             usedPercentage: Number(sevenDay.used_percentage) || 0,
-            resetsAt: String(sevenDay.resets_at || ''),
+            resetsAt: sevenDay.resets_at
+              ? new Date(Number(sevenDay.resets_at) * 1000).toISOString()
+              : '',
           }
         : null,
     },
