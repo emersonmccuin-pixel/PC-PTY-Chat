@@ -6,7 +6,14 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
-Current status: Phase 0 has started. The first implemented slice adds WebSocket liveness detection, transient-session start-state snapshots, and shared gating for modal terminal input so "Starting..." does not also mean raw terminal input is accepted.
+Current status: Phase 0 has started.
+
+Implemented slices:
+
+- WebSocket liveness detection and reconnect on heartbeat timeout.
+- Transient-session start-state snapshots for agent designer, workflow builder, and setup wizard.
+- Shared terminal writability gating so modal terminal input is disabled until the transient session is ready.
+- Orchestrator send-queue acknowledgement/drain hardening, including a small `orchestrator-send-queue-delivery` service boundary.
 
 ## Executive Decision
 
@@ -66,12 +73,18 @@ These files are not just large; they cross feature boundaries. That is why chat,
 
 ### 1. Chat and WebSocket stability
 
-Evidence:
+Original evidence:
 
 - `apps/web/src/hooks/use-project-ws.ts` reconnects only on browser `close` events. There is no ping/pong heartbeat or application-level "dead socket" detection.
 - `apps/server/src/index.ts` creates the WebSocket server at `/ws` and does not install a heartbeat loop.
 - `ProjectWebSocketHub` only checks `readyState === OPEN` at send time. That is not enough for half-open connections after sleep/wake, idle network drops, or proxy timeout.
 - The client `send()` returns true after `ws.send()` succeeds locally. If the connection is half-open, the UI can believe a send happened while no server message is processed.
+
+Phase 0 update:
+
+- Implemented client heartbeat pings and server pong replies.
+- Both active-project and all-project WebSocket hooks now close and reconnect when inbound traffic goes silent past the timeout.
+- Remaining work is observability: expose last heartbeat, reconnect count, last replay high-water seq, and last inbound envelope in the UI/status surface.
 
 Likely symptom match:
 
@@ -86,13 +99,13 @@ The existing chat path is not naive. It already has reconnect backoff, session r
 
 Primary fix:
 
-- Add server ping/client pong or client ping/server ack heartbeat.
-- Treat missed heartbeats as a hard close and reconnect.
+- Add server ping/client pong or client ping/server ack heartbeat. Done.
+- Treat missed heartbeats as a hard close and reconnect. Done.
 - Add visible runtime diagnostic fields: last inbound WS envelope, last heartbeat, reconnect count, last replay high-water seq.
 
 Secondary suspect:
 
-- `deliverNextQueuedPromptOnce()` drains one queued prompt and does not loop. It is triggered on a `ready` transition and on some retry/send paths. If the PTY stays ready after delivering one queued item, backlog can stall until another state transition. Confirm with a send-queue trace before changing behavior.
+- `deliverNextQueuedPromptOnce()` intentionally delivers one queued prompt per ready turn. The real bug risk was a race where the ready transition could arrive before JSONL confirmation cleared the previous delivered item. Phase 0 now retries delivery after JSONL confirmation if the runtime is already ready, and the behavior is covered by `apps/server/test/orchestrator-send-queue-delivery.test.ts`.
 
 ### 2. Terminal mode is wired as a debug write path, not a governed runtime surface
 
@@ -116,7 +129,7 @@ Primary fix:
 
 - Add a runtime capability contract: `canAcceptChatInput`, `canAcceptTerminalInput`, `canResize`, `canInterrupt`, `stateLabel`.
 - Feed both composer and xterm from that same contract.
-- For transient sessions, default `canAcceptTerminalInput` to false until the current session reports `ready`.
+- For transient sessions, default `canAcceptTerminalInput` to false until the current session reports `ready`. Initial modal gating is implemented through `terminalWritable`; the fuller named capability object is still future boundary work.
 
 ### 3. Transient modal sessions can miss the `ready` state
 
@@ -470,8 +483,8 @@ Minimum tests to add before deeper refactors:
 
 ## Immediate Next Actions
 
-1. Implement Phase 0 heartbeat and transient modal state fixes.
-2. Create `apps/server/src/features/runtime-host` and move runtime snapshot/send-queue/WS orchestration there without behavior changes.
+1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
+2. Continue carving runtime-host behavior out of `apps/server/src/index.ts`; send-queue delivery has moved first, runtime snapshot and WS orchestration remain.
 3. Create `apps/server/src/features/transient-sessions` and unify agent-designer/workflow-builder/setup-wizard handling.
 4. Split MCP tools enough to make the tool catalog drift explicit and fix the current missing catalog entries or mark them deprecated/internal.
 5. Only then start deeper chat UI decomposition.

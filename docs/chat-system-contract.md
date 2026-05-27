@@ -198,11 +198,11 @@ Use these questions to audit the current implementation:
 
 ## Immediate Work Sequence
 
-1. Add instrumentation for message ids, queue state, WebSocket liveness, PTY state, JSONL cursor, and replay sequence.
-2. Add WebSocket heartbeat/dead-socket detection.
-3. Fix transient modal state snapshots so "Starting..." cannot get stuck after the process is ready.
-4. Gate terminal input from the same runtime capability contract as chat input.
-5. Confirm send queue drains in order across multiple queued messages.
+1. Add instrumentation for message ids, queue state, WebSocket liveness, PTY state, JSONL cursor, and replay sequence. Partially done; queue/runtime fields exist, heartbeat visibility still needs UI diagnostics.
+2. Add WebSocket heartbeat/dead-socket detection. Done.
+3. Fix transient modal state snapshots so "Starting..." cannot get stuck after the process is ready. Done.
+4. Gate terminal input from the same runtime capability contract as chat input. Partially done for transient modals; fuller capability object remains.
+5. Confirm send queue drains in order across multiple queued messages. Started; late-confirmation drain is tested.
 6. Add replay/backfill tests for refresh, reconnect, and session switch.
 7. Only then decompose the UI components and server modules.
 
