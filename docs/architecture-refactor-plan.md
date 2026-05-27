@@ -25,6 +25,7 @@ Implemented slices:
 - Filesystem browse/probe and project file tree/preview routes extracted into `apps/server/src/features/files/routes.ts`, with focused tests for folder browsing, mkdir/probe envelopes, project tree filtering, preview classification, and validation/error shapes.
 - Settings, Claude profile, preflight, installer, and onboarding auth routes extracted into `apps/server/src/features/settings-onboarding/routes.ts`, with focused tests for settings normalization, effective data-dir behavior, injected preflight/install/auth services, and envelope preservation.
 - Work item CRUD, legacy move/update compatibility routes, agent-contract create/approve/reject routes, attachments, stages, and field schemas extracted into `apps/server/src/features/work-items/routes.ts`, with focused tests for legacy/paginated envelopes, versioned mutations, stage orphan handling, forced reassignment, attachment envelopes, and field-schema broadcasts.
+- Agent run active-list/cancel, invoke, continue, by-dispatcher listing, and pending-ask create/answer/cancel routes extracted into `apps/server/src/features/agent-runs/routes.ts`, with focused tests for activity-panel envelopes, cancellation, dispatch validation/delegation, continuation ownership, list summaries, and pending-ask status mapping.
 - MCP/tool catalog drift hardening: the pod allowlist drift test now covers every stock pod plus the orchestrator, `pc_node_failed` is re-registered, and the workflow/tool catalog entries needed by current pod allowlists are present.
 
 ## Executive Decision
@@ -497,7 +498,7 @@ Minimum tests to add before deeper refactors:
 
 1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
 2. Split MCP tools into feature modules so tool definitions, handlers, catalog metadata, and lifecycle flags stay together.
-3. Continue Phase 1 route extraction from `apps/server/src/index.ts`: agent-runs remain.
+3. Continue Phase 1 route extraction from `apps/server/src/index.ts`: remaining mixed utility/worktree/workflow-compat/statusline routes remain.
 4. Only then start deeper chat UI decomposition.
 
 ## Non-Goals
