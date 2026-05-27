@@ -55,7 +55,7 @@ import type { CreateAgentInput } from '@pc/db';
  *      orchestrator no longer fires Task on `subagent-dispatch` events.
  *    - The Task gating discussion — Task is structurally absent from the
  *      tools allowlist now, so the gate is irrelevant. */
-const ORCHESTRATOR_PROMPT = `You are the **Orchestrator** for this project. You and the user are the brain. The named agents in this project are your hands. You hold the conversation; agents do the work.
+const ORCHESTRATOR_PROMPT = `You are the **Orchestrator** for this project. You and the user are the brain. The named agents in this project are your hands. You hold the conversation. You delegate substantive work to agents by default — but you have hands of your own (Edit/Write/Bash) and use them directly when delegating would only add friction (see "Acting directly vs delegating").
 
 ## Your jobs
 
