@@ -27,7 +27,6 @@ import {
 import {
   claudeConfigDir,
   setConfiguredClaudeExe,
-  type JsonlReplayMeta,
 } from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
@@ -134,6 +133,7 @@ import { ProjectCreate, type CreateProjectMode } from './services/project-create
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
+import { createRuntimeHostPtyController } from './features/runtime-host/pty-handlers.ts';
 import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
 import { sendRuntimeHostConnectSnapshot } from './features/runtime-host/websocket-connect.ts';
 import { handleRuntimeHostWsMessage } from './features/runtime-host/websocket-message.ts';
@@ -291,58 +291,24 @@ function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {
   if (runtime) broadcastRuntimeSnapshot(projectId, runtime);
 }
 
-function replayMetaPayload(replay: JsonlReplayMeta | undefined): {
-  id?: string;
-  sessionId?: string;
-  seq?: number;
-  kind?: string;
-  source?: JsonlReplayMeta['source'];
-} {
-  if (!replay) return {};
-  return {
-    id: replay.id,
-    sessionId: replay.sessionId,
-    seq: replay.seq,
-    kind: replay.kind,
-    source: replay.source,
-  };
-}
-
-function ensureOrchestratorPty(
-  projectId: ULID,
-  runtime: ProjectRuntime,
-): ReturnType<ProjectRuntime['ensurePty']> {
-  try {
-    const pty = runtime.ensurePty();
-    runtimeSnapshots.clearFailure(projectId);
-    if (pty.getState() === 'ready') runtimeSnapshots.clearExit(projectId);
-    runtimeSnapshots.noteActivity(projectId);
-    attachPtyHandlers(projectId, runtime, pty);
-    broadcastRuntimeSnapshot(projectId, runtime);
-    return pty;
-  } catch (err) {
-    runtimeSnapshots.noteFailure(projectId, err);
-    broadcastRuntimeSnapshot(projectId, runtime);
-    throw err;
-  }
-}
-
-function startOrchestratorPtyInBackground(
-  projectId: ULID,
-  runtime: ProjectRuntime,
-): void {
-  setImmediate(() => {
-    try {
-      ensureOrchestratorPty(projectId, runtime);
-    } catch (err) {
-      console.error(
-        `[pc] background orchestrator start failed for ${projectId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  });
-}
+const {
+  attachPtyHandlers,
+  ensureOrchestratorPty,
+  startOrchestratorPtyInBackground,
+} = createRuntimeHostPtyController<ReturnType<ProjectRuntime['ensurePty']>, ProjectRuntime>({
+  runtimeSnapshots,
+  getActiveOrchestratorSession,
+  setOrchestratorSessionJsonlCursor,
+  setOrchestratorSessionJsonlPath,
+  broadcastTo,
+  broadcastRuntimeSnapshot,
+  broadcastSendQueueSnapshot,
+  deliverNextQueuedPrompt,
+  maybeAdvanceSendQueueConfirmation,
+  maybeSetSessionTitle,
+  maybeApplyAiTitle,
+  maybePersistPostTurnSummary,
+});
 
 const projectScaffold = new ProjectScaffold({
   trunkPath: ROOT,
@@ -505,119 +471,6 @@ const pendingAsks = new Map<string, (answer: string) => void>();
 /** Look up the runtime for `projectId`. Returns null if unknown. */
 function resolveProject(projectId: string): ProjectRuntime | null {
   return projectRegistry.ensure(projectId as ULID);
-}
-
-/**
- * Attach the per-PtySession event forwarders. Idempotent per session instance
- * via a flag on the session itself — re-binding on every WS reconnect would
- * leak listeners. Called from both the WS connect path and the new-session
- * endpoint (which creates a fresh PtySession instance after wiping state).
- */
-function attachPtyHandlers(
-  projectId: ULID,
-  runtime: ProjectRuntime,
-  session: ReturnType<ProjectRuntime['ensurePty']>,
-): void {
-  const flag = session as unknown as { __pcHandlersAttached?: boolean };
-  if (flag.__pcHandlersAttached) return;
-  const attachedSessionId = getActiveOrchestratorSession(projectId)?.id ?? null;
-  let terminalSeq = 0;
-  session.on('raw', (text: string) => {
-    runtimeSnapshots.noteActivity(projectId);
-    terminalSeq += 1;
-    broadcastTo(projectId, {
-      type: 'raw',
-      sessionId: attachedSessionId,
-      terminalSeq,
-      text,
-    });
-  });
-  session.on('state', (state: string) => {
-    runtimeSnapshots.noteActivity(projectId);
-    if (state === 'ready') {
-      runtimeSnapshots.clearFailure(projectId);
-      runtimeSnapshots.clearExit(projectId);
-    }
-    broadcastTo(projectId, { type: 'state', state });
-    broadcastRuntimeSnapshot(projectId, runtime);
-    if (state === 'ready') {
-      deliverNextQueuedPrompt(projectId, runtime, broadcastSendQueueSnapshot);
-    }
-  });
-  session.on('turn-end', () => {
-    // 19.12 — v1 `onTurnEnd` removed (it swept in-flight v1 subagent nodes
-    // marked still-running across an orchestrator turn boundary). v2 DAG
-    // runs are self-contained with their own idle + wall-clock timeouts.
-    runtimeSnapshots.noteActivity(projectId);
-    broadcastTo(projectId, { type: 'turn-end' });
-    broadcastRuntimeSnapshot(projectId, runtime);
-  });
-  session.on('event', (event: unknown) => {
-    runtimeSnapshots.noteActivity(projectId);
-    broadcastTo(projectId, { type: 'event', event });
-    broadcastRuntimeSnapshot(projectId, runtime);
-  });
-  session.on('error', (err: unknown) => {
-    runtimeSnapshots.noteFailure(projectId, err);
-    broadcastRuntimeSnapshot(projectId, runtime);
-  });
-  session.on('failed', (reason: string) => {
-    runtimeSnapshots.noteFailure(projectId, reason);
-    broadcastRuntimeSnapshot(projectId, runtime);
-  });
-  // JSONL tailer events — Section 0 canonical signal for turn lifecycle +
-  // tool calls. Distinct WS envelope kind from the hook-driven `event` stream
-  // so the chat panel can merge them without ambiguity.
-  session.on('jsonl-event', (event: unknown, replay?: JsonlReplayMeta) => {
-    runtimeSnapshots.noteJsonl(projectId);
-    broadcastTo(projectId, { type: 'jsonl', event, ...replayMetaPayload(replay) });
-    if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
-      setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
-    }
-    maybeAdvanceSendQueueConfirmation(
-      projectId,
-      attachedSessionId,
-      event,
-      runtime,
-      broadcastSendQueueSnapshot,
-    );
-    broadcastRuntimeSnapshot(projectId, runtime);
-    // Section 31.12 — post-turn summary log. CC's `system:post_turn_summary`
-    // row carries rich per-turn metadata; we log every one to the DB. Surface
-    // design is deferred per the buildout — collect data first.
-    maybePersistPostTurnSummary(projectId, event);
-    // Section 31.9 — first-prompt heuristic + CC's `ai-title` envelope both
-    // resolve the session-name surface. Heuristic fires on the first
-    // `jsonl-user` and sticks; ai-title (when it fires) overwrites with the
-    // refining model-generated name. Empirically, ai-title NEVER fires under
-    // `--agent <name>` spawns (the entire orchestrator + every PM pod), so
-    // the heuristic is the only path that lands a title for PC sessions.
-    // See the implementation notes (2026-05-25 Session 36) for the bisect.
-    maybeSetSessionTitle(projectId, event);
-    maybeApplyAiTitle(projectId, event);
-  });
-  session.on('jsonl-path-resolved', (jsonlPath: string) => {
-    const active = getActiveOrchestratorSession(projectId);
-    if (active) setOrchestratorSessionJsonlPath(active.id, jsonlPath);
-    runtimeSnapshots.noteActivity(projectId);
-    broadcastRuntimeSnapshot(projectId, runtime);
-  });
-  session.on('jsonl-cursor-tick', (_path: string, cursor: number) => {
-    const active = getActiveOrchestratorSession(projectId);
-    if (active) setOrchestratorSessionJsonlCursor(active.id, cursor);
-  });
-  session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    runtimeSnapshots.noteExit(projectId, code, signal);
-    broadcastTo(projectId, { type: 'exit', code, signal });
-    broadcastRuntimeSnapshot(projectId, runtime);
-    console.log(`[pc] ${projectId} session exited code=${code} signal=${signal}`);
-  });
-  const currentJsonlPath = session.getJsonlPath();
-  if (currentJsonlPath) {
-    const active = getActiveOrchestratorSession(projectId);
-    if (active) setOrchestratorSessionJsonlPath(active.id, currentJsonlPath);
-  }
-  flag.__pcHandlersAttached = true;
 }
 
 /**
