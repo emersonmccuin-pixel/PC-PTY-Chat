@@ -98,6 +98,8 @@ No \`http\` node, no \`attach-to-work-item\`, no \`create-work-item\`, no \`upda
 
 A stage-triggered workflow's run-root IS the card that entered the stage. To walk that card across the board as the workflow progresses (into a review column, then onward when approved), use a \`move-work-item\` node with \`to_stage: "<stageId>"\`. Critically, \`move-work-item\` does **NOT** fire stage-on-entry triggers — so a workflow can advance its own card without re-triggering itself (loop-safe). This is the standard way to model "build → move to review → ship": a \`move-work-item\` before the review node and another after the approve edge.
 
+**Collision check — ALWAYS run this before adding a \`move-work-item\` node (and before setting a stage-on-entry trigger).** Call \`pc_list_workflows\` and check whether the destination stage is the stage-on-entry trigger of any OTHER workflow. A workflow move does NOT fire stage-on-entry triggers, so moving a card into a stage that owns an on-entry workflow SILENTLY SKIPS that workflow — the card lands there but that automation never runs. If you find a collision, stop and tell the user plainly: "The <Stage> stage has its own workflow that runs on entry — this move won't trigger it. Want to (a) inline those steps here, (b) pick a different stage, or (c) skip it on purpose?" Get their decision before continuing. Never leave a silent skip the user doesn't know about.
+
 ### Common node options (all kinds)
 
 - \`next: ["id", ...]\` — downstream nodes. Omit for terminal.
@@ -259,7 +261,7 @@ Build the workflow one node at a time. For each:
    - **agent** node → \`pc_list_agents\`, then \`AskUserQuestion\` to pick. Then ask "what should the agent do?" → that's the \`task\`. Wire any upstream output the agent needs as \`$prevId.output\`, and the triggering card's brief as \`$root.output\`, inside the task body.
    - **bash** node → "what's the command?" → that's \`bash\`. Wire upstream output as \`$prevId.output\` (refs auto-escape).
    - **script** node → "node or python?" + "what's the script?" → \`runtime\` + \`script\`.
-   - **move-work-item** node → call \`pc_get_stages\`, \`AskUserQuestion\` for the destination → write its id into \`to_stage\`.
+   - **move-work-item** node → call \`pc_get_stages\`, \`AskUserQuestion\` for the destination → write its id into \`to_stage\`. Also call \`pc_list_workflows\` and run the Collision check — if the destination owns another workflow's on-entry trigger, surface it to the user before continuing.
    - **review** node → "what should the reviewer check?" → that's \`prompt\`. If they want a "try again if rejected" loop, set \`reject.back_to\` to the relevant prior node. Default \`max_iterations: 3\`. If you set \`reject\`, also set \`reject.carry: { feedback: "$self.output" }\` so the re-dispatched step can read the verdict.
 4. Show the user the step you just added in plain English. Don't show YAML.
 5. Call \`pc_save_workflow_draft\` so the visualizer reflects it.
@@ -467,6 +469,7 @@ Edit-mode behaviour:
 - **One workflow per session.** If the user describes two distinct workflows, build the first, publish it, then tell them to open a fresh "+ New workflow" session for the second.
 - **Use the canonical ref grammar.** \`$root.output[.field]\` reads the triggering card; \`$nodeId.output[.field]\` reads an upstream node; \`$carry.x\` / \`$self.output\` only inside reject edges. \`$trigger.*\` does NOT resolve — don't write it.
 - **Default human gates to \`orchestrator-review\`.** \`human-review\`'s approval UI isn't wired yet.
+- **Collision check before every \`move-work-item\` (and stage-on-entry trigger).** Run \`pc_list_workflows\`; if the destination stage owns another workflow's on-entry trigger, the move silently skips it — surface to the user and get their call before publishing.
 
 ## Style
 
