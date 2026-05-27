@@ -42,7 +42,6 @@ import {
   dismissFailedRun,
   getAgentRunRow,
   insertPostTurnSummary,
-  listVisibleOrchestratorSendsForSession,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   getGlobalSettings,
@@ -70,7 +69,6 @@ import {
   insertStatuslineSnapshot,
   listLatestSnapshotPerSession,
   getLatestSnapshotForProject,
-  type OrchestratorSendQueueRow,
   workflowRunsV2Repo,
 } from '@pc/db';
 import type { Stage, StatuslineSnapshot, WorkflowV2 } from '@pc/domain';
@@ -89,7 +87,10 @@ import {
 import {
   deliverNextQueuedPrompt,
   maybeAdvanceSendQueueConfirmation,
+  publicSendQueueItem,
   queuedStatusForState,
+  sendQueueSnapshotPayload,
+  type PublicSendQueueItem,
 } from './services/orchestrator-send-queue-delivery.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { runPreflight, probeAuth } from './services/preflight.ts';
@@ -306,17 +307,6 @@ type SendAckStatus =
   | 'no-session'
   | 'error';
 
-interface PublicSendQueueItem {
-  id: ULID;
-  clientMessageId: string;
-  text: string;
-  status: OrchestratorSendQueueRow['status'];
-  createdAt: number;
-  updatedAt: number;
-  deliveryAttempts: number;
-  failureReason: string | null;
-}
-
 interface RuntimeFailureState {
   health: 'failed_resume' | 'provider_missing';
   reason: string;
@@ -362,19 +352,6 @@ interface PublicRuntimeSnapshot {
 }
 
 const runtimeLifecycle = new Map<ULID, RuntimeLifecycleState>();
-
-function publicSendQueueItem(row: OrchestratorSendQueueRow): PublicSendQueueItem {
-  return {
-    id: row.id,
-    clientMessageId: row.clientMessageId,
-    text: row.text,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deliveryAttempts: row.deliveryAttempts,
-    failureReason: row.failureReason,
-  };
-}
 
 function runtimeLifecycleFor(projectId: ULID): RuntimeLifecycleState {
   let state = runtimeLifecycle.get(projectId);
@@ -478,9 +455,7 @@ function runtimeSnapshotPayload(
   const rawJsonlExists = rawJsonlPath ? existsSync(rawJsonlPath) : false;
   const replayExists = replayPath ? existsSync(replayPath) : false;
   const replay = active ? loadSessionReplay(runtime, active.id) : null;
-  const queue = active
-    ? listVisibleOrchestratorSendsForSession(active.id).map(publicSendQueueItem)
-    : [];
+  const queue = active ? sendQueueSnapshotPayload(active.id).items : [];
   const queueDepth = queue.filter((item) => item.status !== 'failed').length;
   const rawJsonlCursor = active ? active.jsonlLineCursor : null;
   const lastJsonlAt = lifecycle.lastJsonlAt ?? fileMtimeMs(rawJsonlPath);
@@ -524,18 +499,6 @@ function runtimeSnapshotPayload(
 
 function broadcastRuntimeSnapshot(projectId: ULID, runtime: ProjectRuntime): void {
   broadcastTo(projectId, runtimeSnapshotPayload(projectId, runtime));
-}
-
-function sendQueueSnapshotPayload(sessionId: ULID): {
-  type: 'send-queue-snapshot';
-  sessionId: ULID;
-  items: PublicSendQueueItem[];
-} {
-  return {
-    type: 'send-queue-snapshot',
-    sessionId,
-    items: listVisibleOrchestratorSendsForSession(sessionId).map(publicSendQueueItem),
-  };
 }
 
 function broadcastSendQueueSnapshot(projectId: ULID, sessionId: ULID): void {

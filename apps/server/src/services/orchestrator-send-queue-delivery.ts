@@ -1,11 +1,13 @@
 import type { ULID } from '@pc/domain';
 import {
   getActiveOrchestratorSession,
+  listVisibleOrchestratorSendsForSession,
   listQueuedOrchestratorSendsForSession,
   markNextDeliveredOrchestratorSendObservedInJsonl,
   markOrchestratorSendDelivered,
   markOrchestratorSendDelivering,
   markOrchestratorSendFailed,
+  type OrchestratorSendQueueRow,
 } from '@pc/db';
 
 type SendResult = string | void;
@@ -20,6 +22,42 @@ export interface OrchestratorSendRuntime {
 }
 
 export type BroadcastSendQueueSnapshot = (projectId: ULID, sessionId: ULID) => void;
+
+export interface PublicSendQueueItem {
+  id: ULID;
+  clientMessageId: string;
+  text: string;
+  status: OrchestratorSendQueueRow['status'];
+  createdAt: number;
+  updatedAt: number;
+  deliveryAttempts: number;
+  failureReason: string | null;
+}
+
+export function publicSendQueueItem(row: OrchestratorSendQueueRow): PublicSendQueueItem {
+  return {
+    id: row.id,
+    clientMessageId: row.clientMessageId,
+    text: row.text,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deliveryAttempts: row.deliveryAttempts,
+    failureReason: row.failureReason,
+  };
+}
+
+export function sendQueueSnapshotPayload(sessionId: ULID): {
+  type: 'send-queue-snapshot';
+  sessionId: ULID;
+  items: PublicSendQueueItem[];
+} {
+  return {
+    type: 'send-queue-snapshot',
+    sessionId,
+    items: listVisibleOrchestratorSendsForSession(sessionId).map(publicSendQueueItem),
+  };
+}
 
 export function queuedStatusForState(
   state: string,
