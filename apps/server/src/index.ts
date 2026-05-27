@@ -10,22 +10,12 @@ import { homedir } from 'node:os';
 
 import type {
   AgentRunStatus,
-  GlobalSettings,
   PendingAskKind,
   PendingAskOption,
   ULID,
   WorkItemType,
 } from '@pc/domain';
-import {
-  isWorkItemType,
-  normalizeOrchestratorSurfacePreference,
-  resolveClaudeConfigDirEnv,
-  withSettingsDefaults,
-} from '@pc/domain';
-import {
-  claudeConfigDir,
-  setConfiguredClaudeExe,
-} from '@pc/runtime';
+import { isWorkItemType } from '@pc/domain';
 import { validateWorkflowV2 } from '@pc/workflows';
 import {
   countWorkItemsInStage,
@@ -35,7 +25,6 @@ import {
   insertPostTurnSummary,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
-  getGlobalSettings,
   getProjectById,
   listFailedRunDismissalsForProject,
   listProjects,
@@ -44,7 +33,6 @@ import {
   reassignStage,
   reconcileOrphanedRunningRuns,
   runMigrations,
-  setGlobalSettings,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
@@ -65,9 +53,6 @@ import {
 } from './services/orchestrator-send-queue-delivery.ts';
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
-import { runPreflight, probeAuth } from './services/preflight.ts';
-import { installClaude, installGit } from './services/onboarding-install.ts';
-import { startLogin, getLoginState, cancelLogin } from './services/onboarding-auth.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
 import {
   dispatchContinueAgent,
@@ -113,6 +98,11 @@ import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { registerFileRoutes } from './features/files/routes.ts';
+import {
+  applyClaudeRuntimeSettings,
+  readSettings,
+  registerSettingsOnboardingRoutes,
+} from './features/settings-onboarding/routes.ts';
 import { createRuntimeHostPtyController } from './features/runtime-host/pty-handlers.ts';
 import {
   registerProjectDetailRoute,
@@ -157,33 +147,11 @@ const CHANNEL_PORT = Number(process.env.CHANNEL_PORT ?? 8788);
 // migrate.ts's __dirname points inside the bundle). Dev resolves to the trunk.
 runMigrations(resolve(ROOT, 'packages', 'db', 'drizzle'));
 
-// Section 10 Phase 0 — push the configured claude.exe override (if any) into
-// the runtime resolver so every spawn honors GlobalSettings.claudeExe. Null =
-// resolver falls through to CLAUDE_EXE → PATH → ~/.local/bin. readSettings is
-// a hoisted declaration; the DB is ready post-migration.
-setConfiguredClaudeExe(readSettings().claudeExe);
-
-// Section 33 — capture the shell-inherited CLAUDE_CONFIG_DIR ONCE, before any
-// stored override is applied, so clearing the override later restores it
-// rather than getting stuck on the last override.
-const SHELL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
-
-/** Point `process.env.CLAUDE_CONFIG_DIR` at the chosen Claude profile (or
- *  restore the shell default when `override` is null). This single assignment
- *  is the whole mechanism: path-resolver reads the env var fresh on every call
- *  AND every claude.exe spawn inherits `process.env`, so chat JSONL location,
- *  the retention sweep, Usage aggregation, and fresh spawns all follow the
- *  chosen profile. Existing PtY sessions keep whatever dir they spawned under
- *  (resume derives it from the persisted JSONL path), so a change is
- *  restart-required for live chats but immediate for new ones. */
-function applyClaudeConfigDirOverride(override: string | null): void {
-  const next = resolveClaudeConfigDirEnv(override, SHELL_CLAUDE_CONFIG_DIR);
-  if (next === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-  else process.env.CLAUDE_CONFIG_DIR = next;
-}
-
-// Apply the stored profile override at boot (mirror of setConfiguredClaudeExe).
-applyClaudeConfigDirOverride(readSettings().claudeConfigDir);
+// Section 10 / 33 — push stored Claude binary/profile overrides into runtime
+// resolvers before any project PTY starts. The settings module captures the
+// shell-inherited CLAUDE_CONFIG_DIR at import time so clearing an override can
+// restore it later.
+applyClaudeRuntimeSettings(readSettings());
 
 // Section 16a.2 — seed the global orchestrator pod if it doesn't already
 // exist. Idempotent on every boot; user/MCP edits to the row survive (the
@@ -649,174 +617,7 @@ app.post('/api/ask', async (c) => {
 
 // ── Global settings (Q10 envelope) ────────────────────────────────────────
 
-function readSettings(): GlobalSettings {
-  const stored = getGlobalSettings();
-  // Section 22.3 — always surface the effective runtime dataDir (the value
-  // every storage path actually uses), overriding any stale persisted value.
-  // The modal field is informational and read-only; changing it requires
-  // restarting with a different PC_DATA_DIR env var.
-  const merged = withSettingsDefaults(stored ?? {}, getDataDir(), homedir());
-  return { ...merged, dataDir: getDataDir() };
-}
-
-app.get('/api/settings', (c) => {
-  return c.json({ ok: true, settings: readSettings() });
-});
-
-/** Partial settings update. Body accepts any subset of the envelope.
- *
- *  Section 22.3 — `dataDir` is informational only: ignored on PATCH, always
- *  returned as the effective `getDataDir()` value. Restart with a different
- *  `PC_DATA_DIR` env var to actually move storage. */
-app.patch('/api/settings', async (c) => {
-  const body = await c.req
-    .json<Partial<GlobalSettings>>()
-    .catch((): Partial<GlobalSettings> => ({}));
-  const current = readSettings();
-  const merged: GlobalSettings = withSettingsDefaults(
-    {
-      // dataDir is always the effective runtime value — see comment above.
-      dataDir: getDataDir(),
-      telemetryOptIn:
-        typeof body.telemetryOptIn === 'boolean' ? body.telemetryOptIn : current.telemetryOptIn,
-      claudeExe:
-        body.claudeExe === undefined
-          ? current.claudeExe
-          : typeof body.claudeExe === 'string' && body.claudeExe.trim()
-            ? body.claudeExe.trim()
-            : null,
-      claudeConfigDir:
-        body.claudeConfigDir === undefined
-          ? current.claudeConfigDir
-          : typeof body.claudeConfigDir === 'string' && body.claudeConfigDir.trim()
-            ? body.claudeConfigDir.trim()
-            : null,
-      onboardingCompletedAt:
-        body.onboardingCompletedAt === undefined
-          ? current.onboardingCompletedAt
-          : typeof body.onboardingCompletedAt === 'string' && body.onboardingCompletedAt.trim()
-            ? body.onboardingCompletedAt.trim()
-            : null,
-      defaultOrchestratorSurface: normalizeOrchestratorSurfacePreference(
-        (body as { defaultOrchestratorSurface?: unknown }).defaultOrchestratorSurface,
-        current.defaultOrchestratorSurface,
-      ),
-      projectsFolder:
-        typeof body.projectsFolder === 'string' && body.projectsFolder.trim()
-          ? body.projectsFolder.trim()
-          : current.projectsFolder,
-      activityPanel: {
-        open: body.activityPanel?.open ?? current.activityPanel.open,
-        showAllProjects:
-          body.activityPanel?.showAllProjects ?? current.activityPanel.showAllProjects,
-      },
-      bugLogTargetProjectId:
-        body.bugLogTargetProjectId === undefined
-          ? current.bugLogTargetProjectId
-          : body.bugLogTargetProjectId,
-      fontScale:
-        typeof body.fontScale === 'number' ? body.fontScale : current.fontScale,
-      agentDispatch: {
-        ackTimeoutMs:
-          typeof body.agentDispatch?.ackTimeoutMs === 'number'
-            ? body.agentDispatch.ackTimeoutMs
-            : current.agentDispatch.ackTimeoutMs,
-        maxConcurrent:
-          typeof body.agentDispatch?.maxConcurrent === 'number'
-            ? body.agentDispatch.maxConcurrent
-            : current.agentDispatch.maxConcurrent,
-      },
-      jsonl: {
-        retentionDays:
-          body.jsonl?.retentionDays === 'never' ||
-          typeof body.jsonl?.retentionDays === 'number'
-            ? body.jsonl.retentionDays
-            : current.jsonl.retentionDays,
-      },
-      hideCancelledStage:
-        typeof body.hideCancelledStage === 'boolean'
-          ? body.hideCancelledStage
-          : current.hideCancelledStage,
-    },
-    getDataDir(),
-    homedir(),
-  );
-  setGlobalSettings(merged);
-  // Keep the runtime resolver in lockstep with the stored override. Takes
-  // effect on the next spawn (existing PtY sessions keep their resolved path).
-  setConfiguredClaudeExe(merged.claudeExe);
-  // Section 33 — redirect CLAUDE_CONFIG_DIR immediately so the next fresh chat
-  // session (and every JSONL path computed after this) uses the chosen
-  // profile. Live sessions are unaffected; the UI nudges + New session.
-  applyClaudeConfigDirOverride(merged.claudeConfigDir);
-  const restartRequired = merged.dataDir !== current.dataDir;
-  return c.json({ ok: true, settings: merged, restartRequired });
-});
-
-/** Section 33 — which Claude account/profile PC is actually talking to right
- *  now. `override` is the stored choice (null = inherit shell env); `effective`
- *  is the resolved CLAUDE_CONFIG_DIR every spawn + JSONL path uses; `source`
- *  explains where `effective` came from. Drives the General-tab read-out so the
- *  user can see which account is live without inspecting their shell env. */
-app.get('/api/settings/claude-profile', (c) => {
-  const override = readSettings().claudeConfigDir;
-  return c.json({
-    ok: true,
-    override,
-    effective: claudeConfigDir(),
-    source: override ? 'override' : SHELL_CLAUDE_CONFIG_DIR ? 'shell' : 'default',
-  });
-});
-
-// ── Preflight (Section 10 Phase 0) ────────────────────────────────────────
-
-/** Structured report of runtime-dependency health (claude binary + version,
- *  git, soft deps). The onboarding wizard + a diagnostics view consume this. */
-app.get('/api/preflight', async (c) => {
-  const preflight = await runPreflight();
-  return c.json({ ok: true, preflight });
-});
-
-// ── Onboarding installs (Section 10 Phase 2) ──────────────────────────────
-// Run the OFFICIAL installers on an explicit wizard click. Each re-runs
-// preflight and returns it so the wizard can advance. Long-running.
-
-app.post('/api/onboarding/install/claude', async (c) => {
-  try {
-    const r = await installClaude();
-    return c.json({ ok: true, ...r });
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 500);
-  }
-});
-
-app.post('/api/onboarding/install/git', async (c) => {
-  try {
-    const r = await installGit();
-    return c.json({ ok: true, ...r });
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 500);
-  }
-});
-
-// Sign-in drive: spawn CC's own `claude auth login`; the wizard polls state.
-app.post('/api/onboarding/auth/login', (c) => {
-  try {
-    return c.json({ ok: true, login: startLogin() });
-  } catch (e) {
-    return c.json({ ok: false, error: (e as Error).message }, 500);
-  }
-});
-
-app.get('/api/onboarding/auth/state', async (c) => {
-  const auth = await probeAuth();
-  return c.json({ ok: true, login: getLoginState(), authed: auth.status === 'authed', auth });
-});
-
-app.post('/api/onboarding/auth/cancel', (c) => {
-  cancelLogin();
-  return c.json({ ok: true });
-});
+registerSettingsOnboardingRoutes(app);
 
 registerFileRoutes(app, {
   projectFolderPath: (projectId) => getProjectById(projectId)?.folderPath ?? null,
