@@ -14,6 +14,7 @@ Implemented slices:
 - Transient-session start-state snapshots for agent designer, workflow builder, and setup wizard.
 - Shared terminal writability gating so modal terminal input is disabled until the transient session is ready.
 - Orchestrator send-queue acknowledgement/drain hardening, including a small `orchestrator-send-queue-delivery` service boundary.
+- WebSocket liveness diagnostics exposed through the status footer hover/data attributes.
 
 ## Executive Decision
 
@@ -84,7 +85,7 @@ Phase 0 update:
 
 - Implemented client heartbeat pings and server pong replies.
 - Both active-project and all-project WebSocket hooks now close and reconnect when inbound traffic goes silent past the timeout.
-- Remaining work is observability: expose last heartbeat, reconnect count, last replay high-water seq, and last inbound envelope in the UI/status surface.
+- Remaining work is deeper observability: heartbeat/reconnect data is now visible in the status footer; next diagnostic layer should add explicit last replay high-water seq and last inbound envelope to a fuller debug panel.
 
 Likely symptom match:
 
@@ -101,7 +102,7 @@ Primary fix:
 
 - Add server ping/client pong or client ping/server ack heartbeat. Done.
 - Treat missed heartbeats as a hard close and reconnect. Done.
-- Add visible runtime diagnostic fields: last inbound WS envelope, last heartbeat, reconnect count, last replay high-water seq.
+- Add visible runtime diagnostic fields: last inbound WS envelope, last heartbeat, reconnect count, last replay high-water seq. Heartbeat/reconnect basics are visible in the status footer; the fuller debug surface remains.
 
 Secondary suspect:
 
