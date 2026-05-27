@@ -1,7 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -44,14 +43,11 @@ import {
   newId,
   reassignStage,
   reconcileOrphanedRunningRuns,
-  reorderProjects,
   runMigrations,
   setGlobalSettings,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
   setOrchestratorSessionTitle,
-  softDeleteProject,
-  updateProjectMeta,
   updateProjectStages,
   updateWorkItemFields as dbUpdateWorkItemFields,
   insertStatuslineSnapshot,
@@ -125,11 +121,15 @@ import {
   getFilesTree,
   previewFile,
 } from './services/files-tree.ts';
-import { ProjectCreate, type CreateProjectMode } from './services/project-create.ts';
+import { ProjectCreate } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
 import { createRuntimeHostPtyController } from './features/runtime-host/pty-handlers.ts';
+import {
+  registerProjectDetailRoute,
+  registerProjectRoutes,
+} from './features/projects/routes.ts';
 import { registerRuntimeHostRoutes } from './features/runtime-host/routes.ts';
 import { registerRuntimeHostWebSocketServer } from './features/runtime-host/websocket-server.ts';
 import { registerTransientSessionRoutes } from './features/transient-sessions/routes.ts';
@@ -904,140 +904,12 @@ app.post('/api/fs/probe', async (c) => {
   }
 });
 
-// ── Project lifecycle ─────────────────────────────────────────────────────
-
-/** List projects. `?include_deleted=1` includes soft-deleted rows (off by
- *  default per design's soft-delete semantics). */
-app.get('/api/projects', (c) => {
-  const includeDeleted = c.req.query('include_deleted') === '1';
-  return c.json({ projects: listProjects({ includeDeleted }) });
+registerProjectRoutes(app, {
+  createProject: (input) => projectCreate.create(input),
+  refreshProject: (project) => projectRegistry.refresh(project),
+  removeProject: (projectId) => projectRegistry.remove(projectId),
+  resolveProject,
 });
-
-/** 5+.4 (D87) — drag-reorder the LeftRail Projects list. Body:
- *  `{ orderedIds: ULID[] }` — the full list of live project IDs in their new
- *  display order. Server rewrites every row's `position` to its index in
- *  one transaction. Unknown / soft-deleted ids are silently dropped (repo-
- *  level enforcement). Registered before the :projectId variant for clarity;
- *  Hono's trie-router prefers literal segments anyway. */
-app.patch('/api/projects/reorder', async (c) => {
-  const body = await c.req.json<{ orderedIds?: unknown }>();
-  if (!Array.isArray(body.orderedIds) || !body.orderedIds.every((v) => typeof v === 'string')) {
-    return c.json({ ok: false, error: 'orderedIds must be an array of strings' }, 400);
-  }
-  try {
-    reorderProjects(body.orderedIds as ULID[]);
-    return c.json({ ok: true, projects: listProjects() });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** Patch a project's mutable metadata (name + git_remote). Slug stays locked
- *  per the project settings contract. Body: `{ name?, git_remote? }`. */
-app.patch('/api/projects/:projectId', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const body = await c.req.json<{ name?: string; git_remote?: string | null }>();
-  const patch: { name?: string; gitRemote?: string | null } = {};
-  if (typeof body.name === 'string') {
-    const name = body.name.trim();
-    if (!name) return c.json({ ok: false, error: 'name cannot be empty' }, 400);
-    patch.name = name;
-  }
-  if (body.git_remote !== undefined) {
-    patch.gitRemote = body.git_remote === null ? null : String(body.git_remote).trim() || null;
-  }
-  try {
-    const updated = updateProjectMeta(id, patch);
-    if (!updated) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-    projectRegistry.refresh(updated);
-    return c.json({ ok: true, project: updated });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** Soft-delete a project. Filesystem is untouched per the multi-tenancy design;
- *  the separate DELETE /api/projects/:id/files endpoint is the only path to
- *  on-disk removal. Idempotent — returns 200 even if already deleted. */
-app.delete('/api/projects/:projectId', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const deleted = softDeleteProject(id);
-  if (!deleted) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  projectRegistry.remove(id);
-  return c.json({ ok: true, project: deleted });
-});
-
-/** Danger-zone: remove PC's scaffold dirs (`.project-companion/`, `.claude/`)
- *  from the project's folder on disk. The user's own files, `.git/`, README,
- *  and `.mcp.json` are NOT touched — per design, only what PC put there is
- *  PC's to remove.
- *
- *  Independent of the soft-delete row flip; either can be invoked alone. */
-app.delete('/api/projects/:projectId/files', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  // Hard-look at the DB so deleted rows are still resolvable here — the UI
-  // flow soft-deletes first, then offers "Also delete files on disk".
-  const project = getProjectById(id) ?? listProjects({ includeDeleted: true }).find((p) => p.id === id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  // Drop the runtime first so no in-flight worker holds a file lock on the
-  // dirs we're about to remove.
-  projectRegistry.remove(id);
-  const folder = project.folderPath;
-  const removed: string[] = [];
-  const skipped: { dir: string; reason: string }[] = [];
-  for (const sub of ['.project-companion', '.claude']) {
-    const target = resolve(folder, sub);
-    if (!existsSync(target)) continue;
-    // Section 22.7 — `.claude/` is a user-owned dir name (Claude Code itself
-    // uses it). Only remove it when PC's ownership marker is present, so an
-    // attach-to-git'd repo's pre-existing `.claude/` config isn't wiped.
-    // `.project-companion/` is unambiguously PC-owned and skips the check.
-    if (sub === '.claude') {
-      const marker = resolve(target, '.pc-managed');
-      if (!existsSync(marker)) {
-        skipped.push({
-          dir: sub,
-          reason: 'no .pc-managed marker — PC did not create this directory',
-        });
-        continue;
-      }
-    }
-    try {
-      rmSync(target, { recursive: true, force: true });
-      removed.push(sub);
-    } catch (err) {
-      return c.json({ ok: false, error: `failed to remove ${sub}: ${(err as Error).message}` }, 500);
-    }
-  }
-  return c.json({ ok: true, removed, skipped });
-});
-
-/** D86 — open the project's folder in the OS file manager.
- *  Windows: `explorer.exe <path>`. macOS: `open <path>`. Linux: `xdg-open <path>`.
- *  Spawned detached so the API doesn't track its lifetime. */
-app.post('/api/projects/:projectId/reveal', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const project = getProjectById(id) ?? listProjects({ includeDeleted: true }).find((p) => p.id === id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const folder = project.folderPath;
-  if (!existsSync(folder)) {
-    return c.json({ ok: false, error: `folder does not exist on disk: ${folder}` }, 404);
-  }
-  const { cmd, args } = revealCommand(folder);
-  try {
-    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: false });
-    child.unref();
-  } catch (err) {
-    return c.json({ ok: false, error: `failed to reveal: ${(err as Error).message}` }, 500);
-  }
-  return c.json({ ok: true });
-});
-
-function revealCommand(path: string): { cmd: string; args: string[] } {
-  if (process.platform === 'win32') return { cmd: 'explorer.exe', args: [path] };
-  if (process.platform === 'darwin') return { cmd: 'open', args: [path] };
-  return { cmd: 'xdg-open', args: [path] };
-}
 
 /** 5+.2 — read-only file tree for the LeftRail Files tab. Walks the project's
  *  folderPath applying the D92 hard-skip list + .gitignore. Returns the full
@@ -1078,46 +950,6 @@ app.get('/api/projects/:projectId/files/preview', async (c) => {
       return c.json({ ok: false, error: err.message }, 404);
     }
     return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** Create a project: git init in `folder_path`, write the PC scaffold, commit,
- *  insert the DB row, register the runtime. Body:
- *    { name, folder_path, mode: 'init-empty' | 'init-in-place' | 'attach-to-git', git_remote? }
- *
- *  Per the project settings contract the UI probes the folder first and picks the
- *  mode; the server enforces consistency (refuses init-empty on a non-empty
- *  folder; refuses to reinit an existing git repo). */
-app.post('/api/projects', async (c) => {
-  const body = await c.req.json<{
-    name?: string;
-    folder_path?: string;
-    mode?: CreateProjectMode;
-    git_remote?: string | null;
-  }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const folderPath = typeof body.folder_path === 'string' ? body.folder_path.trim() : '';
-  const mode = body.mode;
-  if (
-    !name ||
-    !folderPath ||
-    (mode !== 'init-empty' && mode !== 'init-in-place' && mode !== 'attach-to-git')
-  ) {
-    return c.json({ ok: false, error: 'name, folder_path, and mode required' }, 400);
-  }
-  try {
-    const project = await projectCreate.create({
-      name,
-      folderPath,
-      mode,
-      gitRemote: body.git_remote ?? null,
-    });
-    return c.json({ ok: true, project }, 201);
-  } catch (err) {
-    const msg = (err as Error).message;
-    const is400 =
-      /required$|^invalid mode|^folder is not empty|^folder is already a git repo/.test(msg);
-    return c.json({ ok: false, error: msg }, is400 ? 400 : 500);
   }
 });
 
@@ -1250,16 +1082,7 @@ app.put('/api/projects/:projectId/memory/:scope', async (c) => {
   return c.json({ ok: true, file });
 });
 
-// ── Project-scoped endpoints ──────────────────────────────────────────────
-
-app.get('/api/projects/:projectId', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const project = getProjectById(runtime.project.id);
-  if (!project) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
-  return c.json(project);
-});
+registerProjectDetailRoute(app, { resolveProject });
 
 registerTransientSessionRoutes<ReturnType<ProjectRuntime['startAgentDesigner']>, ProjectRuntime>(
   app,

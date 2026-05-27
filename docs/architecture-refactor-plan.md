@@ -21,6 +21,7 @@ Implemented slices:
 - Runtime-host orchestrator PTY handler orchestration extracted into `apps/server/src/features/runtime-host/pty-handlers.ts`, with focused tests for ready-state queue drain, JSONL replay metadata/cursor/queue confirmation, JSONL path persistence, and exit lifecycle broadcasts.
 - Runtime-host WebSocket server setup shell extracted into `apps/server/src/features/runtime-host/websocket-server.ts`, with focused tests for connection rejection, connect snapshot ordering, message delegation, and subscriber detach.
 - Transient-session start/send/interrupt/terminal-input/resize/stop routes for agent designer, workflow builder, and setup wizard extracted into `apps/server/src/features/transient-sessions/routes.ts`, with focused tests for shared wire envelopes, idempotent handler attachment, controls, and error responses.
+- Project lifecycle/detail routes for list, create, reorder, metadata patch, soft-delete, scaffold cleanup, and reveal extracted into `apps/server/src/features/projects/routes.ts`, with focused tests for delegated create, registry side effects, deleted-row filesystem cleanup, and reveal behavior.
 - MCP/tool catalog drift hardening: the pod allowlist drift test now covers every stock pod plus the orchestrator, `pc_node_failed` is re-registered, and the workflow/tool catalog entries needed by current pod allowlists are present.
 
 ## Executive Decision
