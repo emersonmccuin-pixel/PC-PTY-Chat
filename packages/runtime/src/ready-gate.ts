@@ -1,19 +1,23 @@
-// Three-signal ready gate.
+// Ready gate for spawned Claude sessions.
 //
-// Send is only permitted when ALL THREE signals have fired:
+// Send is only permitted when the required signals have fired:
 //   1. MCP handshake — pc-rig's `server.oninitialized` POSTs to
 //      /api/internal/mcp-handshake. We expose notifyHandshake() so the HTTP
 //      route can flip the flag.
 //   2. Composer-ready — CC emitted `\x1b[?2004h` (bracketed-paste-mode-on)
 //      into the PTY. One-shot ANSI sequence. Banner-immune.
-//   3. Init-complete — CC emitted the `/remote-control is active` substring
+//   3. Optional init-complete — CC emitted the `/remote-control is active` substring
 //      somewhere in raw stdout. Matched after running the buffer through
 //      collapseAnsiToWhitespace so the resume-mode cursor-move-right
 //      rendering also matches.
 //
-// The fresh and resume orderings differ — fresh emits composer-ready first,
-// resume emits handshake first — but BOTH must satisfy all three before the
-// gate opens. The gate doesn't enforce ordering; it waits for all three.
+// Subagents deliberately do not use `--remote-control`, so their gate requires
+// only the first two signals. The orchestrator can require the remote-control
+// banner when launched through PtySession instead of this primitive.
+//
+// The fresh and resume orderings differ — fresh often emits composer-ready
+// first, resume often emits handshake first. The gate doesn't enforce ordering;
+// it waits for the configured signal set.
 //
 // Pure logic. No PTY, no HTTP, no fs. Tested in isolation.
 
@@ -28,8 +32,9 @@ export interface ReadyTimestamps {
   handshakeAt: number;
   /** ms since epoch — when `\x1b[?2004h` was first observed. */
   composerReadyAt: number;
-  /** ms since epoch — when "/remote-control is active" first matched. */
-  initCompleteAt: number;
+  /** ms since epoch — when "/remote-control is active" first matched.
+   *  Null when init-complete is not required for this gate. */
+  initCompleteAt: number | null;
 }
 
 export class ReadyGate extends EventEmitter {
@@ -38,12 +43,14 @@ export class ReadyGate extends EventEmitter {
   private initCompleteAt: number | null = null;
   private rawBuffer = '';
   private settled = false;
+  private readonly requireInitComplete: boolean;
   /** Optional override so tests can advance time deterministically. */
   private readonly now: () => number;
 
-  constructor(opts: { now?: () => number } = {}) {
+  constructor(opts: { now?: () => number; requireInitComplete?: boolean } = {}) {
     super();
     this.now = opts.now ?? Date.now;
+    this.requireInitComplete = opts.requireInitComplete ?? true;
   }
 
   /** Feed a raw stdout chunk from the PTY. Idempotent once the gate opens. */
@@ -79,7 +86,7 @@ export class ReadyGate extends EventEmitter {
     if (
       this.handshakeAt === null ||
       this.composerReadyAt === null ||
-      this.initCompleteAt === null
+      (this.requireInitComplete && this.initCompleteAt === null)
     ) {
       return null;
     }

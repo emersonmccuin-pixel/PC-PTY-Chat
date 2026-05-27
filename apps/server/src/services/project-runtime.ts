@@ -468,6 +468,7 @@ export class ProjectRuntime {
       settingsPath: podPrep.settingsPath,
       settingSources: podPrep.settingSources,
       pluginDirs: [podPrep.pluginDir],
+      remoteControl: true,
     });
 
     // Process lifecycle is not chat lifecycle. A claude.exe child can exit

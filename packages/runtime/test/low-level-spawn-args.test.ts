@@ -17,19 +17,17 @@ function input(overrides: Partial<LowLevelSpawnInput> = {}): LowLevelSpawnInput 
   };
 }
 
-test('buildLowLevelSpawnArgs requests remote-control for ReadyGate init-complete', () => {
+test('buildLowLevelSpawnArgs does not request remote-control for subagents', () => {
   const args = buildLowLevelSpawnArgs(input(), 'E:/scratch/mcp.json');
 
-  assert.ok(args.includes('--remote-control'));
-  assert.equal(args.filter((arg) => arg === '--remote-control').length, 1);
-  assert.deepEqual(args.slice(0, 8), [
+  assert.equal(args.includes('--remote-control'), false);
+  assert.deepEqual(args.slice(0, 7), [
     '--dangerously-skip-permissions',
     '--agent',
     'pc-runtime:researcher',
     '--mcp-config',
     'E:/scratch/mcp.json',
     '--strict-mcp-config',
-    '--remote-control',
     '--session-id',
   ]);
 });

@@ -1,7 +1,7 @@
 // LowLevelSpawn — the foundation spawn primitive for the agent system rebuild.
 //
 // Every claude.exe spawn in PC goes through this one piece. Wraps node-pty
-// with the three-signal ready gate, bracketed-paste + echo-ack send, env
+// with the subagent ready gate, bracketed-paste + echo-ack send, env
 // scrub, deterministic JSONL path resolution, and a single observability
 // contract.
 //
@@ -101,7 +101,7 @@ export interface SpawnEvents {
   state: (s: SpawnState) => void;
   /** Parsed JSONL line from CC's on-disk session file. */
   'jsonl-event': (ev: JsonlEvent) => void;
-  /** Fires once when all three signals are in. */
+  /** Fires once when the configured ready-gate signals are in. */
   ready: (ts: ReadyTimestamps) => void;
   /** PTY exit. */
   exit: (code: number | null, signal: number | null) => void;
@@ -115,8 +115,8 @@ export interface SpawnEvents {
  *   2. Caller attaches listeners (`on('ready', ...)`, `on('jsonl-event', ...)`).
  *   3. `start()` — kicks off the actual pty.spawn + tailer attach. Required
  *      to begin the lifecycle. Returns void; listen on events.
- *   4. `awaitReady()` — Promise that resolves when the gate opens (all three
- *      signals fire) or rejects on timeout / exit.
+ *   4. `awaitReady()` — Promise that resolves when the gate opens or rejects
+ *      on timeout / exit.
  *   5. `send(body)` — bracketed-paste + echo-ack. Only callable after ready.
  *   6. `kill()` — graceful Ctrl-C then SIGKILL after a grace window.
  */
@@ -141,7 +141,9 @@ export class LowLevelSpawn extends EventEmitter {
   constructor(input: LowLevelSpawnInput) {
     super();
     this.input = input;
-    this.gate = new ReadyGate();
+    // Subagents must not use Claude remote-control; they are disposable worker
+    // sessions. Their ready gate uses the banner-independent signals only.
+    this.gate = new ReadyGate({ requireInitComplete: false });
     this.gate.on('ready', (ts) => this.handleGateOpen(ts));
     this.gate.on('aborted', (reason: string) => this.handleGateAbort(reason));
 
@@ -439,9 +441,6 @@ export function buildLowLevelSpawnArgs(
     '--mcp-config',
     mcpConfigPath,
     '--strict-mcp-config',
-    // ReadyGate's init-complete signal is the remote-control banner. Claude
-    // does not emit that banner unless this flag is present.
-    '--remote-control',
   ];
   if (input.settingsPath) {
     args.push('--settings', input.settingsPath);

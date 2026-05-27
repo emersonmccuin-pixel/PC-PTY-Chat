@@ -157,9 +157,79 @@ export interface PtySessionOptions {
   /** Session-local Claude plugin dirs. Used to mount PC agent definitions
    *  without writing `<workspace>/.claude/agents`. */
   pluginDirs?: readonly string[];
+  /** Enables Claude's remote-control bridge/banner. PC sets this only for the
+   *  main orchestrator chat; transient modals and subagents leave it off. */
+  remoteControl?: boolean;
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
+
+export function buildPtySessionArgs(opts: PtySessionOptions): string[] {
+  const args: string[] = [
+    '--dangerously-skip-permissions',
+    // Orchestrator is locked to opus per chat.md locked decision.
+    // Subagents pick their own model via YAML (`opts.model`).
+    '--model',
+    opts.model ?? 'opus',
+    // Scope MCP to ONLY the supplied config (default: workspace/.mcp.json,
+    // pc-rig + webhook). Without --strict-mcp-config the orchestrator merges
+    // global user-level MCPs (e.g. WCP, archon) and tries to use them —
+    // confusing and leaks unrelated capabilities into the rig. Section 17a.5
+    // overrides this with a materialised pod's temp mcp.json.
+    '--mcp-config',
+    opts.mcpConfigPath ?? '.mcp.json',
+    '--strict-mcp-config',
+  ];
+  if (opts.remoteControl) {
+    // Orchestrator readiness accepts the remote-control banner as the stable
+    // resume/new-session signal. Ask Claude to print it only for that chat.
+    args.push('--remote-control');
+  }
+  if (opts.settingsPath) {
+    args.push('--settings', opts.settingsPath);
+  }
+  if (opts.settingSources !== undefined) {
+    args.push('--setting-sources', opts.settingSources);
+  }
+  for (const pluginDir of opts.pluginDirs ?? []) {
+    args.push('--plugin-dir', pluginDir);
+  }
+  // Section 4d: subagent dispatches load the agent body via `--agent <name>`.
+  // Interactive mode REPLACES CC's default system prompt with the agent body
+  // (source-verified). Orchestrator path leaves this unset and uses
+  // `--append-system-prompt-file` instead (which appends).
+  if (opts.agentName) {
+    args.push('--agent', opts.agentName);
+  }
+  // Section 3 D11: layer PC's PM identity on top of CC's built-in system
+  // prompt. Skip silently if the file is missing — fresh projects always
+  // have it scaffolded; pre-3c projects pick it up via the boot-time backfill
+  // in ProjectRuntime.refreshHooksIfStale.
+  if (opts.appendSystemPromptPath && existsSync(opts.appendSystemPromptPath)) {
+    args.push('--append-system-prompt-file', opts.appendSystemPromptPath);
+  }
+  // Section 15: deterministic session ownership. Always pass --session-id
+  // (mint) or --resume (continue) when caller supplies a UUID — caller is
+  // ProjectRuntime.resolveSessionForSpawn, which guarantees the resume vs
+  // mint decision is correct (resume only if a JSONL for that UUID exists
+  // on disk; otherwise mint at the stored UUID).
+  if (opts.claudeSessionId) {
+    if (opts.resume) {
+      args.push('--resume', opts.claudeSessionId);
+    } else {
+      args.push('--session-id', opts.claudeSessionId);
+    }
+  }
+  // Load the webhook channel registered in workspace/.mcp.json. CC will
+  // prompt once on boot to confirm dev-channel usage; we auto-press
+  // Enter below. Variadic — keep at the end of the arg list so any future
+  // flags don't get gobbled. Subagent dispatches (loadDevChannels=false)
+  // skip this — they don't listen on channels.
+  if (opts.loadDevChannels ?? true) {
+    args.push('--dangerously-load-development-channels', 'server:webhook');
+  }
+  return args;
+}
 
 /**
  * One PTY session = one claude.exe child.
@@ -249,64 +319,7 @@ export class PtySession extends EventEmitter {
     // todos derive client-side from JSONL tool-call envelopes.
 
     this.loadDevChannels = opts.loadDevChannels ?? true;
-    const args: string[] = [
-      '--dangerously-skip-permissions',
-      // Orchestrator is locked to opus per chat.md locked decision.
-      // Subagents pick their own model via YAML (`opts.model`).
-      '--model',
-      opts.model ?? 'opus',
-      // Scope MCP to ONLY the supplied config (default: workspace/.mcp.json,
-      // pc-rig + webhook). Without --strict-mcp-config the orchestrator merges
-      // global user-level MCPs (e.g. WCP, archon) and tries to use them —
-      // confusing and leaks unrelated capabilities into the rig. Section 17a.5
-      // overrides this with a materialised pod's temp mcp.json.
-      '--mcp-config',
-      opts.mcpConfigPath ?? '.mcp.json',
-      '--strict-mcp-config',
-    ];
-    if (opts.settingsPath) {
-      args.push('--settings', opts.settingsPath);
-    }
-    if (opts.settingSources !== undefined) {
-      args.push('--setting-sources', opts.settingSources);
-    }
-    for (const pluginDir of opts.pluginDirs ?? []) {
-      args.push('--plugin-dir', pluginDir);
-    }
-    // Section 4d: subagent dispatches load the agent body via `--agent <name>`.
-    // Interactive mode REPLACES CC's default system prompt with the agent body
-    // (source-verified). Orchestrator path leaves this unset and uses
-    // `--append-system-prompt-file` instead (which appends).
-    if (opts.agentName) {
-      args.push('--agent', opts.agentName);
-    }
-    // Section 3 D11: layer PC's PM identity on top of CC's built-in system
-    // prompt. Skip silently if the file is missing — fresh projects always
-    // have it scaffolded; pre-3c projects pick it up via the boot-time backfill
-    // in ProjectRuntime.refreshHooksIfStale.
-    if (opts.appendSystemPromptPath && existsSync(opts.appendSystemPromptPath)) {
-      args.push('--append-system-prompt-file', opts.appendSystemPromptPath);
-    }
-    // Section 15: deterministic session ownership. Always pass --session-id
-    // (mint) or --resume (continue) when caller supplies a UUID — caller is
-    // ProjectRuntime.resolveSessionForSpawn, which guarantees the resume vs
-    // mint decision is correct (resume only if a JSONL for that UUID exists
-    // on disk; otherwise mint at the stored UUID).
-    if (opts.claudeSessionId) {
-      if (opts.resume) {
-        args.push('--resume', opts.claudeSessionId);
-      } else {
-        args.push('--session-id', opts.claudeSessionId);
-      }
-    }
-    // Load the webhook channel registered in workspace/.mcp.json. CC will
-    // prompt once on boot to confirm dev-channel usage; we auto-press
-    // Enter below. Variadic — keep at the end of the arg list so any future
-    // flags don't get gobbled. Subagent dispatches (loadDevChannels=false)
-    // skip this — they don't listen on channels.
-    if (this.loadDevChannels) {
-      args.push('--dangerously-load-development-channels', 'server:webhook');
-    }
+    const args = buildPtySessionArgs(opts);
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
       env: scrubIdeIntegrationEnv({

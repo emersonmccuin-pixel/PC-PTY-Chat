@@ -1,4 +1,4 @@
-// Pin the three-signal gate ordering invariants.
+// Pin the ready-gate ordering invariants.
 //
 // Real-CC verification of the gate lives in the labs scenario port; this
 // suite locks the pure logic so future edits can't regress the contract
@@ -84,6 +84,26 @@ test('gate stays closed when only two of three fire', async () => {
   await wait(20);
   assert.equal(gate.isOpen(), false);
   assert.equal(gate.snapshot(), null);
+});
+
+test('gate can open without init-complete when remote-control is disabled', async () => {
+  const clock = { now: 0 };
+  const gate = new ReadyGate({
+    now: () => clock.now,
+    requireInitComplete: false,
+  });
+
+  const ready = collectReady(gate, () => {
+    clock.now = 400;
+    gate.feedChunk(BRACKETED_PASTE_ON);
+    clock.now = 900;
+    gate.notifyHandshake();
+  });
+
+  const ts = await ready;
+  assert.equal(ts.composerReadyAt, 400);
+  assert.equal(ts.handshakeAt, 900);
+  assert.equal(ts.initCompleteAt, null);
 });
 
 test('init-complete substring matches resume-mode cursor-move-right painting', async () => {

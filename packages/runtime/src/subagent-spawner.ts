@@ -6,7 +6,7 @@
 // every test fake in `workflow-firing-smoke.test.ts` keeps working unchanged.
 //
 // Internals: uses Session 5's `LowLevelSpawn` instead of `PtySession`. Gains
-// the v2 ready gate (handshake + composer-ready + init-complete), bracketed
+// the v2 ready gate (handshake + composer-ready), bracketed
 // paste + echo-ack send, deterministic JSONL path (via --session-id), ANSI
 // scrub. Workflow-specific concerns (pc_complete_node / pc_node_failed
 // detection, idle + wall-clock timers, materialised pod cleanup) live here
@@ -14,8 +14,8 @@
 // AgentRun cap and don't surface in the Activity Panel, so reusing `AgentRun`
 // would add coupling without benefit.
 //
-// MCP handshake: LowLevelSpawn's three-signal ready gate requires an MCP
-// handshake notification. Workflow subagents aren't in the v2 active-runs
+// MCP handshake: LowLevelSpawn's subagent ready gate requires an MCP handshake
+// notification. Workflow subagents aren't in the v2 active-runs
 // registry (that registry is scoped to dispatched agents the orchestrator
 // owns), so they need an alternate routing path. The spawner accepts a
 // `registerHandshakeListener` dep — the workflow-runtime layer wires it to
