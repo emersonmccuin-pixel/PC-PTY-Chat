@@ -244,7 +244,7 @@ export function TerminalModePanel({
       <div
         ref={fitTargetRef}
         data-testid="terminal-mode-fit-target"
-        className="h-full w-full overflow-hidden bg-[#050505]"
+        className="box-border h-full w-full overflow-hidden bg-[#050505] px-3"
       >
         <div ref={hostRef} className="h-full w-full" />
       </div>
