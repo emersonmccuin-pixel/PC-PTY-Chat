@@ -211,6 +211,9 @@ export interface MoveWorkItemNode extends WorkflowNodeBase {
   kind: 'move-work-item';
   /** Destination stage id (required, non-empty). */
   to_stage: string;
+  /** Explicit opt-in to move into a stage that has its own stage-on-entry
+   *  workflow (which the move will silently skip). */
+  allow_stage_workflow_skip?: boolean;
 }
 
 export type WorkflowNode =

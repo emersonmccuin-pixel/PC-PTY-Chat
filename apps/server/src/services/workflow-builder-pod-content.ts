@@ -429,6 +429,7 @@ Every error you'll see from \`pc_publish_workflow\` (or \`pc_save_workflow_draft
 | \`script node "X": missing "script" body\` | "Step 'X' needs script source — what should it run?" |
 | \`script node "X": runtime must be "node" or "python"\` | "Step 'X' needs to be node or python — which one?" |
 | \`move-work-item node "X": missing "to_stage"\` | "Step 'X' moves the card but no destination is set — which stage should it move to?" |
+| \`destination stage is the on-entry trigger of workflow\` | "This move lands the card in a stage another workflow runs on entry; a workflow move will not fire it, so that workflow is silently skipped. Offer the user: inline those steps here, pick a different stage, or skip on purpose. If on purpose, set \`allow_stage_workflow_skip: true\` on the move node and republish." |
 | \`node "X": next → unknown node "Y"\` | "Step 'X' connects to 'Y', but there's no step called 'Y'. Did you mean one of the existing steps?" |
 | \`review node "X": reject.back_to → unknown node "Y"\` | "The reject loop on 'X' tries to kick back to 'Y', but there's no such step. Pick an earlier step." |
 | \`review node "X": bundle_from → unknown node "Y"\` | "The review on 'X' bundles 'Y', but 'Y' isn't a step. Drop it or rename." |
