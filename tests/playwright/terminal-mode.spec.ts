@@ -3,8 +3,10 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 const PROJECT_ID = 'proj-terminal-mode';
 const PROJECT_SLUG = 'terminal-mode-smoke';
 const SESSION_ID = 'sess-terminal-mode';
+const WORKFLOW_BUILDER_SESSION_ID = 'wb-terminal-mode';
 
 type Surface = 'chat' | 'terminal';
+type CenterTab = 'orchestrator' | 'workflows';
 
 declare global {
   interface Window {
@@ -92,7 +94,7 @@ function runtimeSnapshot() {
 async function setupTerminalHarness(
   page: Page,
   defaultSurface: Surface,
-  options: { initialMode?: Surface | null } = {},
+  options: { initialMode?: Surface | null; initialTab?: CenterTab } = {},
 ) {
   let currentSettings = settings(defaultSurface);
 
@@ -103,7 +105,7 @@ async function setupTerminalHarness(
   });
 
   await page.addInitScript(
-    ({ projectId, projectSlug, sessionId, initialMode }) => {
+    ({ projectId, projectSlug, sessionId, initialMode, initialTab }) => {
       const activeProjectKey = 'pc.active-project';
       const activeTabKey = 'pc.center-tab';
       const modeKey = `pc.terminal-mode.${projectId}.${sessionId}`;
@@ -114,7 +116,7 @@ async function setupTerminalHarness(
       );
       localStorage.setItem(
         activeTabKey,
-        JSON.stringify({ state: { tab: 'orchestrator' }, version: 0 }),
+        JSON.stringify({ state: { tab: initialTab }, version: 0 }),
       );
       if (!sessionStorage.getItem('terminal-mode-smoke-init')) {
         if (initialMode === null || initialMode === undefined) {
@@ -216,6 +218,7 @@ async function setupTerminalHarness(
       projectSlug: PROJECT_SLUG,
       sessionId: SESSION_ID,
       initialMode: options.initialMode,
+      initialTab: options.initialTab ?? 'orchestrator',
     },
   );
 }
@@ -267,6 +270,21 @@ async function fulfillApi(
   }
   if (path === `/api/projects/${PROJECT_ID}/workflow-v2/runs`) {
     return json({ ok: true, runs: [] });
+  }
+  if (path === '/api/workflows') {
+    return json({ ok: true, workflows: [] });
+  }
+  if (path === `/api/projects/${PROJECT_ID}/workflow-builder/start`) {
+    return json({ ok: true, state: 'ready', sessionId: WORKFLOW_BUILDER_SESSION_ID });
+  }
+  if (path === `/api/projects/${PROJECT_ID}/sessions/${WORKFLOW_BUILDER_SESSION_ID}/terminal-transcript`) {
+    return json({
+      ok: true,
+      sessionId: WORKFLOW_BUILDER_SESSION_ID,
+      bytes: 'WORKFLOW_BOOT\r\n',
+      truncated: false,
+      mtimeMs: Date.now(),
+    });
   }
   if (path === `/api/projects/${PROJECT_ID}/failed-run-dismissals`) {
     return json({ ok: true, runIds: [] });
@@ -342,6 +360,13 @@ test.describe('Terminal mode smoke', () => {
     expect((await terminalWrites(page)).length).toBe(beforeTypeWrites);
 
     await page.evaluate(() => {
+      window.__terminalWsMessages = [];
+    });
+    await page.locator('[data-testid="terminal-mode-fit-target"]').click();
+    await page.keyboard.press('Shift+Enter');
+    await expect.poll(() => terminalInputPayload(page), { timeout: 5_000 }).toBe('\n');
+
+    await page.evaluate(() => {
       window.__terminalWrites = [];
     });
     await page.evaluate(
@@ -382,5 +407,66 @@ test.describe('Terminal mode smoke', () => {
         ),
       )
       .toBe('terminal');
+  });
+
+  test('workflow builder conversation opens as a wide xterm surface', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupTerminalHarness(page, 'chat', { initialTab: 'workflows' });
+    await page.goto('/');
+    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: '+ New workflow' })).toBeVisible();
+
+    await page.getByRole('button', { name: '+ New workflow' }).click();
+
+    const terminal = page.locator('[data-testid="terminal-mode-panel"]');
+    await expect(terminal).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('[data-testid="chat-composer-input"]')).toHaveCount(0);
+    await expect(page.locator('.xterm')).toHaveCount(1);
+    await expect(page.locator('.react-flow')).toHaveCount(0);
+    await expect(page.locator('[data-testid="conversation-header"]')).toHaveCount(1);
+    await expect.poll(() => terminalWrites(page), { timeout: 10_000 }).toContain('WORKFLOW_BOOT\r\n');
+
+    const headerBackground = await page
+      .locator('[data-testid="conversation-header"]')
+      .evaluate((el) => getComputedStyle(el).backgroundColor);
+    const cardBackground = await page.evaluate(() => {
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = getComputedStyle(document.documentElement)
+        .getPropertyValue('--card')
+        .trim();
+      document.body.append(probe);
+      const color = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return color;
+    });
+    expect(headerBackground).toBe(cardBackground);
+
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const fit = document
+              .querySelector('[data-testid="terminal-mode-fit-target"]')
+              ?.getBoundingClientRect();
+            return {
+              width: Math.round(fit?.width ?? 0),
+              height: Math.round(fit?.height ?? 0),
+            };
+          }),
+        { timeout: 5_000 },
+      )
+      .toMatchObject({ width: expect.any(Number), height: expect.any(Number) });
+
+    const fitBox = await page.evaluate(() => {
+      const fit = document
+        .querySelector('[data-testid="terminal-mode-fit-target"]')
+        ?.getBoundingClientRect();
+      return {
+        width: Math.round(fit?.width ?? 0),
+        height: Math.round(fit?.height ?? 0),
+      };
+    });
+    expect(fitBox.width).toBeGreaterThan(1200);
+    expect(fitBox.height).toBeGreaterThan(650);
   });
 });

@@ -59,6 +59,16 @@ const CLAUDE_TERMINAL_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_NO_FLICKER: '1',
 };
 
+function resizePty(
+  session: { resize(cols: number, rows: number): void } | null,
+  cols: number,
+  rows: number,
+): void {
+  const safeCols = Math.max(20, Math.min(400, Math.trunc(cols)));
+  const safeRows = Math.max(5, Math.min(200, Math.trunc(rows)));
+  session?.resize(safeCols, safeRows);
+}
+
 export interface ProjectRuntimeOptions {
   /** Trunk data dir. Per-project subpaths derived from this. */
   dataDir: string;
@@ -84,6 +94,7 @@ export class ProjectRuntime {
    *  Pod-spawn cleanup is bound to the session end. */
   private agentDesigner: PtySession | null = null;
   private agentDesignerPrep: PodSpawnPrep | null = null;
+  private agentDesignerSessionId: string | null = null;
   /** Section 19.9 — transient `workflow-builder` stock pod session that drives
    *  the "+ New workflow" modal. v1 `workflowCreator` removed in 19.12. */
   private workflowBuilder: PtySession | null = null;
@@ -91,6 +102,7 @@ export class ProjectRuntime {
   private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
   private setupWizardCleanup: (() => void) | null = null;
+  private setupWizardSessionId: string | null = null;
   private worktreesSvc: WorktreeService | null = null;
   private orchestratorCols = 120;
   private orchestratorRows = 30;
@@ -757,12 +769,14 @@ export class ProjectRuntime {
       resume: false,
       jsonlPath: cc.jsonlPath,
       extraEnv: { ...prep.extraEnv, PC_SESSION_ID: transientId },
+      envOverrides: { ...CLAUDE_TERMINAL_ENV },
       agentName: prep.agentCliName,
       mcpConfigPath: prep.mcpConfigPath,
       settingsPath: prep.settingsPath,
       settingSources: prep.settingSources,
       pluginDirs: [prep.pluginDir],
     });
+    this.agentDesignerSessionId = transientId;
     return this.agentDesigner;
   }
 
@@ -793,6 +807,27 @@ export class ProjectRuntime {
       : null;
   }
 
+  /** The transient PC_SESSION_ID assigned to the current agent-designer
+   *  PtySession (or null when no designer modal session is live). */
+  agentDesignerSession(): string | null {
+    return this.agentDesignerSessionId;
+  }
+
+  /** True when a session id belongs to one of this project's live transient
+   *  modal PTYs. Used by terminal-transcript routes; durable orchestrator
+   *  sessions still validate through the DB row. */
+  hasLiveTransientSession(sessionId: string): boolean {
+    return (
+      sessionId === this.agentDesignerSessionId ||
+      sessionId === this.workflowBuilderSessionId ||
+      sessionId === this.setupWizardSessionId
+    );
+  }
+
+  resizeAgentDesigner(cols: number, rows: number): void {
+    resizePty(this.agentDesignerPty(), cols, rows);
+  }
+
   /** Kill the agent-designer session + clean up the materialised session-local
    *  runtime files. Idempotent. */
   endAgentDesigner(): void {
@@ -804,6 +839,7 @@ export class ProjectRuntime {
       try { this.agentDesignerPrep.cleanup(); } catch { /* best-effort */ }
       this.agentDesignerPrep = null;
     }
+    this.agentDesignerSessionId = null;
   }
 
   // ── Section 19.9 — workflow-builder transient session (v2-aware) ──────────
@@ -875,6 +911,7 @@ export class ProjectRuntime {
       resume: false,
       jsonlPath: cc.jsonlPath,
       extraEnv: { ...prep.extraEnv, PC_SESSION_ID: transientId },
+      envOverrides: { ...CLAUDE_TERMINAL_ENV },
       agentName: prep.agentCliName,
       mcpConfigPath: prep.mcpConfigPath,
       settingsPath: prep.settingsPath,
@@ -898,6 +935,10 @@ export class ProjectRuntime {
    *  endpoint to scope cleanup. */
   workflowBuilderSession(): string | null {
     return this.workflowBuilderSessionId;
+  }
+
+  resizeWorkflowBuilder(cols: number, rows: number): void {
+    resizePty(this.workflowBuilderPty(), cols, rows);
   }
 
   /** Kill the workflow-builder session + clean up the materialised
@@ -952,6 +993,7 @@ export class ProjectRuntime {
       resume: false,
       jsonlPath: cc.jsonlPath,
       extraEnv: { ...runtimeFiles.extraEnv, PC_SESSION_ID: transientId },
+      envOverrides: { ...CLAUDE_TERMINAL_ENV },
       mcpConfigPath: runtimeFiles.mcpConfigPath,
       settingsPath: runtimeFiles.settingsPath,
       settingSources: runtimeFiles.settingSources,
@@ -961,6 +1003,7 @@ export class ProjectRuntime {
         'setup-wizard-prompt.md',
       ),
     });
+    this.setupWizardSessionId = transientId;
     this.setupWizard.once('exit', () => {
       if (this.setupWizardCleanup) {
         try { this.setupWizardCleanup(); } catch { /* best-effort */ }
@@ -977,15 +1020,25 @@ export class ProjectRuntime {
       : null;
   }
 
+  setupWizardSession(): string | null {
+    return this.setupWizardSessionId;
+  }
+
+  resizeSetupWizard(cols: number, rows: number): void {
+    resizePty(this.setupWizardPty(), cols, rows);
+  }
+
   /** Kill the setup-wizard session. Idempotent. */
   endSetupWizard(): void {
-    if (!this.setupWizard) return;
-    try { this.setupWizard.kill(); } catch { /* best-effort */ }
-    this.setupWizard = null;
+    if (this.setupWizard) {
+      try { this.setupWizard.kill(); } catch { /* best-effort */ }
+      this.setupWizard = null;
+    }
     if (this.setupWizardCleanup) {
       try { this.setupWizardCleanup(); } catch { /* best-effort */ }
       this.setupWizardCleanup = null;
     }
+    this.setupWizardSessionId = null;
   }
 
   private resolveSessionForSpawn(): {

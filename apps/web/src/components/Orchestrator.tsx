@@ -25,6 +25,10 @@ import type {
 import { useOrchestratorTelemetry, type UsageTotals } from '@/store/orchestrator-telemetry';
 import { useViewingSession } from '@/store/viewing-session';
 import { ChatSurface } from '@/components/ChatSurface';
+import {
+  ConversationHeader,
+  ConversationHeaderButton,
+} from '@/components/ConversationHeader';
 import { StatusBar } from '@/components/StatusBar';
 
 interface OrchestratorProps {
@@ -530,39 +534,38 @@ export function Orchestrator({
       : undefined;
 
   const headerSlot = (
-    <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
-      <div className="min-w-0 flex-1 truncate text-sm">
-        {isViewingPast ? (
+    <ConversationHeader
+      title={
+        isViewingPast ? (
           <span className="text-muted-foreground">
             Viewing past session <span className="text-foreground/80">(read-only)</span>
           </span>
         ) : session?.title ? (
-          <span className="text-foreground" title={session.title}>
-            {session.title}
-          </span>
+          <span className="text-foreground">{session.title}</span>
         ) : (
           <span className="italic text-muted-foreground">Untitled session</span>
-        )}
-      </div>
-      {isViewingPast ? (
-        <button
-          onClick={() => setViewing(project.slug, null)}
-          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="Stop viewing this past session and return to the live chat"
-        >
-          ← Return to live
-        </button>
-      ) : (
-        <button
-          onClick={onNewSession}
-          disabled={startingNewSession}
-          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-wait disabled:opacity-60"
-          title="End the current chat session and start a fresh one"
-        >
-          {startingNewSession ? 'Starting...' : '+ New session'}
-        </button>
-      )}
-    </div>
+        )
+      }
+      titleText={session?.title ?? undefined}
+      actions={
+        isViewingPast ? (
+          <ConversationHeaderButton
+            onClick={() => setViewing(project.slug, null)}
+            title="Stop viewing this past session and return to the live chat"
+          >
+            ← Return to live
+          </ConversationHeaderButton>
+        ) : (
+          <ConversationHeaderButton
+            onClick={onNewSession}
+            disabled={startingNewSession}
+            title="End the current chat session and start a fresh one"
+          >
+            {startingNewSession ? 'Starting...' : '+ New session'}
+          </ConversationHeaderButton>
+        )
+      }
+    />
   );
 
   const startupBannerSlot = startingNewSession ? (

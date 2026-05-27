@@ -70,7 +70,7 @@ export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptMo
       aria-label="Agent transcript"
     >
       <div className="flex-1 bg-black/40" aria-hidden="true" />
-      <aside className="flex h-full w-full max-w-3xl flex-col border-l border-border bg-card shadow-2xl">
+      <aside className="flex h-full w-full max-w-6xl flex-col border-l border-border bg-card shadow-2xl">
         <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border bg-muted/30 px-4 py-3">
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground">

@@ -1791,10 +1791,15 @@ app.get('/api/projects/:projectId/sessions/:sessionId/terminal-transcript', (c) 
   const sessionId = c.req.param('sessionId') as ULID;
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const persistedSession = getOrchestratorSession(sessionId);
+  const transientSession =
+    !persistedSession && runtime.hasLiveTransientSession(sessionId)
+      ? { id: sessionId, projectId: id }
+      : null;
   const result = readTerminalTranscriptTail({
     projectId: id,
     sessionId,
-    session: getOrchestratorSession(sessionId),
+    session: persistedSession ?? transientSession,
     runtime,
     tailBytes: normalizeTerminalTranscriptTailBytes(c.req.query('tailBytes')),
   });
@@ -1980,20 +1985,31 @@ function broadcastSessionReplay(
 function attachAgentDesignerHandlers(
   projectId: ULID,
   session: ReturnType<ProjectRuntime['startAgentDesigner']>,
+  sessionId: string | null,
 ): void {
   const flag = session as unknown as { __pcAgentDesignerAttached?: boolean };
   if (flag.__pcAgentDesignerAttached) return;
+  let terminalSeq = 0;
+  session.on('raw', (text: string) => {
+    terminalSeq += 1;
+    broadcastTo(projectId, {
+      type: 'agent-designer-raw',
+      sessionId,
+      terminalSeq,
+      text,
+    });
+  });
   session.on('state', (state: string) =>
-    broadcastTo(projectId, { type: 'agent-designer-state', state }),
+    broadcastTo(projectId, { type: 'agent-designer-state', sessionId, state }),
   );
   session.on('event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'agent-designer-event', event }),
+    broadcastTo(projectId, { type: 'agent-designer-event', sessionId, event }),
   );
   session.on('jsonl-event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'agent-designer-jsonl', event }),
+    broadcastTo(projectId, { type: 'agent-designer-jsonl', sessionId, event }),
   );
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    broadcastTo(projectId, { type: 'agent-designer-exit', code, signal });
+    broadcastTo(projectId, { type: 'agent-designer-exit', sessionId, code, signal });
   });
   flag.__pcAgentDesignerAttached = true;
 }
@@ -2004,8 +2020,9 @@ app.post('/api/projects/:projectId/agent-designer/start', (c) => {
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   try {
     const session = runtime.startAgentDesigner();
-    attachAgentDesignerHandlers(id, session);
-    return c.json({ ok: true, state: session.getState() });
+    const sessionId = runtime.agentDesignerSession();
+    attachAgentDesignerHandlers(id, session, sessionId);
+    return c.json({ ok: true, state: session.getState(), sessionId });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
   }
@@ -2030,6 +2047,32 @@ app.post('/api/projects/:projectId/agent-designer/interrupt', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   runtime.agentDesignerPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/agent-designer/terminal-input', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ data?: unknown }>().catch(() => ({}) as { data?: unknown });
+  const result = forwardTerminalInput(
+    { ptySession: () => runtime.agentDesignerPty() },
+    body.data,
+  );
+  if (!result.ok) return c.json({ ok: false, error: result.error, status: result.status }, 400);
+  return c.json({ ok: true, bytesWritten: result.bytesWritten });
+});
+
+app.post('/api/projects/:projectId/agent-designer/resize', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ cols?: unknown; rows?: unknown }>().catch(
+    () => ({}) as { cols?: unknown; rows?: unknown },
+  );
+  if (typeof body.cols === 'number' && typeof body.rows === 'number') {
+    runtime.resizeAgentDesigner(body.cols, body.rows);
+  }
   return c.json({ ok: true });
 });
 
@@ -2059,20 +2102,31 @@ app.delete('/api/projects/:projectId/agent-designer', (c) => {
 function attachWorkflowBuilderHandlers(
   projectId: ULID,
   session: ReturnType<ProjectRuntime['startWorkflowBuilder']>,
+  sessionId: string | null,
 ): void {
   const flag = session as unknown as { __pcWorkflowBuilderAttached?: boolean };
   if (flag.__pcWorkflowBuilderAttached) return;
+  let terminalSeq = 0;
+  session.on('raw', (text: string) => {
+    terminalSeq += 1;
+    broadcastTo(projectId, {
+      type: 'workflow-builder-raw',
+      sessionId,
+      terminalSeq,
+      text,
+    });
+  });
   session.on('state', (state: string) =>
-    broadcastTo(projectId, { type: 'workflow-builder-state', state }),
+    broadcastTo(projectId, { type: 'workflow-builder-state', sessionId, state }),
   );
   session.on('event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'workflow-builder-event', event }),
+    broadcastTo(projectId, { type: 'workflow-builder-event', sessionId, event }),
   );
   session.on('jsonl-event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'workflow-builder-jsonl', event }),
+    broadcastTo(projectId, { type: 'workflow-builder-jsonl', sessionId, event }),
   );
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    broadcastTo(projectId, { type: 'workflow-builder-exit', code, signal });
+    broadcastTo(projectId, { type: 'workflow-builder-exit', sessionId, code, signal });
   });
   flag.__pcWorkflowBuilderAttached = true;
 }
@@ -2083,11 +2137,12 @@ app.post('/api/projects/:projectId/workflow-builder/start', (c) => {
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   try {
     const session = runtime.startWorkflowBuilder();
-    attachWorkflowBuilderHandlers(id, session);
+    const sessionId = runtime.workflowBuilderSession();
+    attachWorkflowBuilderHandlers(id, session, sessionId);
     return c.json({
       ok: true,
       state: session.getState(),
-      sessionId: runtime.workflowBuilderSession(),
+      sessionId,
     });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
@@ -2116,6 +2171,32 @@ app.post('/api/projects/:projectId/workflow-builder/interrupt', (c) => {
   return c.json({ ok: true });
 });
 
+app.post('/api/projects/:projectId/workflow-builder/terminal-input', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ data?: unknown }>().catch(() => ({}) as { data?: unknown });
+  const result = forwardTerminalInput(
+    { ptySession: () => runtime.workflowBuilderPty() },
+    body.data,
+  );
+  if (!result.ok) return c.json({ ok: false, error: result.error, status: result.status }, 400);
+  return c.json({ ok: true, bytesWritten: result.bytesWritten });
+});
+
+app.post('/api/projects/:projectId/workflow-builder/resize', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ cols?: unknown; rows?: unknown }>().catch(
+    () => ({}) as { cols?: unknown; rows?: unknown },
+  );
+  if (typeof body.cols === 'number' && typeof body.rows === 'number') {
+    runtime.resizeWorkflowBuilder(body.cols, body.rows);
+  }
+  return c.json({ ok: true });
+});
+
 app.delete('/api/projects/:projectId/workflow-builder', (c) => {
   const id = c.req.param('projectId');
   const runtime = resolveProject(id);
@@ -2136,20 +2217,31 @@ app.delete('/api/projects/:projectId/workflow-builder', (c) => {
 function attachSetupWizardHandlers(
   projectId: ULID,
   session: ReturnType<ProjectRuntime['startSetupWizard']>,
+  sessionId: string | null,
 ): void {
   const flag = session as unknown as { __pcSetupWizardAttached?: boolean };
   if (flag.__pcSetupWizardAttached) return;
+  let terminalSeq = 0;
+  session.on('raw', (text: string) => {
+    terminalSeq += 1;
+    broadcastTo(projectId, {
+      type: 'setup-wizard-raw',
+      sessionId,
+      terminalSeq,
+      text,
+    });
+  });
   session.on('state', (state: string) =>
-    broadcastTo(projectId, { type: 'setup-wizard-state', state }),
+    broadcastTo(projectId, { type: 'setup-wizard-state', sessionId, state }),
   );
   session.on('event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'setup-wizard-event', event }),
+    broadcastTo(projectId, { type: 'setup-wizard-event', sessionId, event }),
   );
   session.on('jsonl-event', (event: unknown) =>
-    broadcastTo(projectId, { type: 'setup-wizard-jsonl', event }),
+    broadcastTo(projectId, { type: 'setup-wizard-jsonl', sessionId, event }),
   );
   session.on('exit', (code: number | undefined, signal: string | undefined) => {
-    broadcastTo(projectId, { type: 'setup-wizard-exit', code, signal });
+    broadcastTo(projectId, { type: 'setup-wizard-exit', sessionId, code, signal });
   });
   flag.__pcSetupWizardAttached = true;
 }
@@ -2159,8 +2251,9 @@ app.post('/api/projects/:projectId/setup-wizard/start', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   const session = runtime.startSetupWizard();
-  attachSetupWizardHandlers(id, session);
-  return c.json({ ok: true, state: session.getState() });
+  const sessionId = runtime.setupWizardSession();
+  attachSetupWizardHandlers(id, session, sessionId);
+  return c.json({ ok: true, state: session.getState(), sessionId });
 });
 
 app.post('/api/projects/:projectId/setup-wizard/send', async (c) => {
@@ -2182,6 +2275,32 @@ app.post('/api/projects/:projectId/setup-wizard/interrupt', (c) => {
   const runtime = resolveProject(id);
   if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
   runtime.setupWizardPty()?.interrupt();
+  return c.json({ ok: true });
+});
+
+app.post('/api/projects/:projectId/setup-wizard/terminal-input', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ data?: unknown }>().catch(() => ({}) as { data?: unknown });
+  const result = forwardTerminalInput(
+    { ptySession: () => runtime.setupWizardPty() },
+    body.data,
+  );
+  if (!result.ok) return c.json({ ok: false, error: result.error, status: result.status }, 400);
+  return c.json({ ok: true, bytesWritten: result.bytesWritten });
+});
+
+app.post('/api/projects/:projectId/setup-wizard/resize', async (c) => {
+  const id = c.req.param('projectId');
+  const runtime = resolveProject(id);
+  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+  const body = await c.req.json<{ cols?: unknown; rows?: unknown }>().catch(
+    () => ({}) as { cols?: unknown; rows?: unknown },
+  );
+  if (typeof body.cols === 'number' && typeof body.rows === 'number') {
+    runtime.resizeSetupWizard(body.cols, body.rows);
+  }
   return c.json({ ok: true });
 });
 

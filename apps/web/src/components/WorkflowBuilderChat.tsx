@@ -15,9 +15,9 @@
 
 import { useMemo } from 'react';
 
-import { api } from '@/api/client';
+import { api, type OrchestratorSurfacePreference } from '@/api/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
-import { ChatSurface } from '@/components/ChatSurface';
+import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
 export type WorkflowBuilderState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
@@ -35,6 +35,11 @@ interface WorkflowBuilderChatProps {
   sessionId: string | null;
   /** Reply to an AskUserQuestion pick — wired to the modal's WS `ask-reply`. */
   onAskReply: (toolUseId: string, answer: string) => boolean;
+  title: string;
+  subtitle: string;
+  statusLabel?: string;
+  onClose: () => void;
+  onSurfaceModeChange?: (mode: OrchestratorSurfacePreference) => void;
 }
 
 function isWarmupUserText(text: string): boolean {
@@ -57,6 +62,7 @@ function adaptWorkflowBuilderEvents(
   let skipNextAssistant = false;
   for (const env of events) {
     if (env.type === 'workflow-builder-state') {
+      if (!belongsToSession(env, sessionId)) continue;
       const s = (env as { state?: string }).state;
       if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
         state = s;
@@ -67,6 +73,7 @@ function adaptWorkflowBuilderEvents(
       continue;
     }
     if (env.type === 'workflow-builder-jsonl') {
+      if (!belongsToSession(env, sessionId)) continue;
       const ev = (env as { event?: JsonlEvent }).event;
       if (!ev) continue;
       if (ev.kind === 'jsonl-user' && ev.text) {
@@ -83,7 +90,15 @@ function adaptWorkflowBuilderEvents(
       continue;
     }
     if (env.type === 'workflow-builder-exit') {
+      if (!belongsToSession(env, sessionId)) continue;
       state = 'exited';
+      continue;
+    }
+    if (env.type === 'workflow-builder-raw') {
+      const rawSessionId = (env as { sessionId?: unknown }).sessionId;
+      if (sessionId && rawSessionId === sessionId) {
+        out.push({ ...env, projectId, type: 'raw', sessionId });
+      }
       continue;
     }
     if (env.type === 'ask') {
@@ -97,11 +112,21 @@ function adaptWorkflowBuilderEvents(
   return { envelopes: out, state };
 }
 
+function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
+  if (!sessionId) return true;
+  return (env as { sessionId?: unknown }).sessionId === sessionId;
+}
+
 export function WorkflowBuilderChat({
   projectId,
   events,
   sessionId,
   onAskReply,
+  title,
+  subtitle,
+  statusLabel,
+  onClose,
+  onSurfaceModeChange,
 }: WorkflowBuilderChatProps) {
   const { envelopes, state } = useMemo(
     () => adaptWorkflowBuilderEvents(events, projectId, sessionId),
@@ -123,10 +148,15 @@ export function WorkflowBuilderChat({
         : 'Describe the workflow you want. Enter sends, Shift+Enter for a newline.';
 
   return (
-    <ChatSurface
+    <TransientAgentConversation
       events={envelopes}
       projectId={projectId}
-      currentSessionId={sessionId}
+      sessionId={sessionId}
+      title={<span className="text-foreground">{title}</span>}
+      titleText={title}
+      subtitle={subtitle}
+      statusLabel={statusLabel ?? stateLabel(state)}
+      onClose={onClose}
       onSend={(text) => {
         void api.sendWorkflowBuilder(projectId, text).catch(() => {
           /* surfaced in the next event broadcast or composer ui */
@@ -139,11 +169,38 @@ export function WorkflowBuilderChat({
         });
         return true;
       }}
+      onTerminalInput={(data) => {
+        void api.sendWorkflowBuilderTerminalInput(projectId, data).catch(() => {
+          /* best-effort; terminal input errors are not rendered inline */
+        });
+        return true;
+      }}
+      onTerminalResize={(cols, rows) => {
+        void api.resizeWorkflowBuilder(projectId, cols, rows).catch(() => {
+          /* best-effort */
+        });
+        return true;
+      }}
       onAskReply={onAskReply}
       composerHistoryKey={`workflow-builder:${projectId}`}
       composerDisabled={state === 'spawning' || state === 'exited'}
       composerPlaceholder={composerPlaceholder}
       emptyState={emptyState}
+      onSurfaceModeChange={onSurfaceModeChange}
     />
   );
+}
+
+function stateLabel(state: WorkflowBuilderState): string {
+  switch (state) {
+    case 'spawning':
+      return 'Starting...';
+    case 'thinking':
+      return 'Thinking...';
+    case 'exited':
+      return 'Session ended';
+    case 'ready':
+    default:
+      return 'Ready';
+  }
 }

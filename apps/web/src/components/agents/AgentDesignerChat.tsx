@@ -16,13 +16,14 @@ import { useMemo } from 'react';
 
 import { api, type Project } from '@/api/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
-import { ChatSurface } from '@/components/ChatSurface';
+import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
 export type AgentDesignerState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
 interface AgentDesignerChatProps {
   project: Project;
   events: WsEnvelope[];
+  sessionId: string | null;
 }
 
 /** Warmup-turn user prompt from agent-run-manager. Filtered from the chat. */
@@ -46,12 +47,14 @@ interface AdapterResult {
 function adaptAgentDesignerEvents(
   events: WsEnvelope[],
   projectId: string,
+  sessionId: string | null,
 ): AdapterResult {
   const out: WsEnvelope[] = [];
   let state: AgentDesignerState = 'spawning';
   let skipNextAssistant = false;
   for (const env of events) {
     if (env.type === 'agent-designer-state') {
+      if (!belongsToSession(env, sessionId)) continue;
       const s = (env as { state?: string }).state;
       if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
         state = s;
@@ -62,6 +65,7 @@ function adaptAgentDesignerEvents(
       continue;
     }
     if (env.type === 'agent-designer-jsonl') {
+      if (!belongsToSession(env, sessionId)) continue;
       const ev = (env as { event?: JsonlEvent }).event;
       if (!ev) continue;
       // Filter the warmup turn pair (synthetic prompt from Section 20.C).
@@ -77,8 +81,16 @@ function adaptAgentDesignerEvents(
       continue;
     }
     if (env.type === 'agent-designer-exit') {
+      if (!belongsToSession(env, sessionId)) continue;
       state = 'exited';
       // No envelope translation — composerDisabled handles user-facing state.
+      continue;
+    }
+    if (env.type === 'agent-designer-raw') {
+      const rawSessionId = (env as { sessionId?: unknown }).sessionId;
+      if (sessionId && rawSessionId === sessionId) {
+        out.push({ ...env, projectId, type: 'raw', sessionId });
+      }
       continue;
     }
     // Anything else (orchestrator events on the same WS) doesn't belong on
@@ -87,21 +99,19 @@ function adaptAgentDesignerEvents(
   return { envelopes: out, state };
 }
 
-export function AgentDesignerChat({ project, events }: AgentDesignerChatProps) {
-  const { envelopes, state } = useMemo(
-    () => adaptAgentDesignerEvents(events, project.id),
-    [events, project.id],
-  );
+function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
+  if (!sessionId) return true;
+  return (env as { sessionId?: unknown }).sessionId === sessionId;
+}
 
-  const headerSlot = (
-    <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-2">
-      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-        agent-designer
-      </span>
-      <span className="bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-        {stateLabel(state)}
-      </span>
-    </div>
+export function AgentDesignerChat({
+  project,
+  events,
+  sessionId,
+}: AgentDesignerChatProps) {
+  const { envelopes, state } = useMemo(
+    () => adaptAgentDesignerEvents(events, project.id, sessionId),
+    [events, project.id, sessionId],
   );
 
   const emptyState =
@@ -119,13 +129,13 @@ export function AgentDesignerChat({ project, events }: AgentDesignerChatProps) {
         : 'Type your reply. Enter sends, Shift+Enter for a newline.';
 
   return (
-    <ChatSurface
+    <TransientAgentConversation
       events={envelopes}
       projectId={project.id}
-      // No session id for transient agent-designer sessions; the project
-      // WS doesn't broadcast ask cards to this surface (the pod doesn't
-      // call pc_ask_*), so the ask-filter is effectively a no-op.
-      currentSessionId={null}
+      sessionId={sessionId}
+      title={<span className="text-foreground">agent-designer</span>}
+      titleText="agent-designer"
+      statusLabel={stateLabel(state)}
       onSend={(text) => {
         void api.sendAgentDesigner(project.id, text).catch(() => {
           /* error surfaced in the next event broadcast or composer ui */
@@ -139,10 +149,21 @@ export function AgentDesignerChat({ project, events }: AgentDesignerChatProps) {
         });
         return true;
       }}
+      onTerminalInput={(data) => {
+        void api.sendAgentDesignerTerminalInput(project.id, data).catch(() => {
+          /* best-effort; terminal input acks are not surfaced in this shell */
+        });
+        return true;
+      }}
+      onTerminalResize={(cols, rows) => {
+        void api.resizeAgentDesigner(project.id, cols, rows).catch(() => {
+          /* best-effort */
+        });
+        return true;
+      }}
       composerHistoryKey={`agent-designer:${project.id}`}
       composerDisabled={state === 'spawning' || state === 'exited'}
       composerPlaceholder={composerPlaceholder}
-      headerSlot={headerSlot}
       emptyState={emptyState}
     />
   );

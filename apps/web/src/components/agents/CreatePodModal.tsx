@@ -49,6 +49,7 @@ export function CreatePodModal({
   const [convoStarted, setConvoStarted] = useState(false);
   const [convoStarting, setConvoStarting] = useState(false);
   const [convoStartError, setConvoStartError] = useState<string | null>(null);
+  const [convoSessionId, setConvoSessionId] = useState<string | null>(null);
   const initialTabSet = useRef(false);
 
   const projectNamesSet = useMemo(
@@ -112,7 +113,8 @@ export function CreatePodModal({
       // state, but WS envelopes drive the live state in AgentDesignerChat
       // — don't setState off the response or we risk the transient-modal
       // start-race ([[transient-modal-state-race]]).
-      await api.startAgentDesigner(project.id);
+      const started = await api.startAgentDesigner(project.id);
+      setConvoSessionId(started.sessionId);
       setConvoStarted(true);
     } catch (e) {
       setConvoStartError((e as Error).message);
@@ -127,7 +129,7 @@ export function CreatePodModal({
       role="dialog"
       aria-modal="true"
     >
-      <div className="flex h-[80vh] w-full max-w-3xl flex-col border border-border bg-card text-foreground shadow-xl">
+      <div className="flex h-[92vh] w-[96vw] max-w-[1600px] flex-col border border-border bg-card text-foreground shadow-xl">
         <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
           <h2 className="text-base font-semibold text-foreground">Add agent</h2>
           <button
@@ -157,7 +159,11 @@ export function CreatePodModal({
 
           <TabPanel active={tab === 'conversational'}>
             {convoStarted ? (
-              <AgentDesignerChat project={project} events={events} />
+              <AgentDesignerChat
+                project={project}
+                events={events}
+                sessionId={convoSessionId}
+              />
             ) : (
               <StartScreen
                 starting={convoStarting}

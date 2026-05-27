@@ -814,6 +814,9 @@ interface ChatSurfaceProps {
    *  of a misleading live "Thinking" with a climbing timer. Transient
    *  surfaces that manage their own lifecycle omit this. */
   wsStatus?: WsStatus;
+  /** Reports the active surface to parent shells that need to adapt their
+   *  surrounding layout, such as hiding side previews while xterm is active. */
+  onSurfaceModeChange?: (mode: OrchestratorSurfacePreference) => void;
 }
 
 export function ChatSurface({
@@ -840,6 +843,7 @@ export function ChatSurface({
   footerSlot,
   emptyState,
   wsStatus,
+  onSurfaceModeChange,
 }: ChatSurfaceProps) {
   const [pendingPrompts, setPendingPrompts] = useState<PendingPrompt[]>([]);
   const terminalEligible = Boolean(
@@ -850,6 +854,7 @@ export function ChatSurface({
   );
   const [surfaceMode, setSurfaceMode] =
     useState<OrchestratorSurfacePreference>('chat');
+  const [surfaceModeReady, setSurfaceModeReady] = useState(false);
   const eventsRef = useRef(events);
   useEffect(() => {
     eventsRef.current = events;
@@ -1121,15 +1126,22 @@ export function ChatSurface({
   }, [currentSessionId]);
 
   useEffect(() => {
+    setSurfaceModeReady(false);
     if (!terminalEligible || !currentSessionId) {
       setSurfaceMode('chat');
+      setSurfaceModeReady(true);
       return;
     }
     const stored = readTerminalMode(projectId, currentSessionId);
     setSurfaceMode(stored ?? defaultOrchestratorSurface);
+    setSurfaceModeReady(true);
   }, [projectId, currentSessionId, terminalEligible, defaultOrchestratorSurface]);
 
   const terminalActive = terminalEligible && surfaceMode === 'terminal';
+  useEffect(() => {
+    if (!surfaceModeReady) return;
+    onSurfaceModeChange?.(terminalActive ? 'terminal' : 'chat');
+  }, [onSurfaceModeChange, surfaceModeReady, terminalActive]);
   const setTerminalMode = useCallback(
     (next: OrchestratorSurfacePreference) => {
       if (!terminalEligible || !currentSessionId) return;
@@ -1251,7 +1263,7 @@ export function ChatSurface({
   }
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {headerSlot}
       <div className="relative flex-1 overflow-hidden">
         <div
@@ -1484,7 +1496,7 @@ export function ChatSurface({
             sessionId={currentSessionId}
             events={events}
             visible={terminalActive}
-            writable={terminalActive && wsStatus === 'open'}
+            writable={terminalActive && (wsStatus === undefined || wsStatus === 'open')}
             onInput={onTerminalInput}
             onResize={onTerminalResize}
           />

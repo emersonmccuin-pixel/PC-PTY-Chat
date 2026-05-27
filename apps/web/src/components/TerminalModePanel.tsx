@@ -119,6 +119,24 @@ export function TerminalModePanel({
     term.open(hostRef.current);
     termRef.current = term;
     fitRef.current = fit;
+    term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type === 'keydown' &&
+        event.key === 'Enter' &&
+        event.shiftKey &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        if (writableRef.current) {
+          onInputRef.current('\n');
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      }
+      return true;
+    });
     dataDisposableRef.current = term.onData((data) => {
       if (!writableRef.current) return;
       onInputRef.current(data);

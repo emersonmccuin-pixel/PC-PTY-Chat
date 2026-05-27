@@ -70,9 +70,8 @@ function scrubIdeIntegrationEnv(env: Record<string, string | undefined>): Record
 /** CC encodes the absolute cwd as the dir name under `~/.claude/projects/`.
  *  Replace any non-[A-Za-z0-9._-] character with '-'. Empirically verified
  *  against `C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test` →
- *  `C--Users-emers-AppData-Local-Temp-cc-stream-test` and
- *  `E:\\Projects\\Caisson\\workspace` →
- *  `E--Claude-Code-Projects-Personal-Caisson-workspace`. */
+ *  `C--Users-example-AppData-Local-Temp-cc-stream-test` and
+ *  `E:\\Projects\\Caisson\\workspace` → `E--Projects-Caisson-workspace`. */
 export function encodeCwdForClaude(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9._-]/g, '-');
 }
@@ -113,6 +112,9 @@ export interface PtySessionOptions {
    *  PC_SESSION_ID through so hooks can route their writes into the
    *  per-session data dir. */
   extraEnv?: Record<string, string>;
+  /** Post-scrub env overrides. Used by interactive xterm surfaces to
+   *  advertise terminal capabilities without reintroducing host IDE markers. */
+  envOverrides?: Record<string, string>;
   /** Durable PC session id used in the normalized replay ledger. Defaults to
    *  the parent directory of `eventsPath` for transient sessions. */
   pcSessionId?: string;
@@ -370,13 +372,17 @@ export class PtySession extends EventEmitter {
 
     this.loadDevChannels = opts.loadDevChannels ?? true;
     const args = buildPtySessionArgs(opts);
+    const env = scrubIdeIntegrationEnv({
+      ...process.env,
+      FORCE_COLOR: '0',
+      ...(opts.extraEnv ?? {}),
+    });
     this.child = pty.spawn(claudeExe, args, {
       cwd: opts.workspaceDir,
-      env: scrubIdeIntegrationEnv({
-        ...process.env,
-        FORCE_COLOR: '0',
-        ...(opts.extraEnv ?? {}),
-      }),
+      env: {
+        ...env,
+        ...(opts.envOverrides ?? {}),
+      },
       cols: opts.cols ?? 120,
       rows: opts.rows ?? 30,
     });
@@ -668,6 +674,18 @@ export class PtySession extends EventEmitter {
   interrupt() {
     if (this.state === 'exited') return;
     this.child.write('\x1b');
+  }
+
+  /** Raw terminal input for xterm-backed debug surfaces. Bypasses the
+   *  bracketed-paste chat send queue and writes exactly what xterm emits. */
+  writeRaw(bytes: string): boolean {
+    if (this.state === 'exited') return false;
+    try {
+      this.child.write(bytes);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Section 20.C — re-send the Enter key without typing any text. Used by

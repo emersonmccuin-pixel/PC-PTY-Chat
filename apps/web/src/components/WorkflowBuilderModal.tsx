@@ -27,7 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { WorkflowV2 } from '@pc/domain';
 
-import { api } from '@/api/client';
+import { api, type OrchestratorSurfacePreference } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { WorkflowBuilderChat } from './WorkflowBuilderChat';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
@@ -78,6 +78,8 @@ export function WorkflowBuilderModal({
   const [draftDef, setDraftDef] = useState<WorkflowV2.Workflow | null>(
     editingWorkflow?.def ?? null,
   );
+  const [conversationSurface, setConversationSurface] =
+    useState<OrchestratorSurfacePreference>('chat');
 
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -202,6 +204,19 @@ export function WorkflowBuilderModal({
   const subtitle = isEditMode
     ? 'Tell the model what you want to change. Drag nodes to reposition.'
     : 'Interview drives a complete workflow. Drag nodes to reposition; sockets to wire. Close to cancel.';
+  const conversation = (
+    <WorkflowBuilderChat
+      projectId={projectId}
+      events={events}
+      sessionId={sessionId}
+      onAskReply={replyToAsk}
+      title={title}
+      subtitle={subtitle}
+      statusLabel={statusLabel}
+      onClose={() => closeRef.current()}
+      onSurfaceModeChange={setConversationSurface}
+    />
+  );
 
   return (
     <div
@@ -209,43 +224,30 @@ export function WorkflowBuilderModal({
       aria-modal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     >
-      <div className="flex h-[85vh] w-full max-w-6xl flex-col border border-border bg-card text-sm shadow-xl">
-        <header className="flex items-center justify-between border-b border-border bg-muted/30 px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold uppercase tracking-wide">{title}</h2>
-            <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">{statusLabel}</span>
-            <button
-              onClick={() => closeRef.current()}
-              className="border border-border px-2 py-1 text-xs hover:bg-muted"
-            >
-              Close
-            </button>
-          </div>
-        </header>
-
-        <Group orientation="horizontal" id="pc-workflow-builder-split" className="flex-1 min-h-0">
-          <Panel id="chat" defaultSize="40%" minSize="28%">
-            <WorkflowBuilderChat
-              projectId={projectId}
-              events={events}
-              sessionId={sessionId}
-              onAskReply={replyToAsk}
-            />
-          </Panel>
-          <Separator className="w-px bg-border transition-colors hover:bg-primary" />
-          <Panel id="graph" defaultSize="60%" minSize="32%">
-            <div className="relative h-full min-h-0 w-full">
-              <WorkflowGraphV2
-                workflow={draftDef}
-                authoring
-                onChange={handleGraphChange}
-              />
-            </div>
-          </Panel>
-        </Group>
+      <div className="flex h-[92vh] w-[96vw] max-w-[1800px] flex-col border border-border bg-card text-sm shadow-xl">
+        {conversationSurface === 'terminal' ? (
+          <div className="min-h-0 flex-1 overflow-hidden">{conversation}</div>
+        ) : (
+          <Group
+            orientation="horizontal"
+            id="pc-workflow-builder-split"
+            className="min-h-0 flex-1 overflow-hidden"
+          >
+            <Panel id="chat" defaultSize="64%" minSize="50%" className="min-h-0 overflow-hidden">
+              {conversation}
+            </Panel>
+            <Separator className="w-px bg-border transition-colors hover:bg-primary" />
+            <Panel id="graph" defaultSize="36%" minSize="24%" className="min-h-0 overflow-hidden">
+              <div className="relative h-full min-h-0 w-full">
+                <WorkflowGraphV2
+                  workflow={draftDef}
+                  authoring
+                  onChange={handleGraphChange}
+                />
+              </div>
+            </Panel>
+          </Group>
+        )}
       </div>
     </div>
   );
