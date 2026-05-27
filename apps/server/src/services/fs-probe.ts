@@ -24,7 +24,8 @@ export interface FolderProbeResult {
   isGitRepo: boolean;
   /** Whether `<path>/.project-companion` already exists — blocks attach. */
   hasPcScaffold: boolean;
-  /** Whether `<path>/.mcp.json` already exists — blocks attach. */
+  /** Whether `<path>/.mcp.json` already exists. Informational only; PC no
+   *  longer writes or owns project-root MCP config. */
   hasMcpJson: boolean;
 }
 

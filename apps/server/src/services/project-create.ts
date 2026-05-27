@@ -4,8 +4,8 @@
 //
 //   1. Validate name + folder.
 //   2. Resolve a unique slug from the name.
-//   3. Mint a ULID up-front so the scaffold pass (which embeds the id into
-//      hooks + .mcp.json) and the DB row share an identity.
+//   3. Mint a ULID up-front so the durable scaffold and the DB row share an
+//      identity.
 //   4. `git init -b main` in the project folder (skipped for attach-to-git).
 //   5. If `init-in-place` AND the folder had pre-existing files: commit them
 //      first as `Initial import` so the user can `git diff` the next commit
@@ -65,11 +65,7 @@ const DEFAULT_STAGES: Stage[] = [
  *  attach-to-git so the user's other uncommitted changes are left alone.
  *  README.md is intentionally absent — attach-to-git skips it to preserve
  *  the existing repo's README. */
-const SCAFFOLD_PATHS_FOR_COMMIT = [
-  '.mcp.json',
-  '.claude',
-  '.project-companion',
-];
+const SCAFFOLD_PATHS_FOR_COMMIT = ['.project-companion'];
 
 export class ProjectCreate {
   constructor(
@@ -107,11 +103,6 @@ export class ProjectCreate {
       if (existsSync(resolve(folderPath, '.project-companion'))) {
         throw new Error(
           `${folderPath}/.project-companion already exists — remove it first to re-adopt this repo`,
-        );
-      }
-      if (existsSync(resolve(folderPath, '.mcp.json'))) {
-        throw new Error(
-          `${folderPath}/.mcp.json already exists — back it up + remove it first; PC needs to write its own`,
         );
       }
     }

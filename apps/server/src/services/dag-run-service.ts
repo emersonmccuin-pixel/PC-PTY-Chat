@@ -47,6 +47,10 @@ export interface DagRunServiceOptions {
   projectId: ULID;
   workspaceDir: string;
   channelPort: number;
+  serverPort?: number;
+  dataDir?: string;
+  templatesDir?: string;
+  trunkPath?: string;
   getProject: () => Project;
   workItemService: WorkItemService;
   worktrees: WorktreeService;
@@ -168,7 +172,18 @@ export function makeExecutorDeps(
       worktreeDir,
       scratchDir: sessionDataDir,
       filterMcpToReferencedTools: true,
+      dataDir: opts.dataDir,
+      templatesDir: opts.templatesDir,
+      trunkPath: opts.trunkPath,
+      serverPort: opts.serverPort,
+      channelPort: opts.channelPort,
     });
+    if (!podPrep) {
+      return {
+        state: 'failed',
+        error: `pod "${node.agent}" not found in registry`,
+      };
+    }
 
     const initialInput =
       `Your assignment is work item ${childWi.id}. Call pc_get_work_item({ id: "${childWi.id}" }) ` +
@@ -176,14 +191,17 @@ export function makeExecutorDeps(
       `work item with your report.`;
 
     const handle = spawner({
-      agentName: node.agent,
+      agentName: podPrep.agentCliName,
       worktreeDir,
       initialInput,
       sessionDataDir,
       pcSessionId,
       ...(node.timeout !== undefined ? { idleTimeoutMs: node.timeout } : {}),
-      ...(podPrep?.mcpConfigPath ? { mcpConfigPath: podPrep.mcpConfigPath } : {}),
-      ...(podPrep?.extraEnv ? { extraEnv: podPrep.extraEnv } : {}),
+      mcpConfigPath: podPrep.mcpConfigPath,
+      settingsPath: podPrep.settingsPath,
+      settingSources: podPrep.settingSources,
+      pluginDirs: [podPrep.pluginDir],
+      extraEnv: podPrep.extraEnv,
     });
 
     let failureReason: string | null = null;
@@ -191,7 +209,7 @@ export function makeExecutorDeps(
       const result = await handle.done;
       if (result.kind === 'failure') failureReason = `${result.cause}: ${result.message}`;
     } finally {
-      podPrep?.cleanup();
+      podPrep.cleanup();
     }
 
     const outcome = await verify({

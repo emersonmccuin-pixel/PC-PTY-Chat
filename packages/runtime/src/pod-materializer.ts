@@ -92,8 +92,62 @@ export interface MaterializedPod {
   cleanup(): void;
 }
 
+export interface MaterializedPluginPod extends MaterializedPod {
+  /** Directory passed to Claude via `--plugin-dir`. */
+  pluginDir: string;
+  /** Agent name passed to Claude via `--agent`. Plugin agents are namespaced. */
+  agentCliName: string;
+}
+
 export function materializePod(opts: MaterializePodOptions): MaterializedPod {
-  const { bundle, worktreeDir, scratchDir } = opts;
+  const { bundle, worktreeDir } = opts;
+  const agentMdPath = resolve(worktreeDir, '.claude', 'agents', `${bundle.agent.name}.md`);
+  return materializePodFiles(opts, agentMdPath, {
+    cleanupAgent: () => tryUnlink(agentMdPath),
+  });
+}
+
+/** Materialize a pod as a session-local Claude plugin instead of writing
+ *  `<worktree>/.claude/agents`. This is the isolated runtime path PC uses for
+ *  spawns: terminal-launched Claude Code sessions in the user's repo cannot
+ *  auto-discover these agent definitions. */
+export function materializePodPlugin(
+  opts: MaterializePodOptions & { pluginName?: string },
+): MaterializedPluginPod {
+  const pluginName = opts.pluginName ?? 'pc-runtime';
+  const pluginDir = resolve(opts.scratchDir, 'claude-plugin');
+  const agentMdPath = resolve(pluginDir, 'agents', `${opts.bundle.agent.name}.md`);
+  const manifestPath = resolve(pluginDir, '.claude-plugin', 'plugin.json');
+  mkdirSync(dirname(manifestPath), { recursive: true });
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      {
+        name: pluginName,
+        version: '0.0.0',
+        description: 'Project Companion session runtime',
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  const materialized = materializePodFiles(opts, agentMdPath, {
+    cleanupAgent: () => rmSync(pluginDir, { recursive: true, force: true }),
+  });
+  return {
+    ...materialized,
+    pluginDir,
+    agentCliName: `${pluginName}:${opts.bundle.agent.name}`,
+  };
+}
+
+function materializePodFiles(
+  opts: MaterializePodOptions,
+  agentMdPath: string,
+  cleanup: { cleanupAgent: () => void },
+): MaterializedPod {
+  const { bundle, scratchDir } = opts;
   const baselineMcp = opts.baselineMcpServers ?? {};
   const catalog = opts.mcpToolCatalog ?? {};
 
@@ -109,7 +163,6 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
   );
   const variables = withMaterializerVariables(opts.variables, expandedTools);
 
-  const agentMdPath = resolve(worktreeDir, '.claude', 'agents', `${bundle.agent.name}.md`);
   mkdirSync(dirname(agentMdPath), { recursive: true });
   writeFileSync(
     agentMdPath,
@@ -139,7 +192,11 @@ export function materializePod(opts: MaterializePodOptions): MaterializedPod {
     mcpConfigPath,
     envVars: buildEnvMap(bundle.secrets),
     cleanup() {
-      tryUnlink(agentMdPath);
+      try {
+        cleanup.cleanupAgent();
+      } catch {
+        /* best-effort */
+      }
       tryUnlink(mcpConfigPath);
     },
   };

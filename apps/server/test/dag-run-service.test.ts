@@ -14,7 +14,7 @@ import type { Spawner, Verifier, DagRunServiceOptions } from '../src/services/da
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-dag-run-'));
 process.env.PC_DATA_DIR = tmpDir;
 
-const { closeDb, runMigrations, createProject, getWorkItem, listWorkItems, workflowRunsV2Repo } =
+const { closeDb, runMigrations, createProject, createAgent, getWorkItem, listWorkItems, workflowRunsV2Repo } =
   await import('@pc/db');
 const { WorkItemService } = await import('../src/services/work-item.ts');
 const { fireDagWorkflow, applyV2ReviewDecision } = await import('../src/services/dag-run-service.ts');
@@ -40,6 +40,16 @@ beforeEach(() => {
     stages,
     folderPath: tmpDir,
   }) as unknown as Project;
+  createAgent(
+    {
+      name: 'researcher',
+      scope: 'project',
+      projectId: project.id as ULID,
+      prompt: 'test researcher',
+      tools: ['mcp__pc-rig__pc_get_work_item'],
+    },
+    { actor: 'user', reason: 'dag-run-service test fixture' },
+  );
   const workItemService = new WorkItemService({
     projectId: project.id as ULID,
     getProject: () => project,
@@ -137,7 +147,7 @@ test('$nodeId.output in a downstream task resolves from the upstream child WI', 
   // to node a's report. (The fake agent later overwrites the body with b's own
   // report, so we assert against the creation-time body captured via broadcast.)
   const bCreated = createdBodies.find((w) => w.title.endsWith('· b'))!;
-  assert.match(bCreated.body, /use upstream: report::researcher/);
+  assert.match(bCreated.body, /use upstream: report::pc-runtime:researcher/);
 });
 
 test('review node pauses the run (paused), then approve completes it', async () => {

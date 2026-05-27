@@ -232,14 +232,6 @@ function ProbePreview({ state }: { state: ProbeState }) {
         </div>
       );
     }
-    if (probe.hasMcpJson) {
-      return (
-        <div className="text-xs text-destructive">
-          An <code className="bg-muted px-1">.mcp.json</code> file already exists
-          here. Back it up + remove it first — PC needs to write its own.
-        </div>
-      );
-    }
     return (
       <div className="text-xs text-success">
         Existing git repo — will add the Caisson scaffold as one new
@@ -268,7 +260,7 @@ function derivedMode(state: ProbeState): CreateProjectMode | null {
   const p = state.probe;
   if (!p.exists || !p.isDirectory) return null;
   if (p.isGitRepo) {
-    if (p.hasPcScaffold || p.hasMcpJson) return null;
+    if (p.hasPcScaffold) return null;
     return 'attach-to-git';
   }
   return p.hasFiles ? 'init-in-place' : 'init-empty';

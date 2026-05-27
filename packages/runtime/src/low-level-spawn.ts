@@ -39,6 +39,8 @@ export interface PodDescriptor {
   /** Pod name passed to `--agent <name>`. Must match a materialized
    *  `.claude/agents/<name>.md` in the worktree. */
   name: string;
+  /** Logical PC pod name for records/UI when `name` is a CLI/plugin alias. */
+  logicalName?: string;
 }
 
 export interface LowLevelSpawnInput {
@@ -63,6 +65,14 @@ export interface LowLevelSpawnInput {
    *  this file's `command` field must point at the bundled
    *  `packages/mcp/dist/server.mjs`, not `npx -y tsx`. */
   mcpConfigPath?: string;
+  /** Absolute path to PC's session-local Claude settings file. */
+  settingsPath?: string;
+  /** Passed to `--setting-sources`. PC uses `''` to disable user/project/local
+   *  setting discovery while still loading explicit `--settings`. */
+  settingSources?: string;
+  /** Session-local Claude plugin dirs. Used to mount PC agent definitions
+   *  without writing `<worktree>/.claude/agents`. */
+  pluginDirs?: readonly string[];
   /** Per-spawn override of the claude binary path. Omit to let
    *  `requireClaudeBinary` resolve (config → CLAUDE_EXE → PATH → ~/.local/bin). */
   claudeExe?: string;
@@ -161,27 +171,7 @@ export class LowLevelSpawn extends EventEmitter {
       });
     }
 
-    const args: string[] = [
-      // Without this CC prompts before every tool call, blocking end_turn.
-      // Lab scenario 08 surfaced this. Production sets it for every dispatched
-      // agent and the orchestrator equivalent.
-      '--dangerously-skip-permissions',
-      // Pod's tool allowlist + prompt fully replace CC's coding-assistant
-      // default (Section 16a). Always set, never omitted.
-      '--agent',
-      this.input.podDefinition.name,
-      // Scope MCP to ONLY the supplied config. Caller is responsible for
-      // ensuring this file points at the bundled MCP server (Section 20.A).
-      '--mcp-config',
-      mcpConfigPath,
-      '--strict-mcp-config',
-    ];
-
-    if (this.input.mode === 'fresh') {
-      args.push('--session-id', this.input.ccProviderSessionId);
-    } else {
-      args.push('--resume', this.input.ccProviderSessionId);
-    }
+    const args = buildLowLevelSpawnArgs(this.input, mcpConfigPath);
 
     const env = scrubIdeEnv(this.input.env);
 
@@ -429,4 +419,45 @@ export class LowLevelSpawn extends EventEmitter {
     };
     tryAttach();
   }
+}
+
+export function buildLowLevelSpawnArgs(
+  input: LowLevelSpawnInput,
+  mcpConfigPath = input.mcpConfigPath ?? '.mcp.json',
+): string[] {
+  const args: string[] = [
+    // Without this CC prompts before every tool call, blocking end_turn.
+    // Lab scenario 08 surfaced this. Production sets it for every dispatched
+    // agent and the orchestrator equivalent.
+    '--dangerously-skip-permissions',
+    // Pod's tool allowlist + prompt fully replace CC's coding-assistant
+    // default (Section 16a). Always set, never omitted.
+    '--agent',
+    input.podDefinition.name,
+    // Scope MCP to ONLY the supplied config. Caller is responsible for
+    // ensuring this file points at the bundled MCP server (Section 20.A).
+    '--mcp-config',
+    mcpConfigPath,
+    '--strict-mcp-config',
+    // ReadyGate's init-complete signal is the remote-control banner. Claude
+    // does not emit that banner unless this flag is present.
+    '--remote-control',
+  ];
+  if (input.settingsPath) {
+    args.push('--settings', input.settingsPath);
+  }
+  if (input.settingSources !== undefined) {
+    args.push('--setting-sources', input.settingSources);
+  }
+  for (const pluginDir of input.pluginDirs ?? []) {
+    args.push('--plugin-dir', pluginDir);
+  }
+
+  if (input.mode === 'fresh') {
+    args.push('--session-id', input.ccProviderSessionId);
+  } else {
+    args.push('--resume', input.ccProviderSessionId);
+  }
+
+  return args;
 }

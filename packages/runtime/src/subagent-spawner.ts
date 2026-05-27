@@ -71,6 +71,12 @@ export interface SubagentSpawnRequest {
   excludeJsonlPaths?: readonly string[];
   /** Override `--mcp-config` for the spawn. */
   mcpConfigPath?: string;
+  /** Absolute path to PC's session-local Claude settings file. */
+  settingsPath?: string;
+  /** Passed to `--setting-sources`. */
+  settingSources?: string;
+  /** Session-local Claude plugin dirs. */
+  pluginDirs?: readonly string[];
 }
 
 export interface SubagentSpawnSuccess {
@@ -272,6 +278,9 @@ export function spawnSubagent(
     ccProviderSessionId,
     mode: 'fresh',
     mcpConfigPath: req.mcpConfigPath,
+    settingsPath: req.settingsPath,
+    settingSources: req.settingSources,
+    pluginDirs: req.pluginDirs,
     claudeExe: req.claudeExe,
     transcriptPath,
   };

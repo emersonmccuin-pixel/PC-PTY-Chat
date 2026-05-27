@@ -98,6 +98,9 @@ export interface AgentRunInput {
   /** Continuation lineage. Set by pc_continue_agent (Session 8 wiring). */
   continues?: string;
   mcpConfigPath?: string;
+  settingsPath?: string;
+  settingSources?: string;
+  pluginDirs?: readonly string[];
   claudeExe?: string;
   transcriptPath?: string;
   // Timeouts (all configurable; defaults per design §4.1):
@@ -187,7 +190,7 @@ export class AgentRun extends EventEmitter {
     this.record = {
       agentRunId: input.agentRunId,
       ccProviderSessionId: input.ccProviderSessionId,
-      podName: input.podDefinition.name,
+      podName: input.podDefinition.logicalName ?? input.podDefinition.name,
       state: 'queued',
       createdAt: this.deps.now(),
       queuedAt: this.deps.now(),
@@ -341,6 +344,9 @@ export class AgentRun extends EventEmitter {
       // opens; we don't pass it to LowLevelSpawn (LowLevelSpawn doesn't
       // auto-send either — kept here as a no-op pass-through field).
       mcpConfigPath: this.input.mcpConfigPath,
+      settingsPath: this.input.settingsPath,
+      settingSources: this.input.settingSources,
+      pluginDirs: this.input.pluginDirs,
       claudeExe: this.input.claudeExe,
       transcriptPath: this.input.transcriptPath,
       handshakeTimeoutMs: this.timeouts.handshakeTimeoutMs,

@@ -1,30 +1,24 @@
 // Section 17a.5 — Pod spawn preparation.
 //
 // Resolves an agent name against the pod registry and, when a live global pod
-// row exists, materialises it: writes the `.claude/agents/<name>.md` into the
-// worktree + a temp `mcp.json` in `scratchDir`, and returns the spawn args /
-// env vars / cleanup hook the caller folds into PtySession's `mcpConfigPath`
-// + `extraEnv`.
+// row exists, materialises it into a PC-owned per-session runtime bundle:
+// a Claude plugin with the agent definition, a temp `mcp.json`, and a
+// session-local settings file. Nothing is written to the user's worktree
+// `.claude/` or `.mcp.json`.
 //
 // Pod resolution is project-first-then-global as of Section 22.1
 // (codebase-review stabilization, 2026-05-25). Callers that have a projectId
 // MUST pass it so a project-scoped pod with the same name wins; callers that
 // don't (genuinely global-only contexts) can omit it for the legacy lookup.
 //
-// 17a.5 wires this into the workflow runtime's subagent dispatch path. The
-// orchestrator path stays on the existing `--append-system-prompt-file` flow
-// until Section 16a flips it (orchestrator becomes a pod row at that point).
-//
-// When no pod row exists, the helper returns a null bundle — caller falls
-// back to current behaviour (project `.mcp.json` + flat-file agent .md from
-// `templates/.project-companion/agents/`). This keeps Section 3's flat-file
-// globals working until 17e nukes them.
+// When no pod row exists, the helper returns a null bundle. Production callers
+// treat that as a loud spawn error; the old project-root fallback was removed
+// when PC's runtime became isolated from terminal Claude Code sessions.
 
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { getPodForSpawn } from '@pc/db';
-import type { PodMcpServerConfig, ULID } from '@pc/domain';
-import { materializePod, type MaterializedPod, type PodWorkItemContext } from '@pc/runtime';
+import type { ULID } from '@pc/domain';
+import { materializePodPlugin, type MaterializedPluginPod, type PodWorkItemContext } from '@pc/runtime';
+import { prepareClaudeRuntimeFiles } from './claude-runtime-bundle.ts';
 import { PC_RIG_TOOL_NAMES } from './pod-tool-catalog.ts';
 import { renderAvailableAgents } from './pod-variable-renderers.ts';
 
@@ -36,7 +30,7 @@ export interface PreparePodSpawnInput {
    *  dispatch is genuinely project-agnostic (no such call site exists in
    *  production today — all spawns happen within a project). */
   projectId?: ULID | null;
-  /** Worktree root — `.claude/agents/<name>.md` lands under here. */
+  /** Worktree root. Claude still runs here as cwd, but PC runtime files do not. */
   worktreeDir: string;
   /** Per-spawn scratch dir — temp `mcp.json` lands here. Caller owns the dir
    *  lifecycle; cleanup() removes the file but NOT the dir. */
@@ -56,12 +50,29 @@ export interface PreparePodSpawnInput {
    *  expected_output JSON. Null / undefined → no section emitted, matching
    *  today's behaviour. */
   workItem?: PodWorkItemContext;
+  /** Optional runtime wiring overrides. Production project runtimes pass these
+   *  explicitly; server-side agent routes can fall back to process defaults. */
+  dataDir?: string;
+  templatesDir?: string;
+  trunkPath?: string;
+  serverPort?: number;
+  channelPort?: number;
+  projectSlug?: string | null;
+  projectName?: string | null;
 }
 
 export interface PodSpawnPrep {
   /** Absolute path to the materialised pod `mcp.json`. Caller passes this as
    *  PtySession's `mcpConfigPath` and SubagentSpawnRequest's `mcpConfigPath`. */
   mcpConfigPath: string;
+  /** Agent name to pass to `--agent`. Plugin agents are namespaced. */
+  agentCliName: string;
+  /** Session-local plugin dir passed via `--plugin-dir`. */
+  pluginDir: string;
+  /** Session-local settings JSON passed via `--settings`. */
+  settingsPath: string;
+  /** Empty string disables user/project/local setting discovery. */
+  settingSources: '';
   /** Env-var map from the pod's secrets. Caller merges into the spawn's
    *  `extraEnv`. Empty when the pod has no secrets. */
   extraEnv: Record<string, string>;
@@ -78,13 +89,23 @@ export interface PodSpawnPrep {
 }
 
 /** Resolves the pod for `agentName` and materialises it. Returns `null` when
- *  no live global pod row exists for that name — caller falls back to the
- *  existing flat-file + project-`.mcp.json` path. */
+ *  no live global pod row exists for that name. */
 export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | null {
   const bundle = getPodForSpawn(input.agentName, input.projectId);
   if (!bundle) return null;
 
-  const baseline = readProjectMcpBaseline(input.worktreeDir);
+  const runtimeFiles = prepareClaudeRuntimeFiles({
+    scratchDir: input.scratchDir,
+    worktreeDir: input.worktreeDir,
+    projectId: input.projectId,
+    projectSlug: input.projectSlug,
+    projectName: input.projectName,
+    dataDir: input.dataDir,
+    templatesDir: input.templatesDir,
+    trunkPath: input.trunkPath,
+    serverPort: input.serverPort,
+    channelPort: input.channelPort,
+  });
 
   // Section 36 — pod-prompt variable substitution. Compute the DB-backed
   // roster lazily only when referenced. AVAILABLE_TOOLS is materializer-owned
@@ -95,11 +116,11 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
     variables.AVAILABLE_AGENTS = renderAvailableAgents(input.projectId ?? null);
   }
 
-  const materialised: MaterializedPod = materializePod({
+  const materialised: MaterializedPluginPod = materializePodPlugin({
     bundle,
     worktreeDir: input.worktreeDir,
     scratchDir: input.scratchDir,
-    baselineMcpServers: baseline,
+    baselineMcpServers: runtimeFiles.baselineMcpServers,
     mcpToolCatalog: { 'pc-rig': PC_RIG_TOOL_NAMES },
     filterMcpToReferencedTools: input.filterMcpToReferencedTools ?? false,
     workItem: input.workItem,
@@ -108,29 +129,19 @@ export function preparePodSpawn(input: PreparePodSpawnInput): PodSpawnPrep | nul
 
   return {
     mcpConfigPath: materialised.mcpConfigPath,
-    extraEnv: materialised.envVars,
-    cleanup: materialised.cleanup,
+    agentCliName: materialised.agentCliName,
+    pluginDir: materialised.pluginDir,
+    settingsPath: runtimeFiles.settingsPath,
+    settingSources: runtimeFiles.settingSources,
+    extraEnv: {
+      ...materialised.envVars,
+      ...runtimeFiles.extraEnv,
+    },
+    cleanup() {
+      try { materialised.cleanup(); } catch { /* best-effort */ }
+      try { runtimeFiles.cleanup(); } catch { /* best-effort */ }
+    },
     podScope: bundle.agent.scope,
     podProjectId: bundle.agent.projectId ?? null,
   };
-}
-
-/** Read the project's existing `<worktreeDir>/.mcp.json` and return its
- *  `mcpServers` map. The pod's MCP rows merge on top — pc-rig + webhook (the
- *  defaults PC scaffolds) survive unless the pod explicitly overrides them.
- *
- *  When the file is missing or malformed, returns an empty baseline. Subagents
- *  with no pod-declared MCP rows still get an empty pod mcp.json — the spawn
- *  will fail to find pc-rig, which is the right loud signal that PC's project
- *  scaffold didn't land. */
-function readProjectMcpBaseline(worktreeDir: string): Record<string, PodMcpServerConfig> {
-  const path = resolve(worktreeDir, '.mcp.json');
-  if (!existsSync(path)) return {};
-  try {
-    const raw = readFileSync(path, 'utf8');
-    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, PodMcpServerConfig> };
-    return parsed.mcpServers ?? {};
-  } catch {
-    return {};
-  }
 }

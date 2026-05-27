@@ -557,13 +557,16 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   const run = factory({
     agentRunId: args.agentRunId,
     ccProviderSessionId: args.ccSessionId,
-    podDefinition: { name: args.podName },
+    podDefinition: { name: args.podPrep.agentCliName, logicalName: args.podName },
     worktreePath: args.input.worktreeDir,
     env: baseEnv,
     initialInput: args.mode === 'fresh' ? args.initialInput : args.initialInput,
     mode: args.mode,
     continues: args.continuesParent ?? undefined,
     mcpConfigPath: args.podPrep.mcpConfigPath,
+    settingsPath: args.podPrep.settingsPath,
+    settingSources: args.podPrep.settingSources,
+    pluginDirs: [args.podPrep.pluginDir],
     // Forensic transcript per spawn — sits next to the materialised pod files
     // in the per-run scratch dir.
     transcriptPath: resolve(
@@ -735,11 +738,11 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
       completedAt,
     });
 
-    // Pod-materialised files (.claude/agents/<pod>.md, .mcp.json) are
-    // disposable now that the agent has exited. Removing them before
-    // verification keeps the worktree free of run-scoped junk while the
-    // verification pass runs. The worktree itself + any files the agent
-    // wrote stay intact for `files_exist` / `bash_exit_zero` predicates.
+    // Pod-materialised session runtime files are disposable now that the
+    // agent has exited. Removing them before verification keeps the worktree
+    // free of run-scoped junk while the verification pass runs. The worktree
+    // itself + any files the agent wrote stay intact for `files_exist` /
+    // `bash_exit_zero` predicates.
     args.podPrep.cleanup();
 
     // Section 26.5 — run tier-1 verification when the dispatch was a

@@ -790,6 +790,8 @@ interface ChatSurfaceProps {
   composerQueueing?: boolean;
   /** Server-derived send button label. */
   composerSendLabel?: string;
+  /** Non-blocking status text shown in the composer chrome. */
+  composerStatusMessage?: string;
   /** Optional content above the chat scroller (session title row, agent label, etc.). */
   headerSlot?: ReactNode;
   /** Optional content between scroller and composer (e.g. session-ended notice). */
@@ -821,6 +823,7 @@ export function ChatSurface({
   composerDisabledReason,
   composerQueueing,
   composerSendLabel,
+  composerStatusMessage,
   headerSlot,
   bannerSlot,
   footerSlot,
@@ -1526,6 +1529,7 @@ export function ChatSurface({
           disabled={composerDisabled}
           placeholder={composerPlaceholder}
           disabledReason={composerDisabledReason}
+          statusMessage={composerStatusMessage}
           sendLabel={resolvedComposerSendLabel}
         />
       )}
@@ -3330,6 +3334,7 @@ function Composer({
   disabled,
   placeholder,
   disabledReason,
+  statusMessage,
   sendLabel,
 }: {
   historyKey: string;
@@ -3341,6 +3346,7 @@ function Composer({
   disabled?: boolean;
   placeholder?: string;
   disabledReason?: string;
+  statusMessage?: string;
   sendLabel: string;
 }) {
   const [text, setText] = useState('');
@@ -3477,9 +3483,14 @@ function Composer({
           sessionState={sessionState}
           contextUsedPct={contextUsedPct}
         />
-        {disabledReason ? (
-          <span className="ml-auto normal-case tracking-normal text-warning">
-            {disabledReason}
+        {disabledReason || statusMessage ? (
+          <span
+            className={
+              'ml-auto normal-case tracking-normal ' +
+              (disabledReason ? 'text-warning' : 'text-[var(--fg-dim)]')
+            }
+          >
+            {disabledReason ?? statusMessage}
           </span>
         ) : (
           <span className="ml-auto text-[var(--fg-dim)]">

@@ -288,8 +288,8 @@ function McpServersSection({
 
       {bundle && bundle.mcpServers.length === 0 && !adding && (
         <div className="border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-          No MCP servers attached to this pod. The pod inherits the project's
-          baseline .mcp.json on spawn.
+          No MCP servers attached to this pod. The pod inherits PC's session
+          runtime MCP baseline on spawn.
         </div>
       )}
 

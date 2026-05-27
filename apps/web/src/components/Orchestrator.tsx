@@ -146,6 +146,17 @@ function composerAvailabilityFor(input: {
   }
 }
 
+function composerStatusMessageFor(reason: 'busy' | 'spawning' | 'respawning'): string {
+  switch (reason) {
+    case 'busy':
+      return 'Claude is working; new messages will queue.';
+    case 'spawning':
+      return 'Claude is starting; you can type and queue a message.';
+    case 'respawning':
+      return 'Claude is restarting; you can type and queue a message.';
+  }
+}
+
 export function Orchestrator({
   project,
   events,
@@ -362,6 +373,12 @@ export function Orchestrator({
 
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  const [startingNewSession, setStartingNewSession] = useState(false);
+
+  useEffect(() => {
+    setStartingNewSession(false);
+    setResumeError(null);
+  }, [project.id]);
 
   async function onResume() {
     if (!session?.id || resuming) return;
@@ -381,15 +398,24 @@ export function Orchestrator({
   }
 
   async function onNewSession() {
+    if (startingNewSession) return;
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
+    setStartingNewSession(true);
     try {
       const transition = await api.startNewSession(project.id);
       applySessionTransition(transition);
       setSession(transition.session);
       setPastEvents([]);
       setViewing(project.slug, null);
+      try {
+        setRuntimeSnapshot(await api.getOrchestratorRuntime(project.id));
+      } catch (err) {
+        console.error('[pc] getOrchestratorRuntime after new session', err);
+      }
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
+    } finally {
+      setStartingNewSession(false);
     }
   }
 
@@ -419,9 +445,13 @@ export function Orchestrator({
     [project.id],
   );
 
-  const composerHidden = isViewingPast || sessionEnded;
   const runtimeHealth =
     runtimeSnapshot?.health ?? legacyHealthFromPtyState(latestRuntimeState);
+  const runtimeStarting =
+    !isViewingPast &&
+    !startingNewSession &&
+    (runtimeHealth === 'spawning' || runtimeHealth === 'respawning');
+  const composerHidden = isViewingPast || sessionEnded || startingNewSession;
   const composerAvailability = composerAvailabilityFor({
     wsStatus,
     health: runtimeHealth,
@@ -443,6 +473,10 @@ export function Orchestrator({
     composerAvailability.mode === 'live' || composerAvailability.mode === 'queueing'
       ? composerAvailability.sendLabel
       : 'Send ↵';
+  const composerStatusMessage =
+    composerAvailability.mode === 'queueing'
+      ? composerStatusMessageFor(composerAvailability.reason)
+      : undefined;
 
   const headerSlot = (
     <div className="flex items-center justify-between gap-2 border-b border-border bg-card px-4 py-2">
@@ -470,16 +504,39 @@ export function Orchestrator({
       ) : (
         <button
           onClick={onNewSession}
-          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          disabled={startingNewSession}
+          className="shrink-0 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-wait disabled:opacity-60"
           title="End the current chat session and start a fresh one"
         >
-          + New session
+          {startingNewSession ? 'Starting...' : '+ New session'}
         </button>
       )}
     </div>
   );
 
-  const bannerSlot = !isViewingPast && sessionEnded ? (
+  const startupBannerSlot = startingNewSession ? (
+    <div
+      className="flex items-center justify-between gap-3 border-t border-border bg-warning/10 px-4 py-2 text-xs text-warning"
+      data-testid="session-starting-banner"
+      aria-live="polite"
+    >
+      <span>Starting a new chat session. Clearing the old view and launching Claude.</span>
+    </div>
+  ) : runtimeStarting ? (
+    <div
+      className="flex items-center justify-between gap-3 border-t border-border bg-warning/10 px-4 py-2 text-xs text-warning"
+      data-testid="session-starting-banner"
+      aria-live="polite"
+    >
+      <span>
+        {runtimeHealth === 'respawning'
+          ? 'Claude is restarting. You can type now; the message will queue until it is ready.'
+          : 'Claude is starting. You can type now; the message will queue until it is ready.'}
+      </span>
+    </div>
+  ) : null;
+
+  const bannerSlot = startupBannerSlot ?? (!isViewingPast && sessionEnded ? (
     <div className="flex items-center justify-between gap-3 border-t border-border bg-warning/10 px-4 py-2 text-xs text-warning">
       <span>
         This session ended. Resume it, or click{' '}
@@ -499,7 +556,7 @@ export function Orchestrator({
         </button>
       </div>
     </div>
-  ) : null;
+  ) : null);
 
   const footerSlot = (
     <StatusBar
@@ -516,6 +573,10 @@ export function Orchestrator({
     <span className="text-red-400">Error loading session: {pastError}</span>
   ) : isViewingPast ? (
     'This session has no events on disk.'
+  ) : startingNewSession ? (
+    'Starting a new chat session…'
+  ) : runtimeStarting ? (
+    'Claude is starting for this session. You can type below; messages will queue until it is ready.'
   ) : (
     'No chat events yet. Send a message below to wake the orchestrator.'
   );
@@ -539,6 +600,7 @@ export function Orchestrator({
       composerDisabledReason={composerDisabledReason}
       composerQueueing={composerQueueing}
       composerSendLabel={composerSendLabel}
+      composerStatusMessage={composerStatusMessage}
       headerSlot={headerSlot}
       bannerSlot={bannerSlot}
       footerSlot={footerSlot}

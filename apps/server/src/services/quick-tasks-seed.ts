@@ -6,9 +6,9 @@
 // this project is system-seeded, not user-created). Idempotent: subsequent
 // boots find the existing row + folder and no-op.
 //
-// The folder gets the normal PC scaffold (`.mcp.json`, `.claude/`,
-// `.project-companion/`) so claude.exe can spawn with `--agent quick-tasks-pm`
-// (added in 34.2) with the same plumbing every other project uses.
+// The folder gets the durable PC scaffold (`.project-companion/` + README).
+// Claude runtime files are session-local, so Quick Tasks uses the same
+// isolated spawn plumbing as every other project.
 //
 // Order at boot: this seed must run BEFORE `projectRegistry.loadAll()` so the
 // runtime picks Quick Tasks up like any other project. Idempotent on every
@@ -43,7 +43,7 @@ const QUICK_TASKS_STAGES: Stage[] = [
 export interface EnsureQuickTasksProjectDeps {
   /** PC's data dir. Quick Tasks folder lands at `<dataDir>/quick-tasks-workspace/`. */
   dataDir: string;
-  /** Scaffold writer — renders `.mcp.json` / `.claude/` / `.project-companion/`. */
+  /** Scaffold writer — renders `.project-companion/` + README. */
   scaffold: ProjectScaffold;
 }
 

@@ -582,6 +582,34 @@ function sessionTransitionKind(env: WsEnvelope): SessionTransitionKind | null {
     : null;
 }
 
+function sessionIdFromSessionChanged(env: WsEnvelope): string | null {
+  if (env.type !== 'session-changed') return null;
+  const session = (env as Partial<SessionChangedEnvelope>).session;
+  if (!session || typeof session !== 'object') return null;
+  const id = (session as { id?: unknown }).id;
+  return typeof id === 'string' ? id : null;
+}
+
+function sessionIdFromSessionReplay(env: WsEnvelope): string | null {
+  if (env.type !== 'session-replay') return null;
+  const id = (env as Partial<SessionReplayEnvelope>).sessionId;
+  return typeof id === 'string' ? id : null;
+}
+
+function latestRuntimeForSession(
+  events: WsEnvelope[],
+  sessionId: string | null,
+): RuntimeStateEnvelope | null {
+  if (!sessionId) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const candidate = events[i]!;
+    if (candidate.type !== 'runtime-state') continue;
+    const runtime = candidate as RuntimeStateEnvelope;
+    if (runtime.sessionId === sessionId) return runtime;
+  }
+  return null;
+}
+
 export function nextBackoffMs(prevDelay: number): number {
   const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
   if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
@@ -662,12 +690,17 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
             });
           } else {
             seenTsRef.current.clear();
-            setEvents([final]);
+            const changedSessionId = sessionIdFromSessionChanged(final);
+            setEvents((prev) => {
+              const latestRuntime = latestRuntimeForSession(prev, changedSessionId);
+              return latestRuntime ? [latestRuntime, final] : [final];
+            });
           }
           return;
         }
         if (final.type === 'session-replay') {
           const replay = replayEventsFromEnvelope(final, project!.id);
+          const replaySessionId = sessionIdFromSessionReplay(final);
           const seenTs = seenTsRef.current;
           seenTs.clear();
           for (const replayEnv of replay) {
@@ -676,9 +709,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
           }
           setEvents((prev) => {
             const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
-            const latestRuntime = [...prev]
-              .reverse()
-              .find((candidate) => candidate.type === 'runtime-state');
+            const latestRuntime = latestRuntimeForSession(prev, replaySessionId);
             const latestSessionChanged = [...prev]
               .reverse()
               .find((candidate) => candidate.type === 'session-changed');
@@ -749,12 +780,10 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
 
       setEvents((prev) => {
         const latestState = [...prev].reverse().find((candidate) => candidate.type === 'state');
-        const latestRuntime = [...prev]
-          .reverse()
-          .find((candidate) => candidate.type === 'runtime-state');
+        const latestRuntime = latestRuntimeForSession(prev, transition.session.id);
         const checkpoints = [
           ...(transition.transition === 'resume-session' && latestState ? [latestState] : []),
-          ...(transition.transition === 'resume-session' && latestRuntime ? [latestRuntime] : []),
+          ...(latestRuntime ? [latestRuntime] : []),
           checkpoint,
         ];
         const replayLimit = Math.max(0, MAX_BUFFERED - checkpoints.length);

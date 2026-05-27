@@ -1,6 +1,6 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -160,15 +160,15 @@ test.describe('B. Create empty-folder project (init-empty)', () => {
     await waitForRail(page, 'Q14 Project A');
   });
 
-  test('B.6 disk: one commit + scaffold dirs present', async () => {
+  test('B.6 disk: one commit + durable scaffold present', async () => {
     const log = execSync('git log --oneline', { cwd: EMPTY }).toString().trim();
     expect(log.split('\n').length).toBe(1);
     expect(log).toMatch(/Initial commit/);
     expect(existsSync(join(EMPTY, '.git'))).toBe(true);
-    expect(existsSync(join(EMPTY, '.claude'))).toBe(true);
     expect(existsSync(join(EMPTY, '.project-companion'))).toBe(true);
     expect(existsSync(join(EMPTY, 'README.md'))).toBe(true);
-    expect(existsSync(join(EMPTY, '.mcp.json'))).toBe(true);
+    expect(existsSync(join(EMPTY, '.claude'))).toBe(false);
+    expect(existsSync(join(EMPTY, '.mcp.json'))).toBe(false);
   });
 });
 
@@ -527,12 +527,9 @@ test.describe('H. Project settings — info + agents', () => {
     await expect(page.locator('text=Project copy updated.')).toBeVisible({
       timeout: 5_000,
     });
-    // Disk: project copy starts with `# test edit`.
-    const onDisk = readFileSync(
-      join(EMPTY, '.claude', 'agents', 'researcher.md'),
-      'utf8',
-    );
-    expect(onDisk.startsWith('# test edit')).toBe(true);
+    // Disk: project agents are DB/session-runtime backed, not written into
+    // `<project>/.claude/agents`.
+    expect(existsSync(join(EMPTY, '.claude', 'agents', 'researcher.md'))).toBe(false);
     // Library untouched.
     const lib = await (await request.get(`${HONO}/api/agents`)).json() as {
       agents: { name: string; body: string }[];
@@ -615,8 +612,8 @@ test.describe('I. Danger zone', () => {
     expect(a).toBeDefined();
     // Disk untouched.
     expect(existsSync(join(EMPTY, '.git'))).toBe(true);
-    expect(existsSync(join(EMPTY, '.claude'))).toBe(true);
     expect(existsSync(join(EMPTY, '.project-companion'))).toBe(true);
+    expect(existsSync(join(EMPTY, '.claude'))).toBe(false);
   });
 
   test('I.4 + I.5 delete files for Project C', async ({ page }) => {
@@ -628,7 +625,7 @@ test.describe('I. Danger zone', () => {
     await expect(page.locator('text=/Removed:/')).toBeVisible({
       timeout: 5_000,
     });
-    // Disk: scaffold dirs gone, originals survive.
+    // Disk: durable scaffold dir gone, originals survive.
     expect(existsSync(join(WITH_FILES, '.project-companion'))).toBe(false);
     expect(existsSync(join(WITH_FILES, '.claude'))).toBe(false);
     expect(existsSync(join(WITH_FILES, '.git'))).toBe(true);

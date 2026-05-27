@@ -48,6 +48,7 @@ function mkRuntime(): InstanceType<typeof ProjectRuntime> {
   }) as unknown as Project;
   return new ProjectRuntime(project, {
     dataDir: tmpDir,
+    serverPort: 0,
     channelPort: 0,
     broadcast: () => {},
     templatesDir: resolve(tmpDir, 'templates'),

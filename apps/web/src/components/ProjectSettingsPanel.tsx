@@ -245,10 +245,10 @@ function DangerZone({
         <div className="border-t border-destructive/30 pt-3">
           <div className="mb-1 text-sm font-medium text-destructive">Delete PC files on disk</div>
           <p className="mb-2 text-xs text-foreground/80">
-            Removes <code className="font-mono">.project-companion/</code> and{' '}
-            <code className="font-mono">.claude/</code> from the project folder. Your own files,{' '}
-            <code className="font-mono">.git/</code>, README, and <code className="font-mono">.mcp.json</code>{' '}
-            stay. Independent of archive state.
+            Removes <code className="font-mono">.project-companion/</code> from the project folder.
+            Legacy PC-owned <code className="font-mono">.claude/</code> config is removed only when
+            marked as PC-managed. Your own files, <code className="font-mono">.git/</code>, README,
+            and <code className="font-mono">.mcp.json</code> stay.
           </p>
           <button
             onClick={() => {

@@ -53,6 +53,9 @@ export interface InteractiveSessionInput {
    *  many interactive sessions start idle and wait for the user to type. */
   initialInput?: string;
   mcpConfigPath?: string;
+  settingsPath?: string;
+  settingSources?: string;
+  pluginDirs?: readonly string[];
   claudeExe?: string;
   transcriptPath?: string;
   handshakeTimeoutMs?: number;
@@ -163,6 +166,9 @@ export class InteractiveSession extends EventEmitter {
       ccProviderSessionId: this.input.ccProviderSessionId,
       mode,
       mcpConfigPath: this.input.mcpConfigPath,
+      settingsPath: this.input.settingsPath,
+      settingSources: this.input.settingSources,
+      pluginDirs: this.input.pluginDirs,
       claudeExe: this.input.claudeExe,
       transcriptPath: this.input.transcriptPath,
       handshakeTimeoutMs: this.input.handshakeTimeoutMs,

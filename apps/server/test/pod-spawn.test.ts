@@ -1,9 +1,9 @@
 // Section 17a.5 unit tests — pod-spawn helper.
 //
 // Verifies preparePodSpawn's contract: returns null when no pod row exists
-// for the agent name; materialises into worktreeDir + scratchDir when one
-// does; merges the project's existing .mcp.json as the baseline; threads
-// secrets through `extraEnv`; cleanup() removes the temp files.
+// for the agent name; materialises into scratchDir when one does; uses PC's
+// session-local MCP baseline; threads secrets through `extraEnv`; cleanup()
+// removes the temp files.
 //
 // Run via:  pnpm --filter @pc/server test
 
@@ -111,7 +111,7 @@ test('preparePodSpawn returns null when no pod row matches the agent name', () =
 
 // --- materialisation with baseline merge -----------------------------------
 
-test('preparePodSpawn materialises the pod + merges baseline .mcp.json', () => {
+test('preparePodSpawn materialises the pod plugin + PC runtime baseline', () => {
   const dirs = freshDirs();
   try {
     writeProjectMcpJson(dirs.worktree);
@@ -142,9 +142,13 @@ test('preparePodSpawn materialises the pod + merges baseline .mcp.json', () => {
     });
     assert.ok(prep);
 
-    // Agent .md lands in the worktree's .claude/agents/.
-    const mdPath = resolve(dirs.worktree, '.claude', 'agents', 'pod-spawn-baseline.md');
+    assert.equal(prep.agentCliName, 'pc-runtime:pod-spawn-baseline');
+    assert.equal(prep.pluginDir, resolve(dirs.scratch, 'claude-plugin'));
+
+    // Agent .md lands in the session-local plugin, not the worktree.
+    const mdPath = resolve(dirs.scratch, 'claude-plugin', 'agents', 'pod-spawn-baseline.md');
     assert.ok(existsSync(mdPath));
+    assert.ok(!existsSync(resolve(dirs.worktree, '.claude', 'agents', 'pod-spawn-baseline.md')));
     const md = readFileSync(mdPath, 'utf8');
     assert.match(md, /\nname: pod-spawn-baseline\n/);
     // Section 26: the materializer merges in the required work-item tools.
@@ -153,13 +157,13 @@ test('preparePodSpawn materialises the pod + merges baseline .mcp.json', () => {
     assert.match(md, /\nmodel: sonnet\n/);
     assert.match(md, /\n\ndo stuff/);
 
-    // mcp.json lands in scratchDir + merges baseline + pod servers.
+    // mcp.json lands in scratchDir + merges PC baseline + pod servers.
     assert.equal(prep.mcpConfigPath, resolve(dirs.scratch, 'mcp.json'));
     const mcp = JSON.parse(readFileSync(prep.mcpConfigPath, 'utf8'));
-    // Baseline survives:
+    // PC baseline is generated from runtime state; the worktree .mcp.json is ignored.
     assert.equal(mcp.mcpServers['pc-rig'].command, 'node');
-    assert.equal(mcp.mcpServers['pc-rig'].env.PC_PROJECT_ID, 'p1');
     assert.equal(mcp.mcpServers.webhook.command, 'node');
+    assert.notEqual(mcp.mcpServers['pc-rig'].env.PC_PROJECT_ID, 'p1');
     // Pod row added:
     assert.equal(mcp.mcpServers.jira.command, 'jira-mcp');
   } finally {
@@ -194,7 +198,7 @@ test('preparePodSpawn lets pod MCP rows override baseline by name', () => {
     assert.ok(prep);
     const mcp = JSON.parse(readFileSync(prep.mcpConfigPath, 'utf8'));
     assert.equal(mcp.mcpServers['pc-rig'].command, 'pod-override');
-    // webhook from baseline still there.
+    // webhook from PC baseline still there.
     assert.equal(mcp.mcpServers.webhook.command, 'node');
   } finally {
     dirs.cleanup();
@@ -226,7 +230,9 @@ test('preparePodSpawn works with no baseline .mcp.json on disk', () => {
     });
     assert.ok(prep);
     const mcp = JSON.parse(readFileSync(prep.mcpConfigPath, 'utf8'));
-    assert.deepEqual(Object.keys(mcp.mcpServers), ['jira']);
+    assert.ok(mcp.mcpServers['pc-rig']);
+    assert.ok(mcp.mcpServers.webhook);
+    assert.equal(mcp.mcpServers.jira.command, 'jira-mcp');
   } finally {
     dirs.cleanup();
   }
@@ -262,10 +268,9 @@ test('preparePodSpawn returns secret env-var map in extraEnv', () => {
       scratchDir: dirs.scratch,
     });
     assert.ok(prep);
-    assert.deepEqual(prep.extraEnv, {
-      JIRA_TOKEN: 'jt-secret',
-      OPENAI_KEY: 'sk-secret',
-    });
+    assert.equal(prep.extraEnv.JIRA_TOKEN, 'jt-secret');
+    assert.equal(prep.extraEnv.OPENAI_KEY, 'sk-secret');
+    assert.equal(prep.extraEnv.PC_PROJECT_ID, '');
   } finally {
     dirs.cleanup();
   }
@@ -291,7 +296,7 @@ test('preparePodSpawn expands mcp__pc-rig__* via the static catalog', () => {
     });
     assert.ok(prep);
     const md = readFileSync(
-      resolve(dirs.worktree, '.claude', 'agents', 'pod-wildcard.md'),
+      resolve(dirs.scratch, 'claude-plugin', 'agents', 'pod-wildcard.md'),
       'utf8',
     );
     // Read survives; wildcard expanded into a comma-separated list of pc-rig
@@ -339,7 +344,7 @@ test('preparePodSpawn emits the knowledge footer when knowledge rows exist AND p
     });
     assert.ok(prep);
     const md = readFileSync(
-      resolve(dirs.worktree, '.claude', 'agents', 'pod-knows.md'),
+      resolve(dirs.scratch, 'claude-plugin', 'agents', 'pod-knows.md'),
       'utf8',
     );
     // Footer present + roster + pc_knowledge_read pattern + summary
@@ -364,13 +369,15 @@ test('preparePodSpawn cleanup() removes the materialised .md + mcp.json', () => 
       scratchDir: dirs.scratch,
     });
     assert.ok(prep);
-    const mdPath = resolve(dirs.worktree, '.claude', 'agents', 'pod-cleanup.md');
+    const mdPath = resolve(dirs.scratch, 'claude-plugin', 'agents', 'pod-cleanup.md');
     assert.ok(existsSync(mdPath));
     assert.ok(existsSync(prep.mcpConfigPath));
+    assert.ok(existsSync(prep.settingsPath));
 
     prep.cleanup();
     assert.ok(!existsSync(mdPath));
     assert.ok(!existsSync(prep.mcpConfigPath));
+    assert.ok(!existsSync(prep.settingsPath));
     // Repeat cleanup is safe.
     prep.cleanup();
   } finally {

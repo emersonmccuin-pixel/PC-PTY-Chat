@@ -29,6 +29,7 @@ import { selectStageEntryWorkflows } from '@pc/workflows';
 
 import { renderTemplate } from './project-scaffold.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
+import { prepareClaudeRuntimeFiles } from './claude-runtime-bundle.ts';
 import { WorktreeService } from './worktree.ts';
 import { importV2WorkflowsFromDisk } from './workflow-import.ts';
 import {
@@ -51,6 +52,8 @@ export interface ProjectRuntimeOptions {
   dataDir: string;
   /** Channel server port for subagent dispatch + UI proxy. */
   channelPort: number;
+  /** HTTP server port for hook callbacks and pc-rig MCP. */
+  serverPort: number;
   /** WS broadcaster pre-bound to this project — registry produces it. */
   broadcast: BroadcastFn;
   /** Templates dir for hook re-render (per-session paths via env var). */
@@ -75,6 +78,7 @@ export class ProjectRuntime {
   private workflowBuilderPrep: PodSpawnPrep | null = null;
   private workflowBuilderSessionId: string | null = null;
   private setupWizard: PtySession | null = null;
+  private setupWizardCleanup: (() => void) | null = null;
   private worktreesSvc: WorktreeService | null = null;
   /** Section 19.13 — one-shot YAML→DB import per ProjectRuntime lifetime.
    *  ProjectRegistry calls `bootstrap()` right after construct; the flag
@@ -235,6 +239,10 @@ export class ProjectRuntime {
       projectId: this.project.id,
       workspaceDir: this.project.folderPath,
       channelPort: this.opts.channelPort,
+      serverPort: this.opts.serverPort,
+      dataDir: this.opts.dataDir,
+      templatesDir: this.opts.templatesDir,
+      trunkPath: this.opts.trunkPath,
       getProject: () => this.project,
       workItemService: this.workItemService(),
       worktrees: this.worktrees(),
@@ -373,9 +381,9 @@ export class ProjectRuntime {
   }
 
   /**
-   * Lazy: PtySession — spawned on first WS connect. cwd = project.folderPath
-   * so `claude.exe --mcp-config .mcp.json` resolves to `<folder>/.mcp.json`
-   * (generated at project-create per P7).
+   * Lazy: PtySession — spawned on first WS connect. cwd is still the user's
+   * project folder, but PC's Claude runtime files are passed explicitly from
+   * the per-session data dir so terminal-launched Claude does not inherit them.
    *
    * Session continuity: looks up the active OrchestratorSession row for this
    * project. If found → spawn with `--resume <uuid>` so Claude picks up the
@@ -385,7 +393,7 @@ export class ProjectRuntime {
    */
   ensurePty(): PtySession {
     if (this.pty && this.pty.getState() !== 'exited') return this.pty;
-    this.refreshHooksIfStale();
+    this.refreshProjectCompanionFilesIfStale();
     const session = this.resolveSessionForSpawn();
     const sessionDir = this.sessionDataPath(session.row.id);
     mkdirSync(sessionDir, { recursive: true });
@@ -397,7 +405,8 @@ export class ProjectRuntime {
     // here, CC writes elsewhere when env var is set, hooks hid the
     // mismatch by feeding the chat panel directly).
     const jsonlPath = session.jsonlPath;
-    // Section 16a.3 — materialise the project's PM pod into the workspace.
+    // Section 16a.3 — materialise the project's PM pod into a session-local
+    // plugin. Nothing lands in `<project>/.claude`.
     // Replaces the pre-16a `--append-system-prompt-file` lever (which layered
     // PC's PM identity on top of CC's coding-assistant default). `--agent
     // <name>` REPLACES the default — PC owns the prompt + tool surface end-
@@ -416,6 +425,13 @@ export class ProjectRuntime {
         projectId: this.project.id,
         worktreeDir: this.project.folderPath,
         scratchDir: sessionDir,
+        dataDir: this.opts.dataDir,
+        templatesDir: this.opts.templatesDir,
+        trunkPath: this.opts.trunkPath,
+        serverPort: this.opts.serverPort,
+        channelPort: this.opts.channelPort,
+        projectSlug: this.project.slug,
+        projectName: this.project.name,
       });
       if (!prep) {
         // Boot-time seed (16a.2 / 34.2) always inserts the row; a null here
@@ -441,14 +457,17 @@ export class ProjectRuntime {
       claudeSessionId: session.providerSessionId,
       resume: session.resume,
       extraEnv: {
-        PC_SESSION_ID: session.row.id,
         ...podPrep.extraEnv,
+        PC_SESSION_ID: session.row.id,
         ...(session.claudeConfigDir ? { CLAUDE_CONFIG_DIR: session.claudeConfigDir } : {}),
       },
       jsonlPath,
       jsonlStartLine: session.resume ? session.row.jsonlLineCursor : 0,
-      agentName: pmAgentName,
+      agentName: podPrep.agentCliName,
       mcpConfigPath: podPrep.mcpConfigPath,
+      settingsPath: podPrep.settingsPath,
+      settingSources: podPrep.settingSources,
+      pluginDirs: [podPrep.pluginDir],
     });
 
     // Process lifecycle is not chat lifecycle. A claude.exe child can exit
@@ -593,13 +612,13 @@ export class ProjectRuntime {
    *   - uses `--agent agent-designer` (REPLACES CC's default system prompt
    *     with the pod's content; the pod owns the rulebook)
    *   - materialised pod mcp.json (carries the pod's tool allowlist + any
-   *     per-pod MCP servers; baseline pc-rig still present)
-   *   - cleanup() on session-end removes the materialised .md + mcp.json
+   *     per-pod MCP servers; session-local baseline pc-rig still present)
+   *   - cleanup() on session-end removes the plugin, settings, and mcp.json
    *  Otherwise the wiring (events.jsonl path, transient session id,
    *  hook plumbing) mirrors startAgentCreator. */
   startAgentDesigner(): PtySession {
     this.endAgentDesigner();
-    this.refreshHooksIfStale();
+    this.refreshProjectCompanionFilesIfStale();
     const transientId = `ad-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
@@ -611,6 +630,13 @@ export class ProjectRuntime {
       worktreeDir: this.project.folderPath,
       scratchDir: sessionDir,
       filterMcpToReferencedTools: false,
+      dataDir: this.opts.dataDir,
+      templatesDir: this.opts.templatesDir,
+      trunkPath: this.opts.trunkPath,
+      serverPort: this.opts.serverPort,
+      channelPort: this.opts.channelPort,
+      projectSlug: this.project.slug,
+      projectName: this.project.name,
     });
     if (!prep) {
       throw new Error(
@@ -627,9 +653,12 @@ export class ProjectRuntime {
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,
-      extraEnv: { PC_SESSION_ID: transientId, ...prep.extraEnv },
-      agentName: 'agent-designer',
+      extraEnv: { ...prep.extraEnv, PC_SESSION_ID: transientId },
+      agentName: prep.agentCliName,
       mcpConfigPath: prep.mcpConfigPath,
+      settingsPath: prep.settingsPath,
+      settingSources: prep.settingSources,
+      pluginDirs: [prep.pluginDir],
     });
     return this.agentDesigner;
   }
@@ -661,8 +690,8 @@ export class ProjectRuntime {
       : null;
   }
 
-  /** Kill the agent-designer session + clean up the materialised pod
-   *  files. Idempotent. */
+  /** Kill the agent-designer session + clean up the materialised session-local
+   *  runtime files. Idempotent. */
   endAgentDesigner(): void {
     if (this.agentDesigner) {
       try { this.agentDesigner.kill(); } catch { /* best-effort */ }
@@ -706,7 +735,7 @@ export class ProjectRuntime {
    *  time per project; calling `start` again kills the prior one. */
   startWorkflowBuilder(): PtySession {
     this.endWorkflowBuilder();
-    this.refreshHooksIfStale();
+    this.refreshProjectCompanionFilesIfStale();
     const transientId = `wb-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
@@ -718,6 +747,13 @@ export class ProjectRuntime {
       worktreeDir: this.project.folderPath,
       scratchDir: sessionDir,
       filterMcpToReferencedTools: false,
+      dataDir: this.opts.dataDir,
+      templatesDir: this.opts.templatesDir,
+      trunkPath: this.opts.trunkPath,
+      serverPort: this.opts.serverPort,
+      channelPort: this.opts.channelPort,
+      projectSlug: this.project.slug,
+      projectName: this.project.name,
     });
     if (!prep) {
       throw new Error(
@@ -734,9 +770,12 @@ export class ProjectRuntime {
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,
-      extraEnv: { PC_SESSION_ID: transientId, ...prep.extraEnv },
-      agentName: 'workflow-builder',
+      extraEnv: { ...prep.extraEnv, PC_SESSION_ID: transientId },
+      agentName: prep.agentCliName,
       mcpConfigPath: prep.mcpConfigPath,
+      settingsPath: prep.settingsPath,
+      settingSources: prep.settingSources,
+      pluginDirs: [prep.pluginDir],
     });
     this.workflowBuilderSessionId = transientId;
     return this.workflowBuilder;
@@ -757,8 +796,8 @@ export class ProjectRuntime {
     return this.workflowBuilderSessionId;
   }
 
-  /** Kill the workflow-builder session + clean up the materialised pod files
-   *  + drop its draft state. Idempotent. */
+  /** Kill the workflow-builder session + clean up the materialised
+   *  session-local runtime files + drop its draft state. Idempotent. */
   endWorkflowBuilder(): void {
     if (this.workflowBuilder) {
       try { this.workflowBuilder.kill(); } catch { /* best-effort */ }
@@ -779,14 +818,26 @@ export class ProjectRuntime {
    *  per project — calling start again kills the prior one. */
   startSetupWizard(): PtySession {
     if (this.setupWizard) {
-      try { this.setupWizard.kill(); } catch { /* best-effort */ }
-      this.setupWizard = null;
+      this.endSetupWizard();
     }
-    this.refreshHooksIfStale();
+    this.refreshProjectCompanionFilesIfStale();
     const transientId = `sw-${randomUUID()}`;
     const sessionDir = this.sessionDataPath(transientId);
     mkdirSync(sessionDir, { recursive: true });
     const cc = this.transientCcSession();
+    const runtimeFiles = prepareClaudeRuntimeFiles({
+      scratchDir: sessionDir,
+      worktreeDir: this.project.folderPath,
+      projectId: this.project.id,
+      projectSlug: this.project.slug,
+      projectName: this.project.name,
+      dataDir: this.opts.dataDir,
+      templatesDir: this.opts.templatesDir,
+      trunkPath: this.opts.trunkPath,
+      serverPort: this.opts.serverPort,
+      channelPort: this.opts.channelPort,
+    });
+    this.setupWizardCleanup = runtimeFiles.cleanup;
     this.setupWizard = new PtySession({
       workspaceDir: this.project.folderPath,
       stopMarkerPath: resolve(sessionDir, 'stop-markers.txt'),
@@ -795,12 +846,21 @@ export class ProjectRuntime {
       claudeSessionId: cc.ccSessionId,
       resume: false,
       jsonlPath: cc.jsonlPath,
-      extraEnv: { PC_SESSION_ID: transientId },
+      extraEnv: { ...runtimeFiles.extraEnv, PC_SESSION_ID: transientId },
+      mcpConfigPath: runtimeFiles.mcpConfigPath,
+      settingsPath: runtimeFiles.settingsPath,
+      settingSources: runtimeFiles.settingSources,
       appendSystemPromptPath: resolve(
         this.project.folderPath,
         '.project-companion',
         'setup-wizard-prompt.md',
       ),
+    });
+    this.setupWizard.once('exit', () => {
+      if (this.setupWizardCleanup) {
+        try { this.setupWizardCleanup(); } catch { /* best-effort */ }
+        this.setupWizardCleanup = null;
+      }
     });
     return this.setupWizard;
   }
@@ -817,6 +877,10 @@ export class ProjectRuntime {
     if (!this.setupWizard) return;
     try { this.setupWizard.kill(); } catch { /* best-effort */ }
     this.setupWizard = null;
+    if (this.setupWizardCleanup) {
+      try { this.setupWizardCleanup(); } catch { /* best-effort */ }
+      this.setupWizardCleanup = null;
+    }
   }
 
   private resolveSessionForSpawn(): {
@@ -867,17 +931,14 @@ export class ProjectRuntime {
   }
 
   /**
-   * Re-render the project's `.claude/hooks/*.cjs` from the trunk templates
-   * once per server boot. The template was updated to read PC_SESSION_ID for
-   * per-session path routing; existing projects scaffolded before that
-   * update have the old hardcoded-path version and need a refresh. Idempotent;
-   * the second call per ProjectRuntime instance is a no-op.
+   * Backfill project-visible PC files that are intentionally part of the repo
+   * scaffold (`.project-companion/*`). Claude runtime files (`.mcp.json`,
+   * `.claude/settings.json`, hooks, and agents) are now session-local and must
+   * never be refreshed into the user's project root.
    */
-  private refreshHooksIfStale(): void {
+  private refreshProjectCompanionFilesIfStale(): void {
     if (this.hooksRefreshed) return;
     this.hooksRefreshed = true;
-    const srcDir = resolve(this.opts.templatesDir, '.claude', 'hooks');
-    const destDir = resolve(this.project.folderPath, '.claude', 'hooks');
     const tokens = {
       PROJECT_DATA_DIR: this.dataPath.replace(/\\/g, '/'),
       PROJECT_ID: this.project.id,
@@ -892,26 +953,10 @@ export class ProjectRuntime {
       PC_DB_PATH: resolve(this.opts.dataDir, 'pc.sqlite').replace(/\\/g, '/'),
     };
     try {
-      mkdirSync(destDir, { recursive: true });
-      for (const f of readdirSync(srcDir)) {
-        if (!f.endsWith('.cjs')) continue;
-        const raw = readFileSync(resolve(srcDir, f), 'utf-8');
-        writeFileSync(resolve(destDir, f), renderTemplate(raw, tokens), 'utf-8');
-      }
-      // Also re-render settings.json so additions to the template
-      // (new hook events, permissions, etc.) reach existing projects without
-      // requiring re-scaffold. Section 0 phase 0e added SubagentStop /
-      // SessionEnd / Notification entries that need this.
-      const settingsSrc = resolve(this.opts.templatesDir, '.claude', 'settings.template.json');
-      const settingsDest = resolve(this.project.folderPath, '.claude', 'settings.json');
-      if (existsSync(settingsSrc)) {
-        const raw = readFileSync(settingsSrc, 'utf-8');
-        writeFileSync(settingsDest, renderTemplate(raw, tokens), 'utf-8');
-      }
       // Section 16a.4 — orchestrator-prompt.md backfill removed. The
       // orchestrator's identity now lives in the `agents` DB table as a
-      // pod row (seeded at boot per 16a.2; materialised into the worktree
-      // at spawn per 16a.3). Existing per-project copies of the legacy
+      // pod row (seeded at boot per 16a.2; materialised into a session-local
+      // plugin at spawn). Existing per-project copies of the legacy
       // `.project-companion/orchestrator-prompt.md` are unused post-16a;
       // safe to leave on disk (no reader) or manually delete.
 
@@ -955,7 +1000,7 @@ export class ProjectRuntime {
         }
       }
     } catch (err) {
-      console.error(`[pc] hook refresh failed for ${this.project.slug}:`, (err as Error).message);
+      console.error(`[pc] project companion refresh failed for ${this.project.slug}:`, (err as Error).message);
     }
   }
 }

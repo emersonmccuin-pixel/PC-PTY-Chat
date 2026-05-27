@@ -22,7 +22,6 @@ import { isWorkItemType, resolveClaudeConfigDirEnv, withSettingsDefaults } from 
 import {
   claudeConfigDir,
   jsonlPathFor,
-  resolveNodeLauncher,
   setConfiguredClaudeExe,
 } from '@pc/runtime';
 import { validateWorkflowV2 } from '@pc/workflows';
@@ -150,10 +149,10 @@ import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
 import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
+import { cleanupLegacyProjectRuntimeFiles } from './services/legacy-runtime-cleanup.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
-import { applyNodeLauncherToProjects, rewriteStaleMcpConfigs } from './services/mcp-config-rewrite.ts';
 import { recordAgentInvoke } from './services/agent-audit.ts';
 import { checkInvokeDepth } from './services/invoke-depth.ts';
 
@@ -260,31 +259,6 @@ applyClaudeConfigDirOverride(readSettings().claudeConfigDir);
       case 'unchanged':
         break;
     }
-  }
-}
-
-// Section 20.A.2 — Rewrite stale `npx -y tsx packages/mcp/src/server.ts`
-// commands in per-project .mcp.json files to use the pre-built bundle from
-// 20.A.1 (`node packages/mcp/dist/server.mjs`). Idempotent — no-op once
-// migrated.
-{
-  const folderPaths = listProjects().map((p) => p.folderPath);
-  const result = rewriteStaleMcpConfigs(folderPaths);
-  if (result.rewritten.length > 0) {
-    console.log(
-      `[pc] rewrote pc-rig MCP command to bundle in ${result.rewritten.length} project(s): ${result.rewritten.join(', ')}`,
-    );
-  }
-  // Section 10 Phase 1.4 — re-point the PC node servers at the current
-  // runtime's launcher. Under tsx dev this is a no-op (command already
-  // `node`); in a packaged Electron app it rewrites to the app binary +
-  // ELECTRON_RUN_AS_NODE so MCP children spawn with no system `node` on PATH.
-  // Also self-heals stale absolute launcher paths after an auto-update.
-  const launcherResult = applyNodeLauncherToProjects(folderPaths, resolveNodeLauncher());
-  if (launcherResult.rewritten.length > 0) {
-    console.log(
-      `[pc] applied node launcher to .mcp.json in ${launcherResult.rewritten.length} project(s): ${launcherResult.rewritten.join(', ')}`,
-    );
   }
 }
 
@@ -594,10 +568,27 @@ const projectScaffold = new ProjectScaffold({
   }
 }
 
+// Remove/quarantine legacy PC Claude runtime files from project roots before
+// any Claude process starts. PC now passes session-local `--settings`,
+// `--mcp-config`, and `--plugin-dir`; leaving old root files in place would
+// still affect terminal-launched Claude Code in those folders.
+{
+  const result = cleanupLegacyProjectRuntimeFiles(listProjects({ includeDeleted: true }), {
+    dataDir: DATA,
+  });
+  const changed = result.removed.length + result.rewritten.length;
+  if (changed > 0) {
+    console.log(
+      `[pc] quarantined legacy Claude runtime files from ${changed} project file(s)`,
+    );
+  }
+}
+
 const projectRegistry = new ProjectRegistry({
   dataDir: DATA,
   templatesDir: TEMPLATES,
   trunkPath: ROOT,
+  serverPort: PORT,
   channelPort: CHANNEL_PORT,
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
@@ -919,9 +910,9 @@ function maybePersistPostTurnSummary(projectId: ULID, event: unknown): void {
 // ── Global endpoints ──────────────────────────────────────────────────────
 
 // MCP heartbeats are written per-project by `packages/mcp/src/server.ts`
-// (`PC_PROJECT_ID` is set in every project's `.mcp.json`). Pass `?projectId=`
-// to read that project's heartbeat; the legacy global path is the fallback for
-// pre-per-project clients.
+// (`PC_PROJECT_ID` is supplied in PC's session-local MCP env). Pass
+// `?projectId=` to read that project's heartbeat; the legacy global path is
+// the fallback for pre-per-project clients.
 app.get('/api/mcp-status', (c) => {
   const projectId = c.req.query('projectId');
   const file = projectId
@@ -1764,8 +1755,8 @@ function broadcastSessionReplay(
 //
 // Mirror of the agent-creator wiring above, but spawns CC with
 // `--agent agent-designer` (replaces CC's default system prompt with the
-// pod's content) + the materialised pod mcp.json. Free-form chat
-// conversation for designing a new agent.
+// pod's content) + session-local runtime files. Free-form chat conversation
+// for designing a new agent.
 //
 // WS envelopes (distinct from agent-creator / workflow-creator streams):
 //   { type: 'agent-designer-state', state }

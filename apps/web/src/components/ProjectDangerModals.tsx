@@ -97,12 +97,12 @@ export function DeleteProjectFilesModal({
     <ModalFrame title="Delete PC files on disk" onCancel={onCancel} busy={busy}>
       <p className="text-sm text-foreground/90">
         Removes <code className="bg-muted px-1 font-mono text-xs">.project-companion/</code>{' '}
-        and <code className="bg-muted px-1 font-mono text-xs">.claude/</code> from{' '}
-        <span className="font-medium">{project.name}</span>'s folder. Your own
-        files, <code className="bg-muted px-1 font-mono text-xs">.git/</code>,
-        README, and <code className="bg-muted px-1 font-mono text-xs">.mcp.json</code>{' '}
-        stay. Independent of the archive state — does not remove the project
-        record from PC.
+        from <span className="font-medium">{project.name}</span>'s folder. Legacy
+        PC-owned <code className="bg-muted px-1 font-mono text-xs">.claude/</code>{' '}
+        config is removed only when marked as PC-managed. Your own files,{' '}
+        <code className="bg-muted px-1 font-mono text-xs">.git/</code>, README, and{' '}
+        <code className="bg-muted px-1 font-mono text-xs">.mcp.json</code> stay.
+        Independent of the archive state — does not remove the project record from PC.
       </p>
       <p className="text-xs text-foreground/80">
         Folder: <code className="bg-muted px-1 font-mono text-xs">{project.folderPath}</code>

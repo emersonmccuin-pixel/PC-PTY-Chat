@@ -221,9 +221,16 @@ async function ensureOrchestratorAfterReload(page: Page): Promise<void> {
 
 async function startNewSession(page: Page): Promise<void> {
   await page.locator('button:has-text("+ New session")').click();
-  await expect(
-    page.locator('text=No chat events yet. Send a message below to wake the orchestrator.'),
-  ).toBeVisible({ timeout: 15_000 });
+  const defaultEmpty = page.locator('text=No chat events yet. Send a message below to wake the orchestrator.');
+  const startingBanner = page.locator('[data-testid="session-starting-banner"]');
+  const startingEmpty = page.locator('text=Claude is starting for this session.');
+  await expect.poll(async () => {
+    return (
+      (await defaultEmpty.count()) > 0 ||
+      (await startingBanner.count()) > 0 ||
+      (await startingEmpty.count()) > 0
+    );
+  }, { timeout: 15_000 }).toBe(true);
 }
 
 async function assistantBubbleCount(page: Page): Promise<number> {
@@ -378,7 +385,9 @@ test.describe.serial('Chat smoke (0g)', () => {
     await expect(
       page.locator('text=This session ended.'),
     ).toHaveCount(0);
-    await expect(page.locator('[data-testid="chat-composer-input"]')).toBeVisible();
+    const composer = page.locator('[data-testid="chat-composer-input"]');
+    await expect(composer).toBeVisible({ timeout: 15_000 });
+    await expect(composer).toBeEnabled();
   });
 
   // ───────────────────────────────────────────────────────────────────────

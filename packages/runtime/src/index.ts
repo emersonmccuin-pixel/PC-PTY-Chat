@@ -40,12 +40,14 @@ export {
   buildEnvMap,
   expandToolWildcards,
   materializePod,
+  materializePodPlugin,
   renderAgentMd,
   renderMcpConfig,
 } from './pod-materializer.ts';
 export type {
   MaterializePodOptions,
   MaterializedPod,
+  MaterializedPluginPod,
   PodWorkItemContext,
 } from './pod-materializer.ts';
 

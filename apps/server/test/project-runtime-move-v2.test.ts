@@ -68,6 +68,7 @@ function mkFixture(opts: { yamls?: { id: string; body: string }[] } = {}): Fixtu
 
   const runtime = new ProjectRuntime(project, {
     dataDir: tmpDir,
+    serverPort: 0,
     channelPort: 0,
     broadcast: () => {},
     templatesDir: resolve(tmpDir, 'templates'),

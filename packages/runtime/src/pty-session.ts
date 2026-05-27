@@ -149,6 +149,14 @@ export interface PtySessionOptions {
    *  passes a materialised pod's temp `mcp.json` here so pod-declared MCP
    *  servers merge in alongside the baseline. */
   mcpConfigPath?: string;
+  /** Absolute path to PC's session-local Claude settings file. */
+  settingsPath?: string;
+  /** Passed to `--setting-sources`. PC uses `''` to disable user/project/local
+   *  setting discovery while still loading explicit `--settings`. */
+  settingSources?: string;
+  /** Session-local Claude plugin dirs. Used to mount PC agent definitions
+   *  without writing `<workspace>/.claude/agents`. */
+  pluginDirs?: readonly string[];
 }
 
 export type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
@@ -256,6 +264,15 @@ export class PtySession extends EventEmitter {
       opts.mcpConfigPath ?? '.mcp.json',
       '--strict-mcp-config',
     ];
+    if (opts.settingsPath) {
+      args.push('--settings', opts.settingsPath);
+    }
+    if (opts.settingSources !== undefined) {
+      args.push('--setting-sources', opts.settingSources);
+    }
+    for (const pluginDir of opts.pluginDirs ?? []) {
+      args.push('--plugin-dir', pluginDir);
+    }
     // Section 4d: subagent dispatches load the agent body via `--agent <name>`.
     // Interactive mode REPLACES CC's default system prompt with the agent body
     // (source-verified). Orchestrator path leaves this unset and uses

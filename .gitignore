@@ -32,9 +32,8 @@ workspace/
 
 # Local agent/browser tool state
 /.playwright-mcp/
-/.claude/agents/
-/.claude/skills/
-/.claude/scheduled_tasks.lock
+/.mcp.json
+/.claude/
 
 # Playwright artifacts (regenerated per run)
 test-results/

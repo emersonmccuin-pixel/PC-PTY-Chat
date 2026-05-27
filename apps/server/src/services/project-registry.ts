@@ -14,6 +14,7 @@ export interface ProjectRegistryDeps {
    *  refresh-hooks template substitution can resolve `{{PC_TRUNK_PATH}}` for
    *  the inbox-drain hook's `createRequire` of `better-sqlite3`. */
   trunkPath: string;
+  serverPort: number;
   channelPort: number;
   /** Factory: produces a broadcast fn pre-bound to the given project id. */
   broadcastFor: (projectId: ULID) => BroadcastFn;
@@ -103,6 +104,7 @@ export class ProjectRegistry {
       dataDir: this.deps.dataDir,
       templatesDir: this.deps.templatesDir,
       trunkPath: this.deps.trunkPath,
+      serverPort: this.deps.serverPort,
       channelPort: this.deps.channelPort,
       broadcast: this.deps.broadcastFor(project.id),
     });
