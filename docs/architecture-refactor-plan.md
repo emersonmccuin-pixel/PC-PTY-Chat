@@ -15,6 +15,9 @@ Implemented slices:
 - Shared terminal writability gating so modal terminal input is disabled until the transient session is ready.
 - Orchestrator send-queue acknowledgement/drain hardening, including a small `orchestrator-send-queue-delivery` service boundary.
 - WebSocket liveness diagnostics exposed through the status footer hover/data attributes.
+- Orchestrator runtime snapshot composition extracted from `apps/server/src/index.ts` into `apps/server/src/services/orchestrator-runtime-snapshot.ts`, with refresh/reconnect tests for replay high-water, JSONL cursor, and queue state correctness.
+- Runtime-host HTTP routes for session metadata, runtime snapshots, replay, terminal transcript, new/resume session, and send-queue retry/cancel extracted into `apps/server/src/features/runtime-host/routes.ts`.
+- Runtime-host WebSocket connect replay and message handling extracted into `apps/server/src/features/runtime-host/websocket-connect.ts` and `websocket-message.ts`, with ordering and send/queue tests.
 
 ## Executive Decision
 
@@ -485,7 +488,7 @@ Minimum tests to add before deeper refactors:
 ## Immediate Next Actions
 
 1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
-2. Continue carving runtime-host behavior out of `apps/server/src/index.ts`; send-queue delivery has moved first, runtime snapshot and WS orchestration remain.
+2. Continue carving runtime-host behavior out of `apps/server/src/index.ts`; send-queue delivery, runtime snapshots, runtime-host routes, WS connect replay, and WS message handling have moved. PTY event handler orchestration and the WebSocket server setup shell remain.
 3. Create `apps/server/src/features/transient-sessions` and unify agent-designer/workflow-builder/setup-wizard handling.
 4. Split MCP tools enough to make the tool catalog drift explicit and fix the current missing catalog entries or mark them deprecated/internal.
 5. Only then start deeper chat UI decomposition.

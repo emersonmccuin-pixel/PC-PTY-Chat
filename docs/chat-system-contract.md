@@ -203,7 +203,7 @@ Use these questions to audit the current implementation:
 3. Fix transient modal state snapshots so "Starting..." cannot get stuck after the process is ready. Done.
 4. Gate terminal input from the same runtime capability contract as chat input. Partially done for transient modals; fuller capability object remains.
 5. Confirm send queue drains in order across multiple queued messages. Started; late-confirmation drain is tested.
-6. Add replay/backfill tests for refresh, reconnect, and session switch.
+6. Add replay/backfill tests for refresh, reconnect, and session switch. Started; runtime snapshot, runtime-host route, and WebSocket connect tests now cover replay high-water refresh, reconnect queue state, new-session replay reset, resume replay high-water, and connect envelope ordering. Session-switch UI leakage coverage remains.
 7. Only then decompose the UI components and server modules.
 
 ## Definition Of Done For Chat Stability
