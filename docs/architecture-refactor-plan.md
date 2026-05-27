@@ -21,6 +21,7 @@ Implemented slices:
 - Runtime-host orchestrator PTY handler orchestration extracted into `apps/server/src/features/runtime-host/pty-handlers.ts`, with focused tests for ready-state queue drain, JSONL replay metadata/cursor/queue confirmation, JSONL path persistence, and exit lifecycle broadcasts.
 - Runtime-host WebSocket server setup shell extracted into `apps/server/src/features/runtime-host/websocket-server.ts`, with focused tests for connection rejection, connect snapshot ordering, message delegation, and subscriber detach.
 - Transient-session start/send/interrupt/terminal-input/resize/stop routes for agent designer, workflow builder, and setup wizard extracted into `apps/server/src/features/transient-sessions/routes.ts`, with focused tests for shared wire envelopes, idempotent handler attachment, controls, and error responses.
+- MCP/tool catalog drift hardening: the pod allowlist drift test now covers every stock pod plus the orchestrator, `pc_node_failed` is re-registered, and the workflow/tool catalog entries needed by current pod allowlists are present.
 
 ## Executive Decision
 
@@ -491,7 +492,7 @@ Minimum tests to add before deeper refactors:
 ## Immediate Next Actions
 
 1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
-2. Split MCP tools enough to make the tool catalog drift explicit and fix the current missing catalog entries or mark them deprecated/internal.
+2. Split MCP tools into feature modules so tool definitions, handlers, catalog metadata, and lifecycle flags stay together.
 3. Continue Phase 1 route extraction from `apps/server/src/index.ts`: projects, files, settings/onboarding, work-items, and agent-runs remain.
 4. Only then start deeper chat UI decomposition.
 

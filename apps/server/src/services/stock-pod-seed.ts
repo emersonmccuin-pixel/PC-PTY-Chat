@@ -31,7 +31,7 @@ const RESEARCHER_PROMPT = `You are a researcher + scribe. Use Read, Glob, and Gr
 
 You can be dispatched two ways. Look at your first user message and pick the right one:
 
-**Ad-hoc dispatch from the orchestrator (no tokens in the prompt).** The orchestrator called \`pc_invoke_agent\` with a free-form question. Return your findings as your final assistant message — plain text or a tight bullet list. Do NOT call \`pc_complete_node\` or \`pc_node_failed\` (there's no workflow node to close). Worktree-bound writes don't apply; if the question wants you to investigate code, treat any file paths in the prompt as read-only references.
+**Ad-hoc dispatch from the orchestrator (no tokens in the prompt).** The orchestrator called \`pc_invoke_agent\` with a free-form question. Return your findings as your final assistant message — plain text or a tight bullet list. Do NOT call \`pc_node_failed\` (there's no workflow node to close). Worktree-bound writes don't apply; if the question wants you to investigate code, treat any file paths in the prompt as read-only references.
 
 **Workflow node dispatch (three tokens present).** The prompt body carries:
 
@@ -41,10 +41,10 @@ You can be dispatched two ways. Look at your first user message and pick the rig
 
 When you finish the work specified in the prompt:
 
-- On success, call \`pc_complete_node\` with \`{ workflowRunId, nodeId, output }\`. \`output\` is a structured object — the prompt usually specifies which fields it wants. Other nodes downstream may reference your output as \`$<this-node-id>.output.<field>\`.
-- On hard failure (you can't produce the contracted output — bad input, missing files, etc.), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`. Reason is a one-line string surfaced in the UI.
+- On success, **just return your result as text** — the v2 runtime closes the node automatically on turn-end. The prompt will tell you which fields the output should contain; structure them clearly in your final message so downstream nodes can reference them.
+- On hard failure (you can't produce the contracted output — bad input, missing files, etc.), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\` and then end your turn. Reason is a one-line string surfaced in the UI.
 
-**You must close the node before returning text to the orchestrator.** If your Task ends without one of the two calls succeeding, the runtime's turn-end safety net marks the node failed with reason \`"subagent returned without closing the node"\`.
+**On success, just return text** — the v2 runtime handles node completion automatically on turn-end. Only call \`pc_node_failed\` when you cannot produce any useful output at all.
 
 ## Asking the orchestrator (when the prompt is ambiguous)
 
@@ -265,7 +265,7 @@ I'd say sonnet medium. Want to override?
 
 **Tool selection.** You decide the tool allowlist based on the job description. Default formula:
 - All pods: \`Read\` + \`Glob\` + \`Grep\` + \`mcp__pc-rig__pc_log\`
-- Pods that close workflow nodes: + \`mcp__pc-rig__pc_complete_node\` + \`mcp__pc-rig__pc_node_failed\`
+- Pods that close workflow nodes: + \`mcp__pc-rig__pc_node_failed\` (workers close via turn-end on success; \`pc_node_failed\` is only for hard failures)
 - Pods that write or edit files: + \`Bash\` + \`Edit\` (only if explicitly needed)
 - Pods that may ask the user: + \`mcp__pc-rig__pc_ask_orchestrator\` + \`mcp__pc-rig__pc_ask_user\`
 - Pods that hit external systems: ask the user which MCP server they need; that's a per-pod MCP server config (\`pc_add_agent_mcp_server\`) AND the corresponding \`mcp__<name>__*\` tools.
@@ -1045,7 +1045,6 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'Bash',
     'WebFetch',
     'WebSearch',
-    'mcp__pc-rig__pc_complete_node',
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_ask_orchestrator',
@@ -1058,7 +1057,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   maxTurns: null,
   outputDestination: 'passthrough',
   description:
-    "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Closes via pc_complete_node / pc_node_failed. Can ask the orchestrator or request user approval when needed.",
+    "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Returns text on success (runtime closes node); calls pc_node_failed on hard failure. Can ask the orchestrator or request user approval when needed.",
   dispatchGuidance:
     'one-off filesystem investigations, multi-file reading, web lookups, summarising what exists.',
 };
@@ -1192,6 +1191,8 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
+    'mcp__pc-rig__pc_create_workflow',
+    'mcp__pc-rig__pc_update_workflow',
     'mcp__pc-rig__pc_delete_workflow',
     'mcp__pc-rig__pc_get_workflow',
     'mcp__pc-rig__pc_replace_stages',

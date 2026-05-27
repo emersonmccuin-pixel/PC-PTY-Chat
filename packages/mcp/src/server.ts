@@ -307,13 +307,14 @@ export const TOOLS = [
       required: ['id'],
     },
   },
-  // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow` removed.
-  // v2 workflow runtime owns node completion / failure internally via the
-  // JSONL turn-end + Stop hook contract; the orchestrator-review pause is
-  // resolved via `POST /api/projects/:id/workflow-v2/review` (no MCP tool
-  // yet — 19.17b's orchestrator-pod overhaul re-adds a review-decision tool
-  // matching the new shape). Run-by-name is reintroduced in 19.17b as part
-  // of the orchestrator's repointed workflow toolset.
+  // 19.17 removed `pc_complete_node`, `pc_node_failed`, and `pc_run_workflow`.
+  // `pc_complete_node` was re-added in 19.17b as the orchestrator-review
+  // decision tool (see ~:707 below). `pc_fire_workflow` (formerly
+  // `pc_run_workflow`) was also re-added in 19.17b (see ~:688 below).
+  // `pc_node_failed` is re-registered here by the Batch-A tool-audit
+  // remediation — the spawner already watches the JSONL for it to mark nodes
+  // as agent-self-failed; the tool was never re-added after 19.17, making it
+  // a phantom grant. It now lives at ~:734 below.
   {
     name: 'pc_create_agent',
     description:
@@ -598,15 +599,11 @@ export const TOOLS = [
       },
     },
   },
-  // 19.23 — `pc_create_workflow` + `pc_edit_workflow` removed. Both routed at
-  // the dead `/api/projects/:projectId/workflows` surface (deleted in 19.17;
-  // the v1 workflow-creator pod that drove them is gone). v2 publish flows
-  // through `pc_publish_workflow` (GET → PUT-or-POST against `/api/workflows`);
-  // drafts flow through `pc_save_workflow_draft` (below). Old tool defs would
-  // 404 on call — pruning so the catalog stops advertising dead surfaces.
-  //
-  // `pc_update_workflow_draft` was already removed in 19.17 for the same
-  // reason (its handler was repointed to a dead v1 route).
+  // 19.17 removed `pc_update_workflow_draft` (its handler pointed at a dead
+  // v1 route). 19.23 added `pc_create_workflow` and `pc_update_workflow` as
+  // live v2 tools (see ~:741/:765 below) — they are NOT removed. The original
+  // 19.23 comment here incorrectly said they were pruned; corrected by the
+  // Batch-A tool-audit remediation.
   {
     name: 'pc_save_workflow_draft',
     description:
@@ -729,6 +726,29 @@ export const TOOLS = [
         },
       },
       required: ['workflowRunId', 'nodeId', 'decision'],
+    },
+  },
+  {
+    name: 'pc_node_failed',
+    description:
+      'Signal a hard failure from a workflow agent node. Call this when you cannot produce the contracted output (bad input, missing files, unrecoverable error). The v2 subagent spawner detects this call from the JSONL transcript and closes the node as `agent-self-failed` carrying your reason. After calling, end your turn normally — do NOT call this from ad-hoc (non-workflow) dispatch. Schema: { workflowRunId, nodeId, reason }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowRunId: {
+          type: 'string',
+          description: 'the workflow run id from the dispatch tokens',
+        },
+        nodeId: {
+          type: 'string',
+          description: 'the node id from the dispatch tokens',
+        },
+        reason: {
+          type: 'string',
+          description: 'one-line human-readable reason surfaced in the UI',
+        },
+      },
+      required: ['workflowRunId', 'nodeId', 'reason'],
     },
   },
   {
@@ -2007,10 +2027,39 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow` cases
-    // removed. See the tool-definition site above for the rationale. Any
-    // residual orchestrator-pod prompt still naming these tools surfaces a
-    // generic "tool not found" — caught by 19.17b's prompt overhaul.
+    // 19.17 removed pc_node_failed. Re-registered in Batch A of the
+    // tool-audit remediation: the spawner already watches for this call in
+    // JSONL to mark nodes as agent-self-failed; re-registering makes the
+    // tool visible to CC so the model can actually emit it.
+
+    case 'pc_node_failed': {
+      const runId = typeof args.workflowRunId === 'string' ? args.workflowRunId.trim() : '';
+      const nodeId = typeof args.nodeId === 'string' ? args.nodeId.trim() : '';
+      const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+      if (!runId || !nodeId || !reason) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'pc_node_failed: require { workflowRunId, nodeId, reason }',
+            },
+          ],
+          isError: true,
+        };
+      }
+      // The v2 subagent spawner (subagent-spawner.ts) reads this call from
+      // the JSONL transcript and closes the node as agent-self-failed with
+      // the given reason. This handler just acknowledges so the agent knows
+      // the signal was sent; after this call the agent should end its turn.
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `node failure signal registered for node ${nodeId} (run ${runId}): ${reason}`,
+          },
+        ],
+      };
+    }
 
     case 'pc_destroy_worktree': {
       const target = typeof args.target === 'string' ? args.target : '';
