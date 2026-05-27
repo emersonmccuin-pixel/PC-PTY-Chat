@@ -108,23 +108,11 @@ import {
   readMemoryFile,
   writeMemoryFile,
 } from './services/memory-files.ts';
-import {
-  browseFolder,
-  BrowseError,
-  createChildFolder,
-  listDrives,
-} from './services/fs-browse.ts';
-import { probeFolder } from './services/fs-probe.ts';
-import {
-  FileNotFoundError,
-  FilePathOutsideProjectError,
-  getFilesTree,
-  previewFile,
-} from './services/files-tree.ts';
 import { ProjectCreate } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
 import { ProjectScaffold } from './services/project-scaffold.ts';
+import { registerFileRoutes } from './features/files/routes.ts';
 import { createRuntimeHostPtyController } from './features/runtime-host/pty-handlers.ts';
 import {
   registerProjectDetailRoute,
@@ -830,78 +818,8 @@ app.post('/api/onboarding/auth/cancel', (c) => {
   return c.json({ ok: true });
 });
 
-// ── Filesystem browse + probe (create-project UI) ─────────────────────────
-
-/** List a directory for the folder picker. Query:
- *    path       — directory to list (defaults to ~/ or the gate root).
- *    gateRoot   — optional absolute path. When set, restricts browsing to
- *                 within this root (returns 403 for paths outside). Used by
- *                 the create-project flow with the global projectsFolder
- *                 setting; omitted by the App Settings picker that sets the
- *                 projectsFolder itself. */
-app.get('/api/fs/browse', (c) => {
-  const path = c.req.query('path') ?? '';
-  const gateRoot = c.req.query('gateRoot');
-  const opts = gateRoot && gateRoot.trim() ? { roots: [gateRoot.trim()] } : {};
-  try {
-    return c.json({ ok: true, ...browseFolder(path, opts) });
-  } catch (err) {
-    if (err instanceof BrowseError) {
-      const status = err.kind === 'forbidden' ? 403 : err.kind === 'not_found' ? 404 : 400;
-      return c.json({ ok: false, error: err.message, kind: err.kind }, status);
-    }
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** Enumerate drive roots for the picker's drive-jump row (Windows). */
-app.get('/api/fs/drives', (c) => {
-  return c.json({ ok: true, drives: listDrives() });
-});
-
-/** Create one direct child directory under the currently viewed folder. Body:
- *    parentPath — absolute directory to create inside
- *    name       — single folder-name segment
- *    gateRoot   — optional browse gate; when set, parent + child must stay
- *                 inside it. */
-app.post('/api/fs/mkdir', async (c) => {
-  const body = await c.req.json<{ parentPath?: string; name?: string; gateRoot?: string }>();
-  const parentPath = typeof body.parentPath === 'string' ? body.parentPath.trim() : '';
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  const gateRoot = typeof body.gateRoot === 'string' ? body.gateRoot.trim() : '';
-  if (!parentPath) return c.json({ ok: false, error: 'parentPath required' }, 400);
-  if (!name) return c.json({ ok: false, error: 'folder name required' }, 400);
-
-  const opts = gateRoot ? { roots: [gateRoot] } : {};
-  try {
-    return c.json({ ok: true, ...createChildFolder(parentPath, name, opts) });
-  } catch (err) {
-    if (err instanceof BrowseError) {
-      const status =
-        err.kind === 'forbidden'
-          ? 403
-          : err.kind === 'not_found'
-            ? 404
-            : err.kind === 'already_exists'
-              ? 409
-              : 400;
-      return c.json({ ok: false, error: err.message, kind: err.kind }, status);
-    }
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** Probe a folder for the create-project preview. Body: `{ path }`.
- *  Response: { path, exists, isDirectory, hasFiles, fileCount, isGitRepo }. */
-app.post('/api/fs/probe', async (c) => {
-  const body = await c.req.json<{ path?: string }>();
-  const raw = typeof body.path === 'string' ? body.path.trim() : '';
-  if (!raw) return c.json({ ok: false, error: 'path required' }, 400);
-  try {
-    return c.json({ ok: true, probe: probeFolder(raw) });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 400);
-  }
+registerFileRoutes(app, {
+  projectFolderPath: (projectId) => getProjectById(projectId)?.folderPath ?? null,
 });
 
 registerProjectRoutes(app, {
@@ -909,48 +827,6 @@ registerProjectRoutes(app, {
   refreshProject: (project) => projectRegistry.refresh(project),
   removeProject: (projectId) => projectRegistry.remove(projectId),
   resolveProject,
-});
-
-/** 5+.2 — read-only file tree for the LeftRail Files tab. Walks the project's
- *  folderPath applying the D92 hard-skip list + .gitignore. Returns the full
- *  recursive tree; the renderer collapses/expands client-side. */
-app.get('/api/projects/:projectId/files/tree', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const project = getProjectById(id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  try {
-    const tree = await getFilesTree(project.folderPath);
-    return c.json({ ok: true, tree });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-/** 5+.2 — read-only preview for a single file under the project root. The
- *  `path` query param is relative + posix-style (the tree returns paths in
- *  that shape). Server resolves + bounds-checks to keep the read confined to
- *  folderPath. Renderer kinds: markdown / html / image / text / binary /
- *  oversized — see services/files-tree.ts for the cap + classification. */
-app.get('/api/projects/:projectId/files/preview', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const project = getProjectById(id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const relPath = c.req.query('path');
-  if (typeof relPath !== 'string' || relPath.length === 0) {
-    return c.json({ ok: false, error: 'path query param is required' }, 400);
-  }
-  try {
-    const preview = await previewFile(project.folderPath, relPath);
-    return c.json({ ok: true, preview });
-  } catch (err) {
-    if (err instanceof FilePathOutsideProjectError) {
-      return c.json({ ok: false, error: err.message }, 400);
-    }
-    if (err instanceof FileNotFoundError) {
-      return c.json({ ok: false, error: err.message }, 404);
-    }
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
 });
 
 // Section 17d.1 — Pod (DB-resident agent) routes. Pods are global-scope in
