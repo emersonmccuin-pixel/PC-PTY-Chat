@@ -5,7 +5,7 @@
 //
 // HTTP receiver moved out of this process per multi-tenant design — apps/server
 // now owns the single :8788 listener and routes by project slug. See
-// docs/design/multi-tenancy.md §3.
+// the multi-tenancy runtime design.
 //
 // Section 18.5a — registers with `(projectId, sessionId)`, not just projectId.
 // PC_SESSION_ID is set on the parent CC's spawn env (project-runtime's

@@ -486,7 +486,7 @@ export class PtySession extends EventEmitter {
     });
 
     // JSONL tailer — CC's per-session transcript is the canonical source for
-    // turn lifecycle + tool calls (see docs/design/chat-reliability.md).
+    // turn lifecycle + tool calls (see the chat reliability design).
     //
     // Path resolution:
     //  - Caller passed jsonlPath (orchestrator path; --session-id at spawn

@@ -906,7 +906,7 @@ function attachPtyHandlers(
     // refining model-generated name. Empirically, ai-title NEVER fires under
     // `--agent <name>` spawns (the entire orchestrator + every PM pod), so
     // the heuristic is the only path that lands a title for PC sessions.
-    // See docs/session-log.md (2026-05-25 Session 36) for the bisect.
+    // See the implementation notes (2026-05-25 Session 36) for the bisect.
     maybeSetSessionTitle(projectId, event);
     maybeApplyAiTitle(projectId, event);
   });
@@ -1398,7 +1398,7 @@ app.patch('/api/projects/reorder', async (c) => {
 });
 
 /** Patch a project's mutable metadata (name + git_remote). Slug stays locked
- *  per docs/design/multi-tenancy.md "Open / deferred". Body: `{ name?, git_remote? }`. */
+ *  per the project settings contract. Body: `{ name?, git_remote? }`. */
 app.patch('/api/projects/:projectId', async (c) => {
   const id = c.req.param('projectId') as ULID;
   const body = await c.req.json<{ name?: string; git_remote?: string | null }>();
@@ -1421,7 +1421,7 @@ app.patch('/api/projects/:projectId', async (c) => {
   }
 });
 
-/** Soft-delete a project. Filesystem is untouched per docs/design/multi-tenancy.md;
+/** Soft-delete a project. Filesystem is untouched per the multi-tenancy design;
  *  the separate DELETE /api/projects/:id/files endpoint is the only path to
  *  on-disk removal. Idempotent — returns 200 even if already deleted. */
 app.delete('/api/projects/:projectId', (c) => {
@@ -1550,7 +1550,7 @@ app.get('/api/projects/:projectId/files/preview', async (c) => {
  *  insert the DB row, register the runtime. Body:
  *    { name, folder_path, mode: 'init-empty' | 'init-in-place' | 'attach-to-git', git_remote? }
  *
- *  Per docs/design/multi-tenancy.md Q2 the UI probes the folder first and picks the
+ *  Per the project settings contract the UI probes the folder first and picks the
  *  mode; the server enforces consistency (refuses init-empty on a non-empty
  *  folder; refuses to reinit an existing git repo). */
 app.post('/api/projects', async (c) => {

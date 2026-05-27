@@ -2,7 +2,7 @@
 //
 // Real-CC verification lives in the labs scenario port; this suite covers
 // the pure logic. Replaces the production 500ms setTimeout — see
-// docs/design/agent-system-v2.md § 3.4.
+// the agent-system design § 3.4.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

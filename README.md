@@ -10,8 +10,6 @@ Build your own AI workflows by talking to Claude. No code. No prompt engineering
 
 Everything below is that sentence, unpacked.
 
-![The orchestrator chat — you live in conversation with a project-specific AI Project Manager that knows your work and can act on it.](docs/screenshots/01-orchestrator.png)
-
 ## The problem it solves
 
 AI at work is gated by tech fluency.
@@ -26,19 +24,13 @@ Caisson closes that gap. You describe how the work should be done, in plain Engl
 
 **"Lives in conversation with a project-specific AI Project Manager."** Each project has its own chat with an orchestrator that knows that project's context, files, and history. This is the front door — not a kanban board, not a settings panel. You manage your day by talking to it.
 
-![Work as a tree of tasks — each card is a unit of work moving through stages you define.](docs/screenshots/02-work-items.png)
-
 **"Workflows are authored conversationally, not coded."** You don't map a node graph or write YAML. You have a conversation; Caisson writes the workflow. Change it the same way you built it.
-
-![Workflows — repeatable recipes, callable on demand or wired to fire automatically.](docs/screenshots/03-workflows.png)
 
 **"They fire on schedule, on external events, on manual command, or on internal state changes."** Four triggers. A workflow can run every Monday, when an email lands, when you click "run," or when a task crosses a stage on the board.
 
 **"Each run produces a tree of tasks."** A task is the universal primitive. A workflow run spawns a structured tree of them — the kanban board is just one view of that tree.
 
 **"Some completed by AI specialists on the user's team."** You keep a roster of specialists — a data analyst, a researcher, a copy editor — each tuned for one role with its own tools and context. The Project Manager dispatches work to them.
-
-![Your team of AI specialists — each tuned for one role, built and edited by conversation.](docs/screenshots/04-agents.png)
 
 **"Some by external systems via tool integrations, some held for human-in-the-loop review."** Steps can call out to external tools and services, and any step can pause for your approval. You stay in control of the parts that need judgment.
 

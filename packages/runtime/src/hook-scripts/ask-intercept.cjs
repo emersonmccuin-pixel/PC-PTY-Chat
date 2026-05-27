@@ -1,10 +1,21 @@
 // PreToolUse hook for interactive tools (AskUserQuestion, ExitPlanMode).
-// Forwards the tool input to the Caisson server, waits for the user's
-// answer, then denies the original tool call with the answer as the reason
-// — so CC sees the answer and continues.
+// Forwards the tool input to the PC server (with this project's id), waits for
+// the user's answer, then denies the original tool call with the answer as the
+// reason — so CC sees the answer and continues.
+//
+// Identity guard: bail out unless PC_SESSION_ID is set (i.e. unless we were
+// spawned by PC). Without this, an outer Claude Code dev session running in
+// this repo would POST every AskUserQuestion to /api/ask and surface it as a
+// modal in the live orchestrator UI. Same identity-bleed class as Section
+// 15's JSONL fix.
+
+if (!process.env.PC_SESSION_ID) process.exit(0);
 
 const { readFileSync } = require('node:fs');
 const { request } = require('node:http');
+
+const PROJECT_ID = '{{PROJECT_ID}}';
+const SERVER_PORT = Number('{{PC_SERVER_PORT}}') || 4040;
 
 const raw = readSync(0);
 let payload = {};
@@ -13,6 +24,11 @@ try { payload = JSON.parse(raw); } catch { /* keep empty */ }
 const toolName = payload.tool_name ?? 'Unknown';
 const toolUseId = payload.tool_use_id ?? `na-${Date.now()}`;
 const toolInput = payload.tool_input ?? {};
+// PC_SESSION_ID is set on every claude.exe spawn (orchestrator + agent-creator
+// + workflow-creator). Forwarding it lets the UI filter ask envelopes to the
+// session that asked — so a transient modal doesn't intercept the
+// orchestrator's asks (and vice versa).
+const sessionId = process.env.PC_SESSION_ID || null;
 
 // Hard kill: plan mode is disabled in PC. Auto-deny both entry and exit
 // so CC never enters the review-and-approve loop.
@@ -20,12 +36,12 @@ if (toolName === 'ExitPlanMode' || toolName === 'EnterPlanMode') {
   emitDenyAndExit('Plan mode is disabled here — proceed directly with the work, no plan-then-approve loop.');
 }
 
-const body = JSON.stringify({ toolName, toolUseId, toolInput });
+const body = JSON.stringify({ projectId: PROJECT_ID, sessionId, toolName, toolUseId, toolInput });
 
 const req = request(
   {
     host: '127.0.0.1',
-    port: 4040,
+    port: SERVER_PORT,
     path: '/api/ask',
     method: 'POST',
     headers: {

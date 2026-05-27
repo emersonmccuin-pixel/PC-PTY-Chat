@@ -3,7 +3,7 @@
 -- CC writes a `system:post_turn_summary` row after each assistant turn
 -- carrying rich metadata (title, description, needs_action, artifact_urls).
 -- The buildout deferred placing this in the UI until a week of real data
--- can inform the call (per "TBD" in docs/buildout/jsonl-signal-firehose.md).
+-- can inform the call (per "TBD" in the JSONL signal catalog).
 -- Land the table now so the data accumulates; surface design comes later.
 
 CREATE TABLE `post_turn_summaries` (

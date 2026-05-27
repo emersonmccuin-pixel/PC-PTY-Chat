@@ -267,7 +267,7 @@ export const workflowAudit = sqliteTable(
  * (`is_workflow_root`); node outputs live on child work items, so this row
  * holds only DAG bookkeeping (per-node state + reject-iteration counts) that
  * isn't derivable from the WIs.
- * See docs/buildout/workflow-rebuild-port-map.md ("stateless over work items").
+ * See the workflow runtime design ("stateless over work items").
  */
 export const workflowRunsV2 = sqliteTable(
   'workflow_runs_v2',

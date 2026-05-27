@@ -6,7 +6,7 @@
 -- envelopes, tests, events.jsonl); callsign is a SECOND identifier surfaced
 -- alongside.
 --
--- Locks (full list in docs/buildout/work-item-callsigns.md):
+-- Locks (full list in the work-item callsign contract):
 -- - alias, not replacement;
 -- - unpadded, monotonic, never-reused root sequence on projects.callsign_seq;
 -- - per-parent child sequence computed from MAX(suffix)+1 over existing

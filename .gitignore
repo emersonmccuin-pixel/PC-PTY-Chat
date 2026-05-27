@@ -46,6 +46,7 @@ tests/playwright/readme-*.spec.ts
 # Logs and scratch files
 *.log
 *.log.*
+*.jsonl
 *.out
 .tmp-*
 *.tmp
@@ -77,7 +78,6 @@ scripts/*.png
 /*.webp
 /*.html
 Pics/
-docs/screenshots/00-survey.png
 
 # Local experiment outputs. Promote durable fixtures into tests/ or docs/ before tracking.
 /labs/**/node_modules/

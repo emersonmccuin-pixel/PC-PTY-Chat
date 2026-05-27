@@ -6,7 +6,7 @@
 // placeholder is either substituted or the dispatch has aborted with a clear
 // error.
 //
-// Recognized variables (per the D7 contract in `docs/buildout/subagents.md`):
+// Recognized variables (per the D7 contract in `the subagent contract`):
 //   {{input}}             — text/data the workflow node fed in
 //   {{worktree}}          — absolute path to the assigned worktree
 //   {{workflow.id}}       — workflow run identifier (for pc_complete_node)

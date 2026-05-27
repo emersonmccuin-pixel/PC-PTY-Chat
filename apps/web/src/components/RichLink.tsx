@@ -1,5 +1,5 @@
 // Inline pill for pc:// references (work-item / file / attachment / inbox).
-// Visual spec: docs/design/visual-system.md § Rich-links (line 150).
+// Visual spec: the rich-link visual spec.
 //
 // 1.5.2 ships the primitive + click handler routing. Hover preview (1.5.4)
 // and broken-state (1.5.8) bolt on later via the broken/onHover props.

@@ -1,6 +1,6 @@
 // Project create flow. The `POST /api/projects` endpoint thin-wraps this.
 //
-// Order of operations (per docs/design/multi-tenancy.md §6):
+// Order of operations (per the multi-tenancy project-creation design):
 //
 //   1. Validate name + folder.
 //   2. Resolve a unique slug from the name.

@@ -1,6 +1,6 @@
 // Q11 — per-project settings.
 //
-// Trunk scope (docs/session-log.md, Session Q): rename + git remote, agent library picker
+// Trunk scope (the implementation notes, Session Q): rename + git remote, agent library picker
 // (add from library / edit project copy / save edit back as a new library
 // agent), and danger-zone soft-delete + on-disk file removal.
 //

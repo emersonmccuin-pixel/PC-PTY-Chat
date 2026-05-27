@@ -588,7 +588,7 @@ function SurfacePreview({ surface }: { surface: OrchestratorSurfacePreference })
           I will map the repo, create work items, and propose the first slice.
         </div>
         <div className="max-w-[62%] border border-border bg-muted/30 px-3 py-2 text-xs">
-          Read docs/buildout
+          Read project notes
         </div>
         <div className="max-w-[72%] border border-success/50 bg-success/10 px-3 py-2 text-xs">
           Linked TASK-12 and TASK-13.

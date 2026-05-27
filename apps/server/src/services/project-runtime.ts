@@ -133,7 +133,7 @@ export class ProjectRuntime {
 
   /**
    * Base dir for this project's worktrees: `<data_dir>/worktrees/<slug>/`.
-   * Per `docs/design/multi-tenancy.md` §4 — keeps the user's actual repo clean and
+   * Per `the multi-tenancy design` §4 — keeps the user's actual repo clean and
    * namespaces parallel-project worktrees on disk. Slug is locked at create
    * time (rename → slug migration is a deferred followup).
    */

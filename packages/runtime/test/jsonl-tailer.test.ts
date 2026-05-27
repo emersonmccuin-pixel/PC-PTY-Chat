@@ -1,5 +1,5 @@
 // Unit tests for JsonlTailer — the heart of the chat reliability fix
-// (docs/buildout/chat-reliability.md). The 2026-05-17 session shipped two
+// (the chat reliability design). The 2026-05-17 session shipped two
 // bugs in the tailer/discovery layer; these tests pin the parsing contract
 // so changes here can't silently regress without a fast local signal.
 //

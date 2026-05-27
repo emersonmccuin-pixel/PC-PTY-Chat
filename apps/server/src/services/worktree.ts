@@ -43,7 +43,7 @@ export class WorktreeService {
   /**
    * @param workspaceDir Absolute path to the project's git repo (cwd for git ops).
    * @param baseDir Absolute path under which this project's worktrees live —
-   *   `<data_dir>/worktrees/<slug>/` per `docs/design/multi-tenancy.md` §4. Each
+   *   `<data_dir>/worktrees/<slug>/` per `the multi-tenancy design` §4. Each
    *   worktree directory becomes `<baseDir>/<name>/`.
    */
   constructor(

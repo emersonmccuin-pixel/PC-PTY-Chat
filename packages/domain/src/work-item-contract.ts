@@ -1,5 +1,5 @@
 // Work-item-as-contract types. Section 26 v1 — every agent dispatch creates
-// a work item; the work item IS the contract. See docs/design/agent-outputs.md.
+// a work item; the work item IS the contract. See the agent output contract.
 
 /** Who verifies "done". `auto` runs structured predicates; `orchestrator-review`
  *  wakes the orchestrator via channel event; `human-review` queues in the

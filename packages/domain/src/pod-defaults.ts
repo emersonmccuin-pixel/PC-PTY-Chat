@@ -8,7 +8,7 @@
 // Stock-only for v1. User-customised pods that want defaults must pass
 // `expected_output` explicitly until a default column lands on the agents row.
 // Design rationale + the friction-gradient defaults live in
-// docs/design/agent-outputs.md § "Pod-level defaults".
+// the agent output contract § "Pod-level defaults".
 
 import type { ExpectedOutput } from './work-item-contract.ts';
 

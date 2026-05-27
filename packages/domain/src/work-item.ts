@@ -20,7 +20,7 @@ export type WorkItemStatus =
   | 'archived';
 
 /** Built-in, fixed-set work-item types. Extendable later — not per-project
- *  configurable today (rationale in docs/buildout/work-item-types-and-log-bug.md). */
+ *  configurable today (rationale in the work-item type contract). */
 export const WORK_ITEM_TYPES = ['task', 'bug', 'feature', 'spike'] as const;
 export type WorkItemType = (typeof WORK_ITEM_TYPES)[number];
 

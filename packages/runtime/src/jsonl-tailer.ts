@@ -1,10 +1,10 @@
 // Tails CC's per-session JSONL file (~/.claude/projects/<encoded-cwd>/<uuid>.jsonl)
 // and emits typed canonical events. Source of truth for turn lifecycle + tool
 // calls; replaces the hook-driven derivation that misses the four documented
-// Stop-skip cases (see docs/design/chat-reliability.md).
+// Stop-skip cases (see the chat reliability design).
 //
 // Section 31 extends the catalog to surface every kept JSONL signal claude.exe
-// emits — see docs/buildout/jsonl-signal-firehose.md for the locked render
+// emits — see the JSONL signal catalog for the locked render
 // placements and the cut list. Cut signals stay un-decoded; kept signals get
 // typed envelopes (the ones that drive distinct UI shapes) or richer formatter
 // strings inside the generic jsonl-system pass-through (the ones that render

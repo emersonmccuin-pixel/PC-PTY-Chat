@@ -820,7 +820,7 @@ button:disabled {
 
 /* ──────────────────────────────────────────────────────────────────────
    Rich-links + external-links (Section 1.5)
-   Spec: docs/design/visual-system.md § Rich-links (line 150)
+   Spec: the rich-link visual spec
    ────────────────────────────────────────────────────────────────────── */
 
 .pc-rich-link {

@@ -8,7 +8,7 @@
 //                   pc_run_workflow. Runs BEFORE bind on the same matcher.
 //   bind          — PreToolUse on Agent|Task: scan tool_input.prompt for the
 //                   "[worktree: <abs-path>]" token; write a binding to
-//                   data/current-task-binding.json keyed by tool_use_id.
+//                   <project-data-dir>/current-task-binding.json keyed by tool_use_id.
 //   unbind        — PostToolUse on Agent|Task: drop that binding.
 //   enforce       — PreToolUse on Read|Write|Edit|Bash|Glob|Grep|NotebookEdit:
 //                   if the call is inside a subagent turn (payload.agent_type set)
@@ -23,7 +23,7 @@
 const { readFileSync, writeFileSync, mkdirSync } = require('node:fs');
 const { dirname, resolve } = require('node:path');
 
-const BINDING_FILE = 'E:/Projects/Caisson/data/current-task-binding.json';
+const BINDING_FILE = '{{PROJECT_DATA_DIR}}/current-task-binding.json';
 
 const mode = process.argv[2] ?? '';
 const raw = readStdinSync();
@@ -68,15 +68,24 @@ function extractWorktree(prompt) {
 }
 
 function gateWorkflow() {
-  // Subagents are workflow-only (Section 3 D1). The workflow runtime emits a
-  // dispatch envelope containing "[workflowRunId: <id>]". Any Task call without
-  // that token is a direct orchestrator dispatch; deny it.
+  // PC product policy: subagents inside PC-spawned claude.exe are
+  // workflow-only (Section 3 D1). The workflow runtime emits a dispatch
+  // envelope containing "[workflowRunId: <id>]"; a Task() call without it
+  // is a direct orchestrator dispatch and we deny it.
+  //
+  // BUT: the same `.claude/settings.json` loads in any claude.exe that
+  // opens this repo — including the engineer running Claude Code as a dev
+  // tool. PC's policy doesn't apply there; Task() should work normally.
+  // Distinguish via PC_PROJECT_ID, which apps/server sets on every spawn
+  // (orchestrator + dispatched agent). Absent = outer/dev session = skip.
+  if (!process.env.PC_PROJECT_ID) return;
+
   const prompt = payload.tool_input && payload.tool_input.prompt;
   if (typeof prompt === 'string' && prompt.includes('[workflowRunId:')) return;
   const reason =
-    'Direct Task() blocked. Subagents are workflow-only — call `pc_run_workflow` ' +
-    'instead. For one-off agent work without authoring a custom workflow, run the ' +
-    'built-in "generic-agent-runner" workflow.';
+    'Direct Task() blocked. Subagents are workflow-only — author a workflow ' +
+    'that dispatches the agent (via the conversational New Workflow modal), ' +
+    'then call `pc_run_workflow` with its id.';
   const out = {
     decision: 'block',
     reason,

@@ -3,7 +3,7 @@
 -- Adds the contract fields to `work_items`. Every agent dispatch creates a
 -- work item with `is_agent_task = 1`, an `expected_output` spec, a derived
 -- `acceptance_criteria` predicate set, and a `verification_tier`. See
--- docs/design/agent-outputs.md.
+-- the agent output contract.
 --
 -- `is_workflow_root` is deliberately deferred to Section 19 (workflow
 -- rebuild) — the workflow-side schema lands there together.

@@ -7,7 +7,7 @@
 -- v2 model: a workflow run IS a work item (`is_workflow_root`). Each node spawns
 -- a child WI; node outputs live on those children. The sidecar holds only DAG
 -- bookkeeping (per-node state + reject-iteration counts) — see
--- docs/buildout/workflow-rebuild-port-map.md ("stateless over work items").
+-- the workflow runtime design ("stateless over work items").
 -- `workflow_run_events` is observability/audit only; resume reads the children.
 
 ALTER TABLE work_items ADD COLUMN is_workflow_root integer DEFAULT 0 NOT NULL;--> statement-breakpoint

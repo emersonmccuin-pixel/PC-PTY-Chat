@@ -7,7 +7,7 @@
 // summary the caller folds into the `agent-completed` / `agent-failed`
 // channel envelope.
 //
-// Tier semantics (locked at docs/design/agent-outputs.md § "Verification flow"):
+// Tier semantics (locked at the agent output contract § "Verification flow"):
 //   - auto: predicates run; pass = complete, fail = failed.
 //   - orchestrator-review / human-review: WI flips to `awaiting-verification`
 //     with `verification_status = 'pending'`; the approve/reject tools (26.6)

@@ -3,7 +3,7 @@
 // deps. Reusable across MCP, future workflow-runtime node-evaluation, and
 // the (future) UI editor.
 //
-// Derivation rules (locked at design time — docs/design/agent-outputs.md
+// Derivation rules (locked at design time — the agent output contract
 // § "AC derivation rules"):
 //
 //   text         → body_contains per section + min-chars regex if specified
