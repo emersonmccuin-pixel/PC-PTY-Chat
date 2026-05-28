@@ -44,7 +44,6 @@ import {
 import { TerminalModeToggle, TerminalPane } from '@/features/chat/TerminalPane';
 import { formatElapsed, ThinkingIndicator } from '@/features/chat/ThinkingIndicator';
 import { EditBubble, ToolGroupBubble } from '@/features/chat/ToolBubbles';
-import { injectTodoSnapshots, normalizeJsonlEnvelope } from '@/features/chat/normalizeJsonlEnvelope';
 import {
   deriveActivity,
   deriveJsonlBusy,
@@ -54,18 +53,13 @@ import {
   type RuntimeInputCapabilities,
   writeTerminalMode,
 } from '@/features/chat/runtimeState';
-import { synthesizeRenderItems } from '@/features/chat/toolGrouping';
 import {
   createClientMessageId,
   isPendingUserEvent,
-  pendingPromptEnvelope,
   usePendingPrompts,
 } from '@/features/chat/usePendingPrompts';
-import type {
-  PendingPromptStatus,
-  RenderItem,
-  StableEnvelope,
-} from '@/features/chat/types';
+import { useChatRenderItems } from '@/features/chat/useChatRenderItems';
+import type { PendingPromptStatus, RenderItem } from '@/features/chat/types';
 
 // ── ChatSurface ──────────────────────────────────────────────────────────
 
@@ -178,59 +172,12 @@ export function ChatSurface({
     eventsRef.current = events;
   }, [events]);
 
-  const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
-    // Section 23.5 — derive todos snapshots client-side from JSONL tool-calls
-    // (replaces the hook-accumulated tasks.json + snapshot emission). The
-    // hook no longer accumulates state; the synthetic envelopes injected
-    // below carry the same {kind:'todos'} shape as the legacy hook events.
-    const eventsWithTodos = injectTodoSnapshots(events);
-    // Section 23.8 — buildSuppressionMap retired. Live + new-session replay
-    // both source from JSONL; the hook no longer emits user/assistant/
-    // tool-start/tool-end (those died in 23.4) so there is no dual-pipe
-    // collision to dedupe. Legacy pre-23 sessions surface their hook events
-    // verbatim via the legacy events.jsonl fallback in
-    // loadSessionReplayEnvelopes; they don't have JSONL counterparts on
-    // disk for that session, so dedupe was always a no-op for them too.
-    const out: StableEnvelope[] = [];
-    for (let i = 0; i < eventsWithTodos.length; i++) {
-      const env = eventsWithTodos[i]!;
-      if (env.type === 'ask') {
-        // Scope ask cards to the owning session — transient sessions broadcast
-        // ask envelopes on the same project WS; without this filter their
-        // asks bleed in. Permissive when the session id hasn't loaded yet.
-        const askSessionId = (env as { sessionId?: string | null }).sessionId;
-        if (currentSessionId && askSessionId && askSessionId !== currentSessionId) {
-          continue;
-        }
-        out.push({ origIdx: i, env });
-        continue;
-      }
-      if (env.type === 'event') {
-        out.push({ origIdx: i, env });
-        continue;
-      }
-      if (env.type === 'jsonl') {
-        const normalized = normalizeJsonlEnvelope(env);
-        if (normalized) {
-          out.push({ origIdx: i, env: normalized });
-        }
-      }
-    }
-    for (let i = 0; i < visiblePendingPrompts.length; i++) {
-      const pending = visiblePendingPrompts[i]!;
-      out.push({
-        origIdx: eventsWithTodos.length + i,
-        key: `pending-${pending.id}`,
-        env: pendingPromptEnvelope(projectId, pending),
-      });
-    }
-    return out;
-  }, [events, currentSessionId, projectId, visiblePendingPrompts]);
-
-  const renderItems = useMemo(
-    () => synthesizeRenderItems(chatEnvelopes),
-    [chatEnvelopes],
-  );
+  const { chatEnvelopes, renderItems } = useChatRenderItems({
+    events,
+    currentSessionId,
+    projectId,
+    visiblePendingPrompts,
+  });
 
   const [resolvedApprovals, setResolvedApprovals] = useState<
     Record<string, { approved: boolean; response: string }>
@@ -581,7 +528,8 @@ export function ChatSurface({
           />
         }
         renderItem={renderTimelineItem}
-      />      {bannerSlot}
+      />
+      {bannerSlot}
       {!composerHidden && !terminalActive && (
         <Composer
           historyKey={composerHistoryKey}
