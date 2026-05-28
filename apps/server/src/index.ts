@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -34,8 +34,6 @@ import {
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
-import { getActiveRunRegistry } from './services/agent-active-runs.ts';
-import { notifyWorkflowSubagentHandshake } from './services/workflow-subagent-handshake.ts';
 import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { sweepEphemeralWorkItems } from './services/ephemeral-work-item-sweep.ts';
 import { backfillStageFlags } from './services/stage-flags-backfill.ts';
@@ -64,6 +62,7 @@ import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerStatuslineRoutes } from './features/statusline/routes.ts';
 import { registerProjectContextRoutes } from './features/project-context/routes.ts';
 import { registerWorkflowCompatRoutes } from './features/workflow-compat/routes.ts';
+import { registerMcpBridgeRoutes } from './features/mcp-bridge/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -376,6 +375,11 @@ function resolveProject(projectId: string): ProjectRuntime | null {
   return projectRegistry.ensure(projectId as ULID);
 }
 
+registerMcpBridgeRoutes(app, {
+  dataDir: DATA,
+  resolveProject,
+});
+
 /**
  * Listens on the `jsonl-event` channel for the first `jsonl-user` envelope of
  * a session and derives a title from its text. Idempotent once a title is set
@@ -501,34 +505,6 @@ function maybePersistPostTurnSummary(projectId: ULID, event: unknown): void {
     );
   }
 }
-
-// ── Global endpoints ──────────────────────────────────────────────────────
-
-// MCP heartbeats are written per-project by `packages/mcp/src/server.ts`
-// (`PC_PROJECT_ID` is supplied in PC's session-local MCP env). Pass
-// `?projectId=` to read that project's heartbeat; the legacy global path is
-// the fallback for pre-per-project clients.
-app.get('/api/mcp-status', (c) => {
-  const projectId = c.req.query('projectId');
-  const file = projectId
-    ? resolve(DATA, 'projects', projectId, 'mcp-status.json')
-    : resolve(DATA, 'mcp-status.json');
-  if (!existsSync(file)) return c.json({ alive: false, toolCount: 0, tools: [] });
-  try {
-    const raw = JSON.parse(readFileSync(file, 'utf-8')) as {
-      aliveAt?: string; toolCount?: number; tools?: string[];
-    };
-    const aliveAtMs = raw.aliveAt ? Date.parse(raw.aliveAt) : 0;
-    const alive = Number.isFinite(aliveAtMs) && Date.now() - aliveAtMs < 8000;
-    return c.json({
-      alive,
-      toolCount: alive ? raw.toolCount ?? 0 : 0,
-      tools: alive ? raw.tools ?? [] : [],
-    });
-  } catch {
-    return c.json({ alive: false, toolCount: 0, tools: [] });
-  }
-});
 
 /**
  * Ask intercept. Hook scripts POST { projectId, sessionId?, toolName, toolUseId, toolInput }.
@@ -787,31 +763,6 @@ registerAgentRunRoutes(app, {
 });
 
 registerStatuslineRoutes(app, { broadcastTo });
-
-/** Section 22 / Phase D — internal endpoint posted by pc-rig (the per-spawn
- *  MCP child) when CC's MCP client finishes the JSON-RPC handshake (the
- *  `initialized` notification). Routes the signal to whichever surface owns
- *  the session: the v2 active-runs registry (dispatched agents) or the
- *  workflow-subagent-handshake map (workflow-runtime subagents). */
-app.post('/api/internal/mcp-handshake', async (c) => {
-  const body = await c.req.json<{ projectId?: string; agentSessionId?: string }>();
-  if (!body.projectId || !body.agentSessionId) {
-    return c.json({ ok: false, error: 'projectId + agentSessionId required' }, 400);
-  }
-  const v2Entry = getActiveRunRegistry().getByCcSession(body.agentSessionId);
-  if (v2Entry) {
-    v2Entry.run.notifyMcpHandshake();
-    return c.json({ ok: true, found: true, transport: 'agent' });
-  }
-  if (notifyWorkflowSubagentHandshake(body.agentSessionId)) {
-    return c.json({ ok: true, found: true, transport: 'workflow' });
-  }
-  const runtime = resolveProject(body.projectId);
-  if (runtime?.notifyOrchestratorMcpHandshake(body.agentSessionId)) {
-    return c.json({ ok: true, found: true, transport: 'orchestrator' });
-  }
-  return c.json({ ok: true, found: false });
-});
 
 // ── Static / SPA fallback ─────────────────────────────────────────────────
 
