@@ -5,8 +5,10 @@ reconstructing state from chat history.
 
 ## Current State
 
-Branch: `dev`, ahead of `origin/dev` by 51 commits at the time this handoff was
-written.
+Branch at original handoff time: `dev`, ahead of `origin/dev` by 51 commits.
+Current Codex continuation work should happen in the Codex worktree at
+`E:\Claude Code Projects\Personal\PC-PTY-Chat-codex` on
+`codex/architecture-refactor`; do not edit the primary checkout.
 
 The current uncommitted work has three intentional groups:
 
@@ -90,9 +92,10 @@ Observed counts:
 
 ## Fresh Session First Steps
 
-Start with these commands:
+Start in the Codex worktree with these commands:
 
 ```powershell
+Set-Location "E:\Claude Code Projects\Personal\PC-PTY-Chat-codex"
 git status --short --branch
 rg -n "Quick Tasks|quick tasks|quick-tasks|quick_tasks|pc_create_quick_task|pc_list_quick_tasks|taggedProjectId|quick-tasks-pm|findQuickTasksProject|adoptProjectAsQuickTasks|isQuickTasksKind|ProjectKind" apps packages tests scripts docs
 pnpm --filter @pc/web typecheck
@@ -202,7 +205,8 @@ git diff --check
 Use this prompt after clearing context:
 
 ```text
-We are continuing the architecture refactor in E:\Claude Code Projects\Personal\PC-PTY-Chat.
+We are continuing the architecture refactor in E:\Claude Code Projects\Personal\PC-PTY-Chat-codex.
+Use the Codex worktree only; do not edit or switch branches in the primary checkout at E:\Claude Code Projects\Personal\PC-PTY-Chat.
 Read docs/refactor-session-handoff-2026-05-28.md and docs/architecture-refactor-plan.md.
 First verify the current worktree and Quick Tasks residue exactly as the handoff says.
 Do not revert apps/web/src/components/Shell.tsx or apps/desktop/src/main.ts; they are unrelated existing modifications.

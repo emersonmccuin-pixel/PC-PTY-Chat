@@ -2,6 +2,27 @@
 
 Guidance for Codex / coding agents working in this repo. See `CLAUDE.md` for the same rules.
 
+## CRITICAL — Codex uses a separate worktree
+
+Claude/the user may be working in the primary checkout at:
+
+```text
+E:\Claude Code Projects\Personal\PC-PTY-Chat
+```
+
+Codex must do file edits in the Codex worktree:
+
+```text
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex
+```
+
+Rules:
+- If you start in the primary checkout, run `git worktree list --porcelain`, then move to the Codex worktree or create it.
+- Default Codex branch: `codex/architecture-refactor`.
+- Do not switch branches, merge, rebase, reset, clean, or edit files in the primary checkout.
+- Do not remove or prune worktrees unless the user explicitly asks.
+- See `docs/codex-worktree-workflow.md`.
+
 ## CRITICAL — never restart servers or the app unless expressly asked
 
 The user is continuously using the live dev stack and the packaged "dogfood" app. **Restarts destroy in-flight work** (active sessions, orchestrator/agent state, unsaved context). Treat any restart as destructive and off-limits by default.

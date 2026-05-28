@@ -35,6 +35,13 @@ The Electron shell has **two run modes** (`apps/desktop/src/main.ts`):
 ## CRITICAL RULE — do not restart anything unasked
 Codified in `CLAUDE.md` and `AGENTS.md`: **never restart/kill/relaunch the dev servers, the dogfood app, or `POST /api/dev/restart` unless the user explicitly asks in that moment.** Restarts wipe active sessions + orchestrator/agent state and disrupt the user's live work. Making a code edit is *not* permission to restart to apply it — make the edit and let the user restart. Prior permission does not carry forward.
 
+## Codex worktree rule
+- Primary checkout: `E:\Claude Code Projects\Personal\PC-PTY-Chat` (may be in use by Claude/the user).
+- Codex checkout: `E:\Claude Code Projects\Personal\PC-PTY-Chat-codex`.
+- Codex edits, commits, verification, and merges happen in the Codex worktree.
+- Do not branch-switch, reset, clean, or edit files in the primary checkout.
+- Details: `docs/codex-worktree-workflow.md`.
+
 ## Quick reference
 - Built dogfood exe: `apps/desktop/release/win-unpacked/Caisson.exe`
 - Dogfood launcher: `C:\Users\emers\Run-Caisson-Dogfood.bat` (sets `PORT=4060`, `CHANNEL_PORT=8798`, `PC_DATA_DIR=C:\Users\emers\Caisson-Dogfood-Data`)
