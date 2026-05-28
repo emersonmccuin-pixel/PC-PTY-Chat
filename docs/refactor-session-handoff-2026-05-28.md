@@ -3,6 +3,36 @@
 Purpose: make a fresh session able to continue the architecture refactor without
 reconstructing state from chat history.
 
+## Start A Fresh Codex Session
+
+Use this exact first message in a new Codex session:
+
+```text
+Use only this worktree:
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex
+
+Do not touch this primary checkout:
+E:\Claude Code Projects\Personal\PC-PTY-Chat
+
+Read:
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\AGENTS.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\CLAUDE.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\docs\codex-worktree-workflow.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\docs\refactor-session-handoff-2026-05-28.md
+
+Then continue the architecture refactor from the handoff.
+Do not restart the app, dev server, dogfood app, Vite, channel server, or POST /api/dev/restart.
+Do not merge anything while Claude is still working in the primary checkout.
+```
+
+Plain English:
+
+1. Claude keeps using `E:\Claude Code Projects\Personal\PC-PTY-Chat`.
+2. Codex uses `E:\Claude Code Projects\Personal\PC-PTY-Chat-codex`.
+3. Codex commits work on `codex/architecture-refactor`.
+4. Do not merge final refactor work until Claude is done and committed.
+5. When Claude is done, ask Codex: "Claude is done and committed. Merge the refactor from the Codex worktree."
+
 ## Current State
 
 Branch at original handoff time: `dev`, ahead of `origin/dev` by 51 commits.
@@ -118,71 +148,44 @@ confirms they belong in the same commit.
 
 Continue Phase 4: decompose `ChatSurface`.
 
-Current `apps/web/src/components/ChatSurface.tsx` is about 2140 lines. It is
-already smaller than the original audit because these pieces have been
+Current `apps/web/src/components/ChatSurface.tsx` is about 300 lines. It is
+already much smaller than the original audit because these pieces have been
 extracted:
 
 - `apps/web/src/features/chat/ChatTimeline.tsx`
 - `apps/web/src/features/chat/ChatComposer.tsx`
 - `apps/web/src/features/chat/TerminalPane.tsx`
 - `apps/web/src/features/chat/usePendingPrompts.ts`
+- `apps/web/src/features/chat/useChatRenderItems.ts`
+- `apps/web/src/features/chat/useChatTimelineRenderer.tsx`
+- `apps/web/src/features/chat/useThinkingIndicatorState.ts`
 - `apps/web/src/features/chat/normalizeJsonlEnvelope.ts`
 - `apps/web/src/features/chat/toolGrouping.ts`
 - `apps/web/src/features/chat/runtimeState.ts`
 - `apps/web/src/features/chat/approvals.tsx`
+- `apps/web/src/features/chat/EventBubbles.tsx`
+- `apps/web/src/features/chat/SystemBubbles.tsx`
+- `apps/web/src/features/chat/ToolBubbles.tsx`
+- `apps/web/src/features/chat/AgentWorkflowBubbles.tsx`
+- `apps/web/src/features/chat/ThinkingIndicator.tsx`
 
 Still inside `ChatSurface.tsx`:
 
-- `ChatTurnCard`
-- `EventBubble`
-- system/notification/footer renderers
-- `ThinkingIndicator`
-- user/assistant markdown bubbles
-- tool-call detail renderers
-- tool grouping display components
-- workflow and agent dispatch group bubbles
-- task/todo bubbles
+- runtime input capability coordination
+- surface mode coordination
+- pending prompt coordination
+- live runtime/thinking derivation
+- terminal pane/composer/timeline composition
 
 ## Recommended Phase 4 Slices
 
-Do the next work as small file moves with typecheck after each slice.
+Do the next work as small behavior-preserving moves with typecheck after each
+slice. Good next slices:
 
-1. Extract `ThinkingIndicator`.
-   - New file: `apps/web/src/features/chat/ThinkingIndicator.tsx`
-   - Move `formatElapsed` with it unless another module already needs that.
-   - Acceptance: `ChatSurface` imports it; behavior unchanged.
-
-2. Extract basic event bubbles.
-   - New file: `apps/web/src/features/chat/EventBubbles.tsx`
-   - Move `ChatTurnCard`, `EventBubble`, `UserBubble`, `AssistantBubble`,
-     copy helpers, markdown URL helpers, and queue/session divider components.
-   - Keep props explicit; avoid importing transport state into the renderer.
-
-3. Extract system/status bubbles.
-   - New file: `apps/web/src/features/chat/SystemBubbles.tsx`
-   - Move `SystemBubble`, `SystemErrorBubble`, `SystemFooter`,
-     `SystemRawDump`, `NotificationRow`, turn footer chips, compact and
-     microcompact dividers.
-
-4. Extract tool renderers.
-   - New file: `apps/web/src/features/chat/ToolBubbles.tsx`
-   - Move `ToolCallDetails`, `EditBubble`, `EditDiff`, `WritePreview`,
-     `ToolCallRow`, `ToolSubgroup`, `CollapsibleEventGroup`,
-     `ToolGroupBubble`, and shared tool formatting helpers.
-
-5. Extract workflow/agent/task bubbles.
-   - New file: `apps/web/src/features/chat/AgentWorkflowBubbles.tsx`
-   - Move workflow status derivation, agent status derivation,
-     `WorkflowRunGroupBubble`, `AgentDispatchGroupBubble`, `TodosBubble`,
-     `TaskStartBubble`, and `TaskEndBubble`.
-
-After these slices, `ChatSurface.tsx` should mostly contain:
-
-- input capability and surface mode coordination
-- pending prompt coordination
-- event normalization to render items
-- `renderTimelineItem` switch
-- composition of header/timeline/composer/terminal/footer
+1. Extract surface mode state into `useChatSurfaceMode`.
+2. Extract composer send/interrupt handlers into `useChatComposerActions`.
+3. Move `ChatSurfaceProps` to a nearby type file if it helps reuse.
+4. After `ChatSurface` stabilizes, continue Phase 3 API client split.
 
 ## Guardrails
 
@@ -202,7 +205,7 @@ git diff --check
 
 ## Fresh Session Starter Prompt
 
-Use this prompt after clearing context:
+Use this prompt after clearing context if you want the older detailed starter:
 
 ```text
 We are continuing the architecture refactor in E:\Claude Code Projects\Personal\PC-PTY-Chat-codex.

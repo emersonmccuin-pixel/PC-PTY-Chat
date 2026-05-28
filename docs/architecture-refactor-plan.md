@@ -13,6 +13,11 @@ owning inline `pc_*` handlers. The current cleanup retires the Quick Tasks
 surface that had been intentionally deferred during unmerged-work recovery.
 Fresh-session handoff: [Refactor Session Handoff - 2026-05-28](./refactor-session-handoff-2026-05-28.md).
 
+Fresh Codex sessions should start from the prompt in the handoff file. Short
+version: work only in `E:\Claude Code Projects\Personal\PC-PTY-Chat-codex`,
+do not touch `E:\Claude Code Projects\Personal\PC-PTY-Chat`, and do not merge
+anything while Claude is still working in the primary checkout.
+
 Implemented slices:
 
 - WebSocket liveness detection and reconnect on heartbeat timeout.
