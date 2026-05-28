@@ -11,13 +11,10 @@ import { homedir } from 'node:os';
 import type {
   ULID,
 } from '@pc/domain';
-import { validateWorkflowV2 } from '@pc/workflows';
 import {
   getActiveOrchestratorSession,
-  dismissFailedRun,
   insertPostTurnSummary,
   getProjectById,
-  listFailedRunDismissalsForProject,
   listProjects,
   newId,
   reconcileOrphanedRunningRuns,
@@ -27,7 +24,6 @@ import {
   setOrchestratorSessionTitle,
   workflowRunsV2Repo,
 } from '@pc/db';
-import type { WorkflowV2 } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 
 import {
@@ -67,6 +63,7 @@ import { registerAgentRunRoutes } from './features/agent-runs/routes.ts';
 import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerStatuslineRoutes } from './features/statusline/routes.ts';
 import { registerProjectContextRoutes } from './features/project-context/routes.ts';
+import { registerWorkflowCompatRoutes } from './features/workflow-compat/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -696,76 +693,7 @@ registerWorkItemRoutes(app, {
   channelServer,
 });
 
-// 19.12 — v1 workflows CRUD removed. The v2 surface lives at
-// `/api/projects/:projectId/workflow-v2/definitions` (list/get/publish) and
-// `/workflow-v2/fire`. The workflow-builder draft endpoints below replace the
-// pre-19 workflow-creator/draft path.
-
-/** Section 19.9 — stash an in-progress v2 workflow-builder draft.
- *  Does NOT write to disk — only `pc_publish_workflow` does that.
- *  Broadcasts `workflow-builder-draft` so the modal's visualizer re-renders.
- *
- *  Drafts are loosely validated — they need a top-level `id` (string) so the
- *  draft store can key them, but the rest of the shape may be incomplete
- *  during mid-interview saves. The visualizer renders whatever shape arrives;
- *  full validation runs only at `pc_publish_workflow` time. */
-app.post('/api/projects/:projectId/workflow-builder/draft', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const payload = await c.req.json<{ sessionId?: string; def?: unknown }>();
-  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
-  if (!sessionId) return c.json({ ok: false, error: 'sessionId required' }, 400);
-  if (!payload.def || typeof payload.def !== 'object') {
-    return c.json({ ok: false, error: 'def required' }, 400);
-  }
-  const rawDef = payload.def as Record<string, unknown>;
-  const wfId = typeof rawDef.id === 'string' && rawDef.id ? rawDef.id : '';
-  if (!wfId) return c.json({ ok: false, error: 'def.id required' }, 400);
-  // No full v2 validation here — drafts can be incomplete mid-interview.
-  // Cast through unknown so the in-memory store accepts the partial shape;
-  // pc_publish_workflow runs the full validator before any YAML hits disk.
-  const def = payload.def as unknown as WorkflowV2.Workflow;
-  runtime.setWorkflowBuilderDraft(sessionId, def);
-  broadcastTo(id, { type: 'workflow-builder-draft', sessionId, def });
-  return c.json({ ok: true });
-});
-
-/** Section 19.9 — read the current draft for a workflow-builder session.
- *  Used by `pc_read_workflow_draft` so the agent can pick up user drags
- *  between turns (sync-model-A). Returns `{ ok: true, def: <draft or null> }`. */
-app.get('/api/projects/:projectId/workflow-builder/draft/:sessionId', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const sessionId = c.req.param('sessionId');
-  const def = runtime.getWorkflowBuilderDraft(sessionId);
-  return c.json({ ok: true, def: def ?? null });
-});
-
-// 6.6 — activity-panel "Failed recently" dismissals. The dismissals side-table
-// is generic across v1/v2; the validation step below confirms the runId
-// corresponds to a real v2 run before recording. 19.12 — v1 workflow_runs
-// list / get / retry-from / cancel removed; v2 runs are read via
-// /workflow-v2/runs[/:runId].
-app.get('/api/projects/:projectId/failed-run-dismissals', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const runIds = listFailedRunDismissalsForProject(id as ULID);
-  return c.json({ runIds });
-});
-
-app.post('/api/projects/:projectId/workflow-runs/:runId/dismiss', (c) => {
-  const id = c.req.param('projectId');
-  const runId = c.req.param('runId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const run = workflowRunsV2Repo.getRunForProject(runId as never, runtime.project.id);
-  if (!run) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
-  const dismissedAt = dismissFailedRun(runId as ULID, Date.now());
-  return c.json({ ok: true, dismissedAt });
-});
+registerWorkflowCompatRoutes(app, { resolveProject, broadcastTo });
 
 registerWorktreeRoutes(app, { resolveProject });
 
@@ -804,88 +732,6 @@ app.get('/api/subagent-transcript', async (c) => {
     return c.json({ ok: true, path: requested, relPath: rel, events });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-// 19.12 — v1 /approval/respond and /workflow/run routes removed. v2 paths:
-// POST /workflow-v2/review for review decisions; POST /workflow-v2/fire
-// (or via MCP) for manual runs by name.
-
-// Section 19.17 — POST `/api/projects/:projectId/workflow-v2/fire` and
-// POST `/api/projects/:projectId/workflow-v2/definitions` deleted. The new
-// canonical surface is `/api/workflows/:id/fire` (id-based, DB-backed) and
-// `POST/PUT /api/workflows` for create/update. The MCP tools were repointed
-// alongside the route move. GET endpoints below survive as 19.18 compat.
-
-// list: valid + invalid v2 definitions for the Workflows tab. Reads from
-// DB post-19.17. 19.18 swaps the web client over to `/api/workflows`; this
-// compat shape (using `fileName` for invalids — a legacy of the on-disk
-// registry) is preserved so a mid-19 web client doesn't crash.
-app.get('/api/projects/:projectId/workflow-v2/definitions', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const state = runtime.listV2Workflows();
-  return c.json({
-    ok: true,
-    valid: state.valid.map((e) => ({
-      id: e.workflow.id,
-      name: e.workflow.name,
-      workflow: e.workflow,
-    })),
-    invalid: state.invalid.map((e) => ({ fileName: `${e.slug}.yaml`, errors: e.errors })),
-  });
-});
-
-// get one by id (slug-based; legacy web-client contract). DB-backed.
-app.get('/api/projects/:projectId/workflow-v2/definitions/:wfId', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const entry = runtime.findV2WorkflowBySlug(c.req.param('wfId'));
-  if (!entry) return c.json({ ok: false, error: 'workflow not found' }, 404);
-  return c.json({ ok: true, workflow: entry.workflow, yamlText: entry.yamlText });
-});
-
-// Section 19.4f — read a v2 run (sidecar state + event log). Project-scoped.
-app.get('/api/projects/:projectId/workflow-v2/runs/:runId', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const run = workflowRunsV2Repo.getRunForProject(c.req.param('runId') as never, runtime.project.id);
-  if (!run) return c.json({ ok: false, error: 'run not found' }, 404);
-  return c.json({ ok: true, run, events: workflowRunsV2Repo.listEvents(run.id) });
-});
-
-// Section 19.11 — list every v2 run for a project (Workflows tab uses this
-// to render per-definition run counts + status pills). Project-scoped.
-app.get('/api/projects/:projectId/workflow-v2/runs', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const runs = workflowRunsV2Repo.listRunsByProject(runtime.project.id);
-  return c.json({ ok: true, runs });
-});
-
-// Section 19.4f — apply an orchestrator/human review decision to a paused v2 run.
-app.post('/api/projects/:projectId/workflow-v2/review', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ runId?: string; nodeId?: string; decision?: string; notes?: string }>();
-  if (!body.runId || !body.nodeId || (body.decision !== 'approve' && body.decision !== 'reject')) {
-    return c.json({ ok: false, error: 'require { runId, nodeId, decision: approve|reject }' }, 400);
-  }
-  try {
-    const decision =
-      body.decision === 'reject'
-        ? { kind: 'reject' as const, ...(body.notes ? { notes: body.notes } : {}) }
-        : { kind: 'approve' as const };
-    const status = await runtime.applyV2Review(body.runId as never, body.nodeId, decision);
-    if (status === null) return c.json({ ok: false, error: 'run not found' }, 404);
-    return c.json({ ok: true, status });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 400);
   }
 });
 
