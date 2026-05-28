@@ -30,6 +30,16 @@ Keep the root `server.ts` responsible for:
 - dispatching `CallToolRequestSchema` by tool name
 - shared HTTP helper injection
 
+## Progress
+
+First slice complete:
+
+- Added `packages/mcp/src/tools/context.ts` for injected HTTP/project context helpers.
+- Added `packages/mcp/src/tools/work-items.ts` for the work-item tool definitions and dispatch handlers.
+- Added `packages/mcp/src/tools/index.ts` as the tool module barrel.
+- `packages/mcp/src/server.ts` now composes the extracted work-item tool definitions and delegates those nine handlers through `handleWorkItemTool`.
+- Added focused tests in `packages/mcp/test/work-items-tools.test.ts`.
+
 ## Suggested First Slice
 
 Start with a small, coherent tool family:
