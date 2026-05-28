@@ -15,7 +15,9 @@
 
 import { useSyncExternalStore } from 'react';
 
-import { api, type Attachment, type FilePreview, type WorkItem, type ULID } from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { filesApi, type FilePreview } from '@/features/files/client';
+import { workItemsApi, type Attachment, type WorkItem } from '@/features/work-items/client';
 import type { RichLinkKind } from '@/lib/parse-chat-text';
 
 export type RichLinkData =
@@ -67,17 +69,17 @@ async function fetchData(projectId: ULID, url: string): Promise<void> {
   setEntry(url, { status: 'loading' });
   try {
     if (parsed.kind === 'work-item') {
-      const wi = await api.getWorkItem(projectId, parsed.ref as ULID);
+      const wi = await workItemsApi.getWorkItem(projectId, parsed.ref as ULID);
       setEntry(url, { status: 'ok', data: { kind: 'work-item', workItem: wi } });
       return;
     }
     if (parsed.kind === 'file') {
-      const preview = await api.previewFile(projectId, parsed.ref);
+      const preview = await filesApi.previewFile(projectId, parsed.ref);
       setEntry(url, { status: 'ok', data: { kind: 'file', path: parsed.ref, preview } });
       return;
     }
     if (parsed.kind === 'attachment') {
-      const att = await api.getAttachmentById(projectId, parsed.ref as ULID);
+      const att = await workItemsApi.getAttachmentById(projectId, parsed.ref as ULID);
       setEntry(url, { status: 'ok', data: { kind: 'attachment', attachment: att } });
       return;
     }

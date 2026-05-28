@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api, StageHasItemsError, type Project, type Stage, type WorkItem } from '@/api/client';
+import type { Project, Stage } from '@/features/projects/client';
+import { StageHasItemsError, workItemsApi, type WorkItem } from '@/features/work-items/client';
 
 interface DraftStage {
   rowId: string;
@@ -169,7 +170,7 @@ export function StagesEditor({ project, onProjectUpdated }: StagesEditorProps) {
     setErr(null);
     setSaved(null);
     try {
-      const updated = await api.replaceStages(project.id, stages, {
+      const updated = await workItemsApi.replaceStages(project.id, stages, {
         force,
         ...(fallbackStageId ? { fallbackStageId } : {}),
       });
@@ -298,8 +299,7 @@ function ArchivedSection({
   const [restoring, setRestoring] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api
-      .listArchivedWorkItems(projectId)
+    workItemsApi.listArchivedWorkItems(projectId)
       .then(setItems)
       .catch((e: unknown) => setErr((e as Error).message));
   }, [projectId]);
@@ -326,7 +326,7 @@ function ArchivedSection({
     setRestoring(wiId);
     setErr(null);
     try {
-      await api.restoreWorkItem(projectId, wiId);
+      await workItemsApi.restoreWorkItem(projectId, wiId);
       setItems((prev) => prev?.filter((i) => i.id !== wiId) ?? null);
     } catch (e) {
       setErr((e as Error).message);

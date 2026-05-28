@@ -15,12 +15,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import {
-  api,
-  type CreatePodInput,
-  type Pod,
-  type Project,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { transientSessionsApi } from '@/features/transient-sessions/client';
+import { agentsApi, type CreatePodInput, type Pod } from '@/features/agents/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import {
   AgentDesignerChat,
@@ -76,8 +73,7 @@ export function CreatePodModal({
   // Load the global pool once on mount.
   useEffect(() => {
     let cancelled = false;
-    api
-      .listPods()
+    agentsApi.listPods()
       .then((pods) => {
         if (!cancelled) setGlobalPool(pods);
       })
@@ -103,7 +99,7 @@ export function CreatePodModal({
   // ~50ms after start, producing 16-byte silent transcripts).
   function handleClose() {
     if (convoStarted) {
-      void api.stopAgentDesigner(project.id).catch(() => {
+      void transientSessionsApi.stopAgentDesigner(project.id).catch(() => {
         /* best-effort */
       });
     }
@@ -116,7 +112,7 @@ export function CreatePodModal({
     setConvoStarting(true);
     setConvoInitialState('spawning');
     try {
-      const started = await api.startAgentDesigner(project.id);
+      const started = await transientSessionsApi.startAgentDesigner(project.id);
       setConvoSessionId(started.sessionId);
       setConvoInitialState(
         isAgentDesignerState(started.state) ? started.state : 'spawning',
@@ -287,7 +283,7 @@ function GlobalPoolPanel({
     setRowErr(null);
     setCloningId(pod.id);
     try {
-      const { pod: cloned } = await api.clonePodToProject(pod.id, project.id);
+      const { pod: cloned } = await agentsApi.clonePodToProject(pod.id, project.id);
       onPicked(cloned);
     } catch (e) {
       setRowErr((e as Error).message);
@@ -479,7 +475,7 @@ function ManualForm({
     setBusy(true);
     setError(null);
     try {
-      const pod = await api.createPod(input);
+      const pod = await agentsApi.createPod(input);
       onCreated(pod);
     } catch (err) {
       setError((err as Error).message);

@@ -9,8 +9,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import type { Project, V2RunStatus, V2RunSummary } from '@/api/client';
-import { api } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { workflowsApi, type V2RunStatus, type V2RunSummary } from '@/features/workflows/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 const TERMINAL = new Set<V2RunStatus>(['completed', 'failed', 'cancelled']);
@@ -36,7 +36,7 @@ export function useProjectWorkflowV2Runs(
       return;
     }
     let cancelled = false;
-    void api.listV2WorkflowRuns(project.id).then((r) => {
+    void workflowsApi.listV2WorkflowRuns(project.id).then((r) => {
       if (!cancelled) setRuns(r.runs);
     });
     lastProcessedIdx.current = events.length;
@@ -78,7 +78,7 @@ export function useProjectWorkflowV2Runs(
     lastProcessedIdx.current = events.length;
 
     if (needsRefetch) {
-      void api.listV2WorkflowRuns(project.id).then((r) => setRuns(r.runs));
+      void workflowsApi.listV2WorkflowRuns(project.id).then((r) => setRuns(r.runs));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, project?.id]);
@@ -87,7 +87,7 @@ export function useProjectWorkflowV2Runs(
     runs,
     refetch: () => {
       if (!project) return;
-      void api.listV2WorkflowRuns(project.id).then((r) => setRuns(r.runs));
+      void workflowsApi.listV2WorkflowRuns(project.id).then((r) => setRuns(r.runs));
     },
   };
 }

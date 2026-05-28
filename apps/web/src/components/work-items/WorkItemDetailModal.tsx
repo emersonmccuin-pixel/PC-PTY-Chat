@@ -11,18 +11,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import {
-  api,
-  WORK_ITEM_TYPES,
-  WorkItemConflictError,
-  WorkItemFieldValidationError,
-  type Attachment,
-  type FieldSchema,
-  type Project,
-  type WorkItem,
-  type WorkItemPatch,
-  type WorkItemType,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { WORK_ITEM_TYPES, WorkItemConflictError, WorkItemFieldValidationError, workItemsApi, type Attachment, type FieldSchema, type WorkItem, type WorkItemPatch, type WorkItemType } from '@/features/work-items/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { TypedFieldEditor } from './TypedFieldEditor';
 
@@ -125,8 +115,7 @@ export function WorkItemDetailModal({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listFieldSchemas(project.id)
+    workItemsApi.listFieldSchemas(project.id)
       .then((s) => {
         if (!cancelled) setFieldSchemas(s);
       })
@@ -209,7 +198,7 @@ export function WorkItemDetailModal({
       if (!shallowEqualRecord(draft.fields, baseline.fields ?? {})) {
         patch.fields = draft.fields;
       }
-      const updated = await api.patchWorkItem(
+      const updated = await workItemsApi.patchWorkItem(
         project.id,
         baseline.id,
         baseline.version,
@@ -250,7 +239,7 @@ export function WorkItemDetailModal({
     setBusy(true);
     setError(null);
     try {
-      await api.softDeleteWorkItem(project.id, baseline.id);
+      await workItemsApi.softDeleteWorkItem(project.id, baseline.id);
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -734,7 +723,7 @@ function ChildrenTab({
     setBusy(true);
     setErr(null);
     try {
-      const r = await api.createWorkItem(projectId, trimmed, parent.stageId, {
+      const r = await workItemsApi.createWorkItem(projectId, trimmed, parent.stageId, {
         parentId: parent.id,
       });
       setTitle('');
@@ -839,8 +828,7 @@ function AttachmentsTab({
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const refetch = () => {
-    api
-      .listAttachments(projectId, workItemId)
+    workItemsApi.listAttachments(projectId, workItemId)
       .then(setItems)
       .catch((e) => setErr((e as Error).message));
   };
@@ -866,7 +854,7 @@ function AttachmentsTab({
   async function del(aId: string) {
     if (!window.confirm('Delete this attachment? This cannot be undone.')) return;
     try {
-      await api.deleteAttachment(projectId, workItemId, aId);
+      await workItemsApi.deleteAttachment(projectId, workItemId, aId);
       setItems((prev) => prev?.filter((a) => a.id !== aId) ?? null);
       if (expandedId === aId) setExpandedId(null);
     } catch (e) {
@@ -1015,8 +1003,7 @@ function ActivityTab({
   const [err, setErr] = useState<string | null>(null);
 
   const refetchAttachments = () => {
-    api
-      .listAttachments(projectId, workItem.id)
+    workItemsApi.listAttachments(projectId, workItem.id)
       .then(setAttachments)
       .catch((e) => setErr((e as Error).message));
   };

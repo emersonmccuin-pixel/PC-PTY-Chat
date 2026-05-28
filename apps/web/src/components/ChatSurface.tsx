@@ -14,66 +14,62 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import {
-  Copy as CopyIcon,
-  MessagesSquare,
-  Terminal as TerminalIcon,
-} from 'lucide-react';
+import { Copy as CopyIcon } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import type { OrchestratorSurfacePreference } from '@/api/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import type {
   ApprovalRequiredEvent,
   AssistantEvent,
   ChatEvent,
-  JsonlEvent,
-  SendAckEnvelope,
-  SendQueueSnapshotEnvelope,
   SubagentFailureEvent,
   SystemEvent,
   TaskEndEvent,
   TaskStartEvent,
-  TodoItem,
   TodosEvent,
-  ToolEndEvent,
-  ToolStartEvent,
   UserEvent,
   WsEnvelope,
   WsStatus,
 } from '@/hooks/use-project-ws';
 import { useAgentTranscript } from '@/store/agent-transcript';
-import { useChatComposerPrefill } from '@/store/chat-composer-prefill';
-import { useChatScrollTarget } from '@/store/chat-scroll-target';
-import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { AskCard } from '@/components/AskCard';
-import { TerminalModePanel } from '@/components/TerminalModePanel';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
 import { LiveRichLink } from '@/components/LiveRichLink';
 import { ExternalLink } from '@/components/ExternalLink';
-
-// Tools that have their own dedicated bubble surface (Task/Agent → task-start
-// + task-end cards; TodoWrite + TaskCreate/Update → todos snapshot card).
-// These never enter the generic tool-calls group.
-const SUPPRESSED_TOOLS = new Set([
-  'Agent',
-  'Task',
-  'TodoWrite',
-  'TaskCreate',
-  'TaskUpdate',
-  'TaskList',
-  'TaskGet',
-  'TaskStop',
-  'TaskOutput',
-  'ToolSearch',
-]);
-
-// Tools that get LIFTED OUT of the tool group into their own top-level
-// bubbles — the user sees diffs live as the orchestrator works instead of
-// having them buried in the collapsed L1 "Tool calls" group.
-const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+import { Composer } from '@/features/chat/ChatComposer';
+import { ChatTimeline } from '@/features/chat/ChatTimeline';
+import { TerminalModeToggle, TerminalPane } from '@/features/chat/TerminalPane';
+import { ApprovalBubble } from '@/features/chat/approvals';
+import { injectTodoSnapshots, normalizeJsonlEnvelope } from '@/features/chat/normalizeJsonlEnvelope';
+import {
+  deriveActivity,
+  deriveJsonlBusy,
+  deriveLiveState,
+  isRuntimeThinking,
+  readTerminalMode,
+  STALL_WARN_MS,
+  summarizeInput,
+  writeTerminalMode,
+} from '@/features/chat/runtimeState';
+import { synthesizeRenderItems } from '@/features/chat/toolGrouping';
+import {
+  createClientMessageId,
+  isPendingUserEvent,
+  pendingPromptEnvelope,
+  usePendingPrompts,
+} from '@/features/chat/usePendingPrompts';
+import type {
+  AgentEventEntry,
+  PendingPromptStatus,
+  PendingUserEvent,
+  RenderItem,
+  StableEnvelope,
+  ToolCall,
+  WorkflowEventEntry,
+} from '@/features/chat/types';
 
 // Hide non-actionable Claude Code bookkeeping rows from the main chat.
 // The raw JSONL envelopes still remain in `events` for telemetry, replay,
@@ -97,664 +93,6 @@ const SUPPRESSED_NOTIFICATION_PATTERNS: readonly RegExp[] = [
   /is waiting for your input/i,
   /is no longer responding to user input/i,
 ];
-
-// ── Types ─────────────────────────────────────────────────────────────────
-
-interface ToolCall {
-  toolUseId: string | null;
-  tool: string;
-  input: unknown;
-  result: unknown;
-  startedAt: string;
-  ended: boolean;
-  stableId: number;
-  /** Section 31.5 — most-recent `tool_progress` elapsed seconds for this
-   *  tool's in-flight execution. Null until a progress event arrives. */
-  progressElapsedSeconds: number | null;
-  /** Section 31.5 — most-recent `tool_progress` task_id, if any (CC tags
-   *  background-task tool calls with one). */
-  progressTaskId: string | null;
-}
-
-interface ToolGroupItem {
-  kind: 'tool-group';
-  key: string;
-  calls: ToolCall[];
-}
-
-interface EnvItem {
-  kind: 'env';
-  key: string;
-  env: WsEnvelope;
-}
-
-interface EditItem {
-  kind: 'edit';
-  key: string;
-  call: ToolCall;
-}
-
-interface WorkflowEventEntry {
-  kind: string;
-  body: string;
-}
-
-interface WorkflowRunGroupItem {
-  kind: 'workflow-run-group';
-  key: string;
-  workflowRunId: string;
-  events: WorkflowEventEntry[];
-}
-
-interface AgentEventEntry {
-  kind: string;
-  body: string;
-}
-
-interface AgentDispatchGroupItem {
-  kind: 'agent-dispatch-group';
-  key: string;
-  agentRunId: string;
-  agentName: string | null;
-  events: AgentEventEntry[];
-}
-
-type RenderItem =
-  | ToolGroupItem
-  | EnvItem
-  | EditItem
-  | WorkflowRunGroupItem
-  | AgentDispatchGroupItem;
-
-interface StableEnvelope {
-  origIdx: number;
-  key?: string;
-  env: WsEnvelope;
-}
-
-type PendingPromptStatus =
-  | 'sending'
-  | 'server-received'
-  | 'waiting-transcript'
-  | 'unconfirmed'
-  | 'failed';
-
-interface PendingPrompt {
-  id: string;
-  text: string;
-  createdAt: number;
-  eventFloor: number;
-  status: PendingPromptStatus;
-  expectsAck: boolean;
-  queued: boolean;
-  failureReason?: string;
-}
-
-interface PendingUserEvent extends UserEvent {
-  pendingStatus: PendingPromptStatus;
-  pendingReason?: string;
-  pendingClientMessageId: string;
-  pendingQueued: boolean;
-}
-
-const SEND_ACK_TIMEOUT_MS = 3_000;
-const TRANSCRIPT_WAITING_TIMEOUT_MS = 15_000;
-
-function createClientMessageId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `cm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function canonicalUserTextFromEnvelope(env: WsEnvelope): string | null {
-  if (env.type === 'jsonl') {
-    const ev = env.event as JsonlEvent | undefined;
-    return ev?.kind === 'jsonl-user' ? ev.text : null;
-  }
-  if (env.type === 'event') {
-    const ev = env.event as ChatEvent | undefined;
-    return ev?.kind === 'user' ? (ev as UserEvent).text : null;
-  }
-  return null;
-}
-
-function confirmedPendingIds(events: WsEnvelope[], pendingPrompts: PendingPrompt[]): Set<string> {
-  const confirmed = new Set<string>();
-  const pendingIds = new Set(pendingPrompts.map((pending) => pending.id));
-  for (let i = 0; i < events.length; i++) {
-    const env = events[i]!;
-    if (env.type === 'send-queue-snapshot') {
-      const snapshot = env as SendQueueSnapshotEnvelope;
-      for (const item of snapshot.items) {
-        if (item.status === 'observed_in_jsonl' && pendingIds.has(item.clientMessageId)) {
-          confirmed.add(item.clientMessageId);
-        }
-      }
-    }
-    const text = canonicalUserTextFromEnvelope(env);
-    if (text === null) continue;
-    const match = pendingPrompts.find((pending) => {
-      if (confirmed.has(pending.id) || pending.text !== text) return false;
-      const eventFloor = pending.eventFloor <= events.length ? pending.eventFloor : 0;
-      return i >= eventFloor;
-    });
-    if (match) confirmed.add(match.id);
-  }
-  return confirmed;
-}
-
-function sendAckFromEnvelope(env: WsEnvelope): SendAckEnvelope | null {
-  if (env.type !== 'send-ack') return null;
-  if (typeof env.clientMessageId !== 'string') return null;
-  return env as SendAckEnvelope;
-}
-
-function isPendingUserEvent(event: ChatEvent): event is PendingUserEvent {
-  if (event.kind !== 'user') return false;
-  const candidate = event as Partial<PendingUserEvent>;
-  return (
-    typeof candidate.text === 'string' &&
-    typeof candidate.pendingStatus === 'string' &&
-    typeof candidate.pendingClientMessageId === 'string' &&
-    typeof candidate.pendingQueued === 'boolean'
-  );
-}
-
-function pendingPromptEnvelope(projectId: string, pending: PendingPrompt): WsEnvelope {
-  return {
-    projectId,
-    type: 'event',
-    event: {
-      kind: 'user',
-      text: pending.text,
-      ts: new Date(pending.createdAt).toISOString(),
-      pendingStatus: pending.status,
-      pendingReason: pending.failureReason,
-      pendingClientMessageId: pending.id,
-      pendingQueued: pending.queued,
-    } satisfies PendingUserEvent,
-  };
-}
-
-// ── JSONL→hook normalization + cross-channel dedupe (Section 0) ──────────
-
-/** Section 23.5 — derive todos snapshots from JSONL tool-calls. Before this
- *  shipped, the hook accumulated state in tasks.json and emitted a full
- *  snapshot per change; client just rendered. Post-23.5 the chat panel owns
- *  derivation: walk the JSONL stream for TodoWrite/TaskCreate/TaskUpdate
- *  tool-call inputs and synthesize a `kind:'todos'` chat-event after each.
- *
- *  TodoWrite carries the full list in `input.todos`. TaskCreate's id rarely
- *  lands in `input` (CC assigns one in the tool response we don't have here);
- *  use the `toolUseId` as the synthesized id — unique per dispatch, stable
- *  across re-renders, irrelevant for the user-facing label. TaskUpdate keys
- *  off `input.taskId` against ids previously seen. */
-function injectTodoSnapshots(events: WsEnvelope[]): WsEnvelope[] {
-  type Row = { id: string; subject: string; description: string; activeForm: string; status: TodoItem['status'] };
-  const state = new Map<string, Row>();
-  const out: WsEnvelope[] = [];
-
-  const snapshot = (): TodoItem[] =>
-    Array.from(state.values())
-      .sort((a, b) => {
-        const an = Number(a.id), bn = Number(b.id);
-        if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
-        return a.id.localeCompare(b.id);
-      })
-      .map((r) => ({ content: r.subject, activeForm: r.activeForm, status: r.status }));
-
-  for (const env of events) {
-    out.push(env);
-    if (env.type !== 'jsonl') continue;
-    const ev = env.event as JsonlEvent | undefined;
-    if (!ev || ev.kind !== 'jsonl-tool-call') continue;
-    const input = (ev.input ?? {}) as Record<string, unknown>;
-    const name = ev.name;
-    let changed = false;
-    if (name === 'TodoWrite' && Array.isArray(input.todos)) {
-      state.clear();
-      const todos = input.todos as Array<Record<string, unknown>>;
-      for (let i = 0; i < todos.length; i++) {
-        const t = todos[i] ?? {};
-        const id = String(t.id ?? i + 1);
-        state.set(id, {
-          id,
-          subject: String(t.content ?? ''),
-          description: '',
-          activeForm: String(t.activeForm ?? ''),
-          status: (t.status as TodoItem['status']) ?? 'pending',
-        });
-      }
-      changed = true;
-    } else if (name === 'TaskCreate') {
-      const id = String(input.id ?? ev.toolUseId);
-      state.set(id, {
-        id,
-        subject: String(input.subject ?? ''),
-        description: String(input.description ?? ''),
-        activeForm: String(input.activeForm ?? ''),
-        status: 'pending',
-      });
-      changed = true;
-    } else if (name === 'TaskUpdate') {
-      const id = String(input.taskId ?? '');
-      if (id) {
-        const existing = state.get(id) ?? { id, subject: '', description: '', activeForm: '', status: 'pending' as const };
-        state.set(id, {
-          ...existing,
-          subject: typeof input.subject === 'string' ? input.subject : existing.subject,
-          description: typeof input.description === 'string' ? input.description : existing.description,
-          activeForm: typeof input.activeForm === 'string' ? input.activeForm : existing.activeForm,
-          status: (input.status as TodoItem['status']) ?? existing.status,
-        });
-        changed = true;
-      }
-    }
-    if (changed) {
-      out.push({
-        projectId: env.projectId,
-        type: 'event',
-        event: { kind: 'todos', todos: snapshot() } satisfies TodosEvent,
-      });
-    }
-  }
-  return out;
-}
-
-/** Convert a jsonl envelope into a hook-shape envelope so the downstream
- *  synthesizer doesn't need to branch on origin. Returns null for jsonl event
- *  kinds that aren't rendered as chat bubbles. */
-function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
-  if (env.type !== 'jsonl') return env;
-  const ev = env.event as JsonlEvent | undefined;
-  if (!ev || typeof ev !== 'object') return null;
-  switch (ev.kind) {
-    case 'jsonl-user':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: { kind: 'user', text: ev.text },
-      };
-    case 'jsonl-turn-end':
-      // Phase 0c-followup: a user-interrupted turn lands a `stop_reason: null`
-      // assistant entry containing only a partial thinking block — no text.
-      // Don't synthesize an empty assistant bubble for that; the jsonlBusy
-      // derivation (which reads the raw envelope, not the normalized one)
-      // still clears the thinking indicator correctly.
-      if (!ev.text) return null;
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: { kind: 'assistant', text: ev.text },
-      };
-    case 'jsonl-tool-call':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'tool-start',
-          tool: ev.name,
-          toolUseId: ev.toolUseId,
-          input: ev.input,
-        },
-      };
-    case 'jsonl-tool-result':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'tool-end',
-          tool: '',
-          toolUseId: ev.toolUseId,
-          result: ev.result,
-        },
-      };
-    case 'jsonl-system':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'system',
-          subtype: ev.subtype,
-          level: ev.level,
-          message: ev.message,
-          raw: ev.raw,
-          ts: ev.timestamp ?? undefined,
-        } satisfies SystemEvent,
-      };
-    case 'jsonl-queue-enqueue':
-    case 'jsonl-queue-dequeue':
-      return null;
-    // Section 31 — new typed envelopes from the tailer extension. The
-    // generic jsonl-system row for the same subtype rides alongside (the
-    // tailer emits BOTH so the "expand for raw" surface still works); the
-    // EventBubble dispatch keeps the typed envelopes and drops the redundant
-    // system rows for these subtypes via SUPPRESSED_SYSTEM_SUBTYPES.
-    case 'jsonl-session-state':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'session-state',
-          state: ev.state,
-          permissionMode: ev.permissionMode,
-          ts: ev.timestamp ?? undefined,
-        },
-      };
-    case 'jsonl-compact':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'compact-boundary',
-          trigger: ev.trigger,
-          preTokens: ev.preTokens,
-          messagesSummarized: ev.messagesSummarized,
-          ts: ev.timestamp ?? undefined,
-        },
-      };
-    case 'jsonl-microcompact':
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'microcompact',
-          trigger: ev.trigger,
-          preTokens: ev.preTokens,
-          tokensSaved: ev.tokensSaved,
-          ts: ev.timestamp ?? undefined,
-        },
-      };
-    case 'jsonl-usage':
-      // PM turn-footer chips only render when speed ≠ standard or a cache
-      // miss happened. Suppress the no-op case so the chat doesn't gain a
-      // hidden footer row per turn.
-      if (
-        (!ev.speed || ev.speed === 'standard') &&
-        !ev.cacheMissReason
-      ) {
-        return null;
-      }
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'turn-footer',
-          speed: ev.speed,
-          cacheMissReason: ev.cacheMissReason,
-          model: ev.model,
-        },
-      };
-    case 'jsonl-tool-progress':
-      // Section 31.5 — synthesizer matches by toolUseId and enriches the
-      // existing ToolCall in-place (no standalone render item lands).
-      return {
-        projectId: env.projectId,
-        type: 'event',
-        event: {
-          kind: 'tool-progress',
-          toolUseId: ev.toolUseId,
-          toolName: ev.toolName,
-          elapsedSeconds: ev.elapsedSeconds,
-          taskId: ev.taskId,
-        },
-      };
-    // Section 31 — Internal-only envelopes (no chat surface today).
-    case 'jsonl-ai-title':
-    case 'jsonl-last-prompt':
-    case 'jsonl-file-history':
-    case 'jsonl-bridge-session':
-    case 'jsonl-turn-duration':
-    case 'jsonl-post-turn-summary':
-    case 'jsonl-stream-event':
-      return null;
-    case 'jsonl-sidechain':
-      return null;
-    default:
-      return null;
-  }
-}
-
-function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
-  const items: RenderItem[] = [];
-  let buffer: ToolCall[] = [];
-
-  const flush = () => {
-    if (buffer.length > 0) {
-      items.push({ kind: 'tool-group', key: `tg-${buffer[0]!.stableId}`, calls: buffer });
-      buffer = [];
-    }
-  };
-
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i]!;
-    const env = entry.env;
-    const stableId = entry.origIdx;
-    const stableKey = entry.key ?? `${stableId}`;
-    if (env.type === 'ask') {
-      flush();
-      items.push({ kind: 'env', key: `env-${stableKey}`, env });
-      continue;
-    }
-    if (env.type !== 'event') {
-      flush();
-      items.push({ kind: 'env', key: `env-${stableKey}`, env });
-      continue;
-    }
-    const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-    if (!ev || typeof ev !== 'object' || !('kind' in ev)) {
-      flush();
-      items.push({ kind: 'env', key: `env-${stableKey}`, env });
-      continue;
-    }
-    if ((ev.kind === 'tool-start' || ev.kind === 'tool-end') &&
-        SUPPRESSED_TOOLS.has((ev as ToolStartEvent | ToolEndEvent).tool)) {
-      continue;
-    }
-    if (ev.kind === 'tool-start') {
-      const t = ev as ToolStartEvent;
-      const call: ToolCall = {
-        toolUseId: t.toolUseId ?? null,
-        tool: t.tool,
-        input: t.input ?? null,
-        result: null,
-        startedAt: t.ts ?? `${stableId}`,
-        ended: false,
-        stableId,
-        progressElapsedSeconds: null,
-        progressTaskId: null,
-      };
-      if (HIGHLIGHT_TOOLS.has(t.tool)) {
-        flush();
-        items.push({ kind: 'edit', key: `edit-${stableId}`, call });
-      } else {
-        buffer.push(call);
-      }
-      continue;
-    }
-    // Section 31.5 — `tool-progress` enriches the matching in-flight tool
-    // call (by toolUseId) with elapsed seconds. Doesn't create a new render
-    // item; the tool-group child card picks up the change.
-    if (ev.kind === 'tool-progress') {
-      const tp = ev as { toolUseId: string; elapsedSeconds: number | null; taskId: string | null };
-      const apply = (c: ToolCall) => {
-        c.progressElapsedSeconds = tp.elapsedSeconds;
-        c.progressTaskId = tp.taskId;
-      };
-      let matched = false;
-      for (const c of buffer) {
-        if (!c.ended && c.toolUseId === tp.toolUseId) { apply(c); matched = true; break; }
-      }
-      if (!matched) {
-        for (let j = items.length - 1; j >= 0; j--) {
-          const it = items[j]!;
-          if (it.kind === 'edit') {
-            if (!it.call.ended && it.call.toolUseId === tp.toolUseId) {
-              apply(it.call);
-              matched = true;
-              break;
-            }
-          } else if (it.kind === 'tool-group') {
-            for (let k = it.calls.length - 1; k >= 0; k--) {
-              const c = it.calls[k]!;
-              if (!c.ended && c.toolUseId === tp.toolUseId) {
-                apply(c);
-                matched = true;
-                break;
-              }
-            }
-            if (matched) break;
-          }
-        }
-      }
-      continue;
-    }
-    if (ev.kind === 'tool-end') {
-      const t = ev as ToolEndEvent;
-      let matched: ToolCall | null = null;
-      for (let j = items.length - 1; j >= 0; j--) {
-        const it = items[j]!;
-        if (it.kind !== 'edit') continue;
-        const c = it.call;
-        if (c.ended) continue;
-        if (t.toolUseId && c.toolUseId === t.toolUseId) { matched = c; break; }
-        if (!t.toolUseId && c.tool === t.tool) { matched = c; break; }
-      }
-      if (!matched && t.toolUseId) {
-        for (const c of buffer) {
-          if (c.toolUseId === t.toolUseId && !c.ended) { matched = c; break; }
-        }
-      }
-      if (!matched) {
-        for (let j = buffer.length - 1; j >= 0; j--) {
-          const c = buffer[j]!;
-          if (!c.ended && c.tool === t.tool) { matched = c; break; }
-        }
-      }
-      if (!matched) {
-        for (let j = items.length - 1; j >= 0; j--) {
-          const it = items[j]!;
-          if (it.kind === 'edit') continue;
-          if (it.kind !== 'tool-group') break;
-          for (let k = it.calls.length - 1; k >= 0; k--) {
-            const c = it.calls[k]!;
-            if (!c.ended && (t.toolUseId ? c.toolUseId === t.toolUseId : c.tool === t.tool)) {
-              matched = c; break;
-            }
-          }
-          if (matched) break;
-        }
-      }
-      if (matched) {
-        matched.result = t.result ?? null;
-        matched.ended = true;
-      } else {
-        buffer.push({
-          toolUseId: t.toolUseId ?? null,
-          tool: t.tool,
-          input: null,
-          result: t.result ?? null,
-          startedAt: t.ts ?? `${stableId}`,
-          ended: true,
-          stableId,
-          progressElapsedSeconds: null,
-          progressTaskId: null,
-        });
-      }
-      continue;
-    }
-    if (ev.kind === 'user') {
-      const userText = (ev as UserEvent).text ?? '';
-      const parts = parseUserText(userText);
-      let hoistedAny = false;
-      let hasVisible = false;
-      for (const part of parts) {
-        if (part.kind === 'workflow-event' && part.workflowRunId) {
-          flush();
-          const id = part.workflowRunId;
-          let group: WorkflowRunGroupItem | null = null;
-          for (let j = items.length - 1; j >= 0; j--) {
-            const it = items[j]!;
-            if (it.kind === 'workflow-run-group' && it.workflowRunId === id) {
-              group = it;
-              break;
-            }
-          }
-          if (!group) {
-            group = {
-              kind: 'workflow-run-group',
-              key: `wfg-${id}`,
-              workflowRunId: id,
-              events: [],
-            };
-            items.push(group);
-          }
-          group.events.push({
-            kind: part.workflowEventKind ?? 'unknown',
-            body: part.text,
-          });
-          hoistedAny = true;
-        } else if (part.kind === 'agent-event' && part.agentRunId) {
-          flush();
-          const id = part.agentRunId;
-          let group: AgentDispatchGroupItem | null = null;
-          for (let j = items.length - 1; j >= 0; j--) {
-            const it = items[j]!;
-            if (it.kind === 'agent-dispatch-group' && it.agentRunId === id) {
-              group = it;
-              break;
-            }
-          }
-          if (!group) {
-            group = {
-              kind: 'agent-dispatch-group',
-              key: `adg-${id}`,
-              agentRunId: id,
-              agentName: part.agentName ?? null,
-              events: [],
-            };
-            items.push(group);
-          } else if (!group.agentName && part.agentName) {
-            group.agentName = part.agentName;
-          }
-          group.events.push({
-            kind: part.agentEventKind ?? 'unknown',
-            body: part.text,
-          });
-          hoistedAny = true;
-        } else {
-          hasVisible = true;
-        }
-      }
-      if (hoistedAny && !hasVisible) {
-        continue;
-      }
-    }
-    flush();
-    items.push({ kind: 'env', key: `env-${stableKey}`, env });
-  }
-  flush();
-  return items;
-}
-
-// ── Approval response (POST to per-project endpoint) ──────────────────────
-
-async function respondToApproval(
-  projectId: string,
-  workflowRunId: string,
-  nodeId: string,
-  approved: boolean,
-  response: string,
-): Promise<void> {
-  const res = await fetch(`/api/projects/${projectId}/approval/respond`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workflowRunId, nodeId, approved, response }),
-  });
-  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-  if (!res.ok || data.ok === false) throw new Error(data.error ?? `HTTP ${res.status}`);
-}
 
 // ── ChatSurface ──────────────────────────────────────────────────────────
 
@@ -849,7 +187,10 @@ export function ChatSurface({
   wsStatus,
   onSurfaceModeChange,
 }: ChatSurfaceProps) {
-  const [pendingPrompts, setPendingPrompts] = useState<PendingPrompt[]>([]);
+  const { visiblePendingPrompts, recordPendingPrompt } = usePendingPrompts({
+    events,
+    currentSessionId,
+  });
   const terminalEligible = Boolean(
     onTerminalInput &&
       onTerminalResize &&
@@ -863,143 +204,6 @@ export function ChatSurface({
   useEffect(() => {
     eventsRef.current = events;
   }, [events]);
-
-  useEffect(() => {
-    setPendingPrompts((prev) => {
-      const confirmed = confirmedPendingIds(events, prev);
-      if (confirmed.size === 0) return prev;
-      return prev.filter((pending) => !confirmed.has(pending.id));
-    });
-  }, [events]);
-
-  useEffect(() => {
-    setPendingPrompts((prev) => {
-      let changed = false;
-      const next = prev.map((pending) => {
-        if (pending.status === 'failed') return pending;
-        const ack = [...events].reverse().map(sendAckFromEnvelope).find((candidate) => {
-          return candidate?.clientMessageId === pending.id;
-        });
-        if (!ack) return pending;
-        changed = true;
-        if (ack.ok) {
-          return {
-            ...pending,
-            status: 'server-received' as PendingPromptStatus,
-            queued: pending.queued || ack.status === 'queued',
-            failureReason: undefined,
-          };
-        }
-        return {
-          ...pending,
-          status: 'failed' as PendingPromptStatus,
-          failureReason: ack.error ?? ack.status,
-        };
-      });
-      return changed ? next : prev;
-    });
-  }, [events]);
-
-  useEffect(() => {
-    if (!currentSessionId) return;
-    let snapshot: SendQueueSnapshotEnvelope | null = null;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i]!;
-      if (env.type !== 'send-queue-snapshot') continue;
-      const candidate = env as SendQueueSnapshotEnvelope;
-      if (candidate.sessionId !== currentSessionId) continue;
-      snapshot = candidate;
-      break;
-    }
-    if (!snapshot) return;
-
-    const byClientMessageId = new Map(
-      snapshot.items.map((item) => [item.clientMessageId, item]),
-    );
-    setPendingPrompts((prev) => {
-      let changed = false;
-      const next = prev.map((pending) => {
-        const item = byClientMessageId.get(pending.id);
-        if (!item) return pending;
-        if (item.status === 'failed') {
-          if (
-            pending.status === 'failed' &&
-            pending.failureReason === (item.failureReason ?? 'Delivery failed')
-          ) {
-            return pending;
-          }
-          changed = true;
-          return {
-            ...pending,
-            status: 'failed' as PendingPromptStatus,
-            queued: false,
-            failureReason: item.failureReason ?? 'Delivery failed',
-          };
-        }
-        if (
-          item.status === 'queued_busy' ||
-          item.status === 'queued_spawning' ||
-          item.status === 'queued_backlog' ||
-          item.status === 'delivering'
-        ) {
-          if (
-            pending.status === 'server-received' &&
-            pending.queued &&
-            pending.failureReason === undefined
-          ) {
-            return pending;
-          }
-          changed = true;
-          return {
-            ...pending,
-            status: 'server-received' as PendingPromptStatus,
-            queued: true,
-            failureReason: undefined,
-          };
-        }
-        return pending;
-      });
-      return changed ? next : prev;
-    });
-  }, [events, currentSessionId]);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      const now = Date.now();
-      setPendingPrompts((prev) => {
-        let changed = false;
-        const next = prev.map((pending) => {
-          if (pending.status === 'failed') return pending;
-          const elapsed = now - pending.createdAt;
-          if (
-            pending.expectsAck &&
-            pending.status === 'sending' &&
-            elapsed >= SEND_ACK_TIMEOUT_MS
-          ) {
-            changed = true;
-            return { ...pending, status: 'unconfirmed' as PendingPromptStatus };
-          }
-          if (
-            (pending.status === 'sending' ||
-              pending.status === 'server-received' ||
-              pending.status === 'unconfirmed') &&
-            elapsed >= TRANSCRIPT_WAITING_TIMEOUT_MS
-          ) {
-            changed = true;
-            return { ...pending, status: 'waiting-transcript' as PendingPromptStatus };
-          }
-          return pending;
-        });
-        return changed ? next : prev;
-      });
-    }, 500);
-    return () => clearInterval(id);
-  }, []);
-
-  const visiblePendingPrompts = useMemo(() => {
-    const confirmed = confirmedPendingIds(events, pendingPrompts);
-    return pendingPrompts.filter((pending) => !confirmed.has(pending.id));
-  }, [events, pendingPrompts]);
 
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
     // Section 23.5 — derive todos snapshots client-side from JSONL tool-calls
@@ -1060,61 +264,10 @@ export function ChatSurface({
   >({});
   const [answeredAsks, setAnsweredAsks] = useState<Record<string, string>>({});
 
-  // Thinking indicator state.
-  const liveState = useMemo<string | null>(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i]!;
-      if (env.type === 'turn-end') return 'ready';
-      if (env.type === 'state') return (env as WsEnvelope & { state: string }).state;
-      if (env.type === 'event') {
-        const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-        if (ev?.kind === 'stop-failure') return 'ready';
-      }
-    }
-    return null;
-  }, [events]);
-
-  const jsonlBusy = useMemo<boolean | null>(() => {
-    let anyJsonl = false;
-    let busy = false;
-    for (const env of events) {
-      if (env.type !== 'jsonl') continue;
-      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
-      if (!ev || typeof ev !== 'object') continue;
-      anyJsonl = true;
-      if (ev.kind === 'jsonl-user') busy = true;
-      else if (ev.kind === 'jsonl-turn-end') busy = false;
-    }
-    return anyJsonl ? busy : null;
-  }, [events]);
-
-  // liveState values that mean the turn is NOT in flight. `exited` is the
-  // crash/dead path — without it here a process that died mid-turn left the
-  // spinner spinning forever (server DOES broadcast state:'exited', we just
-  // weren't honoring it). `spawning` covers a respawn after a server restart.
-  const isThinking =
-    jsonlBusy === null
-      ? liveState === 'thinking' || liveState === 'busy'
-      : jsonlBusy &&
-        liveState !== 'ready' &&
-        liveState !== 'exited' &&
-        liveState !== 'spawning';
-
-  // Live "what is it doing" label for the thinking indicator. Newest-first
-  // scan for the most recent progress signal in the JSONL stream.
-  const activity = useMemo<string | null>(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const env = events[i]!;
-      if (env.type !== 'jsonl') continue;
-      const ev = (env as WsEnvelope & { event: JsonlEvent }).event;
-      if (!ev) continue;
-      if (ev.kind === 'jsonl-turn-end') return null;
-      if (ev.kind === 'jsonl-tool-call') return activityLabel(ev.name, ev.input);
-      if (ev.kind === 'jsonl-tool-result') return 'Working through the result';
-      if (ev.kind === 'jsonl-stream-event') return 'Writing a response';
-    }
-    return null;
-  }, [events]);
+  const liveState = useMemo(() => deriveLiveState(events), [events]);
+  const jsonlBusy = useMemo(() => deriveJsonlBusy(events), [events]);
+  const isThinking = isRuntimeThinking(liveState, jsonlBusy);
+  const activity = useMemo(() => deriveActivity(events), [events]);
 
   // Liveness proxy: timestamp of the most recent envelope of any kind. During
   // a live turn SOMETHING flows (raw chunks, jsonl, stream events); a growing
@@ -1124,10 +277,6 @@ export function ChatSurface({
   useEffect(() => {
     setLastEnvelopeAt(Date.now());
   }, [events.length]);
-
-  useEffect(() => {
-    setPendingPrompts([]);
-  }, [currentSessionId]);
 
   useEffect(() => {
     setSurfaceModeReady(false);
@@ -1197,68 +346,21 @@ export function ChatSurface({
       const ok = onSend(text, clientMessageId);
       const queueOptimistically = composerQueueing || isThinking;
       if (ok) {
-        setPendingPrompts((prev) => [
-          ...prev,
-          {
-            id: clientMessageId,
-            text,
-            createdAt: Date.now(),
-            eventFloor: eventsRef.current.length,
-            status: 'sending',
-            expectsAck: wsStatus !== undefined,
-            queued: queueOptimistically,
-          },
-        ]);
+        recordPendingPrompt({
+          id: clientMessageId,
+          text,
+          eventFloor: eventsRef.current.length,
+          expectsAck: wsStatus !== undefined,
+          queued: queueOptimistically,
+        });
       }
       return ok;
     },
-    [onSend, composerQueueing, isThinking, wsStatus],
+    [onSend, composerQueueing, isThinking, wsStatus, recordPendingPrompt],
   );
   const resolvedComposerSendLabel =
     composerSendLabel ??
     (isThinking || composerQueueing ? 'Queue ↵' : 'Send ↵');
-
-  // Conditional auto-follow + jump-to-recent.
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const [pinnedToBottom, setPinnedToBottom] = useState(true);
-  const handleChatScroll = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
-    setPinnedToBottom(distanceFromBottom < 50);
-  }, []);
-  const jumpToBottom = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    setPinnedToBottom(true);
-  }, []);
-  useEffect(() => {
-    if (!pinnedToBottom) return;
-    const el = scrollerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [chatEnvelopes.length, isThinking, pinnedToBottom]);
-  useEffect(() => {
-    setPinnedToBottom(true);
-  }, [currentSessionId]);
-
-  // Cross-tab scroll-to-bubble (Section 6.5).
-  const scrollTargetId = useChatScrollTarget((s) => s.targetId);
-  const scrollTargetRequestedAt = useChatScrollTarget((s) => s.requestedAt);
-  useEffect(() => {
-    if (!scrollTargetId || !scrollTargetRequestedAt) return;
-    const el = scrollerRef.current?.querySelector<HTMLElement>(
-      `[data-bubble-id="${CSS.escape(scrollTargetId)}"]`,
-    );
-    if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setPinnedToBottom(false);
-    el.classList.add('ring-2', 'ring-warning', 'ring-offset-2', 'ring-offset-background');
-    const timer = setTimeout(() => {
-      el.classList.remove('ring-2', 'ring-warning', 'ring-offset-2', 'ring-offset-background');
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [scrollTargetId, scrollTargetRequestedAt]);
 
   function markApprovalResolved(
     workflowRunId: string,
@@ -1272,247 +374,223 @@ export function ChatSurface({
     }));
   }
 
+  function renderTimelineItem(item: RenderItem, idx: number): ReactNode {
+    if (item.kind === 'tool-group') {
+      return (
+        <ChatTurnCard key={item.key} kind="pm" variant="child">
+          <ToolGroupBubble calls={item.calls} />
+        </ChatTurnCard>
+      );
+    }
+    if (item.kind === 'edit') {
+      return (
+        <ChatTurnCard key={item.key} kind="pm" variant="child">
+          <EditBubble call={item.call} />
+        </ChatTurnCard>
+      );
+    }
+    if (item.kind === 'workflow-run-group') {
+      return (
+        <ChatTurnCard key={item.key} kind="pm" variant="child">
+          <WorkflowRunGroupBubble
+            workflowRunId={item.workflowRunId}
+            events={item.events}
+          />
+        </ChatTurnCard>
+      );
+    }
+    if (item.kind === 'agent-dispatch-group') {
+      return (
+        <ChatTurnCard key={item.key} kind="pm" variant="child">
+          <AgentDispatchGroupBubble
+            agentRunId={item.agentRunId}
+            agentName={item.agentName}
+            events={item.events}
+          />
+        </ChatTurnCard>
+      );
+    }
+    const env = item.env;
+    let assistantDurationMs: number | undefined;
+    if (env.type === 'event') {
+      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+      if (ev?.kind === 'assistant') {
+        for (let j = idx + 1; j < renderItems.length; j++) {
+          const next = renderItems[j]!;
+          if (next.kind !== 'env') continue;
+          if (next.env.type !== 'event') continue;
+          const nev = (next.env as WsEnvelope & { event: ChatEvent }).event;
+          if (!nev || typeof nev !== 'object') continue;
+          if (nev.kind === 'user' || nev.kind === 'assistant') break;
+          if (nev.kind === 'system') {
+            const sys = nev as SystemEvent;
+            if (sys.subtype === 'turn_duration') {
+              const raw = sys.raw as { durationMs?: number } | undefined;
+              if (typeof raw?.durationMs === 'number') {
+                assistantDurationMs = raw.durationMs;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (env.type === 'ask') {
+      const askEnv = env as WsEnvelope & {
+        toolName: string;
+        toolUseId: string;
+        toolInput: unknown;
+        ts?: string;
+      };
+      const answered = answeredAsks[askEnv.toolUseId];
+      return (
+        <ChatTurnCard
+          key={item.key}
+          kind="pm"
+          ts={askEnv.ts}
+          sub={askEnv.toolName === 'ExitPlanMode' ? 'plan ready' : 'asking'}
+          status="info"
+        >
+          <AskCard
+            toolName={askEnv.toolName}
+            toolUseId={askEnv.toolUseId}
+            toolInput={askEnv.toolInput}
+            answered={answered}
+            onReply={(answer) => {
+              if (!onAskReply) return;
+              if (onAskReply(askEnv.toolUseId, answer)) {
+                setAnsweredAsks((prev) => ({
+                  ...prev,
+                  [askEnv.toolUseId]: answer,
+                }));
+              }
+            }}
+          />
+        </ChatTurnCard>
+      );
+    }
+    const ev = (env as WsEnvelope & { event: ChatEvent }).event;
+    if (!ev || typeof ev !== 'object') return null;
+    if (ev.kind === 'queue-enqueue' || ev.kind === 'queue-dequeue') {
+      return (
+        <EventBubble
+          key={item.key}
+          event={ev}
+          projectId={projectId}
+          resolvedApprovals={resolvedApprovals}
+          onApprovalResolved={markApprovalResolved}
+        />
+      );
+    }
+    if (ev.kind === 'system') {
+      const sys = ev as SystemEvent;
+      if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
+        return null;
+      }
+      if (sys.level !== 'error') {
+        return (
+          <EventBubble
+            key={item.key}
+            event={ev}
+            projectId={projectId}
+            resolvedApprovals={resolvedApprovals}
+            onApprovalResolved={markApprovalResolved}
+          />
+        );
+      }
+    }
+    const turnKind: 'user' | 'pm' = ev.kind === 'user' ? 'user' : 'pm';
+    let bubbleId: string | undefined;
+    if (ev.kind === 'approval-required') {
+      const ar = ev as ApprovalRequiredEvent;
+      bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
+    }
+    let sub: string | undefined;
+    let status: ChatTurnStatus | undefined;
+    let pendingStatus: PendingPromptStatus | undefined;
+    if (isPendingUserEvent(ev)) {
+      pendingStatus = ev.pendingStatus;
+      sub = pendingStatusLabel(ev);
+      status = pendingStatusTone(ev.pendingStatus);
+      bubbleId = `pending-${ev.pendingClientMessageId}`;
+    } else if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
+      sub = formatElapsed(assistantDurationMs);
+    } else if (ev.kind === 'approval-required') {
+      sub = 'approval required';
+      status = 'warning';
+    } else if (ev.kind === 'subagent-failure') {
+      sub = 'subagent failed';
+      status = 'danger';
+    } else if (ev.kind === 'todos') {
+      sub = 'todos';
+    } else if (ev.kind === 'task-start') {
+      const t = ev as TaskStartEvent;
+      sub = t.subagent ? `${t.subagent} · delegated` : 'delegated';
+    } else if (ev.kind === 'task-end') {
+      const t = ev as TaskEndEvent;
+      sub = t.subagent ? `${t.subagent} · returned` : 'returned';
+    } else if (ev.kind === 'system') {
+      const sys = ev as SystemEvent;
+      sub = sys.subtype.replace(/_/g, ' ');
+      if (sys.level === 'error') status = 'danger';
+    }
+    return (
+      <ChatTurnCard
+        key={item.key}
+        kind={turnKind}
+        ts={ev.ts}
+        sub={sub}
+        bubbleId={bubbleId}
+        status={status}
+        pendingStatus={pendingStatus}
+        copyText={copyTextForEvent(ev)}
+      >
+        <EventBubble
+          event={ev}
+          projectId={projectId}
+          resolvedApprovals={resolvedApprovals}
+          onApprovalResolved={markApprovalResolved}
+        />
+      </ChatTurnCard>
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {headerSlot}
-      <div className="relative flex-1 overflow-hidden">
-        <div
-          ref={scrollerRef}
-          onScroll={handleChatScroll}
-          className={
-            'h-full overflow-y-auto px-4 py-3 ' +
-            (terminalActive ? 'pointer-events-none invisible' : '')
-          }
-        >
-          <div className="flex flex-col gap-3">
-            {renderItems.map((item, idx) => {
-              if (item.kind === 'tool-group') {
-                return (
-                  <ChatTurnCard key={item.key} kind="pm" variant="child">
-                    <ToolGroupBubble calls={item.calls} />
-                  </ChatTurnCard>
-                );
-              }
-              if (item.kind === 'edit') {
-                return (
-                  <ChatTurnCard key={item.key} kind="pm" variant="child">
-                    <EditBubble call={item.call} />
-                  </ChatTurnCard>
-                );
-              }
-              if (item.kind === 'workflow-run-group') {
-                return (
-                  <ChatTurnCard key={item.key} kind="pm" variant="child">
-                    <WorkflowRunGroupBubble
-                      workflowRunId={item.workflowRunId}
-                      events={item.events}
-                    />
-                  </ChatTurnCard>
-                );
-              }
-              if (item.kind === 'agent-dispatch-group') {
-                return (
-                  <ChatTurnCard key={item.key} kind="pm" variant="child">
-                    <AgentDispatchGroupBubble
-                      agentRunId={item.agentRunId}
-                      agentName={item.agentName}
-                      events={item.events}
-                    />
-                  </ChatTurnCard>
-                );
-              }
-              const env = item.env;
-              let assistantDurationMs: number | undefined;
-              if (env.type === 'event') {
-                const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-                if (ev?.kind === 'assistant') {
-                  for (let j = idx + 1; j < renderItems.length; j++) {
-                    const next = renderItems[j]!;
-                    if (next.kind !== 'env') continue;
-                    if (next.env.type !== 'event') continue;
-                    const nev = (next.env as WsEnvelope & { event: ChatEvent }).event;
-                    if (!nev || typeof nev !== 'object') continue;
-                    if (nev.kind === 'user' || nev.kind === 'assistant') break;
-                    if (nev.kind === 'system') {
-                      const sys = nev as SystemEvent;
-                      if (sys.subtype === 'turn_duration') {
-                        const raw = sys.raw as { durationMs?: number } | undefined;
-                        if (typeof raw?.durationMs === 'number') {
-                          assistantDurationMs = raw.durationMs;
-                        }
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-              if (env.type === 'ask') {
-                const askEnv = env as WsEnvelope & {
-                  toolName: string;
-                  toolUseId: string;
-                  toolInput: unknown;
-                  ts?: string;
-                };
-                const answered = answeredAsks[askEnv.toolUseId];
-                return (
-                  <ChatTurnCard
-                    key={item.key}
-                    kind="pm"
-                    ts={askEnv.ts}
-                    sub={askEnv.toolName === 'ExitPlanMode' ? 'plan ready' : 'asking'}
-                    status="info"
-                  >
-                    <AskCard
-                      toolName={askEnv.toolName}
-                      toolUseId={askEnv.toolUseId}
-                      toolInput={askEnv.toolInput}
-                      answered={answered}
-                      onReply={(answer) => {
-                        if (!onAskReply) return;
-                        if (onAskReply(askEnv.toolUseId, answer)) {
-                          setAnsweredAsks((prev) => ({
-                            ...prev,
-                            [askEnv.toolUseId]: answer,
-                          }));
-                        }
-                      }}
-                    />
-                  </ChatTurnCard>
-                );
-              }
-              const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-              if (!ev || typeof ev !== 'object') return null;
-              // Queue indicators stay as centered markers (not turn cards).
-              if (ev.kind === 'queue-enqueue' || ev.kind === 'queue-dequeue') {
-                return (
-                  <EventBubble
-                    key={item.key}
-                    event={ev}
-                    projectId={projectId}
-                    resolvedApprovals={resolvedApprovals}
-                    onApprovalResolved={markApprovalResolved}
-                  />
-                );
-              }
-              // System non-error footers stay as inline hint text (not turn cards).
-              if (ev.kind === 'system') {
-                const sys = ev as SystemEvent;
-                // Section 31 — subtypes in SUPPRESSED_SYSTEM_SUBTYPES are
-                // rendered via their typed envelope instead. Drop the system
-                // event entirely so we don't fall through to the ChatTurnCard
-                // wrapper and surface an empty bubble with the subtype label.
-                if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
-                  return null;
-                }
-                if (sys.level !== 'error') {
-                  return (
-                    <EventBubble
-                      key={item.key}
-                      event={ev}
-                      projectId={projectId}
-                      resolvedApprovals={resolvedApprovals}
-                      onApprovalResolved={markApprovalResolved}
-                    />
-                  );
-                }
-              }
-              const turnKind: 'user' | 'pm' = ev.kind === 'user' ? 'user' : 'pm';
-              let bubbleId: string | undefined;
-              if (ev.kind === 'approval-required') {
-                const ar = ev as ApprovalRequiredEvent;
-                bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
-              }
-              let sub: string | undefined;
-              let status: ChatTurnStatus | undefined;
-              let pendingStatus: PendingPromptStatus | undefined;
-              if (isPendingUserEvent(ev)) {
-                pendingStatus = ev.pendingStatus;
-                sub = pendingStatusLabel(ev);
-                status = pendingStatusTone(ev.pendingStatus);
-                bubbleId = `pending-${ev.pendingClientMessageId}`;
-              } else if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
-                sub = formatElapsed(assistantDurationMs);
-              } else if (ev.kind === 'approval-required') {
-                sub = 'approval required';
-                status = 'warning';
-              } else if (ev.kind === 'subagent-failure') {
-                sub = 'subagent failed';
-                status = 'danger';
-              } else if (ev.kind === 'todos') {
-                sub = 'todos';
-              } else if (ev.kind === 'task-start') {
-                const t = ev as TaskStartEvent;
-                sub = t.subagent ? `${t.subagent} · delegated` : 'delegated';
-              } else if (ev.kind === 'task-end') {
-                const t = ev as TaskEndEvent;
-                sub = t.subagent ? `${t.subagent} · returned` : 'returned';
-              } else if (ev.kind === 'system') {
-                const sys = ev as SystemEvent;
-                sub = sys.subtype.replace(/_/g, ' ');
-                if (sys.level === 'error') status = 'danger';
-              }
-              return (
-                <ChatTurnCard
-                  key={item.key}
-                  kind={turnKind}
-                  ts={ev.ts}
-                  sub={sub}
-                  bubbleId={bubbleId}
-                  status={status}
-                  pendingStatus={pendingStatus}
-                  copyText={copyTextForEvent(ev)}
-                >
-                  <EventBubble
-                    event={ev}
-                    projectId={projectId}
-                    resolvedApprovals={resolvedApprovals}
-                    onApprovalResolved={markApprovalResolved}
-                  />
-                </ChatTurnCard>
-              );
-            })}
-            {chatEnvelopes.length === 0 && emptyState && (
-              <div className="text-center text-xs text-muted-foreground">{emptyState}</div>
-            )}
-            {isThinking && (
-              <ThinkingIndicator
-                elapsedMs={elapsedMs}
-                interruptedAt={interruptedAt}
-                activity={activity}
-                lastEnvelopeAt={lastEnvelopeAt}
-                wsStatus={wsStatus}
-              />
-            )}
-          </div>
-        </div>
-        {!pinnedToBottom && (!terminalEligible || !terminalActive) && (
-          <button
-            onClick={jumpToBottom}
-            className="absolute bottom-3 right-4 z-30 rounded-full px-3.5 py-1.5 text-xs font-bold opacity-100"
-            style={{
-              backgroundColor: '#f0d080',
-              color: '#080604',
-              border: '2px solid #080604',
-              boxShadow: '0 0 0 1px #f5e8c8, 0 10px 30px rgba(0, 0, 0, 0.7)',
-            }}
-            title="Scroll to the latest messages"
-          >
-            ↓ Jump to present
-          </button>
-        )}
-        {terminalEligible && onTerminalInput && onTerminalResize && (
-          <TerminalModePanel
+      <ChatTimeline
+        renderItems={renderItems}
+        autoFollowKey={`${chatEnvelopes.length}:${isThinking ? 1 : 0}`}
+        resetKey={currentSessionId}
+        empty={chatEnvelopes.length === 0}
+        terminalEligible={terminalEligible}
+        terminalActive={terminalActive}
+        emptyState={emptyState}
+        thinkingIndicator={
+          isThinking ? (
+            <ThinkingIndicator
+              elapsedMs={elapsedMs}
+              interruptedAt={interruptedAt}
+              activity={activity}
+              lastEnvelopeAt={lastEnvelopeAt}
+              wsStatus={wsStatus}
+            />
+          ) : undefined
+        }
+        terminalPane={
+          <TerminalPane
+            eligible={terminalEligible}
             projectId={projectId}
             sessionId={currentSessionId}
             events={events}
-            visible={terminalActive}
+            active={terminalActive}
             writable={resolvedTerminalWritable}
             onInput={onTerminalInput}
             onResize={onTerminalResize}
           />
-        )}
-      </div>
-      {bannerSlot}
+        }
+        renderItem={renderTimelineItem}
+      />      {bannerSlot}
       {!composerHidden && !terminalActive && (
         <Composer
           historyKey={composerHistoryKey}
@@ -1526,88 +604,14 @@ export function ChatSurface({
           sendLabel={resolvedComposerSendLabel}
         />
       )}
-      {terminalEligible && (
-        <div className="shrink-0 border-t border-border bg-card px-3 py-1.5">
-          <div className="flex justify-end">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={terminalActive}
-              data-testid="chat-mode-toggle"
-              aria-label={terminalActive ? 'Terminal mode enabled' : 'Terminal mode disabled'}
-              title={terminalActive ? 'Switch to chat mode' : 'Switch to terminal mode'}
-              onClick={() => setTerminalMode(terminalActive ? 'chat' : 'terminal')}
-              className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-2.5 text-xs font-medium shadow-sm hover:border-primary/60"
-            >
-              <span
-                className={
-                  'inline-flex items-center gap-1.5 ' +
-                  (terminalActive ? 'text-muted-foreground' : 'text-foreground')
-                }
-              >
-                <MessagesSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Chat</span>
-              </span>
-              <span
-                aria-hidden="true"
-                className={
-                  'relative inline-flex h-5 w-9 items-center rounded-full border transition-colors ' +
-                  (terminalActive
-                    ? 'border-primary bg-primary'
-                    : 'border-border bg-muted')
-                }
-              >
-                <span
-                  className={
-                    'h-4 w-4 rounded-full bg-background shadow-sm transition-transform ' +
-                    (terminalActive ? 'translate-x-4' : 'translate-x-0.5')
-                  }
-                />
-              </span>
-              <span
-                className={
-                  'inline-flex items-center gap-1.5 ' +
-                  (terminalActive ? 'text-foreground' : 'text-muted-foreground')
-                }
-              >
-                <TerminalIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Terminal</span>
-              </span>
-            </button>
-          </div>
-        </div>
-      )}
+      <TerminalModeToggle
+        eligible={terminalEligible}
+        active={terminalActive}
+        onModeChange={setTerminalMode}
+      />
       {footerSlot}
     </div>
   );
-}
-
-function terminalModeStorageKey(projectId: string, sessionId: string): string {
-  return `pc.terminal-mode.${projectId}.${sessionId}`;
-}
-
-function readTerminalMode(
-  projectId: string,
-  sessionId: string,
-): OrchestratorSurfacePreference | null {
-  try {
-    const value = localStorage.getItem(terminalModeStorageKey(projectId, sessionId));
-    return value === 'chat' || value === 'terminal' ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeTerminalMode(
-  projectId: string,
-  sessionId: string,
-  value: OrchestratorSurfacePreference,
-): void {
-  try {
-    localStorage.setItem(terminalModeStorageKey(projectId, sessionId), value);
-  } catch {
-    /* storage disabled */
-  }
 }
 
 // AskCard reply contract: the parent owns ask reply (WS send for orchestrator,
@@ -2156,41 +1160,6 @@ function formatElapsed(ms: number): string {
   return `${m}m ${rem.toString().padStart(2, '0')}s`;
 }
 
-const TOOL_VERBS: Record<string, string> = {
-  Read: 'Reading',
-  Edit: 'Editing',
-  Write: 'Writing',
-  NotebookEdit: 'Editing',
-  Bash: 'Running',
-  PowerShell: 'Running',
-  Glob: 'Finding files',
-  Grep: 'Searching',
-  WebFetch: 'Fetching',
-  WebSearch: 'Searching the web',
-  Task: 'Delegating to',
-  Agent: 'Delegating to',
-  TodoWrite: 'Updating the plan',
-};
-
-/** Human-readable "what is it doing right now" string for the thinking
- *  indicator. Reuses `summarizeInput` for the per-tool detail; strips the
- *  `mcp__<server>__` prefix off MCP tool names so they read cleanly. */
-function activityLabel(tool: string, input: unknown): string {
-  const clean = tool.startsWith('mcp__')
-    ? tool.split('__').pop() ?? tool
-    : tool;
-  const verb = TOOL_VERBS[tool];
-  const base = verb ?? clean;
-  const summary = summarizeInput(tool, input);
-  return summary ? `${base} ${summary}` : base;
-}
-
-/** Quiet window (no envelopes at all) after which we warn the turn may have
- *  stalled or the agent may have died. CC turns can legitimately think for a
- *  while, but raw PTY output / stream events keep flowing during real work, so
- *  a full minute of dead silence is a strong "something's wrong" signal. */
-const STALL_WARN_MS = 60_000;
-
 function ThinkingIndicator({
   elapsedMs,
   interruptedAt,
@@ -2504,41 +1473,6 @@ function defaultUrlTransform(url: string): string {
 }
 
 // ── Tool-calls group ─────────────────────────────────────────────────────
-
-function summarizeInput(tool: string, input: unknown): string {
-  if (input == null || typeof input !== 'object') return '';
-  const i = input as Record<string, unknown>;
-  switch (tool) {
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-      return typeof i.file_path === 'string'
-        ? (i.file_path as string)
-        : typeof i.notebook_path === 'string'
-          ? (i.notebook_path as string)
-          : '';
-    case 'Bash':
-    case 'PowerShell': {
-      const cmd = typeof i.command === 'string' ? (i.command as string) : '';
-      const first = cmd.split('\n')[0] ?? '';
-      return first.length > 80 ? first.slice(0, 80) + '…' : first;
-    }
-    case 'Glob':
-      return typeof i.pattern === 'string' ? (i.pattern as string) : '';
-    case 'Grep': {
-      const p = typeof i.pattern === 'string' ? (i.pattern as string) : '';
-      const g = typeof i.glob === 'string' ? ` · ${i.glob}` : '';
-      return p + g;
-    }
-    case 'WebFetch':
-      return typeof i.url === 'string' ? (i.url as string) : '';
-    case 'WebSearch':
-      return typeof i.query === 'string' ? (i.query as string) : '';
-    default:
-      return '';
-  }
-}
 
 function resultToString(result: unknown): string {
   if (result == null) return '';
@@ -3182,417 +2116,6 @@ function TaskEndBubble({ event }: { event: TaskEndEvent }) {
       ) : (
         <div className="text-sm italic text-muted-foreground">(no result text)</div>
       )}
-    </div>
-  );
-}
-
-// ── Approval card ────────────────────────────────────────────────────────
-
-interface ApprovalBubbleProps {
-  event: ApprovalRequiredEvent;
-  projectId: string;
-  resolved?: { approved: boolean; response: string };
-  onResolved: (
-    workflowRunId: string,
-    nodeId: string,
-    approved: boolean,
-    response: string,
-  ) => void;
-}
-
-function ApprovalBubble({ event, projectId, resolved, onResolved }: ApprovalBubbleProps) {
-  const [showReject, setShowReject] = useState(false);
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(approved: boolean, response: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      await respondToApproval(projectId, event.workflowRunId, event.nodeId, approved, response);
-      onResolved(event.workflowRunId, event.nodeId, approved, response);
-    } catch (err) {
-      setError(`Failed: ${(err as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="text-sm">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="bg-warning px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-background">
-          approval required
-        </span>
-      </div>
-      <div className="mb-2 text-sm text-foreground">{event.message ?? '(no message)'}</div>
-      {resolved ? (
-        <div className="text-xs text-muted-foreground">
-          {resolved.approved
-            ? 'Approved.'
-            : `Rejected${resolved.response ? ` — ${resolved.response}` : ''}.`}
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void submit(true, '')}
-              className="bg-primary px-3 py-1 text-xs font-medium uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setShowReject(true)}
-              className="bg-destructive px-3 py-1 text-xs font-medium uppercase tracking-wider text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-            >
-              Reject
-            </button>
-          </div>
-          {showReject && (
-            <div className="flex flex-col gap-1">
-              {event.on_reject_prompt && (
-                <div className="text-xs text-muted-foreground">{event.on_reject_prompt}</div>
-              )}
-              <textarea
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                rows={2}
-                placeholder={event.on_reject_prompt ?? 'Optional reason'}
-                className="border border-border bg-background px-2 py-1 text-sm"
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void submit(false, reason)}
-                className="self-start bg-destructive px-3 py-1 text-xs font-medium uppercase tracking-wider text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-              >
-                Submit reject
-              </button>
-            </div>
-          )}
-          {error && <div className="text-xs text-destructive">{error}</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Composer ─────────────────────────────────────────────────────────────
-
-const PROMPT_HISTORY_CAP = 100;
-
-function ComposerRuntimeChips({
-  sessionState,
-  contextUsedPct,
-}: {
-  sessionState: string | null;
-  contextUsedPct: number | null;
-}) {
-  // State chip on the left — colored dot + label. Context-window fill bar
-  // on the right (within this flex group; the send-hint stays ml-auto).
-  // The ctx bar is the "am I about to auto-compact?" gauge — CC compacts
-  // around 85-90% by default, so we tone the bar by threshold.
-  const stateTone =
-    sessionState === 'requires_action'
-      ? 'bg-warning'
-      : sessionState === 'running'
-        ? 'bg-primary'
-        : sessionState === 'idle'
-          ? 'bg-foreground/40'
-          : 'bg-foreground/20';
-  const barTone =
-    contextUsedPct == null
-      ? 'bg-foreground/20'
-      : contextUsedPct >= 85
-        ? 'bg-destructive'
-        : contextUsedPct >= 65
-          ? 'bg-warning'
-          : 'bg-primary/60';
-  return (
-    <span className="flex items-center gap-3 text-[var(--fg-dim)]">
-      {sessionState && (
-        <span className="inline-flex items-center gap-1.5" title="CC session_state_changed">
-          <span className={`h-1.5 w-1.5 rounded-full ${stateTone}`} />
-          <span>{sessionState.replace('_', ' ')}</span>
-        </span>
-      )}
-      <span
-        className="inline-flex items-center gap-2"
-        title={
-          contextUsedPct == null
-            ? 'Context window — no data yet (CC fills this after the first turn)'
-            : `Context window: ${contextUsedPct.toFixed(0)}% used. CC auto-compacts around 85-90%.`
-        }
-      >
-        <span>ctx</span>
-        <span className="relative h-1.5 w-24 overflow-hidden bg-muted">
-          <span
-            className={`absolute inset-y-0 left-0 ${barTone}`}
-            style={{
-              width: `${contextUsedPct == null ? 0 : Math.min(100, contextUsedPct)}%`,
-            }}
-          />
-        </span>
-        <span className="tabular-nums text-foreground">
-          {contextUsedPct == null ? '—' : `${contextUsedPct.toFixed(0)}%`}
-        </span>
-      </span>
-    </span>
-  );
-}
-
-function historyStorageKey(key: string) {
-  return `pc:prompt-history:${key}`;
-}
-
-function readHistory(key: string): string[] {
-  try {
-    const raw = localStorage.getItem(historyStorageKey(key));
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr.filter((x): x is string => typeof x === 'string');
-  } catch {
-    return [];
-  }
-}
-
-function writeHistory(key: string, list: string[]) {
-  try {
-    localStorage.setItem(historyStorageKey(key), JSON.stringify(list));
-  } catch {
-    /* quota / disabled storage — best effort */
-  }
-}
-
-function Composer({
-  historyKey,
-  onSend,
-  onInterrupt,
-  disabled,
-  sendDisabled,
-  placeholder,
-  disabledReason,
-  statusMessage,
-  sendLabel,
-}: {
-  historyKey: string;
-  onSend: (text: string) => boolean;
-  onInterrupt: () => boolean;
-  disabled?: boolean;
-  sendDisabled?: boolean;
-  placeholder?: string;
-  disabledReason?: string;
-  statusMessage?: string;
-  sendLabel: string;
-}) {
-  const [text, setText] = useState('');
-  const [interruptFeedback, setInterruptFeedback] = useState<'sent' | 'failed' | null>(null);
-  const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const COMPOSER_MIN_PX = 56;
-  const COMPOSER_MAX_PX = 200;
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Section 37.13 — absorb pending prefill (e.g. from the InitiativeInspector's
-  // "Chat about this →" button). Fires when seq advances; consumes the pending
-  // text into the local state, focuses, and parks the cursor at the end.
-  const prefillSeq = useChatComposerPrefill((s) => s.seq);
-  const consumePrefill = useChatComposerPrefill((s) => s.consume);
-  useEffect(() => {
-    const pending = consumePrefill();
-    if (pending === null) return;
-    setText(pending);
-    // Defer focus so the textarea actually exists + the new text has landed.
-    setTimeout(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(pending.length, pending.length);
-    }, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prefillSeq]);
-  const resizeTextarea = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    const next = Math.max(COMPOSER_MIN_PX, Math.min(el.scrollHeight, COMPOSER_MAX_PX));
-    el.style.height = `${next}px`;
-  }, []);
-  useEffect(() => { resizeTextarea(); }, [text, resizeTextarea]);
-
-  function clickInterrupt() {
-    if (sendDisabled) return;
-    if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
-    const ok = onInterrupt();
-    setInterruptFeedback(ok ? 'sent' : 'failed');
-    interruptTimerRef.current = setTimeout(() => setInterruptFeedback(null), 1500);
-  }
-  useEffect(() => () => {
-    if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
-  }, []);
-
-  const historyRef = useRef<string[]>(readHistory(historyKey));
-  const [historyIdx, setHistoryIdx] = useState<number | null>(null);
-
-  useEffect(() => {
-    historyRef.current = readHistory(historyKey);
-    setHistoryIdx(null);
-    setText('');
-  }, [historyKey]);
-
-  function submit() {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    if (sendDisabled) return;
-    if (onSend(trimmed)) {
-      const hist = historyRef.current;
-      if (hist[hist.length - 1] !== trimmed) {
-        hist.push(trimmed);
-        if (hist.length > PROMPT_HISTORY_CAP) hist.splice(0, hist.length - PROMPT_HISTORY_CAP);
-        writeHistory(historyKey, hist);
-      }
-      setHistoryIdx(null);
-      setText('');
-    }
-  }
-
-  function navHistory(direction: -1 | 1) {
-    const hist = historyRef.current;
-    if (hist.length === 0) return;
-    if (direction === -1) {
-      const next = historyIdx === null ? hist.length - 1 : Math.max(0, historyIdx - 1);
-      setHistoryIdx(next);
-      setText(hist[next] ?? '');
-    } else {
-      if (historyIdx === null) return;
-      const next = historyIdx + 1;
-      if (next >= hist.length) {
-        setHistoryIdx(null);
-        setText('');
-      } else {
-        setHistoryIdx(next);
-        setText(hist[next] ?? '');
-      }
-    }
-  }
-
-  const historyLen = historyRef.current.length;
-
-  // Section 31.8 follow-up (user feedback) — the composer status line now
-  // shows ONLY context-window fill + session state. Tokens + cost + turn
-  // duration moved to the global app header (which aggregates across all
-  // sessions, not just the current chat). Showing fewer signals here puts
-  // the load-bearing "am I about to be compacted?" gauge front + center.
-  const sessionState = useOrchestratorTelemetry((s) => s.sessionState);
-  const contextUsedPct = useOrchestratorTelemetry((s) => s.contextUsedPct);
-
-  // Section 32.4 — cockpit toolbar. Right-side hint surfaces the ↑/↓
-  // prompt-history affordance that was previously invisible.
-
-  return (
-    <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
-      <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
-        <span
-          className="inline-flex items-center gap-1.5 text-[var(--fg-dim)]"
-          title="↑/↓ in the textarea walks your prompt history for this project"
-        >
-          <kbd className="border border-border px-1 text-[9px]">↑</kbd>
-          <kbd className="border border-border px-1 text-[9px]">↓</kbd>
-          <span>prompt history · {historyLen}</span>
-        </span>
-        <ComposerRuntimeChips
-          sessionState={sessionState}
-          contextUsedPct={contextUsedPct}
-        />
-        {disabledReason || statusMessage ? (
-          <span
-            className={
-              'ml-auto normal-case tracking-normal ' +
-              (disabledReason ? 'text-warning' : 'text-[var(--fg-dim)]')
-            }
-          >
-            {disabledReason ?? statusMessage}
-          </span>
-        ) : (
-          <span className="ml-auto text-[var(--fg-dim)]">
-            enter to send · shift+enter newline
-          </span>
-        )}
-      </div>
-      <textarea
-        ref={textareaRef}
-        data-testid="chat-composer-input"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          if (historyIdx !== null) setHistoryIdx(null);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-            return;
-          }
-          if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
-            if (text === '' || historyIdx !== null) {
-              e.preventDefault();
-              navHistory(-1);
-            }
-            return;
-          }
-          if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
-            if (historyIdx !== null) {
-              e.preventDefault();
-              navHistory(1);
-            }
-            return;
-          }
-        }}
-        placeholder={
-          placeholder ??
-          'Message the orchestrator…'
-        }
-        disabled={disabled}
-        className="resize-none overflow-y-auto border border-border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:bg-muted/60 disabled:opacity-60"
-        style={{ minHeight: COMPOSER_MIN_PX, maxHeight: COMPOSER_MAX_PX }}
-      />
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || sendDisabled || !text.trim()}
-          data-testid="chat-composer-send"
-          className="bg-primary px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {sendLabel}
-        </button>
-        <button
-          type="button"
-          onClick={clickInterrupt}
-          disabled={disabled || sendDisabled || interruptFeedback === 'sent'}
-          title="Stop the current response (sends Escape to the PTY)"
-          className={
-            'border px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50 ' +
-            (interruptFeedback === 'sent'
-              ? 'border-success bg-success/10 text-success'
-              : interruptFeedback === 'failed'
-                ? 'border-warning bg-warning/10 text-warning'
-                : 'border-border text-muted-foreground hover:border-destructive hover:text-destructive')
-          }
-        >
-          {interruptFeedback === 'sent'
-            ? '✓ Sent'
-            : interruptFeedback === 'failed'
-              ? 'Failed — not connected'
-              : 'Interrupt esc'}
-        </button>
-      </div>
     </div>
   );
 }

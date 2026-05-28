@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import type { OrchestratorSurfacePreference } from '@/api/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { ChatSurface } from '@/components/ChatSurface';
 import {
   ConversationHeader,

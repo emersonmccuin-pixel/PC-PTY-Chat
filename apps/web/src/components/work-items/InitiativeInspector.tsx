@@ -12,16 +12,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import {
-  api,
-  WorkItemConflictError,
-  type Attachment,
-  type Project,
-  type Stage,
-  type WorkItem,
-  type WorkItemStatus,
-  type WorkItemType,
-} from '@/api/client';
+import type { Project, Stage } from '@/features/projects/client';
+import { WorkItemConflictError, workItemsApi, type Attachment, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAttachmentLightbox } from '@/store/attachment-lightbox';
@@ -309,8 +301,7 @@ function ChildrenTab({
   const [createOpen, setCreateOpen] = useState(false);
 
   const refetch = useCallback(() => {
-    api
-      .workItems(project.id)
+    workItemsApi.workItems(project.id)
       .then(setItems)
       .catch((e) => setError((e as Error).message));
   }, [project.id]);
@@ -483,7 +474,7 @@ function BriefTab({
     setSaving(true);
     setError(null);
     try {
-      const next = await api.patchWorkItem(project.id, workItem.id, workItem.version, {
+      const next = await workItemsApi.patchWorkItem(project.id, workItem.id, workItem.version, {
         body: draft,
       });
       onPatched(next);
@@ -635,8 +626,7 @@ function ActivityTab({
 
   useEffect(() => {
     let alive = true;
-    api
-      .listAttachments(project.id, workItem.id)
+    workItemsApi.listAttachments(project.id, workItem.id)
       .then((list) => {
         if (alive) setAttachments(list);
       })
@@ -652,8 +642,7 @@ function ActivityTab({
     if (events.length === 0) return;
     const last = events[events.length - 1];
     if (last?.type === 'attachment-changed' && last.workItemId === workItem.id) {
-      api
-        .listAttachments(project.id, workItem.id)
+      workItemsApi.listAttachments(project.id, workItem.id)
         .then(setAttachments)
         .catch(() => {
           /* leave the existing list */
@@ -907,8 +896,7 @@ function DocumentsTab({
   const openLightbox = useAttachmentLightbox((s) => s.open);
 
   const refetch = useCallback(() => {
-    api
-      .listAttachments(project.id, workItem.id)
+    workItemsApi.listAttachments(project.id, workItem.id)
       .then(setAttachments)
       .catch(() => {
         /* swallow — empty list is the safe fallback */

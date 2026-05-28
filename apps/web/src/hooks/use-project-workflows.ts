@@ -14,8 +14,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { Project, ULID, WorkflowRow } from '@/api/client';
-import { api } from '@/api/client';
+import type { Project, ULID } from '@/features/projects/client';
+import { workflowsApi, type WorkflowRow } from '@/features/workflows/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 interface WorkflowChangedEnvelope extends WsEnvelope {
@@ -43,7 +43,7 @@ export function useProjectWorkflows(
       return;
     }
     let cancelled = false;
-    void api.listWorkflowRows(project.id).then((list) => {
+    void workflowsApi.listWorkflowRows(project.id).then((list) => {
       if (cancelled) return;
       setMap(new Map(list.map((w) => [w.id, w])));
     });
@@ -112,7 +112,7 @@ export function useProjectWorkflows(
     workflows,
     refetch: () => {
       if (!project) return;
-      void api.listWorkflowRows(project.id).then((list) => {
+      void workflowsApi.listWorkflowRows(project.id).then((list) => {
         setMap(new Map(list.map((w) => [w.id, w])));
       });
     },

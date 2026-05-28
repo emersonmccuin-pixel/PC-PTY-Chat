@@ -12,7 +12,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, type Project } from '@/api/client';
+import { projectsApi, type Project } from '@/features/projects/client';
+import { runtimeApi } from '@/features/runtime/client';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { useStatuslineStore } from '@/store/statusline';
@@ -112,7 +113,7 @@ export function ProjectRail({
   async function revealInExplorer(project: Project) {
     setMenu(null);
     try {
-      await api.revealProject(project.id);
+      await projectsApi.revealProject(project.id);
     } catch (err) {
       alert(`Couldn't open the folder: ${(err as Error).message}`);
     }
@@ -130,7 +131,7 @@ export function ProjectRail({
   async function startNewSession(project: Project) {
     setMenu(null);
     try {
-      await api.startNewSession(project.id);
+      await runtimeApi.startNewSession(project.id);
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
     }

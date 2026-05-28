@@ -9,15 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import {
-  api,
-  WORK_ITEM_TYPES,
-  WorkItemFieldValidationError,
-  type FieldSchema,
-  type Project,
-  type WorkItem,
-  type WorkItemType,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { WORK_ITEM_TYPES, WorkItemFieldValidationError, workItemsApi, type FieldSchema, type WorkItem, type WorkItemType } from '@/features/work-items/client';
 import { TypedFieldEditor } from './TypedFieldEditor';
 
 const TYPE_LABELS: Record<WorkItemType, string> = {
@@ -64,8 +57,7 @@ export function CreateWorkItemModal({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listFieldSchemas(project.id)
+    workItemsApi.listFieldSchemas(project.id)
       .then((s) => {
         if (!cancelled) setSchemas(s);
       })
@@ -109,7 +101,7 @@ export function CreateWorkItemModal({
     setErr(null);
     setFieldErrors({});
     try {
-      const r = await api.createWorkItem(project.id, trimmed, stage, {
+      const r = await workItemsApi.createWorkItem(project.id, trimmed, stage, {
         ...(body.length > 0 ? { body } : {}),
         ...(type !== 'task' ? { type } : {}),
         ...(Object.keys(fields).length > 0 ? { fields } : {}),

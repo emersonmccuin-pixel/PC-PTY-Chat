@@ -6,12 +6,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import {
-  api,
-  type CreateProjectMode,
-  type FolderProbe,
-  type Project,
-} from '@/api/client';
+import { projectsApi, type CreateProjectMode, type Project } from '@/features/projects/client';
+import { filesApi, type FolderProbe } from '@/features/files/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface CreateProjectModalProps {
@@ -58,8 +54,7 @@ export function CreateProjectModal({
     }
     setProbeState({ status: 'checking' });
     const my = ++probeReqId.current;
-    api
-      .probeFolder(path)
+    filesApi.probeFolder(path)
       .then((p) => {
         if (my !== probeReqId.current) return;
         setProbeState({ status: 'ready', probe: p });
@@ -85,7 +80,7 @@ export function CreateProjectModal({
     setBusy(true);
     setErr(null);
     try {
-      const project = await api.createProject({
+      const project = await projectsApi.createProject({
         name: name.trim(),
         folder_path: folderPath,
         mode,

@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { api } from '@/api/client';
+import { transientSessionsApi } from '@/features/transient-sessions/client';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 
@@ -99,8 +99,7 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
     setSessionId(null);
     setError(null);
     processedRef.current = eventsRef.current.length;
-    api
-      .startSetupWizard(projectId)
+    transientSessionsApi.startSetupWizard(projectId)
       .then((r) => {
         if (cancelled) return;
         setSessionId(r.sessionId);
@@ -114,7 +113,7 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
       });
     return () => {
       cancelled = true;
-      void api.stopSetupWizard(projectId).catch(() => {
+      void transientSessionsApi.stopSetupWizard(projectId).catch(() => {
         /* best-effort cleanup */
       });
     };
@@ -187,25 +186,25 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
           statusLabel={statusLabel}
           onClose={() => closeRef.current()}
           onSend={(text) => {
-            void api.sendSetupWizard(projectId, text).catch(() => {
+            void transientSessionsApi.sendSetupWizard(projectId, text).catch(() => {
               /* surfaced by state/error paths when available */
             });
             return true;
           }}
           onInterrupt={() => {
-            void api.interruptSetupWizard(projectId).catch(() => {
+            void transientSessionsApi.interruptSetupWizard(projectId).catch(() => {
               /* best-effort */
             });
             return true;
           }}
           onTerminalInput={(data) => {
-            void api.sendSetupWizardTerminalInput(projectId, data).catch(() => {
+            void transientSessionsApi.sendSetupWizardTerminalInput(projectId, data).catch(() => {
               /* best-effort */
             });
             return true;
           }}
           onTerminalResize={(cols, rows) => {
-            void api.resizeSetupWizard(projectId, cols, rows).catch(() => {
+            void transientSessionsApi.resizeSetupWizard(projectId, cols, rows).catch(() => {
               /* best-effort */
             });
             return true;

@@ -6,15 +6,16 @@
 // wrapper renders ChatSurface with HTTP-routed send/interrupt + a header
 // label + an appropriate composer-disabled state.
 //
-// Parent (CreatePodModal) is responsible for calling api.startAgentDesigner
-// before mounting + api.stopAgentDesigner on modal close. Cleanup is NOT
+// Parent (CreatePodModal) is responsible for calling transientSessionsApi.startAgentDesigner
+// before mounting + transientSessionsApi.stopAgentDesigner on modal close. Cleanup is NOT
 // in a useEffect cleanup because React 18 Strict Mode double-invokes mount/
 // cleanup and would kill the freshly-spawned claude.exe within ~50ms — see
 // [[strict-mode-useeffect-kills-external-resource]].
 
 import { useMemo } from 'react';
 
-import { api, type Project } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { transientSessionsApi } from '@/features/transient-sessions/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
@@ -149,26 +150,26 @@ export function AgentDesignerChat({
       titleText="agent-designer"
       statusLabel={stateLabel(state)}
       onSend={(text) => {
-        void api.sendAgentDesigner(project.id, text).catch(() => {
+        void transientSessionsApi.sendAgentDesigner(project.id, text).catch(() => {
           /* error surfaced in the next event broadcast or composer ui */
         });
         // Optimistic — actual delivery confirmed via the jsonl-user envelope.
         return true;
       }}
       onInterrupt={() => {
-        void api.interruptAgentDesigner(project.id).catch(() => {
+        void transientSessionsApi.interruptAgentDesigner(project.id).catch(() => {
           /* best-effort */
         });
         return true;
       }}
       onTerminalInput={(data) => {
-        void api.sendAgentDesignerTerminalInput(project.id, data).catch(() => {
+        void transientSessionsApi.sendAgentDesignerTerminalInput(project.id, data).catch(() => {
           /* best-effort; terminal input acks are not surfaced in this shell */
         });
         return true;
       }}
       onTerminalResize={(cols, rows) => {
-        void api.resizeAgentDesigner(project.id, cols, rows).catch(() => {
+        void transientSessionsApi.resizeAgentDesigner(project.id, cols, rows).catch(() => {
           /* best-effort */
         });
         return true;

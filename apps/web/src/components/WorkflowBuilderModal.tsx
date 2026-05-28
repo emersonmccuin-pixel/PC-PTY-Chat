@@ -27,7 +27,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { WorkflowV2 } from '@pc/domain';
 
-import { api, type OrchestratorSurfacePreference } from '@/api/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
+import { transientSessionsApi } from '@/features/transient-sessions/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { WorkflowBuilderChat, type WorkflowBuilderState } from './WorkflowBuilderChat';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
@@ -112,8 +113,7 @@ export function WorkflowBuilderModal({
     setDraftDef(editingRef.current?.def ?? null);
     handoffSentRef.current = false;
     processedRef.current = eventsRef.current.length;
-    api
-      .startWorkflowBuilder(projectId)
+    transientSessionsApi.startWorkflowBuilder(projectId)
       .then((r) => {
         if (cancelled) return;
         setSessionId(r.sessionId);
@@ -127,7 +127,7 @@ export function WorkflowBuilderModal({
       });
     return () => {
       cancelled = true;
-      void api.stopWorkflowBuilder(projectId).catch(() => {
+      void transientSessionsApi.stopWorkflowBuilder(projectId).catch(() => {
         /* best-effort cleanup */
       });
     };
@@ -142,7 +142,7 @@ export function WorkflowBuilderModal({
     if (!editing) return;
     handoffSentRef.current = true;
     const handoff = buildEditHandoff(editing);
-    void api.sendWorkflowBuilder(projectId, handoff).catch((e: unknown) => {
+    void transientSessionsApi.sendWorkflowBuilder(projectId, handoff).catch((e: unknown) => {
       setError(`failed to send edit-mode handoff: ${(e as Error).message}`);
       handoffSentRef.current = false;
     });
@@ -196,8 +196,7 @@ export function WorkflowBuilderModal({
   function handleGraphChange(next: WorkflowV2.Workflow): void {
     setDraftDef(next);
     if (!sessionId) return;
-    void api
-      .saveWorkflowBuilderDraft(projectId, sessionId, next)
+    void transientSessionsApi.saveWorkflowBuilderDraft(projectId, sessionId, next)
       .catch(() => {
         /* best-effort — agent picks up on next read */
       });

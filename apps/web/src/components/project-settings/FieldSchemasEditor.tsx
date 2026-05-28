@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, type FieldSchema, type FieldSchemaInput, type FieldSchemaType } from '@/api/client';
+import { workItemsApi, type FieldSchema, type FieldSchemaInput, type FieldSchemaType } from '@/features/work-items/client';
 
 const TYPE_OPTIONS: { value: FieldSchemaType; label: string }[] = [
   { value: 'text', label: 'Text' },
@@ -63,8 +63,7 @@ export function FieldSchemasEditor({ projectId }: { projectId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
 
   function load() {
-    api
-      .listFieldSchemas(projectId)
+    workItemsApi.listFieldSchemas(projectId)
       .then((items) => {
         const next = items.map(rowFromSchema);
         setRows(next);
@@ -147,7 +146,7 @@ export function FieldSchemasEditor({ projectId }: { projectId: string }) {
     setErr(null);
     setSaved(null);
     try {
-      const next = await api.replaceFieldSchemas(projectId, rows.map(toInput));
+      const next = await workItemsApi.replaceFieldSchemas(projectId, rows.map(toInput));
       const nextRows = next.map(rowFromSchema);
       setRows(nextRows);
       setLoadedSig(JSON.stringify(nextRows.map(toInput)));

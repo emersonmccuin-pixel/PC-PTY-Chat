@@ -17,15 +17,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkflowV2 } from '@pc/domain';
 
-import {
-  api,
-  type Project,
-  type ULID,
-  type V2RunDetail,
-  type V2RunStatus,
-  type V2RunSummary,
-  type WorkflowRow,
-} from '@/api/client';
+import type { Project, ULID } from '@/features/projects/client';
+import { workflowsApi, type V2RunDetail, type V2RunStatus, type V2RunSummary, type WorkflowRow } from '@/features/workflows/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
 import { useProjectWorkflows } from '@/hooks/use-project-workflows';
 import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
@@ -171,7 +164,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     setActionErr(null);
     try {
       const fireBody = row.scope === 'global' ? { projectId: project.id } : {};
-      await api.fireWorkflowRow(row.id, fireBody);
+      await workflowsApi.fireWorkflowRow(row.id, fireBody);
     } catch (e) {
       setActionErr(`Run now failed: ${(e as Error).message}`);
     }
@@ -180,7 +173,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
   async function onDuplicate(row: WorkflowRow) {
     setActionErr(null);
     try {
-      const created = await api.duplicateWorkflowRow(row.id);
+      const created = await workflowsApi.duplicateWorkflowRow(row.id);
       setSelectedId(created.id);
       refetch();
     } catch (e) {
@@ -191,7 +184,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
   async function onToggleDisabled(row: WorkflowRow) {
     setActionErr(null);
     try {
-      await api.updateWorkflowRow(row.id, { disabled: !row.disabled });
+      await workflowsApi.updateWorkflowRow(row.id, { disabled: !row.disabled });
       refetch();
     } catch (e) {
       setActionErr(`Update failed: ${(e as Error).message}`);
@@ -205,7 +198,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     );
     if (!ok) return;
     try {
-      await api.promoteWorkflowToGlobal(row.id);
+      await workflowsApi.promoteWorkflowToGlobal(row.id);
       refetch();
     } catch (e) {
       setActionErr(`Promote failed: ${(e as Error).message}`);
@@ -221,7 +214,7 @@ export function WorkflowsList({ project, events, send }: WorkflowsListProps) {
     }
     setActionErr(null);
     try {
-      await api.deleteWorkflowRow(row.id, { cancel });
+      await workflowsApi.deleteWorkflowRow(row.id, { cancel });
       if (selectedId === row.id) setSelectedId(null);
       refetch();
     } catch (e) {
@@ -883,8 +876,7 @@ function RunInlineDetail({
     let cancelled = false;
     setRun(null);
     setLoadErr(null);
-    void api
-      .getV2Run(project.id, runId)
+    void workflowsApi.getV2Run(project.id, runId)
       .then((res) => {
         if (!cancelled) setRun(res.run);
       })
@@ -1013,7 +1005,7 @@ function YamlTab({ row, onSaved }: { row: WorkflowRow; onSaved: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.updateWorkflowRow(row.id, {
+      const updated = await workflowsApi.updateWorkflowRow(row.id, {
         yaml: draft,
         reason: 'ui-raw-yaml-edit',
       });

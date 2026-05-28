@@ -8,7 +8,7 @@
 import { useEffect, useState } from 'react';
 import { FolderPlus } from 'lucide-react';
 
-import { api, type BrowseResult } from '@/api/client';
+import { filesApi, type BrowseResult } from '@/features/files/client';
 
 interface FolderBrowserModalProps {
   initialPath?: string;
@@ -53,7 +53,7 @@ export function FolderBrowserModal({
   useEffect(() => {
     if (gateRoot) return;
     let cancelled = false;
-    api.listDrives()
+    filesApi.listDrives()
       .then((d) => { if (!cancelled) setDrives(d); })
       .catch(() => { /* non-blocking */ });
     return () => { cancelled = true; };
@@ -72,7 +72,7 @@ export function FolderBrowserModal({
     setErr(null);
     setNewFolderErr(null);
     try {
-      const result = await api.browseFolder(path, gateRoot);
+      const result = await filesApi.browseFolder(path, gateRoot);
       setView(result);
       setPathInput(result.path);
       writeLocal(LAST_DIR_KEY, result.path);
@@ -96,7 +96,7 @@ export function FolderBrowserModal({
     setCreatingFolder(true);
     setNewFolderErr(null);
     try {
-      const result = await api.createFolder({
+      const result = await filesApi.createFolder({
         parentPath: view.path,
         name,
         gateRoot,

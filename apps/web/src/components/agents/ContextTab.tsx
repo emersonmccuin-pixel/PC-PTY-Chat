@@ -11,7 +11,8 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
-import { api, type PodBundle, type PodKnowledge, type ULID } from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { agentsApi, type PodBundle, type PodKnowledge } from '@/features/agents/client';
 import { Markdown } from '../Markdown';
 
 interface ContextTabProps {
@@ -84,9 +85,9 @@ export function ContextTab({
     setOpError(null);
     try {
       if (edit.isNew) {
-        await api.createKnowledge(podId, { name, content: edit.draft.content });
+        await agentsApi.createKnowledge(podId, { name, content: edit.draft.content });
       } else {
-        await api.patchKnowledge(podId, edit.id as ULID, {
+        await agentsApi.patchKnowledge(podId, edit.id as ULID, {
           name,
           content: edit.draft.content,
         });
@@ -106,7 +107,7 @@ export function ContextTab({
     setBusy(true);
     setOpError(null);
     try {
-      await api.deleteKnowledge(podId, row.id);
+      await agentsApi.deleteKnowledge(podId, row.id);
       if (edit?.id === row.id) setEdit(null);
       onChanged();
     } catch (e) {

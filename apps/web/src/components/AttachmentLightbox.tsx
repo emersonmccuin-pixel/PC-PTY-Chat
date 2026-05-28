@@ -5,7 +5,8 @@
 
 import { useEffect, useState } from 'react';
 
-import { api, type Attachment, type ULID } from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { workItemsApi, type Attachment } from '@/features/work-items/client';
 import { useAttachmentLightbox } from '@/store/attachment-lightbox';
 import { useChatWorkItemModal } from '@/store/chat-work-item-modal';
 
@@ -27,8 +28,7 @@ export function AttachmentLightboxMount({ projectId }: AttachmentLightboxMountPr
       return;
     }
     let cancelled = false;
-    api
-      .getAttachmentById(projectId as ULID, attachmentId as ULID)
+    workItemsApi.getAttachmentById(projectId as ULID, attachmentId as ULID)
       .then((a) => {
         if (!cancelled) setAttachment(a);
       })

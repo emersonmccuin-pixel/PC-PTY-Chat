@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api } from '@/api/client';
+import { runtimeApi } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 export interface GlobalUsageBucket {
@@ -37,8 +37,7 @@ export function useGlobalUsageToday(events: WsEnvelope[]): GlobalUsageTodayResul
   const refetch = () => {
     if (inflight.current) return;
     inflight.current = true;
-    api
-      .getUsageAggregate('day', 1)
+    runtimeApi.getUsageAggregate('day', 1)
       .then((r) => {
         const first = r.rows[0] ?? null;
         setToday(first ?? null);

@@ -7,12 +7,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api } from '@/api/client';
-import type {
-  OrchestratorRuntimeHealth,
-  OrchestratorRuntimeSnapshot,
-  OrchestratorRuntimeWaitPoint,
-} from '@/api/client';
+import { settingsApi } from '@/features/settings/client';
+import type { OrchestratorRuntimeHealth, OrchestratorRuntimeSnapshot, OrchestratorRuntimeWaitPoint } from '@/features/runtime/client';
 import type { WsDiagnostics, WsStatus } from '@/hooks/use-project-ws';
 
 // Re-export so other call sites still importing { UsageTotals } from this
@@ -172,7 +168,7 @@ export function StatusBar({
     let cancelled = false;
     async function tick() {
       try {
-        const data = await api.getMcpStatus(projectId ?? undefined);
+        const data = await settingsApi.getMcpStatus(projectId ?? undefined);
         if (!cancelled) setMcp(data);
       } catch {
         if (!cancelled) setMcp({ alive: false, toolCount: 0, tools: [] });

@@ -4,7 +4,7 @@
 
 import { useEffect, useRef } from 'react';
 
-import { api } from '@/api/client';
+import { runtimeApi } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { type StatuslineSnapshot, useStatuslineStore } from '@/store/statusline';
@@ -28,8 +28,7 @@ export function useStatuslineSync(projectId: string | null, events: WsEnvelope[]
       return;
     }
     let cancelled = false;
-    api
-      .getStatuslineSnapshot(projectId)
+    runtimeApi.getStatuslineSnapshot(projectId)
       .then((snap) => {
         if (cancelled || !snap) return;
         const typed = snap as StatuslineSnapshot;

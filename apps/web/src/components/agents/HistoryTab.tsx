@@ -15,13 +15,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import {
-  api,
-  type PodAuditActor,
-  type PodAuditEntry,
-  type PodAuditField,
-  type ULID,
-} from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { agentsApi, type PodAuditActor, type PodAuditEntry, type PodAuditField } from '@/features/agents/client';
 
 interface HistoryTabProps {
   podId: ULID;
@@ -99,11 +94,10 @@ export function HistoryTab({ podId }: HistoryTabProps) {
   const load = useCallback(() => {
     setRows(null);
     setLoadErr(null);
-    const opts: Parameters<typeof api.listPodAudit>[1] = { limit: 100 };
+    const opts: Parameters<typeof agentsApi.listPodAudit>[1] = { limit: 100 };
     if (actor) opts.actor = actor;
     if (field) opts.field = field;
-    api
-      .listPodAudit(podId, opts)
+    agentsApi.listPodAudit(podId, opts)
       .then((r) => setRows(r))
       .catch((e: unknown) => setLoadErr((e as Error).message));
   }, [podId, actor, field]);
@@ -131,7 +125,7 @@ export function HistoryTab({ podId }: HistoryTabProps) {
       // a JSON array. Unwrap with JSON.parse.
       const priorRaw = row.priorValue;
       const decoded = priorRaw === null ? null : JSON.parse(priorRaw);
-      await api.patchPod(podId, { [patchKey]: decoded });
+      await agentsApi.patchPod(podId, { [patchKey]: decoded });
       load();
     } catch (e) {
       setRevertErr((e as Error).message);
@@ -161,7 +155,7 @@ export function HistoryTab({ podId }: HistoryTabProps) {
         const patchKey = AUDIT_FIELD_TO_PATCH_KEY[r.field] ?? r.field;
         patch[patchKey] = r.priorValue === null ? null : JSON.parse(r.priorValue);
       }
-      await api.patchPod(podId, patch);
+      await agentsApi.patchPod(podId, patch);
       load();
     } catch (e) {
       setRevertErr((e as Error).message);

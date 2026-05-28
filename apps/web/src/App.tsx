@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, type GlobalSettings, type Project } from '@/api/client';
+import { projectsApi, type Project } from '@/features/projects/client';
+import { settingsApi, type GlobalSettings } from '@/features/settings/client';
 import { AppSettingsModal } from '@/components/AppSettingsModal';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
@@ -71,8 +72,8 @@ export default function App() {
   const activityPanelOpen = settings?.activityPanel.open ?? true;
 
   useEffect(() => {
-    void api.listProjects().then(setProjects).catch(() => setProjects([]));
-    void api.getSettings().then(setSettings).catch(() => {
+    void projectsApi.listProjects().then(setProjects).catch(() => setProjects([]));
+    void settingsApi.getSettings().then(setSettings).catch(() => {
       /* best-effort — surfaces as gear icon disabled until next load */
     });
   }, []);
@@ -117,8 +118,7 @@ export default function App() {
             }
           : prev,
       );
-      void api
-        .patchSettings({
+      void settingsApi.patchSettings({
           activityPanel: {
             open: patch.open ?? settings?.activityPanel.open ?? true,
             showAllProjects: settings?.activityPanel.showAllProjects ?? false,
@@ -166,8 +166,8 @@ export default function App() {
       for (const p of prev) if (!orderedIds.includes(p.id)) reordered.push(p);
       return reordered;
     });
-    void api.reorderProjects(orderedIds).then(setProjects).catch(() => {
-      void api.listProjects().then(setProjects).catch(() => {});
+    void projectsApi.reorderProjects(orderedIds).then(setProjects).catch(() => {
+      void projectsApi.listProjects().then(setProjects).catch(() => {});
     });
   }, []);
 
@@ -176,8 +176,7 @@ export default function App() {
     setSkipWarning(false);
     setCreateOpen(true);
     if (!onboardingSimMode) {
-      void api
-        .patchSettings({ onboardingCompletedAt: new Date().toISOString() })
+      void settingsApi.patchSettings({ onboardingCompletedAt: new Date().toISOString() })
         .then((r) => setSettings(r.settings))
         .catch(() => {});
     }
@@ -187,8 +186,7 @@ export default function App() {
   // the first Create-Project (and all future ones) default to it. Real setting,
   // so we persist even in sim mode (the picker browses the real filesystem).
   const handleProjectsFolderChange = useCallback((path: string) => {
-    void api
-      .patchSettings({ projectsFolder: path })
+    void settingsApi.patchSettings({ projectsFolder: path })
       .then((r) => setSettings(r.settings))
       .catch(() => {});
   }, []);
@@ -198,8 +196,7 @@ export default function App() {
       setSettings((prev) =>
         prev ? { ...prev, defaultOrchestratorSurface: surface } : prev,
       );
-      void api
-        .patchSettings({ defaultOrchestratorSurface: surface })
+      void settingsApi.patchSettings({ defaultOrchestratorSurface: surface })
         .then((r) => setSettings(r.settings))
         .catch(() => {});
     },
@@ -211,8 +208,7 @@ export default function App() {
       setWizardDismissed(true);
       if (hardDepsMissing) setSkipWarning(true);
       if (!onboardingSimMode) {
-        void api
-          .patchSettings({ onboardingCompletedAt: new Date().toISOString() })
+        void settingsApi.patchSettings({ onboardingCompletedAt: new Date().toISOString() })
           .then((r) => setSettings(r.settings))
           .catch(() => {});
       }

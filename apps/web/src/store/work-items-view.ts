@@ -11,7 +11,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-import type { WorkItemStatus, WorkItemType } from '@/api/client';
+import type { WorkItemStatus, WorkItemType } from '@/features/work-items/client';
 
 export type WorkItemsSubTab = 'dashboard' | 'kanban' | 'table';
 

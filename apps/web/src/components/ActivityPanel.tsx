@@ -11,8 +11,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { AgentRunRecord, Project, V2RunStatus, V2RunSummary } from '@/api/client';
-import { api } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
+import type { V2RunStatus, V2RunSummary } from '@/features/workflows/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
@@ -387,7 +388,7 @@ function RunningAgentCard({
     setCancelling(true);
     setCancelErr(null);
     try {
-      await api.cancelAgentRun(projectId, run.runId);
+      await agentRunsApi.cancelAgentRun(projectId, run.runId);
     } catch (err) {
       setCancelErr((err as Error).message);
       setCancelling(false);
@@ -513,7 +514,7 @@ function useDismissedRunIds(project: Project | null): Set<string> {
       return;
     }
     let cancelled = false;
-    void api.listFailedRunDismissals(project.id).then((list) => {
+    void agentRunsApi.listFailedRunDismissals(project.id).then((list) => {
       if (!cancelled) setIds(new Set(list));
     });
     return () => {
@@ -563,7 +564,7 @@ function FailedRecentlyRegion({
       new CustomEvent('pc:failed-run-dismissed', { detail: { runId } }),
     );
     try {
-      await api.dismissFailedRun(project.id, runId);
+      await agentRunsApi.dismissFailedRun(project.id, runId);
     } catch {
       /* best-effort; user can re-click if it failed */
     }

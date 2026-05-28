@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { api, type MemoryFile, type MemoryScope } from '@/api/client';
+import { projectContextApi, type MemoryFile, type MemoryScope } from '@/features/project-context/client';
 import { useMemoryDrawer } from '@/store/memory-drawer';
 
 const SCOPE_TABS: { scope: MemoryScope; label: string; help: string }[] = [
@@ -48,8 +48,7 @@ export function MemoryDrawer({ projectId }: MemoryDrawerProps) {
     setLoading(true);
     setErr(null);
     setSavedNote(null);
-    api
-      .getMemoryFile(projectId, activeScope)
+    projectContextApi.getMemoryFile(projectId, activeScope)
       .then((f) => {
         if (cancelled) return;
         setFile(f);
@@ -77,7 +76,7 @@ export function MemoryDrawer({ projectId }: MemoryDrawerProps) {
     setErr(null);
     setSavedNote(null);
     try {
-      const next = await api.putMemoryFile(projectId, activeScope, draft);
+      const next = await projectContextApi.putMemoryFile(projectId, activeScope, draft);
       setFile(next);
       setSavedNote(next.exists ? `Saved · ${next.path}` : 'Saved');
     } catch (e) {

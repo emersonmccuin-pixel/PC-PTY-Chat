@@ -11,12 +11,10 @@
 import { useEffect, useMemo } from 'react';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
 
-import type {
-  AgentRunRecord,
-  OrchestratorSurfacePreference,
-  Project,
-  SessionTransitionResponse,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
+import type { SessionTransitionResponse } from '@/features/runtime/client';
+import type { AgentRunRecord } from '@/features/agent-runs/client';
 import type {
   WsDiagnostics,
   WsEnvelope,

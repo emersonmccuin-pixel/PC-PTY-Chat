@@ -5,14 +5,14 @@
 // "browse all" → flips the left rail into Sessions mode (existing 5++
 // surface) without leaving the orchestrator tab.
 //
-// Read pattern mirrors SessionsRail (api.listSessions + api.resumeSession),
+// Read pattern mirrors SessionsRail (runtimeApi.listSessions + runtimeApi.resumeSession),
 // trimmed for the dropdown footprint (no per-row Resume button — clicking
 // the row IS the action; no per-row hover state since the dropdown is
 // already a focused affordance).
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type OrchestratorSession, type SessionTransitionResponse } from '@/api/client';
+import { runtimeApi, type OrchestratorSession, type SessionTransitionResponse } from '@/features/runtime/client';
 import { useRailMode } from '@/store/rail-mode';
 import { useViewingSession } from '@/store/viewing-session';
 
@@ -46,8 +46,7 @@ export function SessionSwitcher({
   // Fetch on mount.
   useEffect(() => {
     let cancelled = false;
-    api
-      .listSessions(projectId)
+    runtimeApi.listSessions(projectId)
       .then((rows) => {
         if (!cancelled) {
           setSessions(rows);
@@ -98,7 +97,7 @@ export function SessionSwitcher({
     if (resumingId) return;
     setResumingId(targetId);
     try {
-      const transition = await api.resumeSession(projectId, targetId);
+      const transition = await runtimeApi.resumeSession(projectId, targetId);
       applySessionTransition(transition);
       setViewing(projectSlug, null);
       onClose();

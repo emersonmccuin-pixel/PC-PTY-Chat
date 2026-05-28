@@ -7,7 +7,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import { api, type FilePreview, type Project } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { filesApi, type FilePreview } from '@/features/files/client';
 import { useViewingFile } from '@/store/viewing-file';
 
 interface FilesViewerProps {
@@ -29,8 +30,7 @@ export function FilesViewer({ project }: FilesViewerProps) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .previewFile(project.id, path)
+    filesApi.previewFile(project.id, path)
       .then((p) => {
         if (!cancelled) setPreview(p);
       })

@@ -5,7 +5,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, type FileTreeNode, type Project } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { filesApi, type FileTreeNode } from '@/features/files/client';
 import { useViewingFile } from '@/store/viewing-file';
 
 interface FilesRailProps {
@@ -34,8 +35,7 @@ export function FilesRail({ project }: FilesRailProps) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .getFilesTree(project.id)
+    filesApi.getFilesTree(project.id)
       .then((rows) => {
         if (!cancelled) setTree(rows);
       })

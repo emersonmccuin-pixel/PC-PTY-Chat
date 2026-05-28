@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { api, type CustomCommand } from '@/api/client';
+import { projectContextApi, type CustomCommand } from '@/features/project-context/client';
 import type { Ability } from '@/lib/abilities';
 import {
   BUILTIN_ABILITIES,
@@ -42,8 +42,7 @@ export function AbilitiesTray({
     if (!open) return;
     setQuery(initialQuery);
     setSelectedIdx(0);
-    api
-      .listCustomCommands(projectId)
+    projectContextApi.listCustomCommands(projectId)
       .then(setCustoms)
       .catch(() => setCustoms([]));
     // Focus the search box on open so typing flows naturally.

@@ -13,16 +13,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { agentsApi, type Pod } from '@/features/agents/client';
+import { projectsApi, type Project, type ULID } from '@/features/projects/client';
+import { runtimeApi } from '@/features/runtime/client';
 import {
-  api,
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
   FONT_SCALE_STEP,
+  settingsApi,
   type GlobalSettings,
-  type Pod,
-  type Project,
-  type ULID,
-} from '@/api/client';
+} from '@/features/settings/client';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { PodDetailModal } from './agents/PodDetailModal';
 
@@ -82,8 +82,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
 
   // Section 33 — load the resolved Claude profile for the General-tab read-out.
   const loadProfile = useRef(() => {
-    void api
-      .getClaudeProfile()
+    void settingsApi.getClaudeProfile()
       .then((p) => setProfile({ effective: p.effective, source: p.source }))
       .catch(() => {});
   });
@@ -93,8 +92,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .listProjects()
+    void projectsApi.listProjects()
       .then((list) => {
         if (!cancelled) setProjects(list);
       })
@@ -109,8 +107,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     if (active !== 'specialists') return;
     if (stockPods !== null) return;
     let cancelled = false;
-    void api
-      .listPods()
+    void agentsApi.listPods()
       .then((pods) => {
         if (cancelled) return;
         setStockPods(pods.filter((p) => p.origin === 'stock'));
@@ -124,8 +121,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
   }, [active, stockPods]);
 
   function refetchStockPods() {
-    void api
-      .listPods()
+    void agentsApi.listPods()
       .then((pods) => {
         setStockPods(pods.filter((p) => p.origin === 'stock'));
       })
@@ -140,7 +136,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     setResetErr(null);
     setResetBusyId(pod.id);
     try {
-      await api.resetStockPodToDefault(pod.id);
+      await agentsApi.resetStockPodToDefault(pod.id);
       refetchStockPods();
     } catch (e) {
       setResetErr((e as Error).message);
@@ -165,7 +161,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     setResetErr(null);
     setResetBusyId('all' as ULID);
     try {
-      await api.resetAllStockPodsToDefault();
+      await agentsApi.resetAllStockPodsToDefault();
       refetchStockPods();
     } catch (e) {
       setResetErr((e as Error).message);
@@ -200,7 +196,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         defaultOrchestratorSurface: draft.defaultOrchestratorSurface,
         claudeConfigDir: draft.claudeConfigDir,
       };
-      const r = await api.patchSettings(patch);
+      const r = await settingsApi.patchSettings(patch);
       initialFontScale.current = r.settings.fontScale;
       onSaved(r.settings, r.restartRequired);
       // Section 33 — the effective profile may have just changed; refresh the
@@ -218,7 +214,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
     setBusy(true);
     setErr(null);
     try {
-      const r = await api.patchSettings({ dataDir: draft.dataDir });
+      const r = await settingsApi.patchSettings({ dataDir: draft.dataDir });
       initialDataDir.current = r.settings.dataDir;
       onSaved(r.settings, r.restartRequired);
     } catch (e) {
@@ -625,8 +621,7 @@ function UsageTab() {
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    api
-      .getUsageAggregate(bucket, windowDays)
+    runtimeApi.getUsageAggregate(bucket, windowDays)
       .then((r) => {
         if (!cancelled) setRows(r.rows);
       })

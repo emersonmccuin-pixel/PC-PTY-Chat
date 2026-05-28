@@ -4,7 +4,8 @@
 // view returns to the project list. 5+P.C: when the center tab is Files,
 // rail content overrides to <FilesRail> regardless of railMode.
 
-import type { Project, SessionTransitionResponse } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import type { SessionTransitionResponse } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useRailMode } from '@/store/rail-mode';
