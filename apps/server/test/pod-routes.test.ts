@@ -873,7 +873,7 @@ test('17b.10: full orchestrator flow — create pod, add knowledge, read it, aud
     prompt: 'You write 4-sentence cold emails.',
     model: 'sonnet',
     effort: 'medium',
-    tools: ['Read', 'Glob', 'mcp__pc-rig__pc_log'],
+    tools: ['Read', 'Glob', 'mcp__pc-rig__pc_get_work_item'],
     actor: 'orchestrator',
     reason: 'mcp-create',
   });

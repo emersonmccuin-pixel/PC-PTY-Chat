@@ -118,6 +118,10 @@ Branch:
 
 - `codex/mcp-tool-split-rescue`
 
+Recovered safe subset:
+
+- `recovery/tool-pruning`
+
 Important commit:
 
 - `7b9ba17 Remove Quick Tasks and prune MCP surface`
@@ -139,7 +143,26 @@ Recommended action: do not merge the branch. Decide separately:
 - keep Quick Tasks and only prune the orchestrator/MCP tool surface, or
 - fully remove Quick Tasks as that commit did.
 
-Then port only the chosen pieces from current `dev`.
+Status:
+
+- Safe tool pruning was ported onto `recovery/tool-pruning`.
+- Quick Tasks was deliberately kept.
+- Focus / initiative work from the old branch was not ported.
+- Removed from shared MCP/catalog surface: `pc_log`, MCP worktree tools,
+  and `NotebookEdit`.
+- Removed from stock pods: `pc_log` prompts/tool grants.
+- Removed from orchestrator: agent edit tools and knowledge-management tools.
+
+Verification:
+
+- `pnpm --filter @pc/mcp typecheck` passed.
+- `pnpm --filter @pc/domain test` passed.
+- `pnpm --filter @pc/runtime test` passed.
+- `pnpm --filter @pc/server test` passed.
+- `pnpm --filter @pc/web typecheck` passed.
+
+Remaining decision: whether Quick Tasks should be deleted as a product surface.
+That should be a separate explicit change if desired.
 
 ### 4. Old-History Workflow Product Work
 
@@ -241,6 +264,8 @@ Recommended action:
 3. Port the Phase 3/4 refactor work onto a fresh branch from current `dev`.
    Done: `recovery/phase3-client-split`.
 4. Make a product decision on Quick Tasks, then port the chosen MCP/tool pruning.
+   Tool pruning is done on `recovery/tool-pruning`; Quick Tasks deletion remains
+   a separate product decision.
 5. Audit workflow product work and recover it feature-by-feature.
 6. Audit runtime/account/desktop work and recover it feature-by-feature.
 7. Only after recovery decisions are made, delete duplicate worktree branches.

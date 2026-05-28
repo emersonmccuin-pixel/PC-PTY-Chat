@@ -48,7 +48,6 @@ test('CC built-ins are all known slugs granted by stock pods', () => {
       'Edit',
       'Glob',
       'Grep',
-      'NotebookEdit',
       'Read',
       'Task',
       'WebFetch',
@@ -78,7 +77,7 @@ test('pc-rig tools cover the v2 workflow-builder additions', () => {
 
 test('friendlyName returns the label for cataloged slugs', () => {
   assert.equal(friendlyName('Read'), 'Read files');
-  assert.equal(friendlyName('mcp__pc-rig__pc_log'), 'Log to project (PC)');
+  assert.equal(friendlyName('mcp__pc-rig__pc_get_work_item'), 'Read a work item');
 });
 
 test('friendlyName falls through to the raw slug for unknowns', () => {

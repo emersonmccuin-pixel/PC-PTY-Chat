@@ -1,6 +1,6 @@
 // Per-project MCP server. Spawned by each project's claude.exe via its
 // .mcp.json. Tools are scoped to PC_PROJECT_ID — set by the per-project config
-// at substitution time. All work-item / workflow / worktree calls shim through
+// at substitution time. Work-item and workflow calls shim through
 // to apps/server's project-scoped HTTP API so dispatch logic stays in one place.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -9,9 +9,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   AGENT_MANAGEMENT_TOOLS,
@@ -72,7 +72,6 @@ const AGENT_SESSION_ID = process.env.PC_AGENT_SESSION_ID ?? '';
 
 // Per-project log + heartbeat — keep each project's MCP signals isolated.
 const PROJECT_DATA = PROJECT_ID ? resolve(DATA, 'projects', PROJECT_ID) : DATA;
-const LOG = resolve(PROJECT_DATA, 'mcp-log.jsonl');
 const STATUS = resolve(PROJECT_DATA, 'mcp-status.json');
 
 /** Section 36 — derived export consumed by apps/server's
@@ -80,51 +79,6 @@ const STATUS = resolve(PROJECT_DATA, 'mcp-status.json');
  *  the hand-maintained flat array that previously had to be kept in sync
  *  with TOOLS (the catalog-drift trap). `TOOLS` below is the sole source. */
 export const TOOLS = [
-  {
-    name: 'pc_log',
-    description:
-      'Append a line to data/mcp-log.jsonl. Use when the user asks you to log via MCP.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        message: { type: 'string', description: 'message body to append' },
-      },
-      required: ['message'],
-    },
-  },
-  {
-    name: 'pc_create_worktree',
-    description:
-      'Create a git worktree as a sibling of the workspace dir. Branch name = worktree name.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'worktree + branch name (alnum, dash, dot, underscore only)',
-        },
-      },
-      required: ['name'],
-    },
-  },
-  {
-    name: 'pc_list_worktrees',
-    description: 'List all git worktrees attached to the workspace repo.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'pc_destroy_worktree',
-    description:
-      'Remove a worktree. Pass either an absolute path or the bare name (resolved under ../worktrees/).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: 'worktree name or absolute path' },
-        force: { type: 'boolean', description: 'pass --force to git worktree remove' },
-      },
-      required: ['target'],
-    },
-  },
   CREATE_WORK_ITEM_TOOL,
   CREATE_AGENT_WORK_ITEM_TOOL,
   APPROVE_WORK_ITEM_TOOL,
@@ -239,7 +193,7 @@ const toolContext = createToolContext({
   serverPort: SERVER_PORT,
 });
 
-const { getServer, postServer, projectPath, withRichLinkHint } = toolContext;
+const { getServer, postServer, withRichLinkHint } = toolContext;
 
 function writeStatus() {
   try {
@@ -343,60 +297,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (agentRunResult) return agentRunResult;
 
   switch (req.params.name) {
-    case 'pc_log': {
-      const message = typeof args.message === 'string' ? args.message : String(args.message ?? '');
-      try {
-        mkdirSync(dirname(LOG), { recursive: true });
-        appendFileSync(LOG, JSON.stringify({ ts: new Date().toISOString(), message }) + '\n');
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_log failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-      return { content: [{ type: 'text', text: `logged: ${message}` }] };
-    }
-
-    case 'pc_create_worktree': {
-      const name = typeof args.name === 'string' ? args.name : '';
-      if (!name) {
-        return { content: [{ type: 'text', text: 'pc_create_worktree: name required' }], isError: true };
-      }
-      try {
-        const res = await postServer(projectPath('worktrees/create'), { name });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_create_worktree failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_create_worktree failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_list_worktrees': {
-      try {
-        const res = await getServer(projectPath('worktrees'));
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: res.body }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_list_worktrees failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_list_worktrees failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
     case 'pc_create_quick_task': {
       const title = typeof args.title === 'string' ? args.title.trim() : '';
       const taskBody = typeof args.body === 'string' ? args.body : undefined;
@@ -484,29 +384,6 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `pc_list_quick_tasks_for_project failed: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
-
-    case 'pc_destroy_worktree': {
-      const target = typeof args.target === 'string' ? args.target : '';
-      const force = args.force === true;
-      if (!target) {
-        return { content: [{ type: 'text', text: 'pc_destroy_worktree: target required' }], isError: true };
-      }
-      try {
-        const res = await postServer(projectPath('worktrees/destroy'), { target, force });
-        if (res.status >= 200 && res.status < 300) {
-          return { content: [{ type: 'text', text: `destroyed worktree ${target}` }] };
-        }
-        return {
-          content: [{ type: 'text', text: `pc_destroy_worktree failed (${res.status}): ${res.body}` }],
-          isError: true,
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `pc_destroy_worktree failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

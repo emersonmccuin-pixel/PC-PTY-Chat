@@ -98,7 +98,6 @@ const WRITER_PROMPT = `You are a writer. The orchestrator dispatches you to draf
 - **pc_get_work_item** — pull the pinned work item's body / fields when the dispatcher pinned you to one.
 - **pc_attach_to_work_item** — persist long drafts to the pinned work item; keep the chat reply scannable.
 - **pc_knowledge_read** — pull style guides / voice references the dispatcher told you about.
-- **pc_log** — short audit breadcrumb if noteworthy.
 
 ## When to pause
 
@@ -137,7 +136,6 @@ const REVIEWER_PROMPT = `You are a reviewer. The orchestrator dispatches you to 
 - **pc_get_work_item** — pull the pinned work item's body / fields when the dispatcher pinned you to one.
 - **pc_attach_to_work_item** — persist long review notes to the pinned work item.
 - **pc_knowledge_read** — pull style guides / review criteria docs.
-- **pc_log** — short audit breadcrumb if noteworthy.
 
 ## When to pause
 
@@ -182,7 +180,6 @@ const PLANNER_PROMPT = `You are a planner. The orchestrator dispatches you to br
 - **pc_get_work_item** — pull the pinned work item's body / fields when the dispatcher pinned you to one.
 - **pc_attach_to_work_item** — persist long plans to the pinned work item.
 - **pc_knowledge_read** — pull reference docs.
-- **pc_log** — short audit breadcrumb if noteworthy.
 
 ## When to pause
 
@@ -264,13 +261,13 @@ I'd say sonnet medium. Want to override?
 \`\`\`
 
 **Tool selection.** You decide the tool allowlist based on the job description. Default formula:
-- All pods: \`Read\` + \`Glob\` + \`Grep\` + \`mcp__pc-rig__pc_log\`
+- All pods: \`Read\` + \`Glob\` + \`Grep\`
 - Pods that close workflow nodes: + \`mcp__pc-rig__pc_node_failed\` (workers close via turn-end on success; \`pc_node_failed\` is only for hard failures)
 - Pods that write or edit files: + \`Bash\` + \`Edit\` (only if explicitly needed)
 - Pods that may ask the user: + \`mcp__pc-rig__pc_ask_orchestrator\` + \`mcp__pc-rig__pc_ask_user\`
 - Pods that hit external systems: ask the user which MCP server they need; that's a per-pod MCP server config (\`pc_add_agent_mcp_server\`) AND the corresponding \`mcp__<name>__*\` tools.
 
-Don't ask the user to pick tools from a list. They don't know what each one does. You pick; explain in plain English ("It can read files but not write them; it can log a note for me but can't touch the rest of the project").
+Don't ask the user to pick tools from a list. They don't know what each one does. You pick; explain in plain English ("It can read files but not write them; it can ask before doing anything destructive").
 
 **Preview.** Before creating the pod, summarise: "Here's what I'll create: [name], [model+effort], can do [tools in plain English], with [N] knowledge docs. Prompt opens: '<first 2 lines>'. Sound right?" Wait for confirmation.
 
@@ -935,7 +932,6 @@ const CODE_WRITER_PROMPT = `You are a code-writer. The orchestrator dispatches y
 - **pc_get_work_item** — pull the pinned work item's body / fields when the dispatcher pinned you to one.
 - **pc_attach_to_work_item** — persist long change summaries (e.g. multi-file refactor notes) to the pinned work item.
 - **pc_knowledge_read** — pull project conventions / style guides the dispatcher told you about.
-- **pc_log** — short audit breadcrumb if noteworthy.
 
 ## When to pause
 
@@ -996,7 +992,6 @@ const EXTRACTOR_PROMPT = `You are an extractor. The orchestrator dispatches you 
 - **pc_get_work_item** — pull the pinned work item's body / fields when the dispatcher pinned you to one.
 - **pc_attach_to_work_item** — persist large extracted JSON to the pinned work item.
 - **pc_knowledge_read** — pull schema definitions / extraction examples.
-- **pc_log** — short audit breadcrumb if noteworthy.
 
 ## When to pause
 
@@ -1046,7 +1041,6 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'WebFetch',
     'WebSearch',
     'mcp__pc-rig__pc_node_failed',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
     'mcp__pc-rig__pc_request_approval',
@@ -1073,7 +1067,6 @@ const WRITER_POD_CONTENT: CreateAgentInput = {
     'Grep',
     'Edit',
     'Bash',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
@@ -1099,7 +1092,6 @@ const REVIEWER_POD_CONTENT: CreateAgentInput = {
     'Glob',
     'Grep',
     'Bash',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
@@ -1124,7 +1116,6 @@ const PLANNER_POD_CONTENT: CreateAgentInput = {
     'Read',
     'Glob',
     'Grep',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
@@ -1149,7 +1140,6 @@ const AGENT_DESIGNER_POD_CONTENT: CreateAgentInput = {
     'Read',
     'Glob',
     'Grep',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_list_agents',
     'mcp__pc-rig__pc_get_agent',
     'mcp__pc-rig__pc_create_agent',
@@ -1182,7 +1172,6 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
     'Glob',
     'Grep',
     'Bash',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_list_stages',
     'mcp__pc-rig__pc_list_field_schemas',
     'mcp__pc-rig__pc_list_agents',
@@ -1221,7 +1210,6 @@ const CODE_WRITER_POD_CONTENT: CreateAgentInput = {
     'Bash',
     'WebFetch',
     'WebSearch',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
@@ -1246,7 +1234,6 @@ const EXTRACTOR_POD_CONTENT: CreateAgentInput = {
     'Read',
     'Glob',
     'Grep',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_knowledge_read',
     'mcp__pc-rig__pc_ask_orchestrator',
     'mcp__pc-rig__pc_ask_user',
@@ -1296,7 +1283,6 @@ If they say no or want to talk about something specific, just chat normally.
 - **\`pc_move_work_item({ id, toFlag: 'done' })\`** — preferred way to mark complete (drops into the Done stage AND flips status atomically).
 - **\`pc_get_work_item\`** — pull a single row when the user asks about a specific task.
 - **\`pc_attach_to_work_item\`** — rarely needed; only for long-form context the user is dictating into a task.
-- **\`pc_log\`** — quiet breadcrumb for noteworthy moves.
 
 ## What you DON'T do
 
@@ -1348,7 +1334,6 @@ const QUICK_TASKS_PM_POD_CONTENT: CreateAgentInput = {
     'Read',
     'Glob',
     'Grep',
-    'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_list_stages',
     'mcp__pc-rig__pc_list_work_items',
     'mcp__pc-rig__pc_create_quick_task',

@@ -301,8 +301,8 @@ test('preparePodSpawn expands mcp__pc-rig__* via the static catalog', () => {
     );
     // Read survives; wildcard expanded into a comma-separated list of pc-rig
     // tool names. We don't pin every tool name (catalog drifts) but the
-    // expanded list must contain pc_log (load-bearing fixture entry).
-    assert.match(md, /\ntools: Read, mcp__pc-rig__pc_log/);
+    // expanded list must start with the first pc-rig tool in the live catalog.
+    assert.match(md, /\ntools: Read, mcp__pc-rig__pc_create_work_item/);
     // No raw wildcard escapes into the .md.
     assert.ok(!md.includes('mcp__pc-rig__*'));
   } finally {

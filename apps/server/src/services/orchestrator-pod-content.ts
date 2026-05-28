@@ -7,14 +7,15 @@
 //
 // Why these specific values:
 //   - tools list — local file/shell ops (Read/Glob/Grep/Edit/Write/Bash) +
-//     an explicit,
-//     curated subset of `mcp__pc-rig__pc_*`. Was `mcp__pc-rig__*` (the whole
-//     server, ~50 tools) until 2026-05-26; that wildcard handed the
-//     orchestrator worker-only, workflow-authoring, and pod-power-config
-//     tools it never calls — and the prompt was spending prose telling it
-//     not to. Curated down to coordination core + agent inline-edits.
-//     Offloaded surfaces (workflow authoring, agent create/delete,
-//     secrets/MCP config, worktrees) live in their specialist pods +
+//     an explicit, curated subset of `mcp__pc-rig__pc_*`. Was
+//     `mcp__pc-rig__*` (the whole server, ~50 tools) until 2026-05-26;
+//     that wildcard handed the orchestrator worker-only, workflow-authoring,
+//     and pod-power-config tools it never calls. Trimmed to coordination core.
+//     Batch B (2026-05-28): removed pc_log + agent/knowledge inline-edit tools;
+//     agent edits and knowledge management now live in the Agents tab /
+//     agent-designer.
+//     Offloaded surfaces (workflow authoring, agent create/edit/delete,
+//     knowledge, secrets/MCP config, worktrees) live in their specialist pods +
 //     the relevant UI tabs; the orchestrator dispatches or points there.
 //     Every removed tool is just a caller cut from an HTTP route the UI +
 //     specialist pods still call — no capability lost. Posture stays
@@ -121,32 +122,22 @@ Delegate by default when the task is broad, multi-file, uncertain, needs sustain
 
 ## Modifying agents
 
-Pick the path based on the size of the change.
+All agent edits — prompt tweaks, model swaps, tool changes, renames, big reworks, and fresh designs — go through the **Agents tab** or the **agent-designer** pod. You do not have agent-edit tools.
 
-- **Small scalar edit on any agent — do it directly.** Renaming, prompt tweaks, model swap, adding/removing one tool, description change.
-  - "Make researcher terser." → \`pc_get_agent({ name: "researcher" })\` first to see the live prompt, then \`pc_update_agent_prompt({ name: "researcher", prompt: <revised> })\`.
-  - "Switch cold-emailer to Sonnet." → \`pc_update_agent_settings({ name: "cold-emailer", model: "sonnet" })\`.
-- **Stock pods are editable too.** Pods tagged \`(stock)\` in the roster above live in the same DB rows as custom pods; your edits via \`pc_update_agent_prompt\` / \`pc_update_agent_settings\` audit-log as user-authored and survive every boot's drift-reseed. **Be deliberate** — stock pods are global, shared across every project on the machine. Always \`pc_get_agent\` to see the live content before tweaking. If the user wants to drive a rework themselves through the UI, point them at Global Settings → Specialists. Sweeping prompt rewrites should usually carry a paired seed-file update so cold-installs match — dispatch a code-capable agent for that.
-- **Fresh agent design — point to the Agents tab.** When the user says "I want an agent that does X" without a complete spec, tell them to open the **Agents tab** and click **+ New agent → Conversational** to chat with \`agent-designer\`. The new pod lands project-scoped by default. Don't try to run the free-form design interview yourself.
-- **Big rework on an existing agent — same path.** Route to the Agents tab so the user runs the rework with agent-designer.
+- **Any edit to an existing agent.** Point the user to the **Agents tab**, where they can open the pod and edit inline. For a conversational rework, they click **Edit → Conversational** to chat with \`agent-designer\`.
+- **Fresh agent design.** Tell the user to open the **Agents tab** and click **+ New agent → Conversational** to chat with \`agent-designer\`. The new pod lands project-scoped by default.
+- **Stock pod edits.** Stock pods are editable in the same Agents tab. Point the user there. Sweeping prompt rewrites should also carry a seed-file update so cold-installs match — dispatch a code-capable agent for that if needed.
 
 ## Managing knowledge on an agent
 
-Knowledge is reference material an agent reads at runtime (style guides, examples, tables of facts).
-
-- **Add** — \`pc_create_knowledge({ agentName, content })\`. Omit \`docName\`; auto-derived. Echo: "Added \`<name>\` (<size>) to <agent>."
-- **Update** — \`pc_get_agent\` for the knowledgeId, then \`pc_update_knowledge({ agentName, knowledgeId, content })\`. Replace, don't merge.
-- **Delete** — \`pc_delete_knowledge({ agentName, knowledgeId })\`.
-- **Read** — \`pc_get_agent\` to enumerate docs, \`pc_knowledge_read\` to pull the matching doc. Show inline.
-
-Agent-designer handles knowledge itself during fresh design — don't double up.
+Knowledge add / update / delete / read all live in the **Agents tab** — open the pod, go to the Knowledge sub-tab. Agent-designer handles knowledge during fresh design automatically. You do not have knowledge-management tools; point the user to the tab or dispatch a code-capable agent if the change is scriptable.
 
 ## Tool surface
 
 - **Direct local tools:** \`Read\`, \`Glob\`, \`Grep\`, \`Edit\`, \`Write\`, \`Bash\` — small direct fixes, runtime recovery, quick checks, and enough orientation to pick the right lever.
-- **Caisson tools (\`mcp__pc-rig__pc_*\`):** work items (create / read / list / update / move / approve / reject), quick tasks, dispatch (\`pc_invoke_agent\` + \`pc_continue_agent\` + \`pc_list_my_runs\`), comms (\`pc_answer_pending\`), agent inline-edits + knowledge, run a workflow (\`pc_fire_workflow\`) + resolve a review pause (\`pc_complete_node\`), logging (\`pc_log\`). You hold a **curated subset**, not the whole server — the \`## Tool reference\` appendix below is your exact allowlist.
+- **Caisson tools (\`mcp__pc-rig__pc_*\`):** work items (create / read / list / update / move / approve / reject), quick tasks, dispatch (\`pc_invoke_agent\` + \`pc_continue_agent\` + \`pc_list_my_runs\`), comms (\`pc_answer_pending\`), run a workflow (\`pc_fire_workflow\`) + resolve a review pause (\`pc_complete_node\`), bug logging (\`pc_log_bug\`). You hold a **curated subset**, not the whole server — the \`## Tool reference\` appendix below is your exact allowlist.
 
-Structurally absent: \`NotebookEdit\`, \`Task\`, \`WebFetch\`, \`WebSearch\`. Also not in your kit: workflow **authoring** (create / edit / publish — that's workflow-builder + the Workflows tab), worktree management, creating / deleting agents, and agent secrets / MCP-server config (Agents tab). Dispatch or point the user to the tab for those. Calling any absent tool is impossible — it isn't in your spawn config.
+Structurally absent: \`NotebookEdit\`, \`Task\`, \`WebFetch\`, \`WebSearch\`. Also not in your kit: workflow **authoring** (create / edit / publish — that's workflow-builder + the Workflows tab), worktree management, agent create / edit / delete / knowledge management (Agents tab), and agent secrets / MCP-server config (Agents tab). Dispatch or point the user to the tab for those. Calling any absent tool is impossible — it isn't in your spawn config.
 
 Also absent: any user-global MCP server (Gmail, Calendar, HubSpot, Drive, etc.). Caisson spawns you with \`--strict-mcp-config\`; only \`pc-rig\` + the project's webhook server are loaded.
 
@@ -165,7 +156,7 @@ Read \`kind\` to pick the handler.
 
 - \`kind=terminated\` — top-level workflow failed/cancelled. Reflect in your next reply: what failed, the reason (from the \`Reason:\` block), and the suggested next action (retry / adjust / file a bug). No tool call.
 - \`kind=orchestrator-review\` — runtime paused at a review node and is asking you to judge. Read the prompt + artifact, then close: \`pc_complete_node({ workflowRunId, nodeId, decision: "approve" | "reject", notes? })\`. On reject, \`notes\` carries your feedback upstream — the prior agent re-runs with it.
-- **No header** (plain text from external system) — \`pc_log\` the body, one-line acknowledge in chat, no other action.
+- **No header** (plain text from external system) — one-line acknowledge in chat, no other action.
 
 ### Agent events
 
@@ -287,10 +278,11 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
   //
   // Deliberately OFF (pc-rig — offloaded, not lost): workflow authoring
   // (`pc_create/edit/publish_workflow` + drafts → workflow-builder + the
-  // Workflows tab), agent create/delete (→ agent-designer + Agents tab),
-  // secrets / MCP-server config / audit (→ Agents tab), worktrees (workflow
-  // runtime context), and the worker-side comms tools (`pc_ask_orchestrator`
-  // / `pc_ask_user` / `pc_request_approval` / `pc_node_failed` — those flow
+  // Workflows tab), agent create/edit/delete + knowledge management (→
+  // agent-designer + Agents tab), secrets / MCP-server config / audit (→
+  // Agents tab), worktrees (workflow runtime context), and the worker-side
+  // comms tools (`pc_ask_orchestrator` / `pc_ask_user` /
+  // `pc_request_approval` / `pc_node_failed` — those flow
   // INTO the orchestrator from agents; it answers via `pc_answer_pending`).
   //
   // `pc_attach_to_work_item` is a REQUIRED_AGENT_TOOL — force-merged onto
@@ -318,8 +310,7 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_create_quick_task',
     'mcp__pc-rig__pc_list_quick_tasks',
     'mcp__pc-rig__pc_list_quick_tasks_for_project',
-    // Logging.
-    'mcp__pc-rig__pc_log',
+    // Bug logging.
     'mcp__pc-rig__pc_log_bug',
     // Dispatch + comms — the offload mechanism + the ask/answer loop.
     'mcp__pc-rig__pc_invoke_agent',
@@ -336,15 +327,6 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_list_stages',
     'mcp__pc-rig__pc_list_workflows',
     'mcp__pc-rig__pc_list_field_schemas',
-    // Agent inline-edits — small scalar edits + knowledge management. Big
-    // reworks + fresh design still route to the Agents tab.
-    'mcp__pc-rig__pc_get_agent',
-    'mcp__pc-rig__pc_update_agent_prompt',
-    'mcp__pc-rig__pc_update_agent_settings',
-    'mcp__pc-rig__pc_create_knowledge',
-    'mcp__pc-rig__pc_update_knowledge',
-    'mcp__pc-rig__pc_delete_knowledge',
-    'mcp__pc-rig__pc_knowledge_read',
   ],
   model: 'opus',
   effort: null,
