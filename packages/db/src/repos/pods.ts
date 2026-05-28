@@ -85,6 +85,7 @@ function rowToAgent(row: typeof agents.$inferSelect): PodAgentRow {
     description: row.description,
     origin: row.origin,
     dispatchGuidance: row.dispatchGuidance ?? null,
+    expectedOutput: row.expectedOutput ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt ?? null,

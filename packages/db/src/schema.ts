@@ -557,6 +557,10 @@ export const agents = sqliteTable(
      *  from `description` (which has UI-display contracts); may be longer +
      *  more directive. Nullable — most user-created pods don't need one. */
     dispatchGuidance: text('dispatch_guidance'),
+    /** Section 26 Issue #3 — default expected_output for this pod. When set,
+     *  createAgentWorkItem uses this before the stock map (pod-defaults.ts).
+     *  Null for stock pods and user-created pods that haven't declared one. */
+    expectedOutput: text('expected_output', { mode: 'json' }).$type<ExpectedOutput | null>(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),

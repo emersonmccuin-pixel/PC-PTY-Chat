@@ -118,23 +118,46 @@ function unbind() {
 }
 
 function enforce() {
-  // Only enforce when CC tags the call as coming from inside a subagent.
-  if (!payload.agent_type) return;
-  const all = readBindings();
-  const ids = Object.keys(all);
-  if (!ids.length) return;
-  // Sequential subagents in the rig → most-recently-written binding wins.
-  const latest = all[ids[ids.length - 1]];
-  const wt = latest && latest.worktreePath;
-  if (!wt) return;
+  // Enforce for two cases:
+  //   (A) CC-tagged subagent turns (payload.agent_type is set — Task() spawns).
+  //   (B) Top-level workflow agent spawns: no agent_type in PreToolUse payload
+  //       (the hook fires in the agent's own turn, not inside a Task() call),
+  //       but PC_WORKFLOW_RUN_ID env var is set by dag-run-service.ts at spawn.
+  const isSubagent = !!payload.agent_type;
+  const isWorkflowAgent = !!process.env.PC_WORKFLOW_RUN_ID;
+  if (!isSubagent && !isWorkflowAgent) return;
+
+  // Resolve the bound worktree:
+  //   - Subagents: most-recently-written binding in current-task-binding.json
+  //     (written by path-guard 'bind' mode when the Task() prompt carries
+  //     a [worktree:] token).
+  //   - Workflow agents: from PC_WORKFLOW_WORKTREE env var (set at spawn time
+  //     by dag-run-service.ts). If not set (worktree:none workflow), skip.
+  let wt;
+  if (isSubagent) {
+    const all = readBindings();
+    const ids = Object.keys(all);
+    if (!ids.length) return;
+    // Sequential subagents in the rig → most-recently-written binding wins.
+    const latest = all[ids[ids.length - 1]];
+    wt = latest && latest.worktreePath;
+    if (!wt) return;
+  } else {
+    // isWorkflowAgent path
+    if (!process.env.PC_WORKFLOW_WORKTREE) return; // worktree:none workflow = no enforcement
+    wt = resolve(process.env.PC_WORKFLOW_WORKTREE);
+  }
 
   const tool = payload.tool_name || '';
 
   // Pods with cross-worktree read permission: Read/Glob/Grep exempt from
   // worktree binding. Edit/Write/Bash/NotebookEdit stay bound. Add pod names
   // here as they earn the exemption.
+  // For subagents: agent type comes from payload.agent_type.
+  // For workflow agents: agent name comes from PC_AGENT_NAME env var.
+  const agentName = payload.agent_type || process.env.PC_AGENT_NAME || '';
   const READ_ANYWHERE_PODS = new Set(['researcher']);
-  if (READ_ANYWHERE_PODS.has(payload.agent_type) && (tool === 'Read' || tool === 'Glob' || tool === 'Grep')) {
+  if (READ_ANYWHERE_PODS.has(agentName) && (tool === 'Read' || tool === 'Glob' || tool === 'Grep')) {
     return;
   }
 

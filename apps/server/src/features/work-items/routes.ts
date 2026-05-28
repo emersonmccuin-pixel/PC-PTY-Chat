@@ -6,6 +6,7 @@ import {
   getProjectById,
   listWorkItems as dbListWorkItems,
   reassignStage,
+  resolveAgentForDispatch,
   updateProjectStages,
   updateWorkItemFields as dbUpdateWorkItemFields,
 } from '@pc/db';
@@ -286,6 +287,10 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
       const workItem = createAgentWorkItem(input, {
         workItemService: runtime.workItemService(),
         getProject: () => runtime.project,
+        getPodRowExpectedOutput: (podName) => {
+          const row = resolveAgentForDispatch(podName, runtime.project.id);
+          return row?.expectedOutput ?? null;
+        },
       });
       return c.json({ ok: true, workItem });
     } catch (err) {

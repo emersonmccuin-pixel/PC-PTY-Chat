@@ -13,6 +13,7 @@
 // source of truth; the .md file is rendered fresh per spawn.
 
 import type { AgentEffort, AgentModel, AgentOutputDestination } from './agent.ts';
+import type { ExpectedOutput } from './work-item-contract.ts';
 import type { ULID } from './ulid.ts';
 
 export type PodScope = 'global' | 'project';
@@ -108,6 +109,11 @@ export interface PodAgentRow {
    *  rendered into the orchestrator's `{{AVAILABLE_AGENTS}}` variable. Null
    *  for most user-created pods (their `description` is enough). */
   dispatchGuidance: string | null;
+  /** Section 26 Issue #3 — default expected_output for this pod. When set,
+   *  createAgentWorkItem uses this before falling back to the stock map in
+   *  pod-defaults.ts. Null for stock pods (they use the hardcoded map) and
+   *  for user-created pods that haven't declared a default. */
+  expectedOutput: ExpectedOutput | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;

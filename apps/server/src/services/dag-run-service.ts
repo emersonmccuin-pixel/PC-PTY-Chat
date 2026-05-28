@@ -9,9 +9,19 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { Project, ULID, WorkflowV2 } from '@pc/domain';
+import type { AgentRunFailureCause, ExpectedOutput, Project, ULID, WorkflowV2 } from '@pc/domain';
 import { substituteRefs, type RefResolver, type ReviewDecision, type RunStatus } from '@pc/workflows';
-import { getWorkItem, moveWorkItemStage, workflowRunsV2Repo } from '@pc/db';
+import {
+  getWorkItem,
+  insertAgentRunRow,
+  markAgentRunTerminal,
+  moveWorkItemStage,
+  newId,
+  resolveAgentForDispatch,
+  setAssignedAgentRunId,
+  updateAgentRunStatus,
+  workflowRunsV2Repo,
+} from '@pc/db';
 import { spawnSubagent, type SubagentSpawnHandle, type SubagentSpawnRequest } from '@pc/runtime';
 import { DagExecutor, type DagExecutorDeps, type DagNodeContext, type NodeOutcome } from './dag-executor.ts';
 import { createAgentWorkItem } from './agent-work-item.ts';
@@ -156,6 +166,8 @@ export function makeExecutorDeps(
     ctx: DagNodeContext
   ): Promise<NodeOutcome> => {
     const task = render(node.task, ctx);
+
+    // Issue #3 — consult pod row's expected_output before the stock map.
     const childWi = createAgentWorkItem(
       {
         title: `${workflow.name} · ${node.id}`,
@@ -168,7 +180,14 @@ export function makeExecutorDeps(
         parentWorkItemId: run.workItemId,
         worktree: run.worktreePath,
       },
-      { workItemService: opts.workItemService, getProject: opts.getProject }
+      {
+        workItemService: opts.workItemService,
+        getProject: opts.getProject,
+        getPodRowExpectedOutput: (podName) => {
+          const row = resolveAgentForDispatch(podName, opts.projectId);
+          return row?.expectedOutput as ExpectedOutput | null | undefined;
+        },
+      }
     );
 
     const worktreeDir = run.worktreePath ?? opts.workspaceDir;
@@ -195,11 +214,69 @@ export function makeExecutorDeps(
       };
     }
 
+    // Issue #1(c) — thread worktree + run tokens into the initial prompt so
+    // the agent knows its boundaries. The [worktree:] token is informational
+    // (the real guard is path-guard.cjs enforce() activated by PC_WORKFLOW_RUN_ID).
     const initialInput =
+      `[workflowRunId: ${run.id}] [nodeId: ${node.id}] [worktree: ${worktreeDir}]\n\n` +
       `Your assignment is work item ${childWi.id}. Call pc_get_work_item({ id: "${childWi.id}" }) ` +
       `to read its body, acceptance criteria, and attachments, then begin. When finished, update the ` +
-      `work item with your report.`;
+      `work item with your report.\n\n` +
+      `IMPORTANT: You are running inside a workflow worktree. You MUST stay within ` +
+      `${worktreeDir}. Do NOT cd to the main repo or use absolute paths outside this ` +
+      `directory. All git commands (add, commit, push) must run within this worktree.`;
 
+    // Issue #2 — insert agent_runs row so the Running Agents rail can see this agent.
+    const agentRunId = newId() as ULID;
+    const wfCcSessionId = randomUUID();
+    const queuedAt = Date.now();
+    insertAgentRunRow({
+      id: agentRunId,
+      projectId: opts.projectId,
+      podName: node.agent,
+      dispatcherSessionId: pcSessionId,
+      ccSessionId: wfCcSessionId,
+      status: 'queued',
+      input: `[workflow: ${run.id}] [node: ${node.id}]\n${task}`,
+      parentWorkItemId: childWi.id as ULID,
+      parentInvokeDepth: 0,
+      continues: null,
+      queuedAt,
+    });
+    setAssignedAgentRunId(childWi.id as ULID, agentRunId);
+
+    // Helper to broadcast agent-run-changed in the Activity Panel shape.
+    const broadcastRun = (
+      status: 'queued' | 'running' | 'completed' | 'failed',
+      extra: { result?: string; failureReason?: string | null; failureCause?: AgentRunFailureCause | null; endedAt?: number } = {}
+    ): void => {
+      opts.broadcast({
+        type: 'agent-run-changed',
+        record: {
+          runId: agentRunId,
+          sessionId: wfCcSessionId,
+          agentName: node.agent,
+          model: 'opus',
+          projectId: opts.projectId,
+          parentWorkItemId: childWi.id as ULID,
+          dispatcherSessionId: pcSessionId,
+          wait: false,
+          worktreeDir,
+          startedAt: queuedAt,
+          status,
+          result: extra.result ?? '',
+          failureReason: extra.failureReason ?? null,
+          failureCause: extra.failureCause ?? null,
+          endedAt: extra.endedAt ?? null,
+        },
+      });
+    };
+    broadcastRun('queued');
+
+    // Issue #1(a) — set PC_WORKFLOW_RUN_ID + PC_WORKFLOW_WORKTREE so
+    // path-guard.cjs enforce() activates for this top-level spawn (no
+    // agent_type payload in PreToolUse for direct --agent spawns). Also
+    // pass PC_AGENT_NAME for the READ_ANYWHERE_PODS exemption check.
     const handle = spawner({
       agentName: podPrep.agentCliName,
       worktreeDir,
@@ -211,13 +288,26 @@ export function makeExecutorDeps(
       settingsPath: podPrep.settingsPath,
       settingSources: podPrep.settingSources,
       pluginDirs: [podPrep.pluginDir],
-      extraEnv: podPrep.extraEnv,
+      extraEnv: {
+        ...podPrep.extraEnv,
+        PC_WORKFLOW_RUN_ID: run.id,
+        PC_WORKFLOW_WORKTREE: worktreeDir,
+        PC_AGENT_NAME: node.agent,
+      },
     });
 
+    // Transition to 'running' immediately (spawner fires off the process).
+    updateAgentRunStatus({ id: agentRunId, status: 'running', spawnedAt: Date.now(), readyAt: Date.now() });
+    broadcastRun('running');
+
     let failureReason: string | null = null;
+    let spawnCause: string | null = null;
     try {
       const result = await handle.done;
-      if (result.kind === 'failure') failureReason = `${result.cause}: ${result.message}`;
+      if (result.kind === 'failure') {
+        failureReason = `${result.cause}: ${result.message}`;
+        spawnCause = result.cause;
+      }
     } finally {
       podPrep.cleanup();
     }
@@ -235,6 +325,31 @@ export function makeExecutorDeps(
       failureReason !== null ||
       outcome?.verificationStatus === 'failed' ||
       outcome?.workItemStatus === 'failed';
+
+    // Issue #2 — mark the agent_runs row terminal.
+    const completedAt = Date.now();
+    const terminalStatus = failed ? 'failed' : 'completed';
+    const mappedCause: AgentRunFailureCause | null = failed
+      ? (spawnCause === 'idle-timeout' ? 'idle-timeout'
+        : spawnCause === 'wall-clock-timeout' ? 'wall-clock-timeout'
+        : spawnCause === 'killed' ? 'cancelled'
+        : 'spawn-error')
+      : null;
+    markAgentRunTerminal({
+      id: agentRunId,
+      status: terminalStatus,
+      result: failed ? null : '',
+      failureCause: mappedCause,
+      failureReason: failureReason,
+      completedAt,
+    });
+    broadcastRun(terminalStatus, {
+      result: failed ? '' : '',
+      failureReason,
+      failureCause: mappedCause,
+      endedAt: completedAt,
+    });
+
     return {
       state: failed ? 'failed' : 'completed',
       workItemId: childWi.id as ULID,

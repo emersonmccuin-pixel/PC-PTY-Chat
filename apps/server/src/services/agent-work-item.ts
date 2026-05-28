@@ -49,6 +49,11 @@ export interface CreateAgentWorkItemInput {
 export interface CreateAgentWorkItemDeps {
   workItemService: WorkItemService;
   getProject: () => Project;
+  /** Optional: look up the pod row's expected_output by name (project-scope
+   *  first). When set, consulted between caller-supplied expectedOutput and
+   *  the stock map. Added for Issue #3 — agents.expected_output column.
+   *  Tests omit it; the stock-map fallback still works without it. */
+  getPodRowExpectedOutput?: (podName: string) => ExpectedOutput | null | undefined;
 }
 
 export class AgentWorkItemInputError extends Error {
@@ -79,15 +84,22 @@ export function createAgentWorkItem(
     );
   }
 
-  // Resolve expected_output: caller-supplied wins; otherwise pod default;
-  // otherwise hard-fail (the orchestrator must specify SOMETHING).
+  // Resolve expected_output: caller-supplied wins; pod row (DB) second;
+  // stock map third; hard-fail when all three are absent.
   let expectedOutput: ExpectedOutput | null;
   if (input.expectedOutput !== undefined) {
     assertExpectedOutputShape(input.expectedOutput);
     expectedOutput = input.expectedOutput;
   } else {
-    const def = getPodDefaultExpectedOutput(pod);
-    expectedOutput = def ?? null;
+    // Pod-row lookup (project-scope first, injected by callers with DB access).
+    const rowOutput = deps.getPodRowExpectedOutput?.(pod);
+    if (rowOutput != null) {
+      assertExpectedOutputShape(rowOutput);
+      expectedOutput = rowOutput;
+    } else {
+      const def = getPodDefaultExpectedOutput(pod);
+      expectedOutput = def ?? null;
+    }
   }
   if (expectedOutput === null) {
     throw new AgentWorkItemInputError(
