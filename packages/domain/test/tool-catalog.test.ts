@@ -36,13 +36,14 @@ test('every entry has a label + description', () => {
   }
 });
 
-test('CC built-ins are all 10 standard slugs', () => {
+test('CC built-ins are all known slugs granted by stock pods', () => {
   const builtins = TOOL_CATALOG.filter((e) => e.source === 'cc-builtin').map(
     (e) => e.slug,
   );
   assert.deepEqual(
     [...builtins].sort(),
     [
+      'AskUserQuestion',
       'Bash',
       'Edit',
       'Glob',
