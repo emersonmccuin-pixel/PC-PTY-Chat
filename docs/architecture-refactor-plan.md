@@ -6,11 +6,13 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
-Current status: Phase 1 server route extraction and Phase 2 MCP tool splitting
-are complete. `apps/server/src/index.ts` is boot/composition/static-serving only,
-and `packages/mcp/src/server.ts` now composes feature tool modules instead of
-owning inline `pc_*` handlers. The current cleanup retires the Quick Tasks
-surface that had been intentionally deferred during unmerged-work recovery.
+Current status: Phase 1 server route extraction, Phase 2 MCP tool splitting,
+and the Phase 3 web API client barrel split are complete.
+`apps/server/src/index.ts` is boot/composition/static-serving only,
+`packages/mcp/src/server.ts` now composes feature tool modules instead of
+owning inline `pc_*` handlers, and `apps/web/src/api/client.ts` composes
+feature clients. The remaining Phase 3 work is contract cleanup inside feature
+clients.
 Fresh-session handoff: [Refactor Session Handoff - 2026-05-28](./refactor-session-handoff-2026-05-28.md).
 
 Fresh Codex sessions should start from the prompt in the handoff file. Short
@@ -50,6 +52,9 @@ Implemented slices:
   send/interrupt/pending-prompt actions, input capability resolution, runtime
   thinking derivation, and the public prop contract are extracted from the
   top-level surface coordinator.
+- Web API client split: `apps/web/src/api/client.ts` is now a compatibility
+  barrel over feature clients, and work-item contracts/errors moved from
+  `features/work-items/client.ts` to `features/work-items/types.ts`.
 
 ## Executive Decision
 
@@ -422,9 +427,16 @@ Contract decision:
 - Preferred: create `packages/contracts` or make `packages/domain` explicitly browser-safe and import types from there.
 - Avoid long-term duplicate interfaces in `apps/web/src/api/client.ts`.
 
+Current status:
+
+- `apps/web/src/api/client.ts` is a compatibility barrel over feature clients.
+- No web source imports `@/api/client` directly.
+- Continue contract cleanup by moving feature types/errors out of client files
+  when the split is behavior-preserving.
+
 Definition of done:
 
-- `client.ts` becomes a barrel or disappears.
+- `client.ts` becomes a barrel or disappears. Done at the barrel level.
 - Each feature imports only its own client slice.
 - Web/server type drift is tested.
 

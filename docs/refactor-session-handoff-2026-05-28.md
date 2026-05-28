@@ -185,7 +185,22 @@ Do the next work as small behavior-preserving moves with typecheck after each
 slice. Good next slices:
 
 1. Leave `ChatSurface` as the thin coordinator unless a clear reuse seam appears.
-2. After `ChatSurface` stabilizes, continue Phase 3 API client split.
+2. Continue Phase 3 contract cleanup inside feature clients.
+
+## Phase 3 Client State
+
+`apps/web/src/api/client.ts` is already a compatibility barrel over feature
+clients, and no web source imports `@/api/client` directly.
+
+Contract cleanup started with:
+
+- `apps/web/src/features/work-items/types.ts`
+
+Good next slices:
+
+1. Move `features/agents/client.ts` contracts/errors to a nearby `types.ts`.
+2. Move `features/workflows/client.ts` contracts to a nearby `types.ts`.
+3. Keep each client module as HTTP methods plus compatibility re-exports.
 
 ## Guardrails
 
