@@ -40,6 +40,13 @@ First slice complete:
 - `packages/mcp/src/server.ts` now composes the extracted work-item tool definitions and delegates those nine handlers through `handleWorkItemTool`.
 - Added focused tests in `packages/mcp/test/work-items-tools.test.ts`.
 
+Second slice complete:
+
+- Added `packages/mcp/src/tools/agents.ts` for agent CRUD, agent knowledge, secrets, per-agent MCP servers, audit, and agent listing.
+- `packages/mcp/src/server.ts` now composes those agent tool definitions and delegates those handlers through `handleAgentTool`.
+- Moved shared pod-resolution, knowledge-name derivation, and slim agent-list response shaping into the agent tool module.
+- Added focused tests in `packages/mcp/test/agents-tools.test.ts`.
+
 ## Suggested First Slice
 
 Start with a small, coherent tool family:
