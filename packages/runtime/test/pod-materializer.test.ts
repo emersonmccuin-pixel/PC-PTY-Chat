@@ -141,10 +141,10 @@ test('renderAgentMd emits the canonical frontmatter shape', () => {
 });
 
 test('renderAgentMd appends the generated available-tools footer', () => {
-  const md = renderAgentMd(makeAgent(), ['Read', 'mcp__pc-rig__pc_log']);
+  const md = renderAgentMd(makeAgent(), ['Read', 'mcp__pc-rig__pc_get_work_item']);
   assert.ok(md.includes('## Available tools'));
   assert.ok(md.includes('- `Read` - Read text files from the project'));
-  assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line to the project'));
+  assert.ok(md.includes('- `mcp__pc-rig__pc_get_work_item` - Fetch a card'));
 });
 
 test('renderAgentMd suppresses the generated footer when the prompt places {{AVAILABLE_TOOLS}}', () => {
@@ -251,35 +251,35 @@ test('materializePod writes the assignment section into the .md when workItem is
 // --- expandToolWildcards ----------------------------------------------------
 
 test('expandToolWildcards passes non-wildcard entries through unchanged', () => {
-  const out = expandToolWildcards(['Read', 'Glob', 'mcp__pc-rig__pc_log'], {});
-  assert.deepEqual(out, ['Read', 'Glob', 'mcp__pc-rig__pc_log']);
+  const out = expandToolWildcards(['Read', 'Glob', 'mcp__pc-rig__pc_get_work_item'], {});
+  assert.deepEqual(out, ['Read', 'Glob', 'mcp__pc-rig__pc_get_work_item']);
 });
 
 test('expandToolWildcards expands mcp__<server>__* against the catalog', () => {
   const out = expandToolWildcards(['Read', 'mcp__pc-rig__*'], {
-    'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'],
+    'pc-rig': ['mcp__pc-rig__pc_get_work_item', 'mcp__pc-rig__pc_knowledge_read'],
   });
   assert.deepEqual(out, [
     'Read',
-    'mcp__pc-rig__pc_log',
+    'mcp__pc-rig__pc_get_work_item',
     'mcp__pc-rig__pc_knowledge_read',
   ]);
 });
 
 test('expandToolWildcards dedupes overlapping wildcard + explicit entries', () => {
   const out = expandToolWildcards(
-    ['mcp__pc-rig__pc_log', 'mcp__pc-rig__*', 'mcp__pc-rig__pc_log'],
-    { 'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'] },
+    ['mcp__pc-rig__pc_get_work_item', 'mcp__pc-rig__*', 'mcp__pc-rig__pc_get_work_item'],
+    { 'pc-rig': ['mcp__pc-rig__pc_get_work_item', 'mcp__pc-rig__pc_knowledge_read'] },
   );
   assert.deepEqual(out, [
-    'mcp__pc-rig__pc_log',
+    'mcp__pc-rig__pc_get_work_item',
     'mcp__pc-rig__pc_knowledge_read',
   ]);
 });
 
 test('expandToolWildcards throws on unknown server', () => {
   assert.throws(
-    () => expandToolWildcards(['mcp__gmail__*'], { 'pc-rig': ['mcp__pc-rig__pc_log'] }),
+    () => expandToolWildcards(['mcp__gmail__*'], { 'pc-rig': ['mcp__pc-rig__pc_get_work_item'] }),
     /unknown MCP server "gmail"/,
   );
 });
@@ -388,7 +388,7 @@ test('materializePod filters mcp.json to referenced servers when filterMcpToRefe
       agent: makeAgent({
         tools: [
           'Read', 'Glob', 'Grep',
-          'mcp__pc-rig__pc_log',
+          'mcp__pc-rig__pc_get_work_item',
           'mcp__jira__create_issue',
         ],
       }),
@@ -431,19 +431,19 @@ test('materializePod expands mcp__pc-rig__* against the supplied catalog', () =>
       worktreeDir: dirs.worktree,
       scratchDir: dirs.scratch,
       mcpToolCatalog: {
-        'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'],
+        'pc-rig': ['mcp__pc-rig__pc_get_work_item', 'mcp__pc-rig__pc_knowledge_read'],
       },
     });
     // Section 26: required work-item tools merge in after wildcard expansion.
     const md = readFileSync(result.agentMdPath, 'utf8');
     const expectedTools = mergeRequiredAgentTools([
       'Read',
-      'mcp__pc-rig__pc_log',
+      'mcp__pc-rig__pc_get_work_item',
       'mcp__pc-rig__pc_knowledge_read',
     ]).join(', ');
     assert.match(md, new RegExp(`\\ntools: ${expectedTools}\\n`));
     assert.ok(md.includes('## Available tools'));
-    assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line'));
+    assert.ok(md.includes('- `mcp__pc-rig__pc_get_work_item` - Fetch a card'));
     assert.ok(!md.includes('- `mcp__pc-rig__*`'));
   } finally {
     dirs.cleanup();
@@ -462,7 +462,7 @@ test('materializePod throws when a wildcard targets an unknown server', () => {
           bundle,
           worktreeDir: dirs.worktree,
           scratchDir: dirs.scratch,
-          mcpToolCatalog: { 'pc-rig': ['mcp__pc-rig__pc_log'] },
+          mcpToolCatalog: { 'pc-rig': ['mcp__pc-rig__pc_get_work_item'] },
         }),
       /unknown MCP server "gmail"/,
     );
@@ -628,14 +628,14 @@ test('materializePod renders AVAILABLE_TOOLS from final expanded tools, overridi
       worktreeDir: dirs.worktree,
       scratchDir: dirs.scratch,
       mcpToolCatalog: {
-        'pc-rig': ['mcp__pc-rig__pc_log', 'mcp__pc-rig__pc_knowledge_read'],
+        'pc-rig': ['mcp__pc-rig__pc_get_work_item', 'mcp__pc-rig__pc_knowledge_read'],
       },
       variables: { AVAILABLE_TOOLS: '- `stale` - should not render' },
     });
     const md = readFileSync(result.agentMdPath, 'utf8');
     assert.ok(md.includes('- `Read` - Read text files from the project'));
-    assert.ok(md.includes('- `mcp__pc-rig__pc_log` - Append a line'));
     assert.ok(md.includes('- `mcp__pc-rig__pc_get_work_item` - Fetch a card'));
+    assert.ok(md.includes('- `mcp__pc-rig__pc_knowledge_read` - Runtime: pull'));
     assert.ok(!md.includes('mcp__pc-rig__*'));
     assert.ok(!md.includes('stale'));
     assert.ok(!md.includes('{{AVAILABLE_TOOLS}}'));
@@ -652,7 +652,7 @@ test('materializePod suppresses the footer when the agent lacks pc_knowledge_rea
   try {
     const bundle = makeBundle({
       agent: makeAgent({
-        tools: ['Read', 'Glob', 'Grep', 'mcp__pc-rig__pc_log'], // no _knowledge_read
+        tools: ['Read', 'Glob', 'Grep', 'mcp__pc-rig__pc_get_work_item'], // no _knowledge_read
       }),
       knowledge: [makeKnowledge('agent-roster', 'roster content')],
     });

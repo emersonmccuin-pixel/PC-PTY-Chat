@@ -121,7 +121,7 @@ function ScalarSettings({
           type="text"
           value={draft.tools}
           onChange={(e) => onChange({ tools: e.target.value })}
-          placeholder="Read, Glob, Grep, mcp__pc-rig__pc_log"
+          placeholder="Read, Glob, Grep, mcp__pc-rig__pc_get_work_item"
           className="w-full border border-border bg-background px-2 py-1 font-mono text-xs text-foreground outline-none focus:border-primary"
         />
       </Field>

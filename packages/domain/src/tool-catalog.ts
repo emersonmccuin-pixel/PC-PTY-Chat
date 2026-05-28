@@ -65,12 +65,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     source: 'cc-builtin',
   },
   {
-    slug: 'NotebookEdit',
-    label: 'Edit Jupyter notebooks',
-    description: 'Modify .ipynb files cell-by-cell.',
-    source: 'cc-builtin',
-  },
-  {
     slug: 'Task',
     label: 'Spawn sub-agents (Task tool)',
     description: "Use CC's built-in Task tool to spawn sub-agents.",
@@ -90,30 +84,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   },
 
   // --- pc-rig (PC's own MCP server) ---------------------------------------
-  {
-    slug: 'mcp__pc-rig__pc_log',
-    label: 'Log to project (PC)',
-    description: "Append a line to the project's MCP log.",
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_create_worktree',
-    label: 'Create git worktree',
-    description: "Open a sibling git worktree off the project's repo.",
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_list_worktrees',
-    label: 'List git worktrees',
-    description: 'List all worktrees attached to the project.',
-    source: 'pc-rig',
-  },
-  {
-    slug: 'mcp__pc-rig__pc_destroy_worktree',
-    label: 'Remove git worktree',
-    description: 'Tear down a worktree by name or path.',
-    source: 'pc-rig',
-  },
   {
     slug: 'mcp__pc-rig__pc_create_work_item',
     label: 'Create work item',
