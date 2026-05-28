@@ -1,11 +1,11 @@
 # Unmerged Work Recovery - 2026-05-28
 
-Current base: local `dev` at `e8cdf86` (`Merge recovered MCP tool pruning`).
+Current base: local `dev` after cleanup on 2026-05-28.
 
-This document is the recovery map for all known work that is not currently in
-`dev`. The important point: the work is not gone. It is scattered across local
-branches, old-history worktrees, and stashes. Do not delete anything listed here
-until it is either ported, explicitly abandoned, or backed up elsewhere.
+This document is the recovery map for work that was not in `dev` at the start
+of cleanup. The important point: the work is not gone. The useful pieces were
+ported or verified as already present, and the old source tips are preserved by
+backup tags.
 
 ## Safety Snapshot
 
@@ -27,6 +27,24 @@ Backup tags were created for every important unmerged tip:
 - `backup/2026-05-28/stash-abilities-tray`
 
 These tags are non-destructive labels. They do not merge or modify app files.
+
+## Cleanup Completed
+
+Completed after recovery:
+
+- Local source branches for superseded work were deleted.
+- Duplicate `wf-*` workflow worktrees were removed.
+- External recovery worktrees were removed.
+- Stashes were dropped after confirming their backup tags matched exactly.
+- `docs/app-structure-overview.html` was kept and committed as documentation.
+
+Remaining local branches:
+
+- `dev` — active clean foundation.
+- `main` — retained normal local branch.
+
+Recovery source is now the `backup/2026-05-28/*` tag set, not loose branch or
+stash names.
 
 ## What Is Already In Dev
 
@@ -116,7 +134,7 @@ Status:
   `packages/runtime/test/path-resolver.test.ts`.
 - `pnpm --filter @pc/runtime test` passed: 252/252 tests.
 
-Recommended action: no port needed; keep branch only until cleanup.
+Recommended action: done; source branch deleted after backup.
 
 ### 2. Refactor Work To Continue
 
@@ -140,7 +158,7 @@ Status:
 - Do not merge the old branches directly.
 - Candidate branch passed full CI.
 
-Recommended action: keep old branches only as source references until cleanup.
+Recommended action: done; old branches deleted after recovery.
 
 ### 3. MCP Tool Pruning / Quick Tasks Decision
 
@@ -227,9 +245,7 @@ Audited as present in current `dev`:
 - `move-work-item`, `$root.output`, and existing-card stage-trigger roots in
   workflow runtime/domain code.
 
-Recommended action: do not port these old workflow branches. Treat them as
-source-history backups only. Cleanup can happen after the user confirms no
-documentation-only entries from those branches matter.
+Recommended action: done; old branches/worktrees deleted after backup.
 
 ### 5. Runtime / Desktop / Account Work
 
@@ -253,9 +269,9 @@ Audited as present in current `dev`:
 - Workflow "agentic build" runtime pieces: workspace-shaping MCP tools,
   `move-work-item`, `$root.output`, and stage-triggered existing-card roots.
 
-Recommended action: do not merge these branches wholesale. Preserve as backups
-until branch cleanup. If desktop packaging docs/CI are still desired, audit
-those separately as a narrow documentation/CI task.
+Recommended action: done; old branches deleted after backup. If desktop
+packaging docs/CI are still desired, audit those separately as a narrow
+documentation/CI task.
 
 ### 6. Stashed Work
 
@@ -284,23 +300,22 @@ Status:
 - The remaining `stash@{1}` docs are dormant Abilities planning notes, not
   required app code.
 
-Recommended action: keep both stashes until final cleanup, but do not port
-them wholesale.
+Recommended action: done; stashes dropped after backup tags were verified.
 
 ### 7. Dirty Worktrees / Loose Files
 
 Main worktree:
 
-- untracked `docs/app-structure-overview.html`
+- clean after `docs/app-structure-overview.html` was committed.
 
-Workflow worktree:
+Workflow worktrees:
 
-- `wf-DKSQTERZ` has uncommitted deletions of old workflow demo YAML files.
+- removed.
 
 Recommended action:
 
-- leave `docs/app-structure-overview.html` alone until the user decides whether
-  it is useful documentation.
+- `docs/app-structure-overview.html` was committed because it is useful
+  app-structure documentation.
 - `wf-DKSQTERZ` deletes are superseded: current `dev` already has those old
   `.project-companion/workflows` and `templates/.project-companion/workflows`
   YAML demo files removed.
@@ -318,11 +333,12 @@ Recommended action:
    code. Do not port old workflow branches.
 6. Runtime/account audit: current `dev` already contains the important runtime
    and account code. Only desktop packaging docs/CI remain worth a narrow check.
-7. Only after recovery decisions are made, delete duplicate worktree branches.
+7. Delete duplicate worktree branches. Done.
 
-## Branches Not Safe To Merge Wholesale
+## Deleted Source Branches
 
-These are useful as source material only:
+These were useful as source material only and have been deleted locally. Use
+the backup tags above if historical recovery is needed:
 
 - `codex/mcp-tool-split-rescue`
 - `codex/phase4-chat-surface`
