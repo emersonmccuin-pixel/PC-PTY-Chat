@@ -13,7 +13,9 @@ export function registerDevControlRoutes(app: Hono, deps: DevControlDeps): void 
   /** GET /api/dev/status — active-agent count + whether a restart is safe. */
   app.get('/api/dev/status', (c) => {
     const activeAgents = getActiveRunRegistry().list().length;
-    return c.json({ activeAgents, canRestart: activeAgents === 0 });
+    // TEMP reload-test marker — bump the number and hit restart to confirm the
+    // supervisor respawn picks up BE source changes. Remove after testing.
+    return c.json({ activeAgents, canRestart: activeAgents === 0, marker: 'BE-RELOAD-TEST-1' });
   });
 
   /**
