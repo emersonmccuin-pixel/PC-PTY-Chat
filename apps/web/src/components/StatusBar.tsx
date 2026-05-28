@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { settingsApi } from '@/features/settings/client';
 import type { OrchestratorRuntimeHealth, OrchestratorRuntimeSnapshot, OrchestratorRuntimeWaitPoint } from '@/features/runtime/client';
 import type { WsDiagnostics, WsStatus } from '@/hooks/use-project-ws';
+import { useMcpPanel } from '@/store/mcp-panel';
 
 // Re-export so other call sites still importing { UsageTotals } from this
 // module compile. The canonical home is now @/store/orchestrator-telemetry.
@@ -149,7 +150,8 @@ export function StatusBar({
   runtimeSnapshot,
 }: StatusBarProps) {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
-  const [showMcp, setShowMcp] = useState(false);
+  const showMcp = useMcpPanel((s) => s.open);
+  const setShowMcp = useMcpPanel((s) => s.setOpen);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const pillRef = useRef<HTMLButtonElement | null>(null);
   const effectiveRuntimeHealth = runtimeSnapshot?.health ?? runtimeHealth ?? null;
@@ -200,7 +202,7 @@ export function StatusBar({
         <button
           ref={pillRef}
           type="button"
-          onClick={() => setShowMcp((s) => !s)}
+          onClick={() => setShowMcp(!showMcp)}
           aria-expanded={showMcp}
           aria-label="MCP server status — click for details"
           className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-muted ${

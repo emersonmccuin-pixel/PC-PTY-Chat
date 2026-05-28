@@ -1,6 +1,6 @@
 # Unmerged Work Recovery - 2026-05-28
 
-Current base: local `dev` at `4a3cfe1` (`Merge refactor phases 1 and 2 into dev`).
+Current base: local `dev` at `e8cdf86` (`Merge recovered MCP tool pruning`).
 
 This document is the recovery map for all known work that is not currently in
 `dev`. The important point: the work is not gone. It is scattered across local
@@ -38,10 +38,37 @@ Merged into `dev`:
 - Orchestrator now uses a curated tool allowlist rather than the broad
   `mcp__pc-rig__*` wildcard.
 - Pod materialization renders tool docs from the final materialized allowlist.
+- Phase 3/4 web refactor recovery:
+  - split web API client by feature
+  - decomposed `ChatSurface` core helpers
+  - extracted `ChatSurface` timeline container
+- Safe MCP/tool pruning recovery:
+  - removed `pc_log`, MCP worktree tools, and `NotebookEdit` from the shared
+    MCP/catalog surface
+  - removed `pc_log` grants/prompts from stock pods
+  - tightened the orchestrator tool surface so agent-edit and knowledge tools
+    live in the Agents tab / agent-designer path
+  - kept Quick Tasks intentionally
+- Workflow product work that old branches still show as unmerged but current
+  `dev` already contains in newer split modules:
+  - `pc_fire_workflow` and `pc_complete_node`
+  - workflow create/update/delete/get MCP tools
+  - stage and field-schema replacement MCP tools
+  - Raw YAML editor tab with save/refetch behavior
+  - workflow cross-tab navigation reliability fix
+  - inline workflow run detail
+  - `move-work-item` workflow node, `$root.output` refs, and stage-triggered
+    existing-card run roots
+- Runtime/account work that old branches still show as unmerged but current
+  `dev` already contains:
+  - Claude account/profile override setting and effective-profile route
+  - remote-control readiness detection
+  - orchestrator runtime health snapshots
+  - session-bundle runtime file relocation
 
 ## Unmerged Groups
 
-### Recovered Candidate Branch
+### Recovered Refactor Branch
 
 Branch:
 
@@ -58,6 +85,10 @@ Plain English:
 This branch recovers the next refactor slice on top of the clean `dev` base.
 It keeps the useful refactor work and avoids reviving the unrelated desktop
 updates / unread-project hook that was mixed into the old branch history.
+
+Status:
+
+- Merged into `dev`.
 
 Verification:
 
@@ -109,8 +140,7 @@ Status:
 - Do not merge the old branches directly.
 - Candidate branch passed full CI.
 
-Recommended action: review `recovery/phase3-client-split`; if accepted, merge
-that branch into `dev` rather than any of the old source branches.
+Recommended action: keep old branches only as source references until cleanup.
 
 ### 3. MCP Tool Pruning / Quick Tasks Decision
 
@@ -145,7 +175,8 @@ Recommended action: do not merge the branch. Decide separately:
 
 Status:
 
-- Safe tool pruning was ported onto `recovery/tool-pruning`.
+- Safe tool pruning was ported onto `recovery/tool-pruning` and merged into
+  `dev`.
 - Quick Tasks was deliberately kept.
 - Focus / initiative work from the old branch was not ported.
 - Removed from shared MCP/catalog surface: `pc_log`, MCP worktree tools,
@@ -177,25 +208,28 @@ Branches/worktrees:
 
 Plain English:
 
-This is a large chunk of useful workflow app/product work, but it is based on
-the old mainline history, not the new clean `dev`. Git cannot merge it safely
-as a normal branch.
+This looks alarming because many branches are still unmerged, but the main
+feature work has already reached current `dev` in newer split modules. Git
+still calls the old branches "unmerged" because they came from unrelated/old
+history and were not merged by identical commit ids.
 
-Likely useful features inside this family include:
+Audited as present in current `dev`:
 
-- DB-backed workflow routes
-- workflow-builder prompt overhaul
-- workflow-builder draft/publish flow
-- Workflows list/detail UI improvements
-- Raw YAML editor tab
-- workflow run viewer changes
-- workflow route smoke tests
-- MCP tools for firing workflows and completing review nodes
-- smaller UI reliability fixes around workflow navigation and saving
+- `pc_fire_workflow` and `pc_complete_node` in
+  `packages/mcp/src/tools/workflows.ts`.
+- Workflow MCP tool tests in `packages/mcp/test/workflows-tools.test.ts`.
+- Orchestrator prompt/allowlist references to `pc_fire_workflow` and
+  `pc_complete_node`.
+- Raw YAML tab, save refetch, and nav-directive race fix in
+  `apps/web/src/components/WorkflowsList.tsx`.
+- Workflow authoring tools, stage/field-schema replacement tools, and catalog
+  drift coverage.
+- `move-work-item`, `$root.output`, and existing-card stage-trigger roots in
+  workflow runtime/domain code.
 
-Recommended action: treat this as a product salvage queue. Port features one at
-a time after the refactor base is stable, starting with backend API contracts
-and tests, then UI.
+Recommended action: do not port these old workflow branches. Treat them as
+source-history backups only. Cleanup can happen after the user confirms no
+documentation-only entries from those branches matter.
 
 ### 5. Runtime / Desktop / Account Work
 
@@ -206,22 +240,22 @@ Branches:
 
 Plain English:
 
-This is a huge old-history line. It appears to contain valuable runtime and
-desktop work, including:
+This is a huge old-history line. The important product work has mostly already
+reached current `dev` in newer/refactored form. The branch still appears
+unmerged because its history is not connected cleanly to `dev`.
 
-- relocating Claude runtime files into session bundles
-- detecting remote-control readiness
-- hardening orchestrator chat sessions
-- runtime health snapshots
-- account/profile override work
-- desktop packaging/build work
-- cleanup around runtime sessions and git errors
-- usage cap display fixes
-- agentic build pipeline work
+Audited as present in current `dev`:
 
-Recommended action: preserve and audit separately. Do not merge wholesale.
-Break it into small recovery branches from current `dev`, starting with runtime
-relocation / readiness if those are still product-critical.
+- Claude account/profile override setting, UI, and effective-profile route.
+- Remote-control readiness detection and tests.
+- Runtime health snapshots and tests.
+- Session-bundle relocation support.
+- Workflow "agentic build" runtime pieces: workspace-shaping MCP tools,
+  `move-work-item`, `$root.output`, and stage-triggered existing-card roots.
+
+Recommended action: do not merge these branches wholesale. Preserve as backups
+until branch cleanup. If desktop packaging docs/CI are still desired, audit
+those separately as a narrow documentation/CI task.
 
 ### 6. Stashed Work
 
@@ -239,7 +273,19 @@ domain exports, and tests.
 `stash@{1}` is dormant abilities-tray scaffolding. It only touches three files
 and should stay parked unless that idea becomes active again.
 
-Recommended action: keep both parked for now.
+Status:
+
+- `stash@{0}` is superseded by current `dev`: stock identity now lives on
+  `agents.origin`, Caisson is a stock pod, reset-to-default uses `origin`, and
+  usage cap reset parsing already accepts epoch-seconds.
+- The useful code piece from `stash@{1}` has been recovered: App Settings and
+  MCP detail panel state now use the existing Zustand stores, so the
+  already-present ability hooks target the real UI state.
+- The remaining `stash@{1}` docs are dormant Abilities planning notes, not
+  required app code.
+
+Recommended action: keep both stashes until final cleanup, but do not port
+them wholesale.
 
 ### 7. Dirty Worktrees / Loose Files
 
@@ -262,12 +308,14 @@ Recommended action:
 1. Stabilize and keep current `dev` as the new base.
 2. Cherry-pick the tiny path resolver test fix. Done: already present.
 3. Port the Phase 3/4 refactor work onto a fresh branch from current `dev`.
-   Done: `recovery/phase3-client-split`.
+   Done and merged: `recovery/phase3-client-split`.
 4. Make a product decision on Quick Tasks, then port the chosen MCP/tool pruning.
-   Tool pruning is done on `recovery/tool-pruning`; Quick Tasks deletion remains
-   a separate product decision.
-5. Audit workflow product work and recover it feature-by-feature.
-6. Audit runtime/account/desktop work and recover it feature-by-feature.
+   Done and merged: `recovery/tool-pruning`; Quick Tasks deletion remains a
+   separate product decision.
+5. Workflow product work audit: current `dev` already contains the important
+   code. Do not port old workflow branches.
+6. Runtime/account audit: current `dev` already contains the important runtime
+   and account code. Only desktop packaging docs/CI remain worth a narrow check.
 7. Only after recovery decisions are made, delete duplicate worktree branches.
 
 ## Branches Not Safe To Merge Wholesale
