@@ -2,10 +2,11 @@
 
 Prepared: 2026-05-27
 
-Phase 1 server route extraction is complete. The next boundary pass is
-`packages/mcp/src/server.ts`, currently about 3,546 lines with the tool
-definitions, HTTP helpers, status heartbeat, and every `pc_*` handler in one
-file.
+Phase 1 server route extraction is complete. Phase 2 MCP tool splitting is also
+complete: `packages/mcp/src/server.ts` now owns the MCP SDK shell, status
+heartbeat, shared context construction, tool list composition, and handler
+dispatch, while feature modules own the public `pc_*` tool definitions and
+handlers.
 
 ## Goal
 
@@ -72,6 +73,9 @@ Final cleanup complete:
 
 - Moved `pc_log_bug` into the work-item tool module, since it creates a cross-project bug work item and uses the same rich-link response path.
 - `packages/mcp/src/server.ts` no longer owns any inline `pc_*` tool definitions or handler cases; it now composes tool constants and delegates calls to feature handlers.
+- Removed the deferred Quick Tasks exception from the root server. The retired
+  `pc_create_quick_task`, `pc_list_quick_tasks`, and
+  `pc_list_quick_tasks_for_project` tools are no longer part of the MCP surface.
 
 ## Suggested First Slice
 

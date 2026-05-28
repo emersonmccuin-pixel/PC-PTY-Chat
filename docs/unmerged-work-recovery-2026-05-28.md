@@ -66,7 +66,8 @@ Merged into `dev`:
   - removed `pc_log` grants/prompts from stock pods
   - tightened the orchestrator tool surface so agent-edit and knowledge tools
     live in the Agents tab / agent-designer path
-  - kept Quick Tasks intentionally
+  - kept Quick Tasks intentionally during recovery; the later cleanup now
+    retires that product surface explicitly
 - Workflow product work that old branches still show as unmerged but current
   `dev` already contains in newer split modules:
   - `pc_fire_workflow` and `pc_complete_node`
@@ -186,21 +187,25 @@ product deletion. It:
 - also carries Focus / initiative work that the user indicated should be
   abandoned or restarted fresh
 
-Recommended action: do not merge the branch. Decide separately:
-
-- keep Quick Tasks and only prune the orchestrator/MCP tool surface, or
-- fully remove Quick Tasks as that commit did.
+Recommended action: do not merge the branch. The product decision has now been
+made separately: retire Quick Tasks and port only the relevant deletion pieces
+onto current `dev`.
 
 Status:
 
 - Safe tool pruning was ported onto `recovery/tool-pruning` and merged into
   `dev`.
-- Quick Tasks was deliberately kept.
+- Quick Tasks was deliberately kept during the first recovery pass, then removed
+  in the current cleanup as an explicit product decision.
 - Focus / initiative work from the old branch was not ported.
 - Removed from shared MCP/catalog surface: `pc_log`, MCP worktree tools,
   and `NotebookEdit`.
 - Removed from stock pods: `pc_log` prompts/tool grants.
 - Removed from orchestrator: agent edit tools and knowledge-management tools.
+- Removed in the current cleanup: Quick Tasks routes, seed service, MCP tools,
+  catalog entries, special runtime/project branching, tagged work-item plumbing,
+  stock-pod prompt grants, and live schema references. Historical migrations are
+  preserved, and a removal migration cleans live data/indexes.
 
 Verification:
 
@@ -210,8 +215,9 @@ Verification:
 - `pnpm --filter @pc/server test` passed.
 - `pnpm --filter @pc/web typecheck` passed.
 
-Remaining decision: whether Quick Tasks should be deleted as a product surface.
-That should be a separate explicit change if desired.
+Remaining decision: none for Quick Tasks. The old Focus / initiative work is
+still intentionally abandoned and should be restarted fresh only if it becomes a
+new product direction.
 
 ### 4. Old-History Workflow Product Work
 
@@ -327,8 +333,8 @@ Recommended action:
 3. Port the Phase 3/4 refactor work onto a fresh branch from current `dev`.
    Done and merged: `recovery/phase3-client-split`.
 4. Make a product decision on Quick Tasks, then port the chosen MCP/tool pruning.
-   Done and merged: `recovery/tool-pruning`; Quick Tasks deletion remains a
-   separate product decision.
+   Done: `recovery/tool-pruning` was merged, and the current cleanup separately
+   removes Quick Tasks without reviving the abandoned Focus / initiative work.
 5. Workflow product work audit: current `dev` already contains the important
    code. Do not port old workflow branches.
 6. Runtime/account audit: current `dev` already contains the important runtime

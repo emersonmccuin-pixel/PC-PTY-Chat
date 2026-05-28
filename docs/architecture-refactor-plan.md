@@ -6,9 +6,12 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
-Current status: Phase 1 server route extraction is complete. `apps/server/src/index.ts`
-is now boot/composition/static-serving only; Phase 2 MCP tool-module splitting is
-the next planned boundary pass.
+Current status: Phase 1 server route extraction and Phase 2 MCP tool splitting
+are complete. `apps/server/src/index.ts` is boot/composition/static-serving only,
+and `packages/mcp/src/server.ts` now composes feature tool modules instead of
+owning inline `pc_*` handlers. The current cleanup retires the Quick Tasks
+surface that had been intentionally deferred during unmerged-work recovery.
+Fresh-session handoff: [Refactor Session Handoff - 2026-05-28](./refactor-session-handoff-2026-05-28.md).
 
 Implemented slices:
 
@@ -35,6 +38,9 @@ Implemented slices:
 - MCP bridge routes for heartbeat status and internal handshake routing extracted into `apps/server/src/features/mcp-bridge/routes.ts`, with focused tests for heartbeat freshness, corrupt/missing files, and agent/workflow/orchestrator handshake priority.
 - Chat bridge routes for ask interception, subagent transcript reads, and channel test-send proxying extracted into `apps/server/src/features/chat-bridges/routes.ts`, with focused tests for pending ask resolution/timeouts, transcript path containment/JSONL parsing, and channel-send envelopes.
 - MCP/tool catalog drift hardening: the pod allowlist drift test now covers every stock pod plus the orchestrator, `pc_node_failed` is re-registered, and the workflow/tool catalog entries needed by current pod allowlists are present.
+- Quick Tasks product-surface removal: routes, seed service, MCP tools, catalog metadata, stock-pod prompt grants, special project/runtime branching, and tagged work-item plumbing were removed; only historical migrations and the removal migration retain references.
+- Agent transcript backfill: `GET /api/projects/:projectId/agent-runs/:runId/events` replays the agent's provider JSONL, and the Activity transcript modal merges that backfill with live `agent-jsonl-event` WebSocket envelopes.
+- Runtime input capability contract: `ChatSurface` accepts a single capability object for composer input, send, interrupt, terminal input, and terminal resize; orchestrator and transient modals now feed terminal writability from runtime state rather than ad hoc composer booleans.
 
 ## Executive Decision
 
@@ -146,11 +152,12 @@ Root issue:
 
 Chat send and terminal raw input follow different state rules. Chat composer can be disabled during `spawning`, but terminal input remains writable as soon as a PTY object exists.
 
-Primary fix:
+Current status:
 
 - Add a runtime capability contract: `canAcceptChatInput`, `canAcceptTerminalInput`, `canResize`, `canInterrupt`, `stateLabel`.
-- Feed both composer and xterm from that same contract.
-- For transient sessions, default `canAcceptTerminalInput` to false until the current session reports `ready`. Initial modal gating is implemented through `terminalWritable`; the fuller named capability object is still future boundary work.
+- Feed both composer and xterm from that same contract. Done for `ChatSurface`, orchestrator, agent-designer, workflow-builder, and setup-wizard.
+- For transient sessions, default `canAcceptTerminalInput` to false until the current session reports `ready`. Done.
+- For orchestrator sessions, raw terminal input is allowed only when the runtime health is `ready`; queued/spawning/busy states can still use the chat composer queue path.
 
 ### 3. Transient modal sessions can miss the `ready` state
 
@@ -189,42 +196,30 @@ Primary fix:
 - Use the start response as an initial snapshot in the modal state adapter.
 - Stop duplicating the adapter logic across `AgentDesignerChat`, `WorkflowBuilderChat`, and `SetupWizardModal`.
 
-### 4. Agent tools and tool catalogs are drifting
+### 4. Agent tools and tool catalogs were drifting
 
-Evidence:
+Original evidence:
 
-- `packages/mcp/src/server.ts` currently defines 55 `pc_*` tools in one `TOOLS` array.
-- `packages/domain/src/tool-catalog.ts` has 47 `pc-rig` catalog entries.
-- Static comparison shows these MCP tools missing from the domain catalog:
-  - `mcp__pc-rig__pc_complete_node`
-  - `mcp__pc-rig__pc_create_workflow`
-  - `mcp__pc-rig__pc_delete_workflow`
-  - `mcp__pc-rig__pc_fire_workflow`
-  - `mcp__pc-rig__pc_get_workflow`
-  - `mcp__pc-rig__pc_replace_field_schemas`
-  - `mcp__pc-rig__pc_replace_stages`
-  - `mcp__pc-rig__pc_update_workflow`
-- Comments in `tool-catalog.ts` say some workflow tools were removed, but `packages/mcp/src/server.ts` still defines and handles them.
-- `apps/server/test/pod-tool-catalog-drift.test.ts` expects the workspace-shaping tools to exist in pod allowlists.
+- `packages/mcp/src/server.ts` defined every `pc_*` tool in one `TOOLS` array.
+- `packages/domain/src/tool-catalog.ts` had fewer `pc-rig` catalog entries than
+  the MCP server exposed.
+- Workflow tools and pod allowlists had already diverged once.
 
-Root issue:
+Current status:
 
-There are multiple sources of truth for:
+- MCP tools are split into feature modules under `packages/mcp/src/tools`.
+- `packages/mcp/src/server.ts` composes tool definitions and delegates calls to
+  feature handlers.
+- `apps/server/test/pod-tool-catalog-drift.test.ts` now checks every stock pod,
+  the orchestrator, and every public `pc-rig` MCP tool against catalog metadata.
 
-- Tool existence
-- Tool descriptions
-- Tool allowlists
-- Which tools are deprecated
-- Which tools are safe for which pod
+Remaining work:
 
-Primary fix:
+- Decide whether tool lifecycle should become explicit metadata
+  (`active | deprecated | internal | removed`) instead of being inferred by
+  catalog presence and allowlists.
 
-- Split MCP tools into modules by feature.
-- Derive all user-facing tool catalogs from the actual MCP tool modules.
-- Add a failing drift test: every `pc_*` tool must have catalog metadata or an explicit `hidden/deprecated/internal` flag.
-- Add a tool lifecycle field: `active | deprecated | internal | removed`.
-
-### 5. Agent run lifecycle is better than the UI makes it feel
+### 5. Agent run lifecycle is better than the UI made it feel
 
 Evidence:
 
@@ -232,20 +227,21 @@ Evidence:
   `queued -> spawning -> running <-> paused -> completed | failed | cancelled`
 - `apps/server/src/services/agent-run-factory.ts` persists transitions and broadcasts `agent-run-changed`.
 - Activity panel filters active/terminal rows through `useProjectAgentRuns()`.
-- `AgentTranscriptModal` only shows live JSONL events received after opening; it explicitly does not backfill prior events.
+- Previously, `AgentTranscriptModal` only showed live JSONL events received after opening.
 
-Likely user-facing gap:
+Current status:
 
-The runtime may be doing the right thing while the UI lacks replay/backfill and unified diagnostics. A running agent can feel invisible or stuck if the modal opens late or misses state events.
+- The transcript modal now calls `GET /api/projects/:projectId/agent-runs/:runId/events` on open.
+- The server derives the provider JSONL path from `project.folderPath` and the persisted `ccSessionId`, reuses `AgentRunJsonlTailer` parsing, and returns canonical events.
+- The modal dedupes backfilled events against live WebSocket events.
 
-Primary fix:
+Remaining work:
 
-- Add `GET /api/projects/:projectId/agent-runs/:runId/events` backfill.
 - Make transcript modal show:
   - persisted row status
   - live runtime status, if active
   - last JSONL event time
-  - transcript path
+  - transcript path beyond the current JSONL path display
   - failure cause
 - Treat "no live transcript yet" differently from "agent has no events".
 
@@ -505,10 +501,12 @@ Minimum tests to add before deeper refactors:
 
 ## Immediate Next Actions
 
-1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
-2. Complete Phase 1 route extraction from `apps/server/src/index.ts`. Done.
-3. Split MCP tools into feature modules so tool definitions, handlers, catalog metadata, and lifecycle flags stay together.
-4. Only then start deeper chat UI decomposition.
+1. Commit/checkpoint the current Quick Tasks removal, transcript backfill,
+   runtime input capability, and docs cleanup.
+2. Continue Phase 4 `ChatSurface` decomposition from the recovered client split
+   and extracted timeline/core helpers.
+3. Start with the low-risk `ThinkingIndicator` extraction, then move leaf
+   renderer groups out of `ChatSurface` without changing behavior.
 
 ## Non-Goals
 
