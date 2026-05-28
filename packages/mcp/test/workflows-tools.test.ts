@@ -3,22 +3,23 @@ import assert from 'node:assert/strict';
 import { TOOLS } from '../src/server.ts';
 import type { ToolContext } from '../src/tools/context.ts';
 import {
-  WORK_ITEM_TOOL_NAMES,
-  WORK_ITEM_TOOLS,
-  handleWorkItemTool,
-} from '../src/tools/work-items.ts';
+  WORKFLOW_TOOL_NAMES,
+  WORKFLOW_TOOLS,
+  handleWorkflowTool,
+} from '../src/tools/workflows.ts';
 
-const expectedWorkItemToolNames = [
-  'pc_create_work_item',
-  'pc_create_agent_work_item',
-  'pc_approve_work_item',
-  'pc_reject_work_item',
-  'pc_log_bug',
-  'pc_move_work_item',
-  'pc_update_work_item',
-  'pc_get_work_item',
-  'pc_list_work_items',
-  'pc_attach_to_work_item',
+const expectedWorkflowToolNames = [
+  'pc_save_workflow_draft',
+  'pc_read_workflow_draft',
+  'pc_publish_workflow',
+  'pc_list_workflows',
+  'pc_fire_workflow',
+  'pc_complete_node',
+  'pc_node_failed',
+  'pc_create_workflow',
+  'pc_update_workflow',
+  'pc_delete_workflow',
+  'pc_get_workflow',
 ];
 
 function fakeContext(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -41,45 +42,44 @@ function fakeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   };
 }
 
-test('work item tool names match the pre-split family', () => {
-  assert.deepEqual(WORK_ITEM_TOOL_NAMES, expectedWorkItemToolNames);
+test('workflow tool names match the pre-split family', () => {
+  assert.deepEqual(WORKFLOW_TOOL_NAMES, expectedWorkflowToolNames);
 
   const serverToolMap = new Map(TOOLS.map((tool) => [tool.name, tool]));
-  for (const tool of WORK_ITEM_TOOLS) {
+  for (const tool of WORKFLOW_TOOLS) {
     assert.deepEqual(serverToolMap.get(tool.name), tool);
   }
 });
 
-test('work item handler returns null for unknown tool names', async () => {
-  const result = await handleWorkItemTool('pc_write_claude_md', {}, fakeContext());
+test('workflow handler returns null for unknown tool names', async () => {
+  const result = await handleWorkflowTool('pc_log_bug', {}, fakeContext());
   assert.equal(result, null);
 });
 
-test('work item handler preserves a success content envelope', async () => {
+test('workflow handler preserves a success content envelope', async () => {
   let requestedPath = '';
-  const result = await handleWorkItemTool(
-    'pc_list_work_items',
-    { stage: 'todo', limit: 3 },
+  const result = await handleWorkflowTool(
+    'pc_list_workflows',
+    {},
     fakeContext({
       getServer: async (path) => {
         requestedPath = path;
-        return { status: 200, body: '{"ok":true,"workItems":[]}' };
+        return { status: 200, body: '{"ok":true,"workflows":[]}' };
       },
     }),
   );
 
-  assert.equal(requestedPath, '/api/projects/proj-1/work-items?stage=todo&limit=3');
+  assert.equal(requestedPath, '/api/workflows?projectId=proj-1');
   assert.equal(result?.isError, undefined);
   assert.deepEqual(result?.content, [
-    { type: 'text', text: '{"ok":true,"workItems":[]}' },
-    { type: 'text', text: 'rich-link-hint' },
+    { type: 'text', text: '{"ok":true,"workflows":[]}' },
   ]);
 });
 
-test('work item handler preserves an error content envelope', async () => {
-  const result = await handleWorkItemTool(
-    'pc_create_work_item',
-    { title: 'Example' },
+test('workflow handler preserves an error content envelope', async () => {
+  const result = await handleWorkflowTool(
+    'pc_create_workflow',
+    { yaml: 'id: example' },
     fakeContext({
       postServer: async () => ({ status: 500, body: 'boom' }),
     }),
@@ -87,6 +87,6 @@ test('work item handler preserves an error content envelope', async () => {
 
   assert.equal(result?.isError, true);
   assert.deepEqual(result?.content, [
-    { type: 'text', text: 'pc_create_work_item failed (500): boom' },
+    { type: 'text', text: 'pc_create_workflow failed (500): boom' },
   ]);
 });

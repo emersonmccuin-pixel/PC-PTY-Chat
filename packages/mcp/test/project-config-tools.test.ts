@@ -3,22 +3,18 @@ import assert from 'node:assert/strict';
 import { TOOLS } from '../src/server.ts';
 import type { ToolContext } from '../src/tools/context.ts';
 import {
-  WORK_ITEM_TOOL_NAMES,
-  WORK_ITEM_TOOLS,
-  handleWorkItemTool,
-} from '../src/tools/work-items.ts';
+  PROJECT_CONFIG_TOOL_NAMES,
+  PROJECT_CONFIG_TOOLS,
+  handleProjectConfigTool,
+} from '../src/tools/project-config.ts';
 
-const expectedWorkItemToolNames = [
-  'pc_create_work_item',
-  'pc_create_agent_work_item',
-  'pc_approve_work_item',
-  'pc_reject_work_item',
-  'pc_log_bug',
-  'pc_move_work_item',
-  'pc_update_work_item',
-  'pc_get_work_item',
-  'pc_list_work_items',
-  'pc_attach_to_work_item',
+const expectedProjectConfigToolNames = [
+  'pc_get_stages',
+  'pc_write_claude_md',
+  'pc_list_stages',
+  'pc_list_field_schemas',
+  'pc_replace_stages',
+  'pc_replace_field_schemas',
 ];
 
 function fakeContext(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -41,52 +37,57 @@ function fakeContext(overrides: Partial<ToolContext> = {}): ToolContext {
   };
 }
 
-test('work item tool names match the pre-split family', () => {
-  assert.deepEqual(WORK_ITEM_TOOL_NAMES, expectedWorkItemToolNames);
+test('project config tool names match the pre-split family', () => {
+  assert.deepEqual(PROJECT_CONFIG_TOOL_NAMES, expectedProjectConfigToolNames);
 
   const serverToolMap = new Map(TOOLS.map((tool) => [tool.name, tool]));
-  for (const tool of WORK_ITEM_TOOLS) {
+  for (const tool of PROJECT_CONFIG_TOOLS) {
     assert.deepEqual(serverToolMap.get(tool.name), tool);
   }
 });
 
-test('work item handler returns null for unknown tool names', async () => {
-  const result = await handleWorkItemTool('pc_write_claude_md', {}, fakeContext());
+test('project config handler returns null for unknown tool names', async () => {
+  const result = await handleProjectConfigTool('pc_log_bug', {}, fakeContext());
   assert.equal(result, null);
 });
 
-test('work item handler preserves a success content envelope', async () => {
+test('project config handler preserves a success content envelope', async () => {
   let requestedPath = '';
-  const result = await handleWorkItemTool(
-    'pc_list_work_items',
-    { stage: 'todo', limit: 3 },
+  const result = await handleProjectConfigTool(
+    'pc_list_stages',
+    {},
     fakeContext({
       getServer: async (path) => {
         requestedPath = path;
-        return { status: 200, body: '{"ok":true,"workItems":[]}' };
+        return {
+          status: 200,
+          body: '{"stages":[{"id":"todo","name":"Todo","order":1,"isNew":true}]}',
+        };
       },
     }),
   );
 
-  assert.equal(requestedPath, '/api/projects/proj-1/work-items?stage=todo&limit=3');
+  assert.equal(requestedPath, '/api/projects/proj-1');
   assert.equal(result?.isError, undefined);
   assert.deepEqual(result?.content, [
-    { type: 'text', text: '{"ok":true,"workItems":[]}' },
-    { type: 'text', text: 'rich-link-hint' },
+    {
+      type: 'text',
+      text: '{"ok":true,"stages":[{"id":"todo","name":"Todo","order":1,"isNew":true}]}',
+    },
   ]);
 });
 
-test('work item handler preserves an error content envelope', async () => {
-  const result = await handleWorkItemTool(
-    'pc_create_work_item',
-    { title: 'Example' },
+test('project config handler preserves an error content envelope', async () => {
+  const result = await handleProjectConfigTool(
+    'pc_replace_stages',
+    { stages: [{ id: 'todo', name: 'Todo' }] },
     fakeContext({
-      postServer: async () => ({ status: 500, body: 'boom' }),
+      patchServer: async () => ({ status: 409, body: 'STAGE_HAS_ITEMS' }),
     }),
   );
 
   assert.equal(result?.isError, true);
   assert.deepEqual(result?.content, [
-    { type: 'text', text: 'pc_create_work_item failed (500): boom' },
+    { type: 'text', text: 'pc_replace_stages failed (409): STAGE_HAS_ITEMS' },
   ]);
 });

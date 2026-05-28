@@ -117,6 +117,23 @@ export const REJECT_WORK_ITEM_TOOL = {
   },
 } as const;
 
+export const LOG_BUG_TOOL = {
+  name: 'pc_log_bug',
+  description:
+    "File a bug in the user's Caisson dogfood tracker, no matter which project this chat is bound to. Reads the target project id from GlobalSettings.bugLogTargetProjectId; if unset, returns an error telling the user to configure 'Bug log target' in App Settings. The new work item is created with type='bug', dropped into the target project's FIRST stage, and the body is prefixed with 'Logged from project: <source-name> · session: <id>' so the bug carries its origin context. Use whenever the user says something like 'log a bug', 'log this as a bug', 'file a bug report', or otherwise reports a defect they want tracked.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'short, scannable bug title' },
+      description: {
+        type: 'string',
+        description: 'free-form bug description (steps, expected, actual, anything useful). Optional but strongly recommended.',
+      },
+    },
+    required: ['title'],
+  },
+} as const;
+
 export const MOVE_WORK_ITEM_TOOL = {
   name: 'pc_move_work_item',
   description:
@@ -241,6 +258,7 @@ export const WORK_ITEM_TOOLS = [
   CREATE_AGENT_WORK_ITEM_TOOL,
   APPROVE_WORK_ITEM_TOOL,
   REJECT_WORK_ITEM_TOOL,
+  LOG_BUG_TOOL,
   MOVE_WORK_ITEM_TOOL,
   UPDATE_WORK_ITEM_TOOL,
   GET_WORK_ITEM_TOOL,
@@ -459,6 +477,109 @@ export async function handleWorkItemTool(
           content: [
             { type: 'text', text: `pc_reject_work_item failed: ${(err as Error).message}` },
           ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_log_bug': {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const description = typeof args.description === 'string' ? args.description : '';
+      if (!title) {
+        return { content: [{ type: 'text', text: 'pc_log_bug: title required' }], isError: true };
+      }
+      try {
+        const settingsRes = await ctx.getServer('/api/settings');
+        if (settingsRes.status < 200 || settingsRes.status >= 300) {
+          return {
+            content: [
+              { type: 'text', text: `pc_log_bug: failed to read settings (${settingsRes.status}): ${settingsRes.body}` },
+            ],
+            isError: true,
+          };
+        }
+        const settingsParsed = JSON.parse(settingsRes.body) as {
+          settings?: { bugLogTargetProjectId?: string | null };
+        };
+        const targetId = settingsParsed.settings?.bugLogTargetProjectId ?? null;
+        if (!targetId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'pc_log_bug: no bug-log target configured. Open App Settings → "Bug log target" and pick the project where bugs should land.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const targetRes = await ctx.getServer(`/api/projects/${targetId}`);
+        if (targetRes.status < 200 || targetRes.status >= 300) {
+          return {
+            content: [
+              { type: 'text', text: `pc_log_bug: target project unreachable (${targetRes.status}): ${targetRes.body}` },
+            ],
+            isError: true,
+          };
+        }
+        const target = JSON.parse(targetRes.body) as {
+          name?: string;
+          stages?: Array<{ id: string; order?: number; isNew?: boolean }>;
+        };
+        const stages = (target.stages ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const intakeStage = stages.find((s) => s.isNew)?.id ?? stages[0]?.id;
+        if (!intakeStage) {
+          return {
+            content: [
+              { type: 'text', text: `pc_log_bug: target project '${target.name ?? targetId}' has no stages defined.` },
+            ],
+            isError: true,
+          };
+        }
+
+        let sourceName = ctx.projectId;
+        if (ctx.projectId) {
+          const sourceRes = await ctx.getServer(`/api/projects/${ctx.projectId}`);
+          if (sourceRes.status >= 200 && sourceRes.status < 300) {
+            try {
+              const source = JSON.parse(sourceRes.body) as { name?: string };
+              if (source.name) sourceName = source.name;
+            } catch {
+              /* fall back to id */
+            }
+          }
+        }
+
+        const prefixParts = [`Logged from project: ${sourceName}`];
+        if (ctx.sessionId) prefixParts.push(`session: ${ctx.sessionId}`);
+        const prefix = prefixParts.join(' · ');
+        const body = description.trim() ? `${prefix}\n\n${description}` : prefix;
+
+        const createRes = await ctx.postServer(`/api/projects/${targetId}/work-items/create`, {
+          title,
+          stageId: intakeStage,
+          body,
+          type: 'bug',
+        });
+        if (createRes.status < 200 || createRes.status >= 300) {
+          return {
+            content: [
+              { type: 'text', text: `pc_log_bug failed (${createRes.status}): ${createRes.body}` },
+            ],
+            isError: true,
+          };
+        }
+        const parsed = JSON.parse(createRes.body) as { ok?: boolean; workItem?: { id?: string; callsign?: string | null } };
+        const newId = parsed.workItem?.id ?? '?';
+        const callsign = parsed.workItem?.callsign ?? null;
+        const idDisplay = callsign ? `${callsign} (${newId})` : newId;
+        return ctx.withRichLinkHint(
+          `Bug filed in ${target.name ?? targetId} (id: ${idDisplay}, stage: ${intakeStage}). Body: ${prefix}`,
+        );
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `pc_log_bug failed: ${(err as Error).message}` }],
           isError: true,
         };
       }

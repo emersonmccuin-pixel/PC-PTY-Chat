@@ -47,6 +47,32 @@ Second slice complete:
 - Moved shared pod-resolution, knowledge-name derivation, and slim agent-list response shaping into the agent tool module.
 - Added focused tests in `packages/mcp/test/agents-tools.test.ts`.
 
+Third slice complete:
+
+- Added `packages/mcp/src/tools/workflows.ts` for workflow drafts, workflow publish/list/fire/review, node failure signaling, and workflow row CRUD.
+- `packages/mcp/src/server.ts` now composes those workflow tool definitions and delegates those handlers through `handleWorkflowTool`.
+- Kept workflow constants in the existing `TOOLS` order so `ListTools` ordering is preserved.
+- Added focused tests in `packages/mcp/test/workflows-tools.test.ts`.
+
+Fourth slice complete:
+
+- Added `packages/mcp/src/tools/agent-runs.ts` for agent dispatch, continuation, caller-run listing, pending asks, approvals, and pending-answer handling.
+- `packages/mcp/src/server.ts` now composes those agent-run tool definitions and delegates those handlers through `handleAgentRunTool`.
+- Extended `ToolContext` with the spawn-time agent-run environment values so extracted handlers do not read `process.env` directly.
+- Added focused tests in `packages/mcp/test/agent-runs-tools.test.ts`.
+
+Fifth slice complete:
+
+- Added `packages/mcp/src/tools/project-config.ts` for stage listing/replacement, field-schema listing/replacement, and project `CLAUDE.md` writes.
+- `packages/mcp/src/server.ts` now composes those project-config tool definitions and delegates those handlers through `handleProjectConfigTool`.
+- Moved project stage response shaping into the project-config module.
+- Added focused tests in `packages/mcp/test/project-config-tools.test.ts`.
+
+Final cleanup complete:
+
+- Moved `pc_log_bug` into the work-item tool module, since it creates a cross-project bug work item and uses the same rich-link response path.
+- `packages/mcp/src/server.ts` no longer owns any inline `pc_*` tool definitions or handler cases; it now composes tool constants and delegates calls to feature handlers.
+
 ## Suggested First Slice
 
 Start with a small, coherent tool family:

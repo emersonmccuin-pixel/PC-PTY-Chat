@@ -21,6 +21,9 @@ export interface ToolContext {
   agentSessionId: string;
   sessionId: string;
   dispatcherSessionId: string;
+  agentRunId?: string;
+  agentParentWorkItemId?: string;
+  agentInvokeDepth?: number;
   projectPath: (suffix: string) => string;
   postServer: (path: string, body: unknown) => Promise<ServerResponse>;
   putServer: (path: string, body: unknown) => Promise<ServerResponse>;
@@ -36,6 +39,9 @@ interface ToolContextOptions {
   agentSessionId: string;
   sessionId: string;
   dispatcherSessionId: string;
+  agentRunId: string;
+  agentParentWorkItemId: string;
+  agentInvokeDepth: number;
   serverPort: number;
 }
 
@@ -130,6 +136,9 @@ export function createToolContext(options: ToolContextOptions): ToolContext {
     agentSessionId: options.agentSessionId,
     sessionId: options.sessionId,
     dispatcherSessionId: options.dispatcherSessionId,
+    agentRunId: options.agentRunId,
+    agentParentWorkItemId: options.agentParentWorkItemId,
+    agentInvokeDepth: options.agentInvokeDepth,
     projectPath,
     postServer: (path, body) => httpWithBody(options.serverPort, 'POST', path, body),
     putServer: (path, body) => httpWithBody(options.serverPort, 'PUT', path, body),
