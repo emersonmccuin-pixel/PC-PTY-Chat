@@ -55,11 +55,11 @@ test('encodeCwdForClaude collapses non-[A-Za-z0-9._-] to "-"', () => {
   // Empirical samples from Section 0.
   assert.equal(
     encodeCwdForClaude('E:\\Projects\\Caisson'),
-    'E--Claude-Code-Projects-Personal-Caisson',
+    'E--Projects-Caisson',
   );
   assert.equal(
     encodeCwdForClaude('C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test'),
-    'C--Users-emers-AppData-Local-Temp-cc-stream-test',
+    'C--Users-example-AppData-Local-Temp-cc-stream-test',
   );
   // Dot, underscore, hyphen preserved.
   assert.equal(encodeCwdForClaude('a.b_c-d/e f'), 'a.b_c-d-e-f');
