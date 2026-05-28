@@ -46,6 +46,9 @@ Implemented slices:
 - Quick Tasks product-surface removal: routes, seed service, MCP tools, catalog metadata, stock-pod prompt grants, special project/runtime branching, and tagged work-item plumbing were removed; only historical migrations and the removal migration retain references.
 - Agent transcript backfill: `GET /api/projects/:projectId/agent-runs/:runId/events` replays the agent's provider JSONL, and the Activity transcript modal merges that backfill with live `agent-jsonl-event` WebSocket envelopes.
 - Runtime input capability contract: `ChatSurface` accepts a single capability object for composer input, send, interrupt, terminal input, and terminal resize; orchestrator and transient modals now feed terminal writability from runtime state rather than ad hoc composer booleans.
+- ChatSurface decomposition: surface mode persistence/notification is extracted
+  to `useChatSurfaceMode`, and composer send/interrupt/pending-prompt actions
+  are extracted to `useChatComposerActions`.
 
 ## Executive Decision
 
@@ -437,6 +440,8 @@ apps/web/src/features/chat/
   ChatComposer.tsx
   TerminalPane.tsx
   usePendingPrompts.ts
+  useChatSurfaceMode.ts
+  useChatComposerActions.ts
   useChatRenderItems.ts
   normalizeJsonlEnvelope.ts
   toolGrouping.ts

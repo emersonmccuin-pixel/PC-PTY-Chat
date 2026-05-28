@@ -8,10 +8,7 @@
 
 import {
   useCallback,
-  useEffect,
   useMemo,
-  useRef,
-  useState,
   type ReactNode,
 } from 'react';
 
@@ -25,14 +22,11 @@ import {
   deriveJsonlBusy,
   deriveLiveState,
   isRuntimeThinking,
-  readTerminalMode,
   type RuntimeInputCapabilities,
-  writeTerminalMode,
 } from '@/features/chat/runtimeState';
-import {
-  createClientMessageId,
-  usePendingPrompts,
-} from '@/features/chat/usePendingPrompts';
+import { useChatComposerActions } from '@/features/chat/useChatComposerActions';
+import { useChatSurfaceMode } from '@/features/chat/useChatSurfaceMode';
+import { usePendingPrompts } from '@/features/chat/usePendingPrompts';
 import { useChatRenderItems } from '@/features/chat/useChatRenderItems';
 import { useChatTimelineRenderer } from '@/features/chat/useChatTimelineRenderer';
 import { useThinkingIndicatorState } from '@/features/chat/useThinkingIndicatorState';
@@ -140,13 +134,6 @@ export function ChatSurface({
       currentSessionId &&
       !composerHidden,
   );
-  const [surfaceMode, setSurfaceMode] =
-    useState<OrchestratorSurfacePreference>('chat');
-  const [surfaceModeReady, setSurfaceModeReady] = useState(false);
-  const eventsRef = useRef(events);
-  useEffect(() => {
-    eventsRef.current = events;
-  }, [events]);
 
   const { chatEnvelopes, renderItems } = useChatRenderItems({
     events,
@@ -172,19 +159,14 @@ export function ChatSurface({
     markInterrupted,
   } = useThinkingIndicatorState({ events, isThinking });
 
-  useEffect(() => {
-    setSurfaceModeReady(false);
-    if (!terminalEligible || !currentSessionId) {
-      setSurfaceMode('chat');
-      setSurfaceModeReady(true);
-      return;
-    }
-    const stored = readTerminalMode(projectId, currentSessionId);
-    setSurfaceMode(stored ?? defaultOrchestratorSurface);
-    setSurfaceModeReady(true);
-  }, [projectId, currentSessionId, terminalEligible, defaultOrchestratorSurface]);
+  const { terminalActive, setTerminalMode } = useChatSurfaceMode({
+    projectId,
+    currentSessionId,
+    terminalEligible,
+    defaultOrchestratorSurface,
+    onSurfaceModeChange,
+  });
 
-  const terminalActive = terminalEligible && surfaceMode === 'terminal';
   const resolvedComposerDisabled = inputCapabilities
     ? !inputCapabilities.canAcceptChatInput
     : composerDisabled;
@@ -200,45 +182,23 @@ export function ChatSurface({
       (!resolvedComposerDisabled &&
         !resolvedComposerSendDisabled &&
         (wsStatus === undefined || wsStatus === 'open')));
-  useEffect(() => {
-    if (!surfaceModeReady) return;
-    onSurfaceModeChange?.(terminalActive ? 'terminal' : 'chat');
-  }, [onSurfaceModeChange, surfaceModeReady, terminalActive]);
-  const setTerminalMode = useCallback(
-    (next: OrchestratorSurfacePreference) => {
-      if (!terminalEligible || !currentSessionId) return;
-      setSurfaceMode(next);
-      writeTerminalMode(projectId, currentSessionId, next);
-    },
-    [projectId, currentSessionId, terminalEligible],
-  );
 
-  const handleInterrupt = useCallback((): boolean => {
-    if (inputCapabilities && !inputCapabilities.canInterrupt) return false;
-    const ok = onInterrupt();
-    if (ok) markInterrupted();
-    return ok;
-  }, [inputCapabilities, onInterrupt, markInterrupted]);
-
-  const handleSend = useCallback(
-    (text: string): boolean => {
-      if (inputCapabilities && !inputCapabilities.canSubmitChatInput) return false;
-      const clientMessageId = createClientMessageId();
-      const ok = onSend(text, clientMessageId);
-      const queueOptimistically = composerQueueing || isThinking;
-      if (ok) {
-        recordPendingPrompt({
-          id: clientMessageId,
-          text,
-          eventFloor: eventsRef.current.length,
-          expectsAck: wsStatus !== undefined,
-          queued: queueOptimistically,
-        });
-      }
-      return ok;
-    },
-    [inputCapabilities, onSend, composerQueueing, isThinking, wsStatus, recordPendingPrompt],
-  );
+  const {
+    handleSend,
+    handleInterrupt,
+    resolvedComposerSendLabel,
+  } = useChatComposerActions({
+    events,
+    inputCapabilities,
+    onSend,
+    onInterrupt,
+    composerQueueing,
+    composerSendLabel,
+    isThinking,
+    wsStatus,
+    recordPendingPrompt,
+    markInterrupted,
+  });
   const handleTerminalResize = useCallback(
     (cols: number, rows: number): boolean => {
       if (inputCapabilities && !inputCapabilities.canResizeTerminal) return false;
@@ -246,9 +206,6 @@ export function ChatSurface({
     },
     [inputCapabilities, onTerminalResize],
   );
-  const resolvedComposerSendLabel =
-    composerSendLabel ??
-    (isThinking || composerQueueing ? 'Queue ↵' : 'Send ↵');
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
