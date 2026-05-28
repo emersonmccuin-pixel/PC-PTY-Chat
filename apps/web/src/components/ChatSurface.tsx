@@ -16,36 +16,12 @@ import {
 } from 'react';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
-import type {
-  ApprovalRequiredEvent,
-  ChatEvent,
-  SystemEvent,
-  TaskEndEvent,
-  TaskStartEvent,
-  WsEnvelope,
-  WsStatus,
-} from '@/hooks/use-project-ws';
-import { AskCard } from '@/components/AskCard';
-import {
-  AgentDispatchGroupBubble,
-  WorkflowRunGroupBubble,
-} from '@/features/chat/AgentWorkflowBubbles';
+import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
 import { Composer } from '@/features/chat/ChatComposer';
 import { ChatTimeline } from '@/features/chat/ChatTimeline';
-import {
-  ChatTurnCard,
-  type ChatTurnStatus,
-  copyTextForEvent,
-  EventBubble,
-  pendingStatusLabel,
-  pendingStatusTone,
-  SUPPRESSED_SYSTEM_SUBTYPES,
-} from '@/features/chat/EventBubbles';
 import { TerminalModeToggle, TerminalPane } from '@/features/chat/TerminalPane';
-import { formatElapsed, ThinkingIndicator } from '@/features/chat/ThinkingIndicator';
-import { EditBubble, ToolGroupBubble } from '@/features/chat/ToolBubbles';
+import { ThinkingIndicator } from '@/features/chat/ThinkingIndicator';
 import {
-  deriveActivity,
   deriveJsonlBusy,
   deriveLiveState,
   isRuntimeThinking,
@@ -55,11 +31,11 @@ import {
 } from '@/features/chat/runtimeState';
 import {
   createClientMessageId,
-  isPendingUserEvent,
   usePendingPrompts,
 } from '@/features/chat/usePendingPrompts';
 import { useChatRenderItems } from '@/features/chat/useChatRenderItems';
-import type { PendingPromptStatus, RenderItem } from '@/features/chat/types';
+import { useChatTimelineRenderer } from '@/features/chat/useChatTimelineRenderer';
+import { useThinkingIndicatorState } from '@/features/chat/useThinkingIndicatorState';
 
 // ── ChatSurface ──────────────────────────────────────────────────────────
 
@@ -179,24 +155,22 @@ export function ChatSurface({
     visiblePendingPrompts,
   });
 
-  const [resolvedApprovals, setResolvedApprovals] = useState<
-    Record<string, { approved: boolean; response: string }>
-  >({});
-  const [answeredAsks, setAnsweredAsks] = useState<Record<string, string>>({});
+  const renderTimelineItem = useChatTimelineRenderer({
+    projectId,
+    renderItems,
+    onAskReply,
+  });
 
   const liveState = useMemo(() => deriveLiveState(events), [events]);
   const jsonlBusy = useMemo(() => deriveJsonlBusy(events), [events]);
   const isThinking = isRuntimeThinking(liveState, jsonlBusy);
-  const activity = useMemo(() => deriveActivity(events), [events]);
-
-  // Liveness proxy: timestamp of the most recent envelope of any kind. During
-  // a live turn SOMETHING flows (raw chunks, jsonl, stream events); a growing
-  // gap means the agent went quiet — or the process/server died. Drives the
-  // "updated Ns ago" readout + the stall hint.
-  const [lastEnvelopeAt, setLastEnvelopeAt] = useState<number>(() => Date.now());
-  useEffect(() => {
-    setLastEnvelopeAt(Date.now());
-  }, [events.length]);
+  const {
+    activity,
+    elapsedMs,
+    interruptedAt,
+    lastEnvelopeAt,
+    markInterrupted,
+  } = useThinkingIndicatorState({ events, isThinking });
 
   useEffect(() => {
     setSurfaceModeReady(false);
@@ -239,36 +213,12 @@ export function ChatSurface({
     [projectId, currentSessionId, terminalEligible],
   );
 
-  // Thinking elapsed timer.
-  const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const [interruptedAt, setInterruptedAt] = useState<number | null>(null);
-  useEffect(() => {
-    if (isThinking) {
-      if (thinkingStartedAt === null) {
-        setThinkingStartedAt(Date.now());
-        setElapsedMs(0);
-      }
-    } else if (thinkingStartedAt !== null) {
-      setThinkingStartedAt(null);
-      setElapsedMs(0);
-      setInterruptedAt(null);
-    }
-  }, [isThinking, thinkingStartedAt]);
-  useEffect(() => {
-    if (thinkingStartedAt === null) return;
-    const tick = () => setElapsedMs(Date.now() - thinkingStartedAt);
-    tick();
-    const id = setInterval(tick, 200);
-    return () => clearInterval(id);
-  }, [thinkingStartedAt]);
-
   const handleInterrupt = useCallback((): boolean => {
     if (inputCapabilities && !inputCapabilities.canInterrupt) return false;
     const ok = onInterrupt();
-    if (ok && isThinking) setInterruptedAt(Date.now());
+    if (ok) markInterrupted();
     return ok;
-  }, [inputCapabilities, onInterrupt, isThinking]);
+  }, [inputCapabilities, onInterrupt, markInterrupted]);
 
   const handleSend = useCallback(
     (text: string): boolean => {
@@ -299,199 +249,6 @@ export function ChatSurface({
   const resolvedComposerSendLabel =
     composerSendLabel ??
     (isThinking || composerQueueing ? 'Queue ↵' : 'Send ↵');
-
-  function markApprovalResolved(
-    workflowRunId: string,
-    nodeId: string,
-    approved: boolean,
-    response: string,
-  ) {
-    setResolvedApprovals((prev) => ({
-      ...prev,
-      [`${workflowRunId}:${nodeId}`]: { approved, response },
-    }));
-  }
-
-  function renderTimelineItem(item: RenderItem, idx: number): ReactNode {
-    if (item.kind === 'tool-group') {
-      return (
-        <ChatTurnCard key={item.key} kind="pm" variant="child">
-          <ToolGroupBubble calls={item.calls} />
-        </ChatTurnCard>
-      );
-    }
-    if (item.kind === 'edit') {
-      return (
-        <ChatTurnCard key={item.key} kind="pm" variant="child">
-          <EditBubble call={item.call} />
-        </ChatTurnCard>
-      );
-    }
-    if (item.kind === 'workflow-run-group') {
-      return (
-        <ChatTurnCard key={item.key} kind="pm" variant="child">
-          <WorkflowRunGroupBubble
-            workflowRunId={item.workflowRunId}
-            events={item.events}
-          />
-        </ChatTurnCard>
-      );
-    }
-    if (item.kind === 'agent-dispatch-group') {
-      return (
-        <ChatTurnCard key={item.key} kind="pm" variant="child">
-          <AgentDispatchGroupBubble
-            agentRunId={item.agentRunId}
-            agentName={item.agentName}
-            events={item.events}
-          />
-        </ChatTurnCard>
-      );
-    }
-    const env = item.env;
-    let assistantDurationMs: number | undefined;
-    if (env.type === 'event') {
-      const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-      if (ev?.kind === 'assistant') {
-        for (let j = idx + 1; j < renderItems.length; j++) {
-          const next = renderItems[j]!;
-          if (next.kind !== 'env') continue;
-          if (next.env.type !== 'event') continue;
-          const nev = (next.env as WsEnvelope & { event: ChatEvent }).event;
-          if (!nev || typeof nev !== 'object') continue;
-          if (nev.kind === 'user' || nev.kind === 'assistant') break;
-          if (nev.kind === 'system') {
-            const sys = nev as SystemEvent;
-            if (sys.subtype === 'turn_duration') {
-              const raw = sys.raw as { durationMs?: number } | undefined;
-              if (typeof raw?.durationMs === 'number') {
-                assistantDurationMs = raw.durationMs;
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
-    if (env.type === 'ask') {
-      const askEnv = env as WsEnvelope & {
-        toolName: string;
-        toolUseId: string;
-        toolInput: unknown;
-        ts?: string;
-      };
-      const answered = answeredAsks[askEnv.toolUseId];
-      return (
-        <ChatTurnCard
-          key={item.key}
-          kind="pm"
-          ts={askEnv.ts}
-          sub={askEnv.toolName === 'ExitPlanMode' ? 'plan ready' : 'asking'}
-          status="info"
-        >
-          <AskCard
-            toolName={askEnv.toolName}
-            toolUseId={askEnv.toolUseId}
-            toolInput={askEnv.toolInput}
-            answered={answered}
-            onReply={(answer) => {
-              if (!onAskReply) return;
-              if (onAskReply(askEnv.toolUseId, answer)) {
-                setAnsweredAsks((prev) => ({
-                  ...prev,
-                  [askEnv.toolUseId]: answer,
-                }));
-              }
-            }}
-          />
-        </ChatTurnCard>
-      );
-    }
-    const ev = (env as WsEnvelope & { event: ChatEvent }).event;
-    if (!ev || typeof ev !== 'object') return null;
-    if (ev.kind === 'queue-enqueue' || ev.kind === 'queue-dequeue') {
-      return (
-        <EventBubble
-          key={item.key}
-          event={ev}
-          projectId={projectId}
-          resolvedApprovals={resolvedApprovals}
-          onApprovalResolved={markApprovalResolved}
-        />
-      );
-    }
-    if (ev.kind === 'system') {
-      const sys = ev as SystemEvent;
-      if (SUPPRESSED_SYSTEM_SUBTYPES.has(sys.subtype)) {
-        return null;
-      }
-      if (sys.level !== 'error') {
-        return (
-          <EventBubble
-            key={item.key}
-            event={ev}
-            projectId={projectId}
-            resolvedApprovals={resolvedApprovals}
-            onApprovalResolved={markApprovalResolved}
-          />
-        );
-      }
-    }
-    const turnKind: 'user' | 'pm' = ev.kind === 'user' ? 'user' : 'pm';
-    let bubbleId: string | undefined;
-    if (ev.kind === 'approval-required') {
-      const ar = ev as ApprovalRequiredEvent;
-      bubbleId = `approval-${ar.workflowRunId}-${ar.nodeId}`;
-    }
-    let sub: string | undefined;
-    let status: ChatTurnStatus | undefined;
-    let pendingStatus: PendingPromptStatus | undefined;
-    if (isPendingUserEvent(ev)) {
-      pendingStatus = ev.pendingStatus;
-      sub = pendingStatusLabel(ev);
-      status = pendingStatusTone(ev.pendingStatus);
-      bubbleId = `pending-${ev.pendingClientMessageId}`;
-    } else if (ev.kind === 'assistant' && typeof assistantDurationMs === 'number') {
-      sub = formatElapsed(assistantDurationMs);
-    } else if (ev.kind === 'approval-required') {
-      sub = 'approval required';
-      status = 'warning';
-    } else if (ev.kind === 'subagent-failure') {
-      sub = 'subagent failed';
-      status = 'danger';
-    } else if (ev.kind === 'todos') {
-      sub = 'todos';
-    } else if (ev.kind === 'task-start') {
-      const t = ev as TaskStartEvent;
-      sub = t.subagent ? `${t.subagent} · delegated` : 'delegated';
-    } else if (ev.kind === 'task-end') {
-      const t = ev as TaskEndEvent;
-      sub = t.subagent ? `${t.subagent} · returned` : 'returned';
-    } else if (ev.kind === 'system') {
-      const sys = ev as SystemEvent;
-      sub = sys.subtype.replace(/_/g, ' ');
-      if (sys.level === 'error') status = 'danger';
-    }
-    return (
-      <ChatTurnCard
-        key={item.key}
-        kind={turnKind}
-        ts={ev.ts}
-        sub={sub}
-        bubbleId={bubbleId}
-        status={status}
-        pendingStatus={pendingStatus}
-        copyText={copyTextForEvent(ev)}
-      >
-        <EventBubble
-          event={ev}
-          projectId={projectId}
-          resolvedApprovals={resolvedApprovals}
-          onApprovalResolved={markApprovalResolved}
-        />
-      </ChatTurnCard>
-    );
-  }
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
