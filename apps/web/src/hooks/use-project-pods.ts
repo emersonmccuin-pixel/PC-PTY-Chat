@@ -16,8 +16,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { Pod, Project, ULID } from '@/api/client';
-import { api } from '@/api/client';
+import type { Project, ULID } from '@/features/projects/client';
+import { agentsApi, type Pod } from '@/features/agents/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 interface PodChangedEnvelope extends WsEnvelope {
@@ -43,7 +43,7 @@ export function useProjectPods(
       return;
     }
     let cancelled = false;
-    void api.listPods(project.id).then((list) => {
+    void agentsApi.listPods(project.id).then((list) => {
       if (cancelled) return;
       setMap(new Map(list.map((p) => [p.id, p])));
     });
@@ -104,7 +104,7 @@ export function useProjectPods(
     }
 
     if (needsRefetch) {
-      void api.listPods(project.id).then((list) => {
+      void agentsApi.listPods(project.id).then((list) => {
         setMap(new Map(list.map((p) => [p.id, p])));
       });
     }
@@ -120,7 +120,7 @@ export function useProjectPods(
     pods,
     refetch: () => {
       if (!project) return;
-      void api.listPods(project.id).then((list) => {
+      void agentsApi.listPods(project.id).then((list) => {
         setMap(new Map(list.map((p) => [p.id, p])));
       });
     },

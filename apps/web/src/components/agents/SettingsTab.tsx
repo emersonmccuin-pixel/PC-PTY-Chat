@@ -10,13 +10,8 @@
 
 import { useState } from 'react';
 
-import {
-  api,
-  type PodBundle,
-  type PodMcpServer,
-  type PodMcpServerConfig,
-  type ULID,
-} from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { agentsApi, type PodBundle, type PodMcpServer, type PodMcpServerConfig } from '@/features/agents/client';
 
 interface SettingsDraftSlice {
   model: string;
@@ -178,7 +173,7 @@ function McpServersSection({
     setBusy(true);
     setOpError(null);
     try {
-      await api.createPodMcpServer(podId, { name: trimmedName, config });
+      await agentsApi.createPodMcpServer(podId, { name: trimmedName, config });
       setAdding(false);
       setName('');
       setConfigJson('');
@@ -196,7 +191,7 @@ function McpServersSection({
     setBusy(true);
     setOpError(null);
     try {
-      await api.deletePodMcpServer(podId, s.id);
+      await agentsApi.deletePodMcpServer(podId, s.id);
       onChanged();
     } catch (e) {
       setOpError((e as Error).message);

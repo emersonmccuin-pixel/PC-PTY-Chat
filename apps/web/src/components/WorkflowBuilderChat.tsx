@@ -9,13 +9,14 @@
 //   - the warmup-turn pair (defensive parity with AgentDesignerChat).
 //
 // Parent (WorkflowBuilderModal) owns session lifecycle: it calls
-// api.startWorkflowBuilder before mounting + api.stopWorkflowBuilder on close.
+// transientSessionsApi.startWorkflowBuilder before mounting + transientSessionsApi.stopWorkflowBuilder on close.
 // Cleanup is NOT in a useEffect cleanup here — see
 // [[strict-mode-useeffect-kills-external-resource]].
 
 import { useMemo } from 'react';
 
-import { api, type OrchestratorSurfacePreference } from '@/api/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
+import { transientSessionsApi } from '@/features/transient-sessions/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
@@ -161,25 +162,25 @@ export function WorkflowBuilderChat({
       statusLabel={statusLabel ?? stateLabel(state)}
       onClose={onClose}
       onSend={(text) => {
-        void api.sendWorkflowBuilder(projectId, text).catch(() => {
+        void transientSessionsApi.sendWorkflowBuilder(projectId, text).catch(() => {
           /* surfaced in the next event broadcast or composer ui */
         });
         return true;
       }}
       onInterrupt={() => {
-        void api.interruptWorkflowBuilder(projectId).catch(() => {
+        void transientSessionsApi.interruptWorkflowBuilder(projectId).catch(() => {
           /* best-effort */
         });
         return true;
       }}
       onTerminalInput={(data) => {
-        void api.sendWorkflowBuilderTerminalInput(projectId, data).catch(() => {
+        void transientSessionsApi.sendWorkflowBuilderTerminalInput(projectId, data).catch(() => {
           /* best-effort; terminal input errors are not rendered inline */
         });
         return true;
       }}
       onTerminalResize={(cols, rows) => {
-        void api.resizeWorkflowBuilder(projectId, cols, rows).catch(() => {
+        void transientSessionsApi.resizeWorkflowBuilder(projectId, cols, rows).catch(() => {
           /* best-effort */
         });
         return true;

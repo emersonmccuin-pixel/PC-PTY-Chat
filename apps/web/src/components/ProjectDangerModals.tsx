@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 
-import { api, type Project } from '@/api/client';
+import { projectsApi, type Project } from '@/features/projects/client';
 
 interface SoftDeleteProjectModalProps {
   project: Project;
@@ -30,7 +30,7 @@ export function SoftDeleteProjectModal({
     setBusy(true);
     setErr(null);
     try {
-      await api.softDeleteProject(project.id);
+      await projectsApi.softDeleteProject(project.id);
       onDeleted(project.id);
     } catch (e) {
       setErr((e as Error).message);
@@ -85,7 +85,7 @@ export function DeleteProjectFilesModal({
     setBusy(true);
     setErr(null);
     try {
-      const removed = await api.deleteProjectFiles(project.id);
+      const removed = await projectsApi.deleteProjectFiles(project.id);
       onDone(removed);
     } catch (e) {
       setErr((e as Error).message);

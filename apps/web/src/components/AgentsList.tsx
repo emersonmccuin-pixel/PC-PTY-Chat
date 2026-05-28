@@ -7,14 +7,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import {
-  api,
-  resolveModelLabel,
-  type Pod,
-  type PodBundle,
-  type Project,
-  type ULID,
-} from '@/api/client';
+import type { Project, ULID } from '@/features/projects/client';
+import { agentsApi, resolveModelLabel, type Pod, type PodBundle } from '@/features/agents/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useProjectPods } from '@/hooks/use-project-pods';
 import { formatToolLabel } from '@/lib/tool-labels';
@@ -362,8 +356,7 @@ function DetailPane({
     return () => {
       setBundleLoading(true);
       setBundleErr(null);
-      return api
-        .getPod(pod.id)
+      return agentsApi.getPod(pod.id)
         .then((b) => {
           setBundle(b);
           setBundleLoading(false);
@@ -382,8 +375,7 @@ function DetailPane({
     setConfirmingDelete(false);
     setBundleLoading(true);
     setBundleErr(null);
-    api
-      .getPod(pod.id)
+    agentsApi.getPod(pod.id)
       .then((b) => {
         if (!cancelled) {
           setBundle(b);
@@ -433,7 +425,7 @@ function DetailPane({
     setPromoting(true);
     setActionErr(null);
     try {
-      await api.promotePodToGlobal(pod.id);
+      await agentsApi.promotePodToGlobal(pod.id);
       onPromoted();
     } catch (e) {
       setActionErr((e as Error).message);
@@ -445,7 +437,7 @@ function DetailPane({
   async function deletePod() {
     setActionErr(null);
     try {
-      await api.deletePod(pod.id);
+      await agentsApi.deletePod(pod.id);
       onDeleted();
     } catch (e) {
       const err = e as Error & { kind?: string };

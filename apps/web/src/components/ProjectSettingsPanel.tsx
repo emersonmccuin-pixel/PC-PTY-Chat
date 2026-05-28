@@ -11,7 +11,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { api, type Project } from '@/api/client';
+import { projectsApi, type Project } from '@/features/projects/client';
+import { projectContextApi } from '@/features/project-context/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
 import { SetupWizardModal } from './SetupWizardModal';
@@ -144,7 +145,7 @@ function ProjectInfoForm({
       if (trimmedName !== project.name) patch.name = trimmedName;
       const nextRemote = trimmedRemote ? trimmedRemote : null;
       if (nextRemote !== (project.gitRemote ?? null)) patch.git_remote = nextRemote;
-      const updated = await api.updateProject(project.id, patch);
+      const updated = await projectsApi.updateProject(project.id, patch);
       onSaved(updated);
     } catch (e) {
       setErr((e as Error).message);
@@ -315,8 +316,7 @@ function SetupWizardNag({
     let cancelled = false;
     setDismissed(false);
     setNeeds(null);
-    api
-      .getClaudeMdStatus(project.id)
+    projectContextApi.getClaudeMdStatus(project.id)
       .then((s) => {
         if (!cancelled) setNeeds(!s.exists || s.empty);
       })
@@ -337,8 +337,7 @@ function SetupWizardNag({
       const env = events[i];
       if (!env) continue;
       if (env.type === 'project-claude-md-changed') {
-        api
-          .getClaudeMdStatus(project.id)
+        projectContextApi.getClaudeMdStatus(project.id)
           .then((s) => setNeeds(!s.exists || s.empty))
           .catch(() => {
             /* leave stale */

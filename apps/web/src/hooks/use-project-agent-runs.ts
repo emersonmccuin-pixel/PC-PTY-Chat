@@ -7,8 +7,8 @@
 // branch and then refetches, since the server's list endpoint filters
 // terminal rows out (running-agents view only).
 
-import type { AgentRunRecord, Project } from '@/api/client';
-import { api } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useResourceList } from '@/hooks/use-resource-list';
 
@@ -37,7 +37,7 @@ export function useProjectAgentRuns(
     getId: (r) => r.runId,
     isTerminal: (r) => TERMINAL.has(r.status),
     dropOnTerminal: true,
-    list: (projectId) => api.listAgentRuns(projectId),
+    list: (projectId) => agentRunsApi.listAgentRuns(projectId),
   });
   return { runs: records };
 }

@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 
-import type { AgentRunRecord } from '@/api/client';
+import type { AgentRunRecord } from '@/features/agent-runs/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 
 interface AgentTranscriptModalProps {

@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
-import { api } from '@/api/client';
+import { runtimeApi } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
@@ -143,8 +143,7 @@ export function TerminalModePanel({
     });
 
     let cancelled = false;
-    void api
-      .getTerminalTranscript(projectId, sessionId, TRANSCRIPT_TAIL_BYTES)
+    void runtimeApi.getTerminalTranscript(projectId, sessionId, TRANSCRIPT_TAIL_BYTES)
       .then((transcript) => {
         if (cancelled || sessionKeyRef.current !== sessionKey) return;
         const live = attachLiveBufferRef.current;

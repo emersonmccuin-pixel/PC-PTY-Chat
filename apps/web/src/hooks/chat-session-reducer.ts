@@ -1,4 +1,4 @@
-import type { SessionReplayItem, SessionTransitionResponse } from '@/api/client';
+import type { SessionReplayItem, SessionTransitionResponse } from '@/features/runtime/client';
 import type {
   RuntimeStateEnvelope,
   SendAckEnvelope,

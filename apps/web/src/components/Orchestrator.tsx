@@ -7,15 +7,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import {
-  api,
-  type OrchestratorSurfacePreference,
-  type OrchestratorRuntimeHealth,
-  type OrchestratorRuntimeSnapshot,
-  type OrchestratorSession,
-  type Project,
-  type SessionTransitionResponse,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
+import { runtimeApi, type OrchestratorRuntimeHealth, type OrchestratorRuntimeSnapshot, type OrchestratorSession, type SessionTransitionResponse } from '@/features/runtime/client';
 import type {
   JsonlEvent,
   WsDiagnostics,
@@ -236,8 +230,7 @@ export function Orchestrator({
     let cancelled = false;
     setPastLoading(true);
     setPastError(null);
-    api
-      .getSessionEvents(project.id, viewingSessionId)
+    runtimeApi.getSessionEvents(project.id, viewingSessionId)
       .then((raw) => {
         if (cancelled) return;
         // Section 23 — server returns envelope-shape items
@@ -274,8 +267,7 @@ export function Orchestrator({
     useState<OrchestratorRuntimeSnapshot | null>(null);
   useEffect(() => {
     let cancelled = false;
-    api
-      .getActiveSession(project.id)
+    runtimeApi.getActiveSession(project.id)
       .then((s) => {
         if (!cancelled) setSession(s);
       })
@@ -287,8 +279,7 @@ export function Orchestrator({
   useEffect(() => {
     let cancelled = false;
     setRuntimeSnapshot(null);
-    api
-      .getOrchestratorRuntime(project.id)
+    runtimeApi.getOrchestratorRuntime(project.id)
       .then((runtime) => {
         if (!cancelled) setRuntimeSnapshot(runtime);
       })
@@ -442,7 +433,7 @@ export function Orchestrator({
     setResuming(true);
     setResumeError(null);
     try {
-      const transition = await api.resumeSession(project.id, session.id);
+      const transition = await runtimeApi.resumeSession(project.id, session.id);
       applySessionTransition(transition);
       setSession(transition.session);
       setPastEvents([]);
@@ -459,13 +450,13 @@ export function Orchestrator({
     if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
     setStartingNewSession(true);
     try {
-      const transition = await api.startNewSession(project.id);
+      const transition = await runtimeApi.startNewSession(project.id);
       applySessionTransition(transition);
       setSession(transition.session);
       setPastEvents([]);
       setViewing(project.slug, null);
       try {
-        setRuntimeSnapshot(await api.getOrchestratorRuntime(project.id));
+        setRuntimeSnapshot(await runtimeApi.getOrchestratorRuntime(project.id));
       } catch (err) {
         console.error('[pc] getOrchestratorRuntime after new session', err);
       }
@@ -485,7 +476,7 @@ export function Orchestrator({
     let cancelled = false;
     const refresh = async () => {
       try {
-        const runtime = await api.getOrchestratorRuntime(project.id);
+        const runtime = await runtimeApi.getOrchestratorRuntime(project.id);
         if (!cancelled) setRuntimeSnapshot(runtime);
       } catch (err) {
         console.error('[pc] getOrchestratorRuntime poll', err);

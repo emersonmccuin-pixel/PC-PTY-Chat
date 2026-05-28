@@ -3,7 +3,7 @@
 // Filtering is client-side for v1; if a project ever has 1000s of items this
 // gets revisited.
 
-import type { WorkItem } from '@/api/client';
+import type { WorkItem } from '@/features/work-items/client';
 import type {
   SortBy,
   SortDir,

@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { Project } from '@/api/client';
+import type { Project } from '@/features/projects/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 
 export interface ResourceListConfig<T> {

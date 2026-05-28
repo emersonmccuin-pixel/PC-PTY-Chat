@@ -7,7 +7,8 @@
 
 import { useEffect, useState } from 'react';
 
-import { api, type Project, type WorkItem } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { workItemsApi, type WorkItem } from '@/features/work-items/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useChatWorkItemModal } from '@/store/chat-work-item-modal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
@@ -33,8 +34,7 @@ export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMou
       return;
     }
     let cancelled = false;
-    api
-      .workItems(project.id)
+    workItemsApi.workItems(project.id)
       .then((list) => {
         if (!cancelled) setItems(list);
       })
@@ -51,8 +51,7 @@ export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMou
     if (!workItemId || events.length === 0) return;
     const last = events[events.length - 1];
     if (last?.type !== 'work-items-changed') return;
-    api
-      .workItems(project.id)
+    workItemsApi.workItems(project.id)
       .then(setItems)
       .catch(() => {});
   }, [events, workItemId, project.id]);

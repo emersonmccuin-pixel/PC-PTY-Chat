@@ -4,7 +4,7 @@
 // state lives in the parent's draft.fields map. Date values are persisted as
 // ms-epoch numbers; the input renders ISO yyyy-mm-dd derived from the value.
 
-import type { FieldSchema } from '@/api/client';
+import type { FieldSchema } from '@/features/work-items/client';
 
 interface TypedFieldEditorProps {
   schema: FieldSchema;

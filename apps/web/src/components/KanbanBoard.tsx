@@ -21,15 +21,9 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 
-import {
-  api,
-  WorkItemConflictError,
-  type Project,
-  type ProjectSettings,
-  type Stage,
-  type WorkItem,
-  type WorkItemStatus,
-} from '@/api/client';
+import type { Project, ProjectSettings, Stage } from '@/features/projects/client';
+import { settingsApi } from '@/features/settings/client';
+import { WorkItemConflictError, workItemsApi, type WorkItem, type WorkItemStatus } from '@/features/work-items/client';
 
 // Section 27 — local mirror of the server-side resolver in @pc/domain.
 // Keeps the web bundle independent of the workspace package.
@@ -90,8 +84,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   const [globalHideCancelled, setGlobalHideCancelled] = useState(false);
   useEffect(() => {
     let alive = true;
-    void api
-      .getSettings()
+    void settingsApi.getSettings()
       .then((s) => {
         if (alive) setGlobalHideCancelled(s.hideCancelledStage === true);
       })
@@ -126,8 +119,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   }, [items, showAgentContracts, filters]);
 
   const refetch = useCallback(() => {
-    api
-      .workItems(project.id)
+    workItemsApi.workItems(project.id)
       .then(setItems)
       .catch((e) => setError((e as Error).message));
   }, [project.id]);
@@ -223,11 +215,11 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
 
     try {
       if (sameStage) {
-        await api.patchWorkItem(project.id, active.id, active.version, {
+        await workItemsApi.patchWorkItem(project.id, active.id, active.version, {
           position: newPosition,
         });
       } else {
-        await api.moveWorkItem(project.id, active.id, active.version, {
+        await workItemsApi.moveWorkItem(project.id, active.id, active.version, {
           stageId: targetStage.id,
           position: newPosition,
         });

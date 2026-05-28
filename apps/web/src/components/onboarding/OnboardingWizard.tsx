@@ -12,11 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import {
-  api,
-  type OrchestratorSurfacePreference,
-  type PreflightReport,
-} from '@/api/client';
+import { settingsApi, type OrchestratorSurfacePreference, type PreflightReport } from '@/features/settings/client';
 import { FolderBrowserModal } from '@/components/FolderBrowserModal';
 
 type StepId = 'welcome' | 'experience' | 'claude' | 'git' | 'auth' | 'projects' | 'done';
@@ -103,7 +99,7 @@ export function OnboardingWizard({
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
-      if (!simMode) void api.cancelOnboardingLogin().catch(() => {});
+      if (!simMode) void settingsApi.cancelOnboardingLogin().catch(() => {});
     };
   }, [simMode]);
 
@@ -112,7 +108,7 @@ export function OnboardingWizard({
       setPreflight({ ...simPreflight.current });
       return simPreflight.current;
     }
-    const p = await api.getPreflight();
+    const p = await settingsApi.getPreflight();
     setPreflight(p);
     return p;
   }, [simMode]);
@@ -121,8 +117,7 @@ export function OnboardingWizard({
   useEffect(() => {
     if (simMode) return;
     let cancelled = false;
-    void api
-      .getPreflight()
+    void settingsApi.getPreflight()
       .then((p) => {
         if (!cancelled) setPreflight(p);
       })
@@ -179,7 +174,7 @@ export function OnboardingWizard({
         setPreflight({ ...simPreflight.current });
         setLog('Simulated: Claude Code installed (2.1.150).');
       } else {
-        const r = await api.installClaude();
+        const r = await settingsApi.installClaude();
         setPreflight(r.preflight);
         setLog(r.log);
       }
@@ -201,7 +196,7 @@ export function OnboardingWizard({
         setPreflight({ ...simPreflight.current });
         setLog('Simulated: git installed (2.51.0).');
       } else {
-        const r = await api.installGit();
+        const r = await settingsApi.installGit();
         setPreflight(r.preflight);
         setLog(r.log);
       }
@@ -233,12 +228,11 @@ export function OnboardingWizard({
         setBusy(null);
         return;
       }
-      await api.startOnboardingLogin();
+      await settingsApi.startOnboardingLogin();
       // Poll until CC reports signed-in (or the login process fails).
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(() => {
-        void api
-          .getOnboardingAuthState()
+        void settingsApi.getOnboardingAuthState()
           .then((s) => {
             if (s.login.url) setLoginUrl(s.login.url);
             if (s.authed) {

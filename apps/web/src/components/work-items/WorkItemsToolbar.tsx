@@ -11,7 +11,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
-import { WORK_ITEM_TYPES, type WorkItemStatus, type WorkItemType } from '@/api/client';
+import { WORK_ITEM_TYPES, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
 import {
   hasActiveFilters,
   useWorkItemsView,

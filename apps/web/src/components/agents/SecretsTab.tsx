@@ -5,15 +5,16 @@
 // (matches the "click-to-overwrite (never readback)" buildout call).
 //
 // API surface used:
-//   - api.createSecret(podId, { envVarName, valuePlaintext })
-//   - api.deleteSecret(podId, secretId)
+//   - agentsApi.createSecret(podId, { envVarName, valuePlaintext })
+//   - agentsApi.deleteSecret(podId, secretId)
 //
 // Both mutations emit a `pod-changed` envelope that refreshes the parent's
 // bundle (passed in via the `onChanged` callback).
 
 import { useState } from 'react';
 
-import { api, type PodBundle, type ULID } from '@/api/client';
+import type { ULID } from '@/features/projects/client';
+import { agentsApi, type PodBundle } from '@/features/agents/client';
 
 interface SecretsTabProps {
   podId: ULID;
@@ -49,7 +50,7 @@ export function SecretsTab({ podId, bundle, loading, error, onChanged }: Secrets
     setBusy(true);
     setOpError(null);
     try {
-      await api.createSecret(podId, { envVarName: name, valuePlaintext: draft.value });
+      await agentsApi.createSecret(podId, { envVarName: name, valuePlaintext: draft.value });
       setDraft(null);
       onChanged();
     } catch (e) {
@@ -65,7 +66,7 @@ export function SecretsTab({ podId, bundle, loading, error, onChanged }: Secrets
     setBusy(true);
     setOpError(null);
     try {
-      await api.deleteSecret(podId, secretId);
+      await agentsApi.deleteSecret(podId, secretId);
       onChanged();
     } catch (e) {
       setOpError((e as Error).message);

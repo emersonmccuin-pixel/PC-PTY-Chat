@@ -23,7 +23,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 
-import type { OrchestratorSurfacePreference } from '@/api/client';
+import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import type {
   ApprovalRequiredEvent,
   AssistantEvent,

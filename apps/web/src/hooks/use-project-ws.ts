@@ -16,13 +16,8 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
-import type {
-  OrchestratorRuntimeSnapshot,
-  Project,
-  SessionReplayItem,
-  SessionTransitionKind,
-  SessionTransitionResponse,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import type { OrchestratorRuntimeSnapshot, SessionReplayItem, SessionTransitionKind, SessionTransitionResponse } from '@/features/runtime/client';
 import {
   chatSessionReducer,
   createChatSessionState,

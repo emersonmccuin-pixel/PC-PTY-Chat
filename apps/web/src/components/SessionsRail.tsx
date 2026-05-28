@@ -5,12 +5,8 @@
 
 import { useEffect, useState } from 'react';
 
-import {
-  api,
-  type OrchestratorSession,
-  type Project,
-  type SessionTransitionResponse,
-} from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { runtimeApi, type OrchestratorSession, type SessionTransitionResponse } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useViewingSession } from '@/store/viewing-session';
 
@@ -40,7 +36,7 @@ export function SessionsRail({
     setResumingId(targetId);
     setResumeError(null);
     try {
-      const transition = await api.resumeSession(project.id, targetId);
+      const transition = await runtimeApi.resumeSession(project.id, targetId);
       applySessionTransition(transition);
       // Clear the read-only-viewing state so the panel snaps back to the live
       // chat (which is now the resumed conversation).
@@ -60,8 +56,7 @@ export function SessionsRail({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    api
-      .listSessions(project.id)
+    runtimeApi.listSessions(project.id)
       .then((rows) => {
         if (!cancelled) setSessions(rows);
       })
@@ -84,8 +79,7 @@ export function SessionsRail({
       (e) => e.type === 'session-changed' || e.type === 'session-title-updated',
     );
     if (!last) return;
-    api
-      .listSessions(project.id)
+    runtimeApi.listSessions(project.id)
       .then(setSessions)
       .catch(() => {});
   }, [events, project?.id]);

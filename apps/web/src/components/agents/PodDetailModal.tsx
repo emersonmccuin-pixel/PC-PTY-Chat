@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { api, type Pod, type PodBundle } from '@/api/client';
+import { agentsApi, type Pod, type PodBundle } from '@/features/agents/client';
 import { ContextTab } from './ContextTab';
 import { SecretsTab } from './SecretsTab';
 import { SettingsTab } from './SettingsTab';
@@ -106,8 +106,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
     let cancelled = false;
     setBundleLoading(true);
     setBundleErr(null);
-    api
-      .getPod(baseline.id)
+    agentsApi.getPod(baseline.id)
       .then((b) => {
         if (!cancelled) {
           setBundle(b);
@@ -151,7 +150,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
     setBusy(true);
     setError(null);
     try {
-      const patch: Parameters<typeof api.patchPod>[1] = {};
+      const patch: Parameters<typeof agentsApi.patchPod>[1] = {};
       const b = draftFromPod(baseline);
       if (draft.name !== b.name) {
         const n = draft.name.trim();
@@ -187,7 +186,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
       if (draft.outputDestination !== b.outputDestination) {
         patch.outputDestination = draft.outputDestination.trim() || null;
       }
-      const next = await api.patchPod(baseline.id, patch);
+      const next = await agentsApi.patchPod(baseline.id, patch);
       setBaseline(next);
       setDraft(draftFromPod(next));
     } catch (e) {
@@ -211,7 +210,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
     setBusy(true);
     setError(null);
     try {
-      await api.deletePod(baseline.id);
+      await agentsApi.deletePod(baseline.id);
       onDeleted();
     } catch (e) {
       const err = e as Error & { kind?: string };
@@ -314,8 +313,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
               loading={bundleLoading}
               error={bundleErr}
               onChanged={() =>
-                api
-                  .getPod(baseline.id)
+                agentsApi.getPod(baseline.id)
                   .then(setBundle)
                   .catch((e: unknown) => setBundleErr((e as Error).message))
               }
@@ -328,8 +326,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
               loading={bundleLoading}
               error={bundleErr}
               onChanged={() =>
-                api
-                  .getPod(baseline.id)
+                agentsApi.getPod(baseline.id)
                   .then(setBundle)
                   .catch((e: unknown) => setBundleErr((e as Error).message))
               }
@@ -344,8 +341,7 @@ export function PodDetailModal({ pod, readOnly, onClose, onDeleted }: PodDetailM
               podId={baseline.id}
               onDraftChange={(patch) => setDraft((p) => ({ ...p, ...patch }))}
               onBundleChanged={() =>
-                api
-                  .getPod(baseline.id)
+                agentsApi.getPod(baseline.id)
                   .then(setBundle)
                   .catch((e: unknown) => setBundleErr((e as Error).message))
               }

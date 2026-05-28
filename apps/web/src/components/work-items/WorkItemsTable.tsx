@@ -8,7 +8,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api, type Project, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/api/client';
+import type { Project } from '@/features/projects/client';
+import { workItemsApi, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
 import { useWorkItemsView } from '@/store/work-items-view';
 import { WorkItemDetailModal } from './WorkItemDetailModal';
@@ -83,8 +84,7 @@ export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
   const setSort = useWorkItemsView((s) => s.setSort);
 
   const refetch = useCallback(() => {
-    api
-      .workItems(project.id)
+    workItemsApi.workItems(project.id)
       .then(setItems)
       .catch((e) => setError((e as Error).message));
   }, [project.id]);

@@ -8,7 +8,8 @@
 
 import { useEffect, useState } from 'react';
 
-import type { Attachment, FilePreview, WorkItem } from '@/api/client';
+import type { FilePreview } from '@/features/files/client';
+import type { Attachment, WorkItem } from '@/features/work-items/client';
 import { useRichLinkData, type RichLinkData } from '@/hooks/use-rich-link-data';
 import {
   cancelRichLinkHide,
