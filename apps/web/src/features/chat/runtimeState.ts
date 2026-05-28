@@ -20,10 +20,16 @@ export function transientInputCapabilities(
   const ready = state === 'ready';
   const thinking = state === 'thinking';
   const active = ready || thinking;
+  // Terminal stdin is the fallback escape hatch — keep it open for any live
+  // PTY state (including 'spawning'), not only once the ready banner lands.
+  // A new CC boot/resume menu we don't auto-press would otherwise stall the
+  // session in 'spawning' with no way for the user to type past it. Only a
+  // dead ('exited') child blocks input; writeRaw() no-ops there anyway.
+  const alive = state !== 'exited';
   return {
     canAcceptChatInput: active,
     canSubmitChatInput: active,
-    canAcceptTerminalInput: ready,
+    canAcceptTerminalInput: alive,
     canResizeTerminal: active,
     canInterrupt: active,
     stateLabel: state,

@@ -530,11 +530,22 @@ export function Orchestrator({
   const inputCapabilities: RuntimeInputCapabilities = {
     canAcceptChatInput: !composerHidden && !composerDisabled,
     canSubmitChatInput: !composerHidden && !composerDisabled && !startingNewSession,
+    // The raw terminal is the "shit went weird" fallback — it must accept
+    // input whenever the PTY child is ALIVE, not only once we've detected the
+    // ready banner. Gating on runtimeHealth === 'ready' deadlocked resume: a
+    // new CC boot menu we don't auto-press blocks the banner, so the session
+    // never goes 'ready', so terminal stdin stays disabled, so the user can't
+    // dismiss the menu that's blocking the banner. Allow input for any live
+    // process state; the backend writeRaw() still no-ops on an exited child.
     canAcceptTerminalInput:
       !composerHidden &&
       !startingNewSession &&
       wsStatus === 'open' &&
-      runtimeHealth === 'ready',
+      runtimeHealth !== null &&
+      runtimeHealth !== 'not_spawned' &&
+      runtimeHealth !== 'provider_missing' &&
+      runtimeHealth !== 'failed_resume' &&
+      runtimeHealth !== 'exited',
     canResizeTerminal:
       !composerHidden &&
       wsStatus === 'open' &&
