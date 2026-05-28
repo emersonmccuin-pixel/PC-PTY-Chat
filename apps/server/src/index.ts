@@ -73,6 +73,7 @@ import { registerRuntimeHostWebSocketServer } from './features/runtime-host/webs
 import { registerTransientSessionRoutes } from './features/transient-sessions/routes.ts';
 import { registerWorkItemRoutes } from './features/work-items/routes.ts';
 import { registerAgentRunRoutes } from './features/agent-runs/routes.ts';
+import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -846,42 +847,7 @@ app.post('/api/projects/:projectId/workflow-runs/:runId/dismiss', (c) => {
   return c.json({ ok: true, dismissedAt });
 });
 
-app.get('/api/projects/:projectId/worktrees', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json(runtime.worktrees().readCached());
-});
-
-app.post('/api/projects/:projectId/worktrees/create', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ name?: string }>();
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (!name) return c.json({ ok: false, error: 'name required' }, 400);
-  try {
-    const entry = await runtime.worktrees().create(name);
-    return c.json({ ok: true, entry });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-app.post('/api/projects/:projectId/worktrees/destroy', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ target?: string; force?: boolean }>();
-  const target = typeof body.target === 'string' ? body.target.trim() : '';
-  if (!target) return c.json({ ok: false, error: 'target required' }, 400);
-  try {
-    await runtime.worktrees().destroy(target, body.force === true);
-    return c.json({ ok: true });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
+registerWorktreeRoutes(app, { resolveProject });
 
 // 19.12 — v1 /workflow/node-complete, /workflow/node-failed, /approvals
 // routes removed. v2 DAG handles node completion + approvals internally;
