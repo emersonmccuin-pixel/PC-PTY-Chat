@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -44,12 +44,6 @@ import { sweepStaleJsonl } from './services/jsonl-sweep.ts';
 import { sweepEphemeralWorkItems } from './services/ephemeral-work-item-sweep.ts';
 import { backfillStageFlags } from './services/stage-flags-backfill.ts';
 import { ChannelServer } from './services/channel-server.ts';
-import { listCustomCommands } from './services/custom-commands.ts';
-import {
-  type MemoryScope,
-  readMemoryFile,
-  writeMemoryFile,
-} from './services/memory-files.ts';
 import { ProjectCreate } from './services/project-create.ts';
 import { ProjectRegistry } from './services/project-registry.ts';
 import type { ProjectRuntime } from './services/project-runtime.ts';
@@ -72,6 +66,7 @@ import { registerWorkItemRoutes } from './features/work-items/routes.ts';
 import { registerAgentRunRoutes } from './features/agent-runs/routes.ts';
 import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerStatuslineRoutes } from './features/statusline/routes.ts';
+import { registerProjectContextRoutes } from './features/project-context/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -678,44 +673,10 @@ registerRuntimeHostRoutes(app, {
   startOrchestratorPtyInBackground,
 });
 
-/** Custom commands for the Abilities tray. Scans `.claude/commands/*.md` in
- *  both project and `~/.claude/commands/`. Project shadows user on name
- *  collision (CC parity). */
-app.get('/api/projects/:projectId/commands', (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ ok: true, commands: listCustomCommands(runtime.folderPath) });
-});
-
-/** Memory file (`CLAUDE.md`) read for one scope. `?scope=user|project|workspace`. */
-app.get('/api/projects/:projectId/memory/:scope', (c) => {
-  const id = c.req.param('projectId');
-  const scope = c.req.param('scope');
-  if (scope !== 'user' && scope !== 'project' && scope !== 'workspace') {
-    return c.json({ ok: false, error: `invalid scope: ${scope}` }, 400);
-  }
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  return c.json({ ok: true, file: readMemoryFile(scope as MemoryScope, runtime.folderPath) });
-});
-
-/** Memory file write. Body: `{ content: string }`. Creates parent dirs and the
- *  file itself if missing. */
-app.put('/api/projects/:projectId/memory/:scope', async (c) => {
-  const id = c.req.param('projectId');
-  const scope = c.req.param('scope');
-  if (scope !== 'user' && scope !== 'project' && scope !== 'workspace') {
-    return c.json({ ok: false, error: `invalid scope: ${scope}` }, 400);
-  }
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ content?: string }>();
-  if (typeof body.content !== 'string') {
-    return c.json({ ok: false, error: 'content required' }, 400);
-  }
-  const file = writeMemoryFile(scope as MemoryScope, runtime.folderPath, body.content);
-  return c.json({ ok: true, file });
+registerProjectContextRoutes(app, {
+  resolveProject,
+  broadcastTo,
+  getProjectFolderPath: (projectId) => getProjectById(projectId)?.folderPath ?? null,
 });
 
 registerProjectDetailRoute(app, { resolveProject });
@@ -727,45 +688,6 @@ registerTransientSessionRoutes<ReturnType<ProjectRuntime['startAgentDesigner']>,
     broadcastTo,
   },
 );
-
-/** D82 detection: is the project's CLAUDE.md missing or effectively empty?
- *  "Empty" means a file whose content is whitespace-only — the nag surface
- *  in Project Settings keys off this. */
-app.get('/api/projects/:projectId/claude-md-status', (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const project = getProjectById(id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const path = resolve(project.folderPath, 'CLAUDE.md');
-  if (!existsSync(path)) return c.json({ ok: true, exists: false, empty: true });
-  try {
-    const content = readFileSync(path, 'utf-8');
-    return c.json({ ok: true, exists: true, empty: content.trim().length === 0 });
-  } catch (err) {
-    return c.json({ ok: false, error: `read failed: ${(err as Error).message}` }, 500);
-  }
-});
-
-/** D82 write — backs the `pc_write_claude_md` MCP tool. Writes the full body
- *  to `<folder>/CLAUDE.md`, overwriting whatever was there. Broadcasts
- *  `project-claude-md-changed` so the wizard modal can close itself + the
- *  Project Settings nag banner can clear. */
-app.put('/api/projects/:projectId/claude-md', async (c) => {
-  const id = c.req.param('projectId') as ULID;
-  const project = getProjectById(id);
-  if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const body = await c.req.json<{ content?: string }>();
-  if (typeof body.content !== 'string' || body.content.trim().length === 0) {
-    return c.json({ ok: false, error: 'content required (non-empty)' }, 400);
-  }
-  const path = resolve(project.folderPath, 'CLAUDE.md');
-  try {
-    writeFileSync(path, body.content, 'utf-8');
-  } catch (err) {
-    return c.json({ ok: false, error: `write failed: ${(err as Error).message}` }, 500);
-  }
-  broadcastTo(id, { type: 'project-claude-md-changed' });
-  return c.json({ ok: true });
-});
 
 registerWorkItemRoutes(app, {
   resolveProject,
