@@ -94,6 +94,8 @@ export function DevControls() {
         <span className="font-mono text-[10px] text-warning">
           FE-RELOAD-TEST-1 · BE:{status?.marker ?? '—'}
         </span>
+        {/* CANARY pipeline test — safe to revert */}
+        <span className="font-mono text-[10px] text-warning">CANARY-1</span>
         <span className="select-none text-border">·</span>
         {status !== null && status.activeAgents > 0 && (
           <span className="text-warning">

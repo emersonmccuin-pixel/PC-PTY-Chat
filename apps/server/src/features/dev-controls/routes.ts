@@ -10,6 +10,10 @@ export interface DevControlDeps {
 export function registerDevControlRoutes(app: Hono, deps: DevControlDeps): void {
   if (!isDevControlsEnabled()) return;
 
+  /** GET /api/dev/canary — pipeline smoke test, safe to revert. */
+  // CANARY pipeline test — safe to revert
+  app.get('/api/dev/canary', (c) => c.json({ ok: true, marker: 'canary-1' }));
+
   /** GET /api/dev/status — active-agent count + whether a restart is safe. */
   app.get('/api/dev/status', (c) => {
     const activeAgents = getActiveRunRegistry().list().length;
