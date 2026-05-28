@@ -4,6 +4,7 @@ export { newId } from './id.ts';
 export { runMigrations } from './migrate.ts';
 
 export {
+  adoptProjectAsQuickTasks,
   createProject,
   findQuickTasksProject,
   getProjectById,
@@ -15,6 +16,7 @@ export {
   updateProjectStages,
 } from './repos/projects.ts';
 export type {
+  AdoptQuickTasksProjectInput,
   CreateProjectInput,
   ListProjectsOptions,
   UpdateProjectMetaInput,

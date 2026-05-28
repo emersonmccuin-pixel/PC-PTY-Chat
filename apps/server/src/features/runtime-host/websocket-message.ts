@@ -136,8 +136,17 @@ export async function handleRuntimeHostWsMessage<
       break;
     }
     case 'resize':
-      if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-        runtime.resizeOrchestrator(msg.cols, msg.rows);
+      if (
+        typeof msg.cols === 'number' &&
+        Number.isFinite(msg.cols) &&
+        typeof msg.rows === 'number' &&
+        Number.isFinite(msg.rows)
+      ) {
+        try {
+          runtime.resizeOrchestrator(msg.cols, msg.rows);
+        } catch {
+          /* Stale browser resize events must not crash the websocket server. */
+        }
       }
       break;
     case 'ask-reply': {

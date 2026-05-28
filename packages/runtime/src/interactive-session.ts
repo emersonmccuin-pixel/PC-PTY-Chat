@@ -186,7 +186,11 @@ export class InteractiveSession extends EventEmitter {
   }
 
   resize(cols: number, rows: number): void {
-    this.spawn?.resize?.(cols, rows);
+    try {
+      this.spawn?.resize?.(cols, rows);
+    } catch {
+      /* The PTY may have exited between state check and resize. */
+    }
   }
 
   /** Close the session — kill the child and transition to exited.

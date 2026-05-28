@@ -286,7 +286,11 @@ export class LowLevelSpawn extends EventEmitter {
 
   resize(cols: number, rows: number): void {
     if (!this.child || this.state === 'exited') return;
-    this.child.resize(cols, rows);
+    try {
+      this.child.resize(cols, rows);
+    } catch {
+      /* already dead */
+    }
   }
 
   /** Kill the child. Sends Ctrl-C first, then SIGKILL after a grace window

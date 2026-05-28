@@ -234,6 +234,10 @@ const projectScaffold = new ProjectScaffold({
       console.log(
         `[pc] Quick Tasks project seeded (id=${result.projectId}, folder=${result.folderPath})`,
       );
+    } else if (result.action === 'adopted') {
+      console.log(
+        `[pc] Quick Tasks project adopted legacy row (id=${result.projectId}, folder=${result.folderPath})`,
+      );
     }
   } catch (err) {
     console.warn(`[pc] Quick Tasks seed failed: ${(err as Error).message}`);

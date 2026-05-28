@@ -42,7 +42,9 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeHarness(options: { createActive?: boolean; ptyState?: string } = {}) {
+function makeHarness(
+  options: { createActive?: boolean; ptyState?: string; resizeThrows?: boolean } = {},
+) {
   seq += 1;
   const project = createProject({
     slug: `runtime-host-msg-${Date.now().toString(36)}-${seq}`,
@@ -92,6 +94,7 @@ function makeHarness(options: { createActive?: boolean; ptyState?: string } = {}
       }),
     ptySession: () => pty,
     resizeOrchestrator: (cols: number, rows: number) => {
+      if (options.resizeThrows) throw new Error('stale pty');
       pty.resized.push({ cols, rows });
     },
     sessionDataPath: (sessionId: string) => {
@@ -208,4 +211,13 @@ test('terminal input, resize, interrupt, and ask replies dispatch to runtime col
   assert.deepEqual(pty.resized, [{ cols: 120, rows: 32 }]);
   assert.equal(pty.interrupted, true);
   assert.deepEqual(asks, [{ id: 'tool-1', answer: 'yes' }]);
+});
+
+test('stale resize message is ignored instead of crashing websocket handler', async () => {
+  const { handle, pty } = makeHarness({ resizeThrows: true });
+
+  await handle({ type: 'resize', cols: 120, rows: 32 });
+  await handle({ type: 'resize', cols: Number.NaN, rows: 32 });
+
+  assert.deepEqual(pty.resized, []);
 });

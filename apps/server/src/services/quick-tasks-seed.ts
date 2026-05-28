@@ -20,7 +20,13 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { Stage } from '@pc/domain';
-import { createProject, findQuickTasksProject, newId } from '@pc/db';
+import {
+  adoptProjectAsQuickTasks,
+  createProject,
+  findQuickTasksProject,
+  getProjectBySlug,
+  newId,
+} from '@pc/db';
 
 import type { ProjectScaffold, ProjectScaffoldTarget } from './project-scaffold.ts';
 
@@ -47,7 +53,7 @@ export interface EnsureQuickTasksProjectDeps {
   scaffold: ProjectScaffold;
 }
 
-export type EnsureQuickTasksAction = 'existed' | 'created';
+export type EnsureQuickTasksAction = 'existed' | 'created' | 'adopted';
 
 export interface EnsureQuickTasksProjectResult {
   action: EnsureQuickTasksAction;
@@ -58,12 +64,30 @@ export interface EnsureQuickTasksProjectResult {
 export async function ensureQuickTasksProject(
   deps: EnsureQuickTasksProjectDeps,
 ): Promise<EnsureQuickTasksProjectResult> {
+  const folderPath = resolve(deps.dataDir, QUICK_TASKS_FOLDER);
   const existing = findQuickTasksProject();
   if (existing) {
     return { action: 'existed', projectId: existing.id, folderPath: existing.folderPath };
   }
 
-  const folderPath = resolve(deps.dataDir, QUICK_TASKS_FOLDER);
+  const legacy = getProjectBySlug(QUICK_TASKS_SLUG);
+  if (legacy) {
+    if (samePath(legacy.folderPath, folderPath)) {
+      const adopted = adoptProjectAsQuickTasks({
+        id: legacy.id,
+        name: QUICK_TASKS_NAME,
+        stages: QUICK_TASKS_STAGES,
+        folderPath,
+      });
+      if (adopted) {
+        return { action: 'adopted', projectId: adopted.id, folderPath: adopted.folderPath };
+      }
+    }
+    throw new Error(
+      `Quick Tasks slug is already used by a standard project at ${legacy.folderPath}`,
+    );
+  }
+
   mkdirSync(folderPath, { recursive: true });
 
   const folderIsRepo = existsSync(resolve(folderPath, '.git'));
@@ -81,7 +105,10 @@ export async function ensureQuickTasksProject(
   deps.scaffold.writeAll(target);
 
   await exec('git', ['add', '.'], { cwd: folderPath });
-  await exec('git', ['commit', '-m', 'Quick Tasks scaffold'], { cwd: folderPath });
+  const { stdout: status } = await exec('git', ['status', '--porcelain'], { cwd: folderPath });
+  if (status.trim()) {
+    await exec('git', ['commit', '-m', 'Quick Tasks scaffold'], { cwd: folderPath });
+  }
 
   const project = createProject({
     id,
@@ -92,4 +119,12 @@ export async function ensureQuickTasksProject(
     kind: 'quick-tasks',
   });
   return { action: 'created', projectId: project.id, folderPath };
+}
+
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }

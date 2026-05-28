@@ -21,6 +21,13 @@ export interface CreateProjectInput {
   kind?: ProjectKind;
 }
 
+export interface AdoptQuickTasksProjectInput {
+  id: ULID;
+  name: string;
+  stages: Stage[];
+  folderPath: string;
+}
+
 interface ProjectRow {
   id: ULID;
   slug: string;
@@ -140,6 +147,24 @@ export function findQuickTasksProject(): Project | null {
     .where(and(eq(projects.kind, 'quick-tasks'), isNull(projects.deletedAt)))
     .get() as ProjectRow | undefined;
   return row ? toDomain(row) : null;
+}
+
+/** Promote the legacy boot-seeded Quick Tasks row created before `kind`
+ *  existed. Kept explicit so arbitrary user projects are not silently
+ *  reclassified by generic metadata edits. */
+export function adoptProjectAsQuickTasks(input: AdoptQuickTasksProjectInput): Project | null {
+  getDb()
+    .update(projects)
+    .set({
+      name: input.name,
+      stages: input.stages,
+      folderPath: input.folderPath,
+      kind: 'quick-tasks',
+      updatedAt: Date.now(),
+    })
+    .where(and(eq(projects.id, input.id), isNull(projects.deletedAt)))
+    .run();
+  return findQuickTasksProject();
 }
 
 /** 5+.4 (D87) — drag-reorder. Rewrites the `position` column for the given

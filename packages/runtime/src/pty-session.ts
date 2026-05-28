@@ -702,7 +702,11 @@ export class PtySession extends EventEmitter {
 
   resize(cols: number, rows: number) {
     if (this.state === 'exited') return;
-    this.child.resize(cols, rows);
+    try {
+      this.child.resize(cols, rows);
+    } catch {
+      /* already dead */
+    }
   }
 
   kill() {
