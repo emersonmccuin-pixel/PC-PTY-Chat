@@ -56,6 +56,7 @@ import { registerWorkItemRoutes } from './features/work-items/routes.ts';
 import { registerAgentRunRoutes } from './features/agent-runs/routes.ts';
 import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerStatuslineRoutes } from './features/statusline/routes.ts';
+import { registerDevControlRoutes } from './features/dev-controls/routes.ts';
 import { registerProjectContextRoutes } from './features/project-context/routes.ts';
 import { registerWorkflowCompatRoutes } from './features/workflow-compat/routes.ts';
 import { registerMcpBridgeRoutes } from './features/mcp-bridge/routes.ts';
@@ -628,6 +629,8 @@ registerAgentRunRoutes(app, {
 
 registerStatuslineRoutes(app, { broadcastTo });
 
+registerDevControlRoutes(app, { gracefulShutdown });
+
 // ── Static / SPA fallback ─────────────────────────────────────────────────
 
 const STATIC_MIME: Record<string, string> = {
@@ -712,9 +715,19 @@ registerRuntimeHostWebSocketServer<ReturnType<ProjectRuntime['ensurePty']>, Proj
   },
 });
 
-process.on('SIGINT', () => {
-  console.log('[pc] SIGINT — shutting down project runtimes + channel server');
+function gracefulShutdown(): void {
   projectRegistry.shutdownAll();
   channelServer.shutdown();
+}
+
+process.on('SIGINT', () => {
+  console.log('[pc] SIGINT — shutting down');
+  gracefulShutdown();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log('[pc] SIGTERM — shutting down');
+  gracefulShutdown();
   process.exit(0);
 });

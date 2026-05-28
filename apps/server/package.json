@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --ignore \"**/data/**\" --ignore \"**/test-results/**\" --ignore \"**/playwright-report/**\" src/index.ts",
+    "dev": "node scripts/dev-supervisor.mjs",
     "start": "tsx src/index.ts",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",

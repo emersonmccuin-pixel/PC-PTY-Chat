@@ -36,6 +36,7 @@ import { AttachmentLightboxMount } from './AttachmentLightbox';
 import { ChatWorkItemModalMount } from './ChatWorkItemModalMount';
 import { ProjectSettingsPanel } from './ProjectSettingsPanel';
 import { RichLinkPreviewCard } from './RichLinkPreviewCard';
+import { DevControls } from './DevControls';
 import { TabBar } from './Tabs';
 import { WorkflowsList } from './WorkflowsList';
 
@@ -158,6 +159,7 @@ export function Shell({
         {activeProject && <AttachmentLightboxMount projectId={activeProject.id} />}
         <RichLinkPreviewCard />
       </Group>
+      {import.meta.env.DEV && <DevControls />}
     </div>
   );
 }
