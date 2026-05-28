@@ -6,7 +6,9 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
-Current status: Phase 0 has started.
+Current status: Phase 1 server route extraction is complete. `apps/server/src/index.ts`
+is now boot/composition/static-serving only; Phase 2 MCP tool-module splitting is
+the next planned boundary pass.
 
 Implemented slices:
 
@@ -26,6 +28,12 @@ Implemented slices:
 - Settings, Claude profile, preflight, installer, and onboarding auth routes extracted into `apps/server/src/features/settings-onboarding/routes.ts`, with focused tests for settings normalization, effective data-dir behavior, injected preflight/install/auth services, and envelope preservation.
 - Work item CRUD, legacy move/update compatibility routes, agent-contract create/approve/reject routes, attachments, stages, and field schemas extracted into `apps/server/src/features/work-items/routes.ts`, with focused tests for legacy/paginated envelopes, versioned mutations, stage orphan handling, forced reassignment, attachment envelopes, and field-schema broadcasts.
 - Agent run active-list/cancel, invoke, continue, by-dispatcher listing, and pending-ask create/answer/cancel routes extracted into `apps/server/src/features/agent-runs/routes.ts`, with focused tests for activity-panel envelopes, cancellation, dispatch validation/delegation, continuation ownership, list summaries, and pending-ask status mapping.
+- Project worktree list/create/destroy routes extracted into `apps/server/src/features/project-worktrees/routes.ts`, with focused tests for cached registry envelopes, validation, service delegation, and service error mapping.
+- Statusline bridge, usage aggregation, and latest-project statusline routes extracted into `apps/server/src/features/statusline/routes.ts`, with focused tests for persistence, broadcasts, fallback row reconstruction, and bucket aggregation.
+- Project context routes for custom commands, memory, and `CLAUDE.md` status/write surfaces extracted into `apps/server/src/features/project-context/routes.ts`, with focused tests for folder-scoped envelopes and broadcast behavior.
+- Workflow compatibility routes for workflow-builder drafts, failed-run dismissals, legacy workflow-v2 definitions/runs, and review responses extracted into `apps/server/src/features/workflow-compat/routes.ts`, with focused tests for validation, mutation envelopes, and review error mapping.
+- MCP bridge routes for heartbeat status and internal handshake routing extracted into `apps/server/src/features/mcp-bridge/routes.ts`, with focused tests for heartbeat freshness, corrupt/missing files, and agent/workflow/orchestrator handshake priority.
+- Chat bridge routes for ask interception, subagent transcript reads, and channel test-send proxying extracted into `apps/server/src/features/chat-bridges/routes.ts`, with focused tests for pending ask resolution/timeouts, transcript path containment/JSONL parsing, and channel-send envelopes.
 - MCP/tool catalog drift hardening: the pod allowlist drift test now covers every stock pod plus the orchestrator, `pc_node_failed` is re-registered, and the workflow/tool catalog entries needed by current pod allowlists are present.
 
 ## Executive Decision
@@ -497,8 +505,8 @@ Minimum tests to add before deeper refactors:
 ## Immediate Next Actions
 
 1. Implement Phase 0 heartbeat and transient modal state fixes. Done.
-2. Split MCP tools into feature modules so tool definitions, handlers, catalog metadata, and lifecycle flags stay together.
-3. Continue Phase 1 route extraction from `apps/server/src/index.ts`: remaining mixed utility/worktree/workflow-compat/statusline routes remain.
+2. Complete Phase 1 route extraction from `apps/server/src/index.ts`. Done.
+3. Split MCP tools into feature modules so tool definitions, handlers, catalog metadata, and lifecycle flags stay together.
 4. Only then start deeper chat UI decomposition.
 
 ## Non-Goals
