@@ -3,6 +3,33 @@ import type { ChatEvent, JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 
 export const STALL_WARN_MS = 60_000;
 
+export interface RuntimeInputCapabilities {
+  canAcceptChatInput: boolean;
+  canSubmitChatInput: boolean;
+  canAcceptTerminalInput: boolean;
+  canResizeTerminal: boolean;
+  canInterrupt: boolean;
+  stateLabel: string;
+}
+
+export type TransientRuntimeState = 'spawning' | 'ready' | 'thinking' | 'exited';
+
+export function transientInputCapabilities(
+  state: TransientRuntimeState,
+): RuntimeInputCapabilities {
+  const ready = state === 'ready';
+  const thinking = state === 'thinking';
+  const active = ready || thinking;
+  return {
+    canAcceptChatInput: active,
+    canSubmitChatInput: active,
+    canAcceptTerminalInput: ready,
+    canResizeTerminal: active,
+    canInterrupt: active,
+    stateLabel: state,
+  };
+}
+
 export function terminalModeStorageKey(projectId: string, sessionId: string): string {
   return `pc.terminal-mode.${projectId}.${sessionId}`;
 }

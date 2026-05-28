@@ -50,6 +50,7 @@ import {
   deriveLiveState,
   isRuntimeThinking,
   readTerminalMode,
+  type RuntimeInputCapabilities,
   STALL_WARN_MS,
   summarizeInput,
   writeTerminalMode,
@@ -129,9 +130,6 @@ interface ChatSurfaceProps {
   /** Keep the textarea editable, but prevent submitting. Used during a
    *  new-session transition so drafts don't leak into the previous session. */
   composerSendDisabled?: boolean;
-  /** Controls whether raw xterm input may reach the runtime. Defaults to the
-   *  same availability gates as the composer and live WS. */
-  terminalWritable?: boolean;
   /** Override composer placeholder. Defaults to the orchestrator string. */
   composerPlaceholder?: string;
   /** User-facing reason when the composer is disabled but still visible. */
@@ -140,6 +138,9 @@ interface ChatSurfaceProps {
   composerQueueing?: boolean;
   /** Server-derived send button label. */
   composerSendLabel?: string;
+  /** Unified runtime input gate. When supplied, it is the source of truth for
+   *  composer send, interrupt, terminal input, and terminal resize. */
+  inputCapabilities?: RuntimeInputCapabilities;
   /** Non-blocking status text shown in the composer chrome. */
   composerStatusMessage?: string;
   /** Optional content above the chat scroller (session title row, agent label, etc.). */
@@ -174,11 +175,11 @@ export function ChatSurface({
   composerHidden,
   composerDisabled,
   composerSendDisabled,
-  terminalWritable,
   composerPlaceholder,
   composerDisabledReason,
   composerQueueing,
   composerSendLabel,
+  inputCapabilities,
   composerStatusMessage,
   headerSlot,
   bannerSlot,
@@ -291,11 +292,20 @@ export function ChatSurface({
   }, [projectId, currentSessionId, terminalEligible, defaultOrchestratorSurface]);
 
   const terminalActive = terminalEligible && surfaceMode === 'terminal';
+  const resolvedComposerDisabled = inputCapabilities
+    ? !inputCapabilities.canAcceptChatInput
+    : composerDisabled;
+  const resolvedComposerSendDisabled = inputCapabilities
+    ? !inputCapabilities.canSubmitChatInput
+    : composerSendDisabled;
+  const resolvedInterruptDisabled = inputCapabilities
+    ? !inputCapabilities.canInterrupt
+    : false;
   const resolvedTerminalWritable =
     terminalActive &&
-    (terminalWritable ??
-      (!composerDisabled &&
-        !composerSendDisabled &&
+    (inputCapabilities?.canAcceptTerminalInput ??
+      (!resolvedComposerDisabled &&
+        !resolvedComposerSendDisabled &&
         (wsStatus === undefined || wsStatus === 'open')));
   useEffect(() => {
     if (!surfaceModeReady) return;
@@ -335,13 +345,15 @@ export function ChatSurface({
   }, [thinkingStartedAt]);
 
   const handleInterrupt = useCallback((): boolean => {
+    if (inputCapabilities && !inputCapabilities.canInterrupt) return false;
     const ok = onInterrupt();
     if (ok && isThinking) setInterruptedAt(Date.now());
     return ok;
-  }, [onInterrupt, isThinking]);
+  }, [inputCapabilities, onInterrupt, isThinking]);
 
   const handleSend = useCallback(
     (text: string): boolean => {
+      if (inputCapabilities && !inputCapabilities.canSubmitChatInput) return false;
       const clientMessageId = createClientMessageId();
       const ok = onSend(text, clientMessageId);
       const queueOptimistically = composerQueueing || isThinking;
@@ -356,7 +368,14 @@ export function ChatSurface({
       }
       return ok;
     },
-    [onSend, composerQueueing, isThinking, wsStatus, recordPendingPrompt],
+    [inputCapabilities, onSend, composerQueueing, isThinking, wsStatus, recordPendingPrompt],
+  );
+  const handleTerminalResize = useCallback(
+    (cols: number, rows: number): boolean => {
+      if (inputCapabilities && !inputCapabilities.canResizeTerminal) return false;
+      return onTerminalResize?.(cols, rows) ?? false;
+    },
+    [inputCapabilities, onTerminalResize],
   );
   const resolvedComposerSendLabel =
     composerSendLabel ??
@@ -586,7 +605,7 @@ export function ChatSurface({
             active={terminalActive}
             writable={resolvedTerminalWritable}
             onInput={onTerminalInput}
-            onResize={onTerminalResize}
+            onResize={handleTerminalResize}
           />
         }
         renderItem={renderTimelineItem}
@@ -596,8 +615,9 @@ export function ChatSurface({
           historyKey={composerHistoryKey}
           onSend={handleSend}
           onInterrupt={handleInterrupt}
-          disabled={composerDisabled}
-          sendDisabled={composerSendDisabled}
+          disabled={resolvedComposerDisabled}
+          sendDisabled={resolvedComposerSendDisabled}
+          interruptDisabled={resolvedInterruptDisabled}
           placeholder={composerPlaceholder}
           disabledReason={composerDisabledReason}
           statusMessage={composerStatusMessage}

@@ -91,6 +91,7 @@ export function Composer({
   onInterrupt,
   disabled,
   sendDisabled,
+  interruptDisabled,
   placeholder,
   disabledReason,
   statusMessage,
@@ -101,6 +102,7 @@ export function Composer({
   onInterrupt: () => boolean;
   disabled?: boolean;
   sendDisabled?: boolean;
+  interruptDisabled?: boolean;
   placeholder?: string;
   disabledReason?: string;
   statusMessage?: string;
@@ -140,7 +142,7 @@ export function Composer({
   }, [text, resizeTextarea]);
 
   function clickInterrupt() {
-    if (sendDisabled) return;
+    if (sendDisabled || interruptDisabled) return;
     if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
     const ok = onInterrupt();
     setInterruptFeedback(ok ? 'sent' : 'failed');
@@ -281,7 +283,7 @@ export function Composer({
         <button
           type="button"
           onClick={clickInterrupt}
-          disabled={disabled || sendDisabled || interruptFeedback === 'sent'}
+          disabled={disabled || sendDisabled || interruptDisabled || interruptFeedback === 'sent'}
           title="Stop the current response (sends Escape to the PTY)"
           className={
             'border px-3 py-1 text-[10px] uppercase tracking-wider disabled:opacity-50 ' +

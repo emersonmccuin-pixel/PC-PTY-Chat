@@ -15,6 +15,7 @@
 import { useMemo } from 'react';
 
 import type { Project } from '@/features/projects/client';
+import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
@@ -175,8 +176,7 @@ export function AgentDesignerChat({
         return true;
       }}
       composerHistoryKey={`agent-designer:${project.id}`}
-      composerDisabled={state === 'spawning' || state === 'exited'}
-      terminalWritable={state === 'ready'}
+      inputCapabilities={transientInputCapabilities(state)}
       composerPlaceholder={composerPlaceholder}
       emptyState={emptyState}
     />

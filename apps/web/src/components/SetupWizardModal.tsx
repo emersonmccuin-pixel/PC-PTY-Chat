@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
@@ -210,8 +211,7 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
             return true;
           }}
           composerHistoryKey={`setup-wizard:${projectId}`}
-          composerDisabled={adapted.state === 'spawning' || adapted.state === 'exited'}
-          terminalWritable={adapted.state === 'ready'}
+          inputCapabilities={transientInputCapabilities(adapted.state)}
           composerPlaceholder={composerPlaceholder}
           emptyState={emptyState}
         />

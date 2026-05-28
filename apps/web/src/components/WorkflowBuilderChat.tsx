@@ -16,6 +16,7 @@
 import { useMemo } from 'react';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
+import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
 import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
@@ -187,8 +188,7 @@ export function WorkflowBuilderChat({
       }}
       onAskReply={onAskReply}
       composerHistoryKey={`workflow-builder:${projectId}`}
-      composerDisabled={state === 'spawning' || state === 'exited'}
-      terminalWritable={state === 'ready'}
+      inputCapabilities={transientInputCapabilities(state)}
       composerPlaceholder={composerPlaceholder}
       emptyState={emptyState}
       onSurfaceModeChange={onSurfaceModeChange}

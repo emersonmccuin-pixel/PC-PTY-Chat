@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { ChatSurface } from '@/components/ChatSurface';
+import type { RuntimeInputCapabilities } from '@/features/chat/runtimeState';
 import {
   ConversationHeader,
   ConversationHeaderButton,
@@ -25,7 +26,7 @@ interface TransientAgentConversationProps {
   onAskReply?: (toolUseId: string, answer: string) => boolean;
   composerHistoryKey: string;
   composerDisabled?: boolean;
-  terminalWritable?: boolean;
+  inputCapabilities?: RuntimeInputCapabilities;
   composerPlaceholder?: string;
   emptyState?: ReactNode;
   onSurfaceModeChange?: (mode: OrchestratorSurfacePreference) => void;
@@ -48,7 +49,7 @@ export function TransientAgentConversation({
   onAskReply,
   composerHistoryKey,
   composerDisabled,
-  terminalWritable,
+  inputCapabilities,
   composerPlaceholder,
   emptyState,
   onSurfaceModeChange,
@@ -80,7 +81,7 @@ export function TransientAgentConversation({
       composerHistoryKey={composerHistoryKey}
       defaultOrchestratorSurface="terminal"
       composerDisabled={composerDisabled}
-      terminalWritable={terminalWritable}
+      inputCapabilities={inputCapabilities}
       composerPlaceholder={composerPlaceholder}
       headerSlot={headerSlot}
       emptyState={emptyState}

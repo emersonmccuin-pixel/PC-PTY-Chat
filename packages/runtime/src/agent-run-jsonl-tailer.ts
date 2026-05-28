@@ -187,6 +187,13 @@ export class AgentRunJsonlTailer extends EventEmitter {
     return this.cursor;
   }
 
+  /** Synchronously drain currently available complete lines without starting
+   *  the polling loop. Used by HTTP backfill endpoints that need a one-shot
+   *  snapshot of an existing transcript. */
+  drainAvailable(): void {
+    this.readTail();
+  }
+
   private readTail(): void {
     if (!existsSync(this.filePath)) return;
     let content: string;

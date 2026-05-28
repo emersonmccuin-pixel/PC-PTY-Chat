@@ -5,6 +5,7 @@ import type {
   PendingAskOption,
   ULID,
 } from '@pc/domain';
+import { AgentRunJsonlTailer, jsonlPathFor, type AgentRunJsonlEvent } from '@pc/runtime';
 import {
   getAgentRunRow,
   getProjectById,
@@ -73,6 +74,14 @@ function continuationFailureStatus(cause: string): number {
   return statusFor[cause] ?? 400;
 }
 
+function loadAgentRunEvents(jsonlPath: string): AgentRunJsonlEvent[] {
+  const events: AgentRunJsonlEvent[] = [];
+  const tailer = new AgentRunJsonlTailer({ filePath: jsonlPath, pollIntervalMs: 60_000 });
+  tailer.on('event', (event: AgentRunJsonlEvent) => events.push(event));
+  tailer.drainAvailable();
+  return events;
+}
+
 export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void {
   const services = {
     getActiveRunRegistry: deps.getActiveRunRegistry ?? defaultGetActiveRunRegistry,
@@ -112,6 +121,32 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       endedAt: r.completedAt,
     }));
     return c.json({ ok: true, runs: shimmed });
+  });
+
+  /** One-shot JSONL backfill for the Activity Panel transcript modal. Live
+   *  events still arrive through WS as `agent-jsonl-event`; this endpoint
+   *  fills the pre-open gap by replaying CC's per-session JSONL. */
+  app.get('/api/projects/:projectId/agent-runs/:runId/events', (c) => {
+    const projectId = c.req.param('projectId') as ULID;
+    const project = getProjectById(projectId);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+
+    const runId = c.req.param('runId') as ULID;
+    const row = getAgentRunRow(runId);
+    if (!row) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+    if (row.projectId !== projectId) {
+      return c.json({ ok: false, error: `run ${runId} not in project ${projectId}` }, 400);
+    }
+
+    const jsonlPath = jsonlPathFor(project.folderPath, row.ccSessionId);
+    const events = loadAgentRunEvents(jsonlPath);
+    return c.json({
+      ok: true,
+      runId: row.id,
+      status: row.status,
+      jsonlPath,
+      events,
+    });
   });
 
   /** Cancel an in-flight agent run. Looks up the AgentRun via the active-runs

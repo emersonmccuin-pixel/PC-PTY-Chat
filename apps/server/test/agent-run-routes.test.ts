@@ -1,14 +1,15 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { Hono } from 'hono';
 import type { Project, Stage, ULID } from '@pc/domain';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-agent-run-routes-'));
 process.env.PC_DATA_DIR = tmpDir;
+process.env.CLAUDE_CONFIG_DIR = join(tmpDir, 'claude-config');
 
 const {
   closeDb,
@@ -18,6 +19,7 @@ const {
   newId,
   runMigrations,
 } = await import('@pc/db');
+const { jsonlPathFor } = await import('@pc/runtime');
 const { registerAgentRunRoutes } = await import('../src/features/agent-runs/routes.ts');
 
 const stages: Stage[] = [{ id: 'backlog', name: 'Backlog', order: 0 }];
@@ -148,6 +150,61 @@ test('agent-run active list and cancel routes preserve envelopes', async () => {
     ok: false,
     error: `unknown run: ${missingRunId}`,
   });
+});
+
+test('agent-run events route backfills canonical JSONL events', async () => {
+  const project = makeProject('events');
+  const run = makeRun(project.id, {
+    status: 'running',
+    ccSessionId: 'cc-events',
+  });
+  const jsonlPath = jsonlPathFor(project.folderPath, 'cc-events');
+  mkdirSync(dirname(jsonlPath), { recursive: true });
+  writeFileSync(
+    jsonlPath,
+    [
+      JSON.stringify({ type: 'user', message: { content: 'research this' } }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'done' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 3, output_tokens: 2 },
+          model: 'claude-test',
+        },
+      }),
+      'not-json',
+      '',
+    ].join('\n'),
+  );
+
+  const app = new Hono();
+  registerAgentRunRoutes(app, {
+    channelServer: {} as never,
+    broadcastTo: () => {},
+  });
+
+  const res = await app.request(`/api/projects/${project.id}/agent-runs/${run.id}/events`);
+  assert.equal(res.status, 200);
+  const body = await json<{
+    ok: boolean;
+    runId: ULID;
+    status: string;
+    jsonlPath: string;
+    events: Array<{ kind: string; text?: string; model?: string | null }>;
+  }>(res);
+  assert.equal(body.ok, true);
+  assert.equal(body.runId, run.id);
+  assert.equal(body.status, 'running');
+  assert.equal(body.jsonlPath, jsonlPath);
+  assert.deepEqual(body.events.map((event) => event.kind), [
+    'jsonl-user',
+    'jsonl-usage',
+    'jsonl-turn-end',
+  ]);
+  assert.equal(body.events[0]?.text, 'research this');
+  assert.equal(body.events[1]?.model, 'claude-test');
+  assert.equal(body.events[2]?.text, 'done');
 });
 
 test('invoke route validates inputs, delegates dispatch, audits, and returns async envelope', async () => {

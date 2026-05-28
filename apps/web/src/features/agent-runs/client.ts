@@ -2,6 +2,7 @@ import { getJson, postJson } from '@/api/http';
 import type { ULID } from '@/features/projects/client';
 
 export type AgentRunStatus =
+  | 'queued'
   | 'spawning'
   | 'running'
   | 'paused'
@@ -60,6 +61,14 @@ export interface AgentRunRecord {
   endedAt: number | null;
 }
 
+export interface AgentRunEventsResponse {
+  ok: true;
+  runId: ULID;
+  status: AgentRunStatus;
+  jsonlPath: string;
+  events: unknown[];
+}
+
 export const agentRunsApi = {
   listAgentRuns: (projectId: ULID) =>
     getJson<{ ok: true; runs: AgentRunRecord[] }>(
@@ -70,6 +79,11 @@ export const agentRunsApi = {
     postJson<{ ok: boolean; status: string | null }>(
       `/api/projects/${projectId}/agent-runs/${runId}/cancel`,
       {},
+    ),
+
+  getAgentRunEvents: (projectId: ULID, runId: string) =>
+    getJson<AgentRunEventsResponse>(
+      `/api/projects/${projectId}/agent-runs/${runId}/events`,
     ),
 
   listAgentPendingAsks: (projectId: ULID) =>
