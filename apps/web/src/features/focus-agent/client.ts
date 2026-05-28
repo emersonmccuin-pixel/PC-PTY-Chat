@@ -1,43 +1,15 @@
 import { getJson, postJson } from '@/api/http';
 import type {
   SessionReplayItem,
-  SessionTransitionKind,
-} from '@/features/runtime/client';
-import type { ULID } from '@/features/projects/client';
+} from '@/features/runtime/types';
+import type { ULID } from '@/features/projects/types';
+import type {
+  FocusAgentRuntimeSnapshot,
+  FocusAgentSession,
+  FocusAgentSessionTransitionResponse,
+} from './types';
 
-export interface FocusAgentSession {
-  id: ULID;
-  provider: 'claude';
-  providerSessionId: string | null;
-  model: string | null;
-  title: string | null;
-  status: 'active' | 'ended';
-  endedReason: string | null;
-  startedAt: number;
-  endedAt: number | null;
-  deletedAt: number | null;
-  jsonlPath: string | null;
-  jsonlLineCursor: number;
-}
-
-export interface FocusAgentRuntimeSnapshot {
-  sessionId: ULID | null;
-  provider: 'claude';
-  providerSessionId: string | null;
-  ptyState: string | null;
-  spawnAttemptId: string | null;
-  spawnAttempt: number;
-  lastReadyAt: number | null;
-  nextRetryAt: number | null;
-  runtimeFailureReason: string | null;
-}
-
-export interface FocusAgentSessionTransitionResponse {
-  transition: SessionTransitionKind;
-  session: FocusAgentSession;
-  replay: SessionReplayItem[];
-  highWaterSeq?: number;
-}
+export * from './types';
 
 export const focusAgentApi = {
   getFocusAgentSession: () =>

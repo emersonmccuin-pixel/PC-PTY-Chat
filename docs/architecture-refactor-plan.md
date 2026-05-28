@@ -6,12 +6,20 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
-Current status: Phase 1 server route extraction and Phase 2 MCP tool splitting
-are complete. `apps/server/src/index.ts` is boot/composition/static-serving only,
-and `packages/mcp/src/server.ts` now composes feature tool modules instead of
-owning inline `pc_*` handlers. The current cleanup retires the Quick Tasks
-surface that had been intentionally deferred during unmerged-work recovery.
+Current status: Phase 1 server route extraction, Phase 2 MCP tool splitting,
+Phase 3 web API client/contract splitting, and Phase 4 `ChatSurface`
+decomposition are complete.
+`apps/server/src/index.ts` is boot/composition/static-serving only,
+`packages/mcp/src/server.ts` now composes feature tool modules instead of
+owning inline `pc_*` handlers, and `apps/web/src/api/client.ts` composes
+feature clients. Feature client contracts now live in colocated `types.ts`
+modules, with client modules kept to HTTP methods plus compatibility re-exports.
 Fresh-session handoff: [Refactor Session Handoff - 2026-05-28](./refactor-session-handoff-2026-05-28.md).
+
+Fresh Codex sessions should start from the prompt in the handoff file. Short
+version: work only in `E:\Claude Code Projects\Personal\PC-PTY-Chat-codex`,
+do not touch `E:\Claude Code Projects\Personal\PC-PTY-Chat`, and do not merge
+anything while Claude is still working in the primary checkout.
 
 Implemented slices:
 
@@ -41,6 +49,21 @@ Implemented slices:
 - Quick Tasks product-surface removal: routes, seed service, MCP tools, catalog metadata, stock-pod prompt grants, special project/runtime branching, and tagged work-item plumbing were removed; only historical migrations and the removal migration retain references.
 - Agent transcript backfill: `GET /api/projects/:projectId/agent-runs/:runId/events` replays the agent's provider JSONL, and the Activity transcript modal merges that backfill with live `agent-jsonl-event` WebSocket envelopes.
 - Runtime input capability contract: `ChatSurface` accepts a single capability object for composer input, send, interrupt, terminal input, and terminal resize; orchestrator and transient modals now feed terminal writability from runtime state rather than ad hoc composer booleans.
+- ChatSurface decomposition: surface mode persistence/notification, composer
+  send/interrupt/pending-prompt actions, input capability resolution, runtime
+  thinking derivation, the public prop contract, and `ChatSurface` itself are
+  extracted into `apps/web/src/features/chat`; the top-level surface is now a
+  thin coordinator.
+- Web API client split: `apps/web/src/api/client.ts` is now a compatibility
+  barrel over feature clients, no web source imports `@/api/client` directly,
+  and exported feature contracts/constants/errors live in colocated `types.ts`
+  modules instead of client modules.
+- Web boundary guard tests: `apps/server/test/web-boundaries.test.ts` prevents
+  `components/ChatSurface.tsx`, direct `@/api/client` imports, and public
+  contract exports from feature `client.ts` files from being reintroduced.
+- Pending prompt utility tests: `apps/server/test/web-pending-prompts.test.ts`
+  covers optimistic pending prompt envelope metadata and transcript/queue
+  confirmation behavior.
 
 ## Executive Decision
 
@@ -413,25 +436,40 @@ Contract decision:
 - Preferred: create `packages/contracts` or make `packages/domain` explicitly browser-safe and import types from there.
 - Avoid long-term duplicate interfaces in `apps/web/src/api/client.ts`.
 
+Current status:
+
+- `apps/web/src/api/client.ts` is a compatibility barrel over feature clients.
+- No web source imports `@/api/client` directly.
+- Feature client contracts/constants/errors are split into colocated `types.ts`
+  modules and re-exported through the existing client modules for compatibility.
+
 Definition of done:
 
-- `client.ts` becomes a barrel or disappears.
-- Each feature imports only its own client slice.
+- `client.ts` becomes a barrel or disappears. Done at the barrel level.
+- Each feature imports only its own client slice. Done for web source; no direct
+  `@/api/client` imports remain.
 - Web/server type drift is tested.
 
 ### Phase 4: Decompose `ChatSurface`
 
-Do this after Phases 0-3, because chat currently consumes every event shape.
+Status: complete. `ChatSurface` now lives in `apps/web/src/features/chat` and
+is a thin coordinator over extracted renderers, hooks, and control-state
+helpers.
 
 Target modules:
 
 ```text
 apps/web/src/features/chat/
+  ChatSurfaceProps.ts
   ChatSurface.tsx
   ChatTimeline.tsx
   ChatComposer.tsx
   TerminalPane.tsx
   usePendingPrompts.ts
+  useChatSurfaceMode.ts
+  useChatComposerActions.ts
+  useChatInputControls.ts
+  useChatRuntimeThinking.ts
   useChatRenderItems.ts
   normalizeJsonlEnvelope.ts
   toolGrouping.ts
@@ -448,8 +486,9 @@ Rules:
 
 Definition of done:
 
-- `ChatSurface` is a coordinator, not the implementation of every behavior.
-- Agent designer/workflow builder/setup wizard can reuse chat without custom one-off adapters.
+- `ChatSurface` is a coordinator, not the implementation of every behavior. Done.
+- Agent designer/workflow builder/setup wizard can reuse chat without custom one-off adapters. Done through `TransientAgentConversation`.
+- Boundary and pending-prompt regressions are covered by focused tests in the server test suite.
 
 ### Phase 5: Rebuild cartridges one at a time
 
@@ -472,7 +511,12 @@ For each cartridge:
 
 ## Boundary Enforcement
 
-Add one of:
+Current lightweight enforcement:
+
+- `apps/server/test/web-boundaries.test.ts` checks the web feature-client and
+  `ChatSurface` boundaries without adding a new lint dependency.
+
+Future stricter options:
 
 - `dependency-cruiser`
 - `eslint-plugin-boundaries`
@@ -501,12 +545,10 @@ Minimum tests to add before deeper refactors:
 
 ## Immediate Next Actions
 
-1. Commit/checkpoint the current Quick Tasks removal, transcript backfill,
-   runtime input capability, and docs cleanup.
-2. Continue Phase 4 `ChatSurface` decomposition from the recovered client split
-   and extracted timeline/core helpers.
-3. Start with the low-risk `ThinkingIndicator` extraction, then move leaf
-   renderer groups out of `ChatSurface` without changing behavior.
+1. Start Phase 5 with the chat/runtime/WebSocket cartridge.
+2. Capture a real trace for the chosen cartridge before redesigning contracts.
+3. Keep the existing runtime primitives and tests; replace internals only when
+   a trace identifies the broken behavior.
 
 ## Non-Goals
 

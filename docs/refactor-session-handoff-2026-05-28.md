@@ -3,6 +3,36 @@
 Purpose: make a fresh session able to continue the architecture refactor without
 reconstructing state from chat history.
 
+## Start A Fresh Codex Session
+
+Use this exact first message in a new Codex session:
+
+```text
+Use only this worktree:
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex
+
+Do not touch this primary checkout:
+E:\Claude Code Projects\Personal\PC-PTY-Chat
+
+Read:
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\AGENTS.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\CLAUDE.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\docs\codex-worktree-workflow.md
+E:\Claude Code Projects\Personal\PC-PTY-Chat-codex\docs\refactor-session-handoff-2026-05-28.md
+
+Then continue the architecture refactor from the handoff.
+Do not restart the app, dev server, dogfood app, Vite, channel server, or POST /api/dev/restart.
+Do not merge anything while Claude is still working in the primary checkout.
+```
+
+Plain English:
+
+1. Claude keeps using `E:\Claude Code Projects\Personal\PC-PTY-Chat`.
+2. Codex uses `E:\Claude Code Projects\Personal\PC-PTY-Chat-codex`.
+3. Codex commits work on `codex/architecture-refactor`.
+4. Do not merge final refactor work until Claude is done and committed.
+5. When Claude is done, ask Codex: "Claude is done and committed. Merge the refactor from the Codex worktree."
+
 ## Current State
 
 Branch at original handoff time: `dev`, ahead of `origin/dev` by 51 commits.
@@ -114,75 +144,101 @@ current cleanup. A sensible split is:
 Keep the unrelated `Shell.tsx` and desktop changes separate unless the user
 confirms they belong in the same commit.
 
-## Next Refactor Objective
+## Refactor Status
 
-Continue Phase 4: decompose `ChatSurface`.
+Lead-up phases and Phase 4 are complete:
 
-Current `apps/web/src/components/ChatSurface.tsx` is about 2140 lines. It is
-already smaller than the original audit because these pieces have been
-extracted:
+- Phase 1 server route extraction.
+- Phase 2 MCP tool split.
+- Phase 3 web API client/contract split.
+- Phase 4 `ChatSurface` decomposition.
 
+Current `apps/web/src/features/chat/ChatSurface.tsx` is about 180 lines and is
+a thin coordinator over extracted modules:
+
+- `apps/web/src/features/chat/ChatSurfaceProps.ts`
+- `apps/web/src/features/chat/ChatSurface.tsx`
 - `apps/web/src/features/chat/ChatTimeline.tsx`
 - `apps/web/src/features/chat/ChatComposer.tsx`
 - `apps/web/src/features/chat/TerminalPane.tsx`
 - `apps/web/src/features/chat/usePendingPrompts.ts`
+- `apps/web/src/features/chat/useChatRenderItems.ts`
+- `apps/web/src/features/chat/useChatTimelineRenderer.tsx`
+- `apps/web/src/features/chat/useThinkingIndicatorState.ts`
+- `apps/web/src/features/chat/useChatSurfaceMode.ts`
+- `apps/web/src/features/chat/useChatComposerActions.ts`
+- `apps/web/src/features/chat/useChatInputControls.ts`
+- `apps/web/src/features/chat/useChatRuntimeThinking.ts`
 - `apps/web/src/features/chat/normalizeJsonlEnvelope.ts`
 - `apps/web/src/features/chat/toolGrouping.ts`
 - `apps/web/src/features/chat/runtimeState.ts`
 - `apps/web/src/features/chat/approvals.tsx`
+- `apps/web/src/features/chat/EventBubbles.tsx`
+- `apps/web/src/features/chat/SystemBubbles.tsx`
+- `apps/web/src/features/chat/ToolBubbles.tsx`
+- `apps/web/src/features/chat/AgentWorkflowBubbles.tsx`
+- `apps/web/src/features/chat/ThinkingIndicator.tsx`
 
 Still inside `ChatSurface.tsx`:
 
-- `ChatTurnCard`
-- `EventBubble`
-- system/notification/footer renderers
-- `ThinkingIndicator`
-- user/assistant markdown bubbles
-- tool-call detail renderers
-- tool grouping display components
-- workflow and agent dispatch group bubbles
-- task/todo bubbles
-
-## Recommended Phase 4 Slices
-
-Do the next work as small file moves with typecheck after each slice.
-
-1. Extract `ThinkingIndicator`.
-   - New file: `apps/web/src/features/chat/ThinkingIndicator.tsx`
-   - Move `formatElapsed` with it unless another module already needs that.
-   - Acceptance: `ChatSurface` imports it; behavior unchanged.
-
-2. Extract basic event bubbles.
-   - New file: `apps/web/src/features/chat/EventBubbles.tsx`
-   - Move `ChatTurnCard`, `EventBubble`, `UserBubble`, `AssistantBubble`,
-     copy helpers, markdown URL helpers, and queue/session divider components.
-   - Keep props explicit; avoid importing transport state into the renderer.
-
-3. Extract system/status bubbles.
-   - New file: `apps/web/src/features/chat/SystemBubbles.tsx`
-   - Move `SystemBubble`, `SystemErrorBubble`, `SystemFooter`,
-     `SystemRawDump`, `NotificationRow`, turn footer chips, compact and
-     microcompact dividers.
-
-4. Extract tool renderers.
-   - New file: `apps/web/src/features/chat/ToolBubbles.tsx`
-   - Move `ToolCallDetails`, `EditBubble`, `EditDiff`, `WritePreview`,
-     `ToolCallRow`, `ToolSubgroup`, `CollapsibleEventGroup`,
-     `ToolGroupBubble`, and shared tool formatting helpers.
-
-5. Extract workflow/agent/task bubbles.
-   - New file: `apps/web/src/features/chat/AgentWorkflowBubbles.tsx`
-   - Move workflow status derivation, agent status derivation,
-     `WorkflowRunGroupBubble`, `AgentDispatchGroupBubble`, `TodosBubble`,
-     `TaskStartBubble`, and `TaskEndBubble`.
-
-After these slices, `ChatSurface.tsx` should mostly contain:
-
-- input capability and surface mode coordination
 - pending prompt coordination
-- event normalization to render items
-- `renderTimelineItem` switch
-- composition of header/timeline/composer/terminal/footer
+- terminal pane/composer/timeline composition
+
+This is intentional for now; leave `ChatSurface` as the coordinator unless a
+clear reuse seam appears.
+
+Phase 4 guard tests:
+
+- `apps/server/test/web-boundaries.test.ts`
+- `apps/server/test/web-pending-prompts.test.ts`
+
+## Next Refactor Objective
+
+Start Phase 5 with the chat/runtime/WebSocket cartridge.
+
+Recommended first slice:
+
+1. Capture the current chat/runtime/WebSocket trace points and identify which
+   state transitions are still hard to inspect.
+2. Write the ideal cartridge contract before moving more behavior.
+3. Keep existing runtime primitives and tests; replace internals only when the
+   trace identifies broken behavior.
+
+## Phase 3 Client State
+
+`apps/web/src/api/client.ts` is already a compatibility barrel over feature
+clients, and no web source imports `@/api/client` directly.
+
+Phase 3 is complete:
+
+- Feature client contracts/constants/errors live in colocated `types.ts` files.
+- Feature `client.ts` files are HTTP methods plus compatibility re-exports.
+- No feature `client.ts` directly exports public contracts.
+
+New `types.ts` modules added for Phase 3:
+
+- `apps/web/src/features/agent-runs/types.ts`
+- `apps/web/src/features/agents/types.ts`
+- `apps/web/src/features/dev-controls/types.ts`
+- `apps/web/src/features/files/types.ts`
+- `apps/web/src/features/focus-agent/types.ts`
+- `apps/web/src/features/project-context/types.ts`
+- `apps/web/src/features/projects/types.ts`
+- `apps/web/src/features/runtime/types.ts`
+- `apps/web/src/features/settings/types.ts`
+- `apps/web/src/features/work-items/types.ts`
+- `apps/web/src/features/workflows/types.ts`
+
+## Phase 4 Completion Checks
+
+Passed:
+
+```powershell
+pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts test/web-pending-prompts.test.ts
+pnpm --filter @pc/web typecheck
+pnpm --filter @pc/server typecheck
+git diff --check
+```
 
 ## Guardrails
 
@@ -202,7 +258,7 @@ git diff --check
 
 ## Fresh Session Starter Prompt
 
-Use this prompt after clearing context:
+Use this prompt after clearing context if you want the older detailed starter:
 
 ```text
 We are continuing the architecture refactor in E:\Claude Code Projects\Personal\PC-PTY-Chat-codex.
@@ -210,6 +266,7 @@ Use the Codex worktree only; do not edit or switch branches in the primary check
 Read docs/refactor-session-handoff-2026-05-28.md and docs/architecture-refactor-plan.md.
 First verify the current worktree and Quick Tasks residue exactly as the handoff says.
 Do not revert apps/web/src/components/Shell.tsx or apps/desktop/src/main.ts; they are unrelated existing modifications.
-Then continue Phase 4 by extracting the next safe ChatSurface slice, starting with ThinkingIndicator unless the code has changed.
-Run focused typechecks after the extraction and summarize what remains.
+Then start Phase 5 with the chat/runtime/WebSocket cartridge.
+Do not redesign runtime behavior until you have captured the current trace points and written the target contract.
+Run focused typechecks/tests after each slice and summarize what remains.
 ```

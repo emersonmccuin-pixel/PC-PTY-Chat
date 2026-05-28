@@ -1,20 +1,8 @@
 import { getJson, postJsonMethod } from '@/api/http';
-import type { ULID } from '@/features/projects/client';
+import type { ULID } from '@/features/projects/types';
+import type { CustomCommand, MemoryFile, MemoryScope } from './types';
 
-export type MemoryScope = 'user' | 'project' | 'workspace';
-
-export interface MemoryFile {
-  scope: MemoryScope;
-  path: string;
-  content: string;
-  exists: boolean;
-}
-
-export interface CustomCommand {
-  name: string;
-  body: string;
-  scope: 'project' | 'user';
-}
+export * from './types';
 
 export const projectContextApi = {
   getClaudeMdStatus: async (

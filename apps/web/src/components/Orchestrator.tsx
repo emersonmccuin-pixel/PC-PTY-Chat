@@ -20,7 +20,7 @@ import type {
 } from '@/hooks/use-project-ws';
 import { useOrchestratorTelemetry, type UsageTotals } from '@/store/orchestrator-telemetry';
 import { useViewingSession } from '@/store/viewing-session';
-import { ChatSurface } from '@/components/ChatSurface';
+import { ChatSurface } from '@/features/chat/ChatSurface';
 import {
   ConversationHeader,
   ConversationHeaderButton,
