@@ -26,7 +26,7 @@ export interface WorkflowCompatRuntime {
     runId: ULID,
     nodeId: string,
     decision: WorkflowReviewDecision,
-  ): Promise<WorkflowV2.WorkflowRunStatus | null>;
+  ): Promise<string | null>;
 }
 
 export interface WorkflowCompatRouteDeps {
