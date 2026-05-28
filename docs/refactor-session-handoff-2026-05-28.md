@@ -144,15 +144,20 @@ current cleanup. A sensible split is:
 Keep the unrelated `Shell.tsx` and desktop changes separate unless the user
 confirms they belong in the same commit.
 
-## Next Refactor Objective
+## Refactor Status
 
-Continue Phase 4: decompose `ChatSurface`.
+Lead-up phases and Phase 4 are complete:
 
-Current `apps/web/src/components/ChatSurface.tsx` is about 180 lines. It is
-already much smaller than the original audit because these pieces have been
-extracted:
+- Phase 1 server route extraction.
+- Phase 2 MCP tool split.
+- Phase 3 web API client/contract split.
+- Phase 4 `ChatSurface` decomposition.
+
+Current `apps/web/src/features/chat/ChatSurface.tsx` is about 180 lines and is
+a thin coordinator over extracted modules:
 
 - `apps/web/src/features/chat/ChatSurfaceProps.ts`
+- `apps/web/src/features/chat/ChatSurface.tsx`
 - `apps/web/src/features/chat/ChatTimeline.tsx`
 - `apps/web/src/features/chat/ChatComposer.tsx`
 - `apps/web/src/features/chat/TerminalPane.tsx`
@@ -179,13 +184,25 @@ Still inside `ChatSurface.tsx`:
 - pending prompt coordination
 - terminal pane/composer/timeline composition
 
-## Recommended Phase 4 Slices
+This is intentional for now; leave `ChatSurface` as the coordinator unless a
+clear reuse seam appears.
 
-Do the next work as small behavior-preserving moves with typecheck after each
-slice. Good next slices:
+Phase 4 guard tests:
 
-1. Leave `ChatSurface` as the thin coordinator unless a clear reuse seam appears.
-2. Continue Phase 3 contract cleanup inside feature clients.
+- `apps/server/test/web-boundaries.test.ts`
+- `apps/server/test/web-pending-prompts.test.ts`
+
+## Next Refactor Objective
+
+Start Phase 5 with the chat/runtime/WebSocket cartridge.
+
+Recommended first slice:
+
+1. Capture the current chat/runtime/WebSocket trace points and identify which
+   state transitions are still hard to inspect.
+2. Write the ideal cartridge contract before moving more behavior.
+3. Keep existing runtime primitives and tests; replace internals only when the
+   trace identifies broken behavior.
 
 ## Phase 3 Client State
 
@@ -211,6 +228,17 @@ New `types.ts` modules added for Phase 3:
 - `apps/web/src/features/settings/types.ts`
 - `apps/web/src/features/work-items/types.ts`
 - `apps/web/src/features/workflows/types.ts`
+
+## Phase 4 Completion Checks
+
+Passed:
+
+```powershell
+pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts test/web-pending-prompts.test.ts
+pnpm --filter @pc/web typecheck
+pnpm --filter @pc/server typecheck
+git diff --check
+```
 
 ## Guardrails
 
@@ -238,6 +266,7 @@ Use the Codex worktree only; do not edit or switch branches in the primary check
 Read docs/refactor-session-handoff-2026-05-28.md and docs/architecture-refactor-plan.md.
 First verify the current worktree and Quick Tasks residue exactly as the handoff says.
 Do not revert apps/web/src/components/Shell.tsx or apps/desktop/src/main.ts; they are unrelated existing modifications.
-Then continue Phase 4 by extracting the next safe ChatSurface slice, starting with ThinkingIndicator unless the code has changed.
-Run focused typechecks after the extraction and summarize what remains.
+Then start Phase 5 with the chat/runtime/WebSocket cartridge.
+Do not redesign runtime behavior until you have captured the current trace points and written the target contract.
+Run focused typechecks/tests after each slice and summarize what remains.
 ```

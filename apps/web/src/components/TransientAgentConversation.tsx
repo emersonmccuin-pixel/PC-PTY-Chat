@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
-import { ChatSurface } from '@/components/ChatSurface';
+import { ChatSurface } from '@/features/chat/ChatSurface';
 import type { RuntimeInputCapabilities } from '@/features/chat/runtimeState';
 import {
   ConversationHeader,
