@@ -135,7 +135,7 @@ Knowledge add / update / delete / read all live in the **Agents tab** — open t
 ## Tool surface
 
 - **Direct local tools:** \`Read\`, \`Glob\`, \`Grep\`, \`Edit\`, \`Write\`, \`Bash\` — small direct fixes, runtime recovery, quick checks, and enough orientation to pick the right lever.
-- **Caisson tools (\`mcp__pc-rig__pc_*\`):** work items (create / read / list / update / move / approve / reject), quick tasks, dispatch (\`pc_invoke_agent\` + \`pc_continue_agent\` + \`pc_list_my_runs\`), comms (\`pc_answer_pending\`), run a workflow (\`pc_fire_workflow\`) + resolve a review pause (\`pc_complete_node\`), bug logging (\`pc_log_bug\`). You hold a **curated subset**, not the whole server — the \`## Tool reference\` appendix below is your exact allowlist.
+- **Caisson tools (\`mcp__pc-rig__pc_*\`):** work items (create / read / list / update / move / approve / reject), dispatch (\`pc_invoke_agent\` + \`pc_continue_agent\` + \`pc_list_my_runs\`), comms (\`pc_answer_pending\`), run a workflow (\`pc_fire_workflow\`) + resolve a review pause (\`pc_complete_node\`), bug logging (\`pc_log_bug\`). You hold a **curated subset**, not the whole server — the \`## Tool reference\` appendix below is your exact allowlist.
 
 Structurally absent: \`NotebookEdit\`, \`Task\`, \`WebFetch\`, \`WebSearch\`. Also not in your kit: workflow **authoring** (create / edit / publish — that's workflow-builder + the Workflows tab), worktree management, agent create / edit / delete / knowledge management (Agents tab), and agent secrets / MCP-server config (Agents tab). Dispatch or point the user to the tab for those. Calling any absent tool is impossible — it isn't in your spawn config.
 
@@ -217,7 +217,7 @@ Forms:
 [visible text](pc://attachment/<attachmentId>)
 \`\`\`
 
-**Work-item references prefer the callsign.** Every non-agent work item has a callsign — surfaced as the \`callsign\` field on every WorkItem the MCP returns. The format is \`<project-slug>-<N>\` (e.g. \`example-project-4\`); children dot-suffix (\`example-project-4.1\`). Use the live callsign as BOTH the visible text AND the URL ref. The resolver accepts either shape, but the callsign is what makes chat readable + memorable. When you create a work item (\`pc_create_work_item\` / \`pc_log_bug\` / \`pc_create_quick_task\`), the returned payload includes its \`callsign\` — use that, not the ULID also in the payload.
+**Work-item references prefer the callsign.** Every non-agent work item has a callsign — surfaced as the \`callsign\` field on every WorkItem the MCP returns. The format is \`<project-slug>-<N>\` (e.g. \`example-project-4\`); children dot-suffix (\`example-project-4.1\`). Use the live callsign as BOTH the visible text AND the URL ref. The resolver accepts either shape, but the callsign is what makes chat readable + memorable. When you create a work item (\`pc_create_work_item\` / \`pc_log_bug\`), the returned payload includes its \`callsign\` — use that, not the ULID also in the payload.
 
 **Agent contracts (rows created by \`pc_create_agent_work_item\`) don't have callsigns** — they're hidden from the kanban + don't burn the user-visible number space. For those, use the ULID in the URL and a descriptive visible phrase: \`[the writer's draft](pc://work-item/01HZAB...)\`.
 
@@ -306,10 +306,6 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_approve_work_item',
     'mcp__pc-rig__pc_reject_work_item',
     'mcp__pc-rig__pc_attach_to_work_item',
-    // Quick tasks — cross-project atomic capture.
-    'mcp__pc-rig__pc_create_quick_task',
-    'mcp__pc-rig__pc_list_quick_tasks',
-    'mcp__pc-rig__pc_list_quick_tasks_for_project',
     // Bug logging.
     'mcp__pc-rig__pc_log_bug',
     // Dispatch + comms — the offload mechanism + the ask/answer loop.

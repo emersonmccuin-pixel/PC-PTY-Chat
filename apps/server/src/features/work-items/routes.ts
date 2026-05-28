@@ -206,7 +206,6 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
       parentId?: string | null;
       type?: string;
       fields?: Record<string, unknown>;
-      taggedProjectId?: string | null;
     }>();
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     const stageId = typeof body.stageId === 'string' ? body.stageId.trim() : '';
@@ -226,9 +225,6 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
         ...(body.parentId !== undefined ? { parentId: body.parentId as ULID | null } : {}),
         ...(typeOpt !== undefined ? { type: typeOpt } : {}),
         ...(body.fields !== undefined ? { fields: body.fields } : {}),
-        ...(body.taggedProjectId !== undefined
-          ? { taggedProjectId: body.taggedProjectId as ULID | null }
-          : {}),
       });
       return c.json({ ok: true, workItem });
     } catch (err) {

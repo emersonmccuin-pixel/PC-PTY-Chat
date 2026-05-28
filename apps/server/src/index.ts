@@ -64,10 +64,8 @@ import {
   registerChatBridgeRoutes,
 } from './features/chat-bridges/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
-import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
 import { seedOrchestratorPodIfMissing } from './services/orchestrator-pod-seed.ts';
-import { ensureQuickTasksProject } from './services/quick-tasks-seed.ts';
 import { cleanupLegacyProjectRuntimeFiles } from './services/legacy-runtime-cleanup.ts';
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
@@ -219,30 +217,6 @@ const projectScaffold = new ProjectScaffold({
   serverPort: PORT,
   channelPort: CHANNEL_PORT,
 });
-
-// Section 34.1 — Quick Tasks pinned cross-project surface. Idempotent
-// boot-time seed creates the row + scaffolded folder once; no-ops thereafter.
-// MUST run before `projectRegistry.loadAll()` so the runtime picks it up
-// like any other project.
-{
-  try {
-    const result = await ensureQuickTasksProject({
-      dataDir: DATA,
-      scaffold: projectScaffold,
-    });
-    if (result.action === 'created') {
-      console.log(
-        `[pc] Quick Tasks project seeded (id=${result.projectId}, folder=${result.folderPath})`,
-      );
-    } else if (result.action === 'adopted') {
-      console.log(
-        `[pc] Quick Tasks project adopted legacy row (id=${result.projectId}, folder=${result.folderPath})`,
-      );
-    }
-  } catch (err) {
-    console.warn(`[pc] Quick Tasks seed failed: ${(err as Error).message}`);
-  }
-}
 
 // Remove/quarantine legacy PC Claude runtime files from project roots before
 // any Claude process starts. PC now passes session-local `--settings`,
@@ -539,11 +513,6 @@ registerProjectRoutes(app, {
 // pod across every loaded ProjectRuntime. Worker pods (researcher, etc.)
 // are intentionally NOT restarted — killing them mid-task would orphan
 // their work, and the next dispatch re-reads the DB anyway.
-// Section 34.3 — Quick Tasks HTTP routes. Surfaces the cross-project capture
-// verbs for the chrome quick-add button (34.7) + the MCP tools
-// (`pc_create_quick_task`, `pc_list_quick_tasks`, `pc_list_quick_tasks_for_project`).
-registerQuickTasksRoutes(app, { registry: projectRegistry });
-
 /** Section 19.17 — workflows are first-class scoped rows (mirrors agents
  *  pattern). CRUD + lifecycle live under `/api/workflows/*`; the legacy
  *  `/api/projects/:projectId/workflow-v2/*` GET endpoints survive only as

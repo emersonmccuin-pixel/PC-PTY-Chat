@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { resolve } from 'node:path';
 
 import type { OrchestratorSession, Project, ULID, WorkflowRow, WorkflowV2, WorkItem } from '@pc/domain';
-import { isQuickTasksKind, postMoveStatusForStage } from '@pc/domain';
+import { postMoveStatusForStage } from '@pc/domain';
 import type { ReviewDecision } from '@pc/workflows';
 import {
   createOrchestratorSession,
@@ -448,16 +448,10 @@ export class ProjectRuntime {
     // <name>` REPLACES the default — PC owns the prompt + tool surface end-
     // to-end via the pod row seeded at server boot (16a.2).
     //
-    // Section 34.2 — Quick Tasks project spawns with `--agent quick-tasks-pm`
-    // (constrained tool surface: no specialist dispatch, no work-item-as-
-    // contract verbs). All other projects spawn with `--agent orchestrator`.
-    const pmAgentName = isQuickTasksKind(this.project.kind)
-      ? 'quick-tasks-pm'
-      : 'orchestrator';
     let podPrep: PodSpawnPrep;
     try {
       const prep = preparePodSpawn({
-        agentName: pmAgentName,
+        agentName: 'orchestrator',
         projectId: this.project.id,
         worktreeDir: this.project.folderPath,
         scratchDir: sessionDir,
@@ -470,18 +464,18 @@ export class ProjectRuntime {
         projectName: this.project.name,
       });
       if (!prep) {
-        // Boot-time seed (16a.2 / 34.2) always inserts the row; a null here
+        // Boot-time seed (16a.2) always inserts the row; a null here
         // means the DB is in an unexpected state (row deleted manually
         // mid-session?). Fail loud — falling back to a default-CC PM
         // would silently lose the locked tool allowlist.
         throw new Error(
-          `${pmAgentName} pod row not found (boot-time seed did not run, or row was deleted)`,
+          'orchestrator pod row not found (boot-time seed did not run, or row was deleted)',
         );
       }
       podPrep = prep;
     } catch (err) {
       throw new Error(
-        `${pmAgentName} pod materialisation failed: ${(err as Error).message}`,
+        `orchestrator pod materialisation failed: ${(err as Error).message}`,
       );
     }
 

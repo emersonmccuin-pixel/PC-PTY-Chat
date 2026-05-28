@@ -79,17 +79,6 @@ export function resolveCancelledHidden(
   return globalHide;
 }
 
-/** Section 34 — projects split into user-created (`'standard'`) and the
- *  boot-time-seeded Quick Tasks singleton (`'quick-tasks'`). The DB unique
- *  partial index on `kind` guarantees at most one live quick-tasks row.
- *  Routing, picker hygiene, and rail visual treatment fork on this value. */
-export const PROJECT_KINDS = ['standard', 'quick-tasks'] as const;
-export type ProjectKind = (typeof PROJECT_KINDS)[number];
-
-export function isQuickTasksKind(kind: ProjectKind | string | undefined | null): boolean {
-  return kind === 'quick-tasks';
-}
-
 export interface Project {
   id: ULID;
   /** URL-safe routing key. Derived from name + uniqued at create; locked thereafter
@@ -105,10 +94,6 @@ export interface Project {
   /** Section 27 — typed per-project overlay. Persisted in the
    *  `projects.settings` JSON column; defaults fill in missing keys. */
   settings: ProjectSettings;
-  /** Section 34 — `'standard'` for user-created; `'quick-tasks'` for the
-   *  boot-time-seeded singleton. Drives rail layout, picker hygiene, and
-   *  the Tasks-tab fork. */
-  kind: ProjectKind;
   /** Section 35 — monotonic, never-reused counter for top-level callsign
    *  numbering. Highest assigned root number. Surfaced for forensic /
    *  debug use; UI doesn't read it directly. */

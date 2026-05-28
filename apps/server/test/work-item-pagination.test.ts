@@ -39,7 +39,6 @@ function makeProjectFixture(): { projectId: ULID; stage: string; getProject: () 
     name: `pagination-fixture-${projectCounter}`,
     slug,
     folderPath: tmpDataDir,
-    kind: 'standard',
     stages: [{ id: stage, name: 'Todo', order: 0 }],
     gitRemote: null,
   });

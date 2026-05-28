@@ -52,7 +52,6 @@ interface WorkItemRow {
   verificationNotes: string | null;
   assignedAgentRunId: ULID | null;
   worktreePath: string | null;
-  taggedProjectId: ULID | null;
   callsign: string | null;
   createdAt: number;
   updatedAt: number;
@@ -87,7 +86,6 @@ function toDomain(row: WorkItemRow): WorkItem {
     verificationNotes: row.verificationNotes,
     assignedAgentRunId: row.assignedAgentRunId,
     worktreePath: row.worktreePath,
-    taggedProjectId: row.taggedProjectId,
     callsign: row.callsign,
   };
 }
@@ -115,9 +113,6 @@ export interface CreateWorkItemInput {
   verificationNotes?: string | null;
   assignedAgentRunId?: ULID | null;
   worktreePath?: string | null;
-  /** Section 34 — soft pointer to a project the Quick Task "belongs to". Only
-   *  meaningful when `projectId` is the Quick Tasks project. */
-  taggedProjectId?: ULID | null;
 }
 
 export function listWorkItems(projectId: ULID): WorkItem[] {
@@ -125,30 +120,6 @@ export function listWorkItems(projectId: ULID): WorkItem[] {
     .select()
     .from(workItems)
     .where(and(eq(workItems.projectId, projectId), isNull(workItems.deletedAt)))
-    .orderBy(asc(workItems.position), asc(workItems.createdAt))
-    .all() as WorkItemRow[];
-  return rows.map(toDomain);
-}
-
-/** Section 34 — list rows in `quickTasksProjectId` whose `tagged_project_id`
- *  matches `taggedProjectId`. Used by `pc_list_quick_tasks_for_project` to
- *  answer "what quick tasks belong to this project?" without scanning every
- *  row. The partial index on `work_items.tagged_project_id` makes this O(N
- *  rows tagged to the target), not O(all quick tasks). */
-export function listQuickTasksTaggedTo(
-  quickTasksProjectId: ULID,
-  taggedProjectId: ULID,
-): WorkItem[] {
-  const rows = getDb()
-    .select()
-    .from(workItems)
-    .where(
-      and(
-        eq(workItems.projectId, quickTasksProjectId),
-        eq(workItems.taggedProjectId, taggedProjectId),
-        isNull(workItems.deletedAt),
-      ),
-    )
     .orderBy(asc(workItems.position), asc(workItems.createdAt))
     .all() as WorkItemRow[];
   return rows.map(toDomain);
@@ -280,7 +251,6 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
       verificationNotes: input.verificationNotes ?? null,
       assignedAgentRunId: input.assignedAgentRunId ?? null,
       worktreePath: input.worktreePath ?? null,
-      taggedProjectId: input.taggedProjectId ?? null,
       callsign,
       createdAt: now,
       updatedAt: now,

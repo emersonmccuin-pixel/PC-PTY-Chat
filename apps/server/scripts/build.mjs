@@ -2,8 +2,8 @@
 // Electron app. In dev the server runs via `tsx src/index.ts`; a packaged app
 // has no tsx, so the desktop main process imports this bundle instead.
 //
-// Output: apps/server/dist/server.mjs (ESM, top-level await preserved — the
-// boot sequence awaits the Quick Tasks seed). Native modules stay external:
+// Output: apps/server/dist/server.mjs (ESM, top-level await preserved).
+// Native modules stay external:
 // they ship as Electron-ABI .node binaries resolved from node_modules at
 // runtime, not bundled. Mirrors packages/mcp/scripts/build.mjs.
 

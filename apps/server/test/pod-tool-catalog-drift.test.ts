@@ -19,6 +19,7 @@ import { PC_RIG_TOOL_NAMES } from '../src/services/pod-tool-catalog.ts';
 import { STOCK_POD_CONTENT } from '../src/services/stock-pod-seed.ts';
 import { ORCHESTRATOR_POD_CONTENT } from '../src/services/orchestrator-pod-content.ts';
 import { TOOLS } from '@pc/mcp';
+import { TOOL_CATALOG } from '@pc/domain';
 
 const caissonPod = STOCK_POD_CONTENT.find((p) => p.name === 'caisson');
 assert.ok(caissonPod, 'caisson pod missing from STOCK_POD_CONTENT');
@@ -50,6 +51,14 @@ test('every mcp__pc-rig__ grant in every stock pod + orchestrator is a real PC_R
       );
     }
   }
+});
+
+test('every public pc-rig tool has domain catalog metadata', () => {
+  const catalogSlugs = new Set(
+    TOOL_CATALOG.filter((entry) => entry.source === 'pc-rig').map((entry) => entry.slug),
+  );
+  const missing = PC_RIG_TOOL_NAMES.filter((name) => !catalogSlugs.has(name));
+  assert.deepEqual(missing, [], `missing catalog metadata: ${missing.join(', ')}`);
 });
 
 test('caisson allowlist includes the 6 new workspace-shaping tools', () => {

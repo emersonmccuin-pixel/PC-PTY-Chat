@@ -13,7 +13,6 @@ import type {
   PodKnowledgeKind,
   PodMcpServerConfig,
   PodScope,
-  ProjectKind,
   ProviderId,
   SessionEndedReason,
   SessionStatus,
@@ -57,10 +56,6 @@ export const projects = sqliteTable(
      *  appended at `max(position) + 1`; drag-reorder rewrites every row's
      *  position in a single transaction. */
     position: integer('position').notNull().default(0),
-    /** Section 34 — `'standard'` for user-created projects, `'quick-tasks'`
-     *  for the boot-time-seeded singleton. The partial unique index below
-     *  ensures at most one live `'quick-tasks'` row per installation. */
-    kind: text('kind').notNull().default('standard').$type<ProjectKind>(),
     /** Section 35 — monotonic, never-reused counter for top-level callsign
      *  numbering. New top-level work items claim `callsign_seq + 1` and
      *  bump the column in the same transaction (SQLite serializes writes
@@ -73,9 +68,6 @@ export const projects = sqliteTable(
   (t) => [
     uniqueIndex('projects_slug_idx').on(t.slug).where(sql`deleted_at IS NULL`),
     index('projects_position_idx').on(t.position),
-    uniqueIndex('projects_quick_tasks_singleton_idx')
-      .on(t.kind)
-      .where(sql`kind = 'quick-tasks' AND deleted_at IS NULL`),
   ],
 );
 
@@ -111,11 +103,6 @@ export const workItems = sqliteTable(
     position: integer('position').notNull().default(0),
     /** Optimistic-concurrency counter. */
     version: integer('version').notNull().default(1),
-    /** Section 34 — soft pointer letting a Quick Task carry a hint about
-     *  which project it belongs to. Nullable; no FK cascade (lookups treat
-     *  dangling tags as untagged). Only meaningful when `projectId` is the
-     *  Quick Tasks project; ignored on standard projects' rows. */
-    taggedProjectId: text('tagged_project_id').$type<ULID | null>(),
     /** Section 35 — display-alias short code (e.g. `pc-2`, `pc-2.1`). ULID
      *  stays the canonical id everywhere internal. Nullable: agent contracts
      *  (`is_agent_task = 1`) stay NULL so they don't burn the user-visible
@@ -157,10 +144,6 @@ export const workItems = sqliteTable(
     index('work_items_stage_idx').on(t.projectId, t.stageId),
     /** Section 26 — fast filter for the "agent contracts" surface. */
     index('work_items_agent_task_idx').on(t.projectId, t.isAgentTask),
-    /** Section 34 — fast lookup for `pc_list_quick_tasks_for_project`. */
-    index('work_items_tagged_project_idx')
-      .on(t.taggedProjectId)
-      .where(sql`tagged_project_id IS NOT NULL`),
   ],
 );
 

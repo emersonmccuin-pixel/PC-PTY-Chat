@@ -57,7 +57,6 @@ const EMPTY_CONTRACT = {
   verificationNotes: null,
   assignedAgentRunId: null,
   worktreePath: null,
-  taggedProjectId: null,
   callsign: null,
 } as const;
 
@@ -544,7 +543,6 @@ test('runUpdateWorkItemStep: Section 27 — toFlag resolves to flagged stage', a
     verificationNotes: null,
     assignedAgentRunId: null,
     worktreePath: null,
-    taggedProjectId: null,
     callsign: null,
   } as WorkItem;
   const { svc, patchCalls } = mkFakeWorkItemService({ existing });
