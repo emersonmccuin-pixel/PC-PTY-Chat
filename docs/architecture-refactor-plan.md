@@ -71,7 +71,7 @@ Useful existing seams:
 
 - `packages/domain` has cohesive domain files per concept.
 - `packages/db/src/repos/*` is already repo-per-entity.
-- `apps/server/src/routes/pod-routes.ts`, `workflow-routes.ts`, and `quick-tasks-routes.ts` already use register-route modules with injected dependencies.
+- `apps/server/src/routes/pod-routes.ts` and `workflow-routes.ts` already use register-route modules with injected dependencies.
 - `packages/runtime` contains valuable runtime primitives that should be preserved, not rewritten speculatively.
 - Tests exist around runtime, DB repos, workflow DAG logic, agent runs, WebSocket hub, terminal mode, and route surfaces.
 
@@ -360,6 +360,8 @@ Definition of done:
 
 ### Phase 2: Split MCP server by tool area
 
+Session handoff: [Phase 2 MCP Tool Split Handoff](./phase-2-mcp-tool-split.md).
+
 Target:
 
 ```text
@@ -368,7 +370,6 @@ packages/mcp/src/tools/
   workflows.ts
   agents.ts
   agent-runs.ts
-  quick-tasks.ts
   worktrees.ts
   project-config.ts
   knowledge.ts
