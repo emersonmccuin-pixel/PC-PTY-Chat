@@ -301,7 +301,9 @@ Recommended action:
 
 - leave `docs/app-structure-overview.html` alone until the user decides whether
   it is useful documentation.
-- inspect the `wf-DKSQTERZ` deletes before removing that worktree.
+- `wf-DKSQTERZ` deletes are superseded: current `dev` already has those old
+  `.project-companion/workflows` and `templates/.project-companion/workflows`
+  YAML demo files removed.
 
 ## Recovery Order
 
