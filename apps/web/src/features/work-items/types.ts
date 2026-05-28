@@ -1,4 +1,4 @@
-import type { ULID } from '@/features/projects/client';
+import type { ULID } from '@/features/projects/types';
 
 export type WorkItemStatus =
   | 'pending'

@@ -7,12 +7,12 @@ Purpose: decide whether Caisson should be refactored into clearer boundaries, an
 Companion contract: [Chat System Contract](./chat-system-contract.md). Use that document as the acceptance criteria checklist for the chat/runtime stabilization work below.
 
 Current status: Phase 1 server route extraction, Phase 2 MCP tool splitting,
-and the Phase 3 web API client barrel split are complete.
+and Phase 3 web API client/contract splitting are complete.
 `apps/server/src/index.ts` is boot/composition/static-serving only,
 `packages/mcp/src/server.ts` now composes feature tool modules instead of
 owning inline `pc_*` handlers, and `apps/web/src/api/client.ts` composes
-feature clients. The remaining Phase 3 work is contract cleanup inside feature
-clients.
+feature clients. Feature client contracts now live in colocated `types.ts`
+modules, with client modules kept to HTTP methods plus compatibility re-exports.
 Fresh-session handoff: [Refactor Session Handoff - 2026-05-28](./refactor-session-handoff-2026-05-28.md).
 
 Fresh Codex sessions should start from the prompt in the handoff file. Short
@@ -53,8 +53,9 @@ Implemented slices:
   thinking derivation, and the public prop contract are extracted from the
   top-level surface coordinator.
 - Web API client split: `apps/web/src/api/client.ts` is now a compatibility
-  barrel over feature clients, and work-item contracts/errors moved from
-  `features/work-items/client.ts` to `features/work-items/types.ts`.
+  barrel over feature clients, no web source imports `@/api/client` directly,
+  and exported feature contracts/constants/errors live in colocated `types.ts`
+  modules instead of client modules.
 
 ## Executive Decision
 
@@ -431,13 +432,14 @@ Current status:
 
 - `apps/web/src/api/client.ts` is a compatibility barrel over feature clients.
 - No web source imports `@/api/client` directly.
-- Continue contract cleanup by moving feature types/errors out of client files
-  when the split is behavior-preserving.
+- Feature client contracts/constants/errors are split into colocated `types.ts`
+  modules and re-exported through the existing client modules for compatibility.
 
 Definition of done:
 
 - `client.ts` becomes a barrel or disappears. Done at the barrel level.
-- Each feature imports only its own client slice.
+- Each feature imports only its own client slice. Done for web source; no direct
+  `@/api/client` imports remain.
 - Web/server type drift is tested.
 
 ### Phase 4: Decompose `ChatSurface`

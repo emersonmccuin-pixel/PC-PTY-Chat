@@ -192,15 +192,25 @@ slice. Good next slices:
 `apps/web/src/api/client.ts` is already a compatibility barrel over feature
 clients, and no web source imports `@/api/client` directly.
 
-Contract cleanup started with:
+Phase 3 is complete:
 
+- Feature client contracts/constants/errors live in colocated `types.ts` files.
+- Feature `client.ts` files are HTTP methods plus compatibility re-exports.
+- No feature `client.ts` directly exports public contracts.
+
+New `types.ts` modules added for Phase 3:
+
+- `apps/web/src/features/agent-runs/types.ts`
+- `apps/web/src/features/agents/types.ts`
+- `apps/web/src/features/dev-controls/types.ts`
+- `apps/web/src/features/files/types.ts`
+- `apps/web/src/features/focus-agent/types.ts`
+- `apps/web/src/features/project-context/types.ts`
+- `apps/web/src/features/projects/types.ts`
+- `apps/web/src/features/runtime/types.ts`
+- `apps/web/src/features/settings/types.ts`
 - `apps/web/src/features/work-items/types.ts`
-
-Good next slices:
-
-1. Move `features/agents/client.ts` contracts/errors to a nearby `types.ts`.
-2. Move `features/workflows/client.ts` contracts to a nearby `types.ts`.
-3. Keep each client module as HTTP methods plus compatibility re-exports.
+- `apps/web/src/features/workflows/types.ts`
 
 ## Guardrails
 

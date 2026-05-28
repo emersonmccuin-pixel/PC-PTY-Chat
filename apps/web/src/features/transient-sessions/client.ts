@@ -1,5 +1,5 @@
 import { postJson } from '@/api/http';
-import type { ULID } from '@/features/projects/client';
+import type { ULID } from '@/features/projects/types';
 
 export const transientSessionsApi = {
   startAgentDesigner: (projectId: ULID) =>

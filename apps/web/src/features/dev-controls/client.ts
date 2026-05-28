@@ -1,12 +1,7 @@
 import { getJson, postJson } from '@/api/http';
+import type { DevStatus } from './types';
 
-export interface DevStatus {
-  activeAgents: number;
-  canRestart: boolean;
-  /** TEMP reload-test marker emitted by the BE; absent until the server is
-   *  restarted onto the new source. Remove after testing. */
-  marker?: string;
-}
+export * from './types';
 
 export const devControlsApi = {
   getDevStatus: () => getJson<DevStatus>('/api/dev/status'),

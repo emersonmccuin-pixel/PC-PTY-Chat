@@ -1,5 +1,5 @@
 import { getJson, postJson, postJsonMethod } from '@/api/http';
-import type { Project, Stage, ULID } from '@/features/projects/client';
+import type { Project, Stage, ULID } from '@/features/projects/types';
 import {
   StageHasItemsError,
   WorkItemConflictError,
