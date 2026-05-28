@@ -1,4 +1,4 @@
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket as WsWebSocket } from 'ws';
 import type { OrchestratorSession, ULID } from '@pc/domain';
 
 import type { PublicRuntimeSnapshot } from '../../services/orchestrator-runtime-snapshot.ts';
@@ -138,6 +138,16 @@ export function handleRuntimeHostWsConnection<
   return true;
 }
 
+/** Server-side liveness sweep interval. Half-open sockets (laptop sleep, Wi-Fi
+ *  roam, NAT/proxy idle-timeout) never deliver a TCP `close`, so without this
+ *  the hub keeps a dead subscriber forever and `broadcast()` silently sends
+ *  every chat/agent event into the void — the UI looks frozen until a manual
+ *  refresh re-subscribes. The canonical `ws` pattern: ping each client every
+ *  interval, terminate any that didn't pong since the last sweep. */
+const WS_KEEPALIVE_INTERVAL_MS = 30_000;
+
+type Liveness = WsWebSocket & { isAlive?: boolean };
+
 export function registerRuntimeHostWebSocketServer<
   TPty extends RuntimeHostMessagePtySession,
   TRuntime extends RuntimeHostWebSocketRuntime<TPty>,
@@ -147,6 +157,13 @@ export function registerRuntimeHostWebSocketServer<
     path: deps.path ?? '/ws',
   });
   wss.on('connection', (ws, req) => {
+    // Browsers can't send protocol ping frames but auto-respond to ours with a
+    // pong, so this `pong` listener is the reliable per-client liveness signal.
+    const live = ws as Liveness;
+    live.isAlive = true;
+    live.on('pong', () => {
+      live.isAlive = true;
+    });
     const socket = ws as unknown as RuntimeHostWebSocketLike;
     handleRuntimeHostWsConnection({
       ...deps,
@@ -155,5 +172,28 @@ export function registerRuntimeHostWebSocketServer<
       subscribe: (projectId) => deps.wsHub.subscribe(projectId, socket),
     });
   });
+
+  const sweep = setInterval(() => {
+    for (const client of wss.clients) {
+      const live = client as Liveness;
+      if (live.isAlive === false) {
+        // Missed a full interval — terminate(). The resulting `close` fires the
+        // connection's detachSubscriber(), cleaning the hub, and lets the
+        // browser observe the drop and reconnect.
+        live.terminate();
+        continue;
+      }
+      live.isAlive = false;
+      try {
+        live.ping();
+      } catch {
+        /* best-effort; a failed ping means the next sweep terminates it */
+      }
+    }
+  }, WS_KEEPALIVE_INTERVAL_MS);
+  // Don't let the sweep timer keep the process alive on shutdown.
+  if (typeof sweep.unref === 'function') sweep.unref();
+  wss.on('close', () => clearInterval(sweep));
+
   return wss;
 }

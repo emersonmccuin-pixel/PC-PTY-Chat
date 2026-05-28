@@ -636,6 +636,9 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let activeHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let delay: number = RECONNECT_SCHEDULE_MS[0];
+    // Lifted to effect scope so the wake handler (visibilitychange / online)
+    // can judge socket freshness across reconnects, not just within one socket.
+    let lastInboundAt = Date.now();
 
     function connect(): void {
       if (cancelled) return;
@@ -645,7 +648,6 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
       const ws = new WebSocket(url);
       wsRef.current = ws;
       let disconnected = false;
-      let lastInboundAt = Date.now();
       let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
       function clearHeartbeat(): void {
@@ -780,8 +782,48 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
 
     connect();
 
+    // Returning to the window or regaining network is the moment a silently
+    // half-dead socket is most likely — Chromium throttles the in-socket
+    // heartbeat timer while the renderer is backgrounded, so it can take
+    // minutes to notice on its own. On wake, if the socket isn't demonstrably
+    // fresh, drop it and reconnect immediately instead of waiting on backoff.
+    function reconnectIfStale(): void {
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const ws = wsRef.current;
+      const fresh =
+        ws &&
+        ws.readyState === WebSocket.OPEN &&
+        !heartbeatTimedOut(lastInboundAt);
+      if (fresh) return;
+      // Make the next reconnect attempt fast regardless of accrued backoff.
+      delay = RECONNECT_SCHEDULE_MS[0];
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        // close() fires the socket's own close handler → scheduleReconnect.
+        try { ws.close(); } catch { /* best-effort */ }
+      } else if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+        connect();
+      } else if (!wsRef.current) {
+        connect();
+      }
+    }
+
+    const hasWindow = typeof window !== 'undefined';
+    if (hasWindow) {
+      document.addEventListener('visibilitychange', reconnectIfStale);
+      window.addEventListener('online', reconnectIfStale);
+      window.addEventListener('focus', reconnectIfStale);
+    }
+
     return () => {
       cancelled = true;
+      if (hasWindow) {
+        document.removeEventListener('visibilitychange', reconnectIfStale);
+        window.removeEventListener('online', reconnectIfStale);
+        window.removeEventListener('focus', reconnectIfStale);
+      }
       if (retryTimer !== null) {
         clearTimeout(retryTimer);
         retryTimer = null;
