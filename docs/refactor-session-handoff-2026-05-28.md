@@ -148,10 +148,11 @@ confirms they belong in the same commit.
 
 Continue Phase 4: decompose `ChatSurface`.
 
-Current `apps/web/src/components/ChatSurface.tsx` is about 270 lines. It is
+Current `apps/web/src/components/ChatSurface.tsx` is about 180 lines. It is
 already much smaller than the original audit because these pieces have been
 extracted:
 
+- `apps/web/src/features/chat/ChatSurfaceProps.ts`
 - `apps/web/src/features/chat/ChatTimeline.tsx`
 - `apps/web/src/features/chat/ChatComposer.tsx`
 - `apps/web/src/features/chat/TerminalPane.tsx`
@@ -161,6 +162,8 @@ extracted:
 - `apps/web/src/features/chat/useThinkingIndicatorState.ts`
 - `apps/web/src/features/chat/useChatSurfaceMode.ts`
 - `apps/web/src/features/chat/useChatComposerActions.ts`
+- `apps/web/src/features/chat/useChatInputControls.ts`
+- `apps/web/src/features/chat/useChatRuntimeThinking.ts`
 - `apps/web/src/features/chat/normalizeJsonlEnvelope.ts`
 - `apps/web/src/features/chat/toolGrouping.ts`
 - `apps/web/src/features/chat/runtimeState.ts`
@@ -173,10 +176,7 @@ extracted:
 
 Still inside `ChatSurface.tsx`:
 
-- runtime input capability coordination
 - pending prompt coordination
-- live runtime/thinking derivation
-- terminal resize coordination
 - terminal pane/composer/timeline composition
 
 ## Recommended Phase 4 Slices
@@ -184,9 +184,8 @@ Still inside `ChatSurface.tsx`:
 Do the next work as small behavior-preserving moves with typecheck after each
 slice. Good next slices:
 
-1. Move `ChatSurfaceProps` to a nearby type file if it helps reuse.
-2. Extract terminal resize/capability resolution if it stays stable.
-3. After `ChatSurface` stabilizes, continue Phase 3 API client split.
+1. Leave `ChatSurface` as the thin coordinator unless a clear reuse seam appears.
+2. After `ChatSurface` stabilizes, continue Phase 3 API client split.
 
 ## Guardrails
 
