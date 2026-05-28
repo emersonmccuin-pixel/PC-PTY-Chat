@@ -1,0 +1,284 @@
+# Chat Runtime WebSocket Pod Audit
+
+Status: `auditing`.
+
+Owner: Codex.
+
+Worktree: `E:\Claude Code Projects\Personal\PC-PTY-Chat-phase5`.
+
+Branch: `codex/phase-5-hardening`.
+
+Base: `dev` at `44980f1`.
+
+## Ownership
+
+Server modules:
+
+- `apps/server/src/features/runtime-host/routes.ts`: orchestrator session, runtime snapshot, replay, terminal transcript, new/resume session, send queue retry/cancel.
+- `apps/server/src/features/runtime-host/websocket-server.ts`: `/ws` server, connection validation, keepalive sweep.
+- `apps/server/src/features/runtime-host/websocket-connect.ts`: deterministic connect snapshot.
+- `apps/server/src/features/runtime-host/websocket-message.ts`: inbound WebSocket message protocol.
+- `apps/server/src/features/runtime-host/pty-handlers.ts`: PTY event listeners and broadcast fanout.
+- `apps/server/src/services/project-runtime.ts`: project-scoped durable orchestrator PTY lifecycle and adjacent transient PTY lifecycle.
+- `apps/server/src/services/websocket-hub.ts`: per-project subscriber registry.
+- `apps/server/src/services/orchestrator-runtime-snapshot.ts`: public runtime snapshot payload.
+- `apps/server/src/services/orchestrator-runtime-health.ts`: health and wait-point derivation.
+- `apps/server/src/services/orchestrator-send-queue-delivery.ts`: prompt queue public shape, delivery, and JSONL confirmation.
+- `apps/server/src/services/session-replay.ts`: replay checkpoint loader from normalized session logs.
+- `apps/server/src/services/terminal-mode.ts`: raw terminal input validation and transcript tail reads.
+
+Runtime modules:
+
+- `packages/runtime/src/interactive-session.ts`: orchestrator wrapper used by `ProjectRuntime.ensurePty()`.
+- `packages/runtime/src/pty-session.ts`: interactive PTY primitive used by transient sessions and related event contracts.
+- `packages/runtime/src/jsonl-tailer.ts`: canonical Claude JSONL event normalizer and cursor source.
+- `packages/runtime/src/send-protocol.ts`: text send mechanics used by PTY sessions.
+- `packages/runtime/src/ready-gate.ts`: ready signal detection used during spawn.
+- `packages/runtime/src/path-resolver.ts`: provider JSONL path resolution.
+- `packages/runtime/src/agent-run-jsonl-tailer.ts`: adjacent transcript backfill/live transcript parser for agent runs.
+
+Web modules:
+
+- `apps/web/src/hooks/use-project-ws.ts`: active-project WebSocket, heartbeat, reconnect, outbound messages, diagnostics.
+- `apps/web/src/hooks/use-all-projects-ws.ts`: sibling sockets for non-active project activity.
+- `apps/web/src/hooks/chat-session-reducer.ts`: replay ordering, high-water dedupe, active-session filtering.
+- `apps/web/src/features/runtime/client.ts` and `types.ts`: HTTP client and web-side runtime contracts.
+- `apps/web/src/components/Orchestrator.tsx`: runtime coordinator, session controls, input capability adapter.
+- `apps/web/src/components/StatusBar.tsx`: runtime and WebSocket diagnostics display.
+- `apps/web/src/features/chat/*`: ChatSurface, timeline, composer, pending prompts, terminal pane, JSONL normalization.
+- `apps/web/src/components/TerminalModePanel.tsx`: xterm surface, terminal transcript tail attach, raw input and resize callbacks.
+- `apps/web/src/components/SessionsRail.tsx`: session history surface.
+- `apps/web/src/components/AgentTranscriptModal.tsx`: adjacent agent transcript backfill plus live WS merge.
+
+Public entry points:
+
+- HTTP: `/api/projects/:projectId/session`.
+- HTTP: `/api/projects/:projectId/orchestrator/runtime`.
+- HTTP: `/api/projects/:projectId/sessions`.
+- HTTP: `/api/projects/:projectId/sessions/:sessionId/events`.
+- HTTP: `/api/projects/:projectId/sessions/:sessionId/terminal-transcript`.
+- HTTP: `/api/projects/:projectId/sessions/new`.
+- HTTP: `/api/projects/:projectId/sessions/:targetId/resume`.
+- HTTP: `/api/projects/:projectId/send-queue/:sendId/cancel`.
+- HTTP: `/api/projects/:projectId/send-queue/:sendId/retry`.
+- WebSocket: `/ws?projectId=<ULID>`.
+
+DB tables and repos:
+
+- `orchestratorSessions` via `repos/orchestrator-sessions.ts`.
+- `orchestratorSendQueue` via `repos/orchestrator-send-queue.ts`.
+- Adjacent status surfaces: `statuslineSnapshots`, `postTurnSummaries`, `agentRuns`.
+
+Persisted files:
+
+- `<dataDir>/projects/<projectId>/sessions/<sessionId>/jsonl-events.jsonl`: normalized replay source of truth.
+- `<dataDir>/projects/<projectId>/sessions/<sessionId>/events.jsonl`: legacy replay fallback.
+- `<dataDir>/projects/<projectId>/sessions/<sessionId>/transcript.log`: raw PTY terminal transcript.
+- Provider JSONL from `jsonlPathFor(project.folderPath, providerSessionId)`.
+- `orchestrator_sessions.jsonl_path` and `orchestrator_sessions.jsonl_line_cursor` persist provider path/cursor.
+
+WebSocket envelopes:
+
+- Inbound: `send`, `interrupt`, `terminal-input`, `resize`, `ask-reply`, `client-ping`.
+- Outbound core: `session-changed`, `session-replay`, `runtime-state`, `send-ack`, `send-queue-snapshot`, `server-pong`.
+- Outbound runtime stream: `state`, `turn-end`, `event`, `jsonl`, `raw`, `exit`.
+- Adjacent shared bus: `agent-jsonl-event`, `agent-run-changed`, `channel-event`, `statusline-snapshot`, `work-items-changed`, `workflow-run-changed`, `pod-changed`.
+
+MCP and workflow hooks:
+
+- No `pc_*` tool is owned directly by this pod.
+- The orchestrator process is spawned with the `orchestrator` pod, session-local MCP config, and PC session env.
+- Pending ask replies enter through the chat WebSocket `ask-reply` message.
+- Agent transcript and channel events share the same project WebSocket bus but belong primarily to the agent-runs/channel pods.
+
+## User Workflows
+
+Create/start:
+
+- Opening a project calls `useProjectWs(activeProject)` and connects to `/ws?projectId=<id>`.
+- Server validates the project, subscribes the socket, sends the connect snapshot, then starts the orchestrator PTY in the background.
+- `ProjectRuntime.ensureActiveSession()` creates a durable session row without blocking on process spawn.
+
+Read/list/open:
+
+- Connect snapshot sends the active `session-changed`, current `runtime-state`, `session-replay`, and `send-queue-snapshot`.
+- `runtimeApi.listSessions()` reads session history for the sessions rail.
+- `runtimeApi.getSessionEvents()` reads past session replay.
+- `runtimeApi.getTerminalTranscript()` reads the raw transcript tail for terminal mode.
+
+Update/send/continue:
+
+- Composer send creates a client message id and optimistic pending prompt.
+- WebSocket `send` writes directly to the PTY if state is `ready` and no queue backlog exists.
+- If PTY is busy, spawning, or has backlog, the server inserts `orchestrator_send_queue`.
+- Server returns `send-ack` and broadcasts `send-queue-snapshot`.
+- JSONL `jsonl-user` confirmation advances delivered sends to `observed_in_jsonl`.
+- Queue delivery retries one prompt per ready turn and continues after JSONL confirmation if runtime is still ready.
+
+Stop/delete/restore:
+
+- `interrupt` calls the live PTY interrupt path.
+- `sessions/new` ends the current durable session, cancels open sends, kills the PTY, creates a fresh session, broadcasts replay and queue surfaces, then starts a background PTY.
+- `sessions/:targetId/resume` reactivates a prior session, cancels replaced-session queue items, kills current PTY, broadcasts replay and queue surfaces, then starts a background PTY.
+- Send queue rows can be cancelled or retried through HTTP endpoints.
+
+Terminal mode:
+
+- Terminal panel attaches by reading the transcript tail, then applies live `raw` envelopes ordered by `terminalSeq`.
+- Terminal input is sent through WebSocket `terminal-input`.
+- Server validates the byte payload and writes raw bytes only if a live PTY is attached.
+- Current web behavior intentionally allows terminal stdin for live non-terminal process states, including spawning, as a recovery escape hatch.
+
+Error and empty states:
+
+- Unknown project returns HTTP 404 or WS policy close.
+- Missing active session is created lazily on first connect/send path.
+- Invalid `send.text` returns `send-ack` with `invalid-message`.
+- Missing PTY during send can return `send-ack` with `no-session`.
+- Invalid terminal input returns `terminal-input-ack`, but the web UI does not yet surface this explicitly.
+- Missing transcript returns empty terminal bytes, not failure.
+- Past sessions with no replay render as empty.
+
+Reload/reconnect/resume:
+
+- Server keepalive uses protocol ping/pong and terminates sockets that miss pong across sweeps.
+- Client app heartbeat sends `client-ping`, expects `server-pong`, and reconnects on inbound silence.
+- Reconnect uses exponential backoff and wake/focus/online stale-socket checks.
+- Reconnect snapshot replays durable session state and queue state without needing process lifecycle memory.
+
+Agent transcript adjacency:
+
+- `AgentTranscriptModal` backfills with `GET /api/projects/:projectId/agent-runs/:runId/events`.
+- Live transcript events append from `agent-jsonl-event` envelopes on the project WebSocket.
+- This is cross-pod behavior; keep audit findings linked to the agent-runs/transcripts pod.
+
+## Dependency Map
+
+Imports into the pod:
+
+- Runtime-host server modules import `@pc/domain`, `@pc/db`, Hono, `ws`, and runtime-host services.
+- `ProjectRuntime` imports DB repos, domain types, runtime classes, pod materialization, workflow/work-item services, and settings/runtime bundle helpers.
+- Web runtime surfaces import feature clients/types, `use-project-ws` envelope types, and chat feature helpers.
+
+Imports out of the pod:
+
+- `apps/server/src/index.ts` composes runtime-host routes, WebSocket server, PTY controller, hub, and runtime snapshot service.
+- `apps/web/src/App.tsx` creates the active project WebSocket hook and passes events through the shell.
+- Many web features import `WsEnvelope` from `use-project-ws.ts` to listen for their own broadcast deltas.
+- Work item, workflow, pod, agent-run, statusline, and project-context features broadcast onto the same project WebSocket hub.
+
+Cross-pod calls that should stay explicit:
+
+- Agent-run transcript live events use the same WebSocket bus but are not owned by the chat runtime.
+- Work item, workflow, pod, statusline, project context, and channel events use `WsEnvelope` as a shared event bus.
+- `terminal-mode.ts` is shared by runtime-host and transient-session routes.
+- `ProjectRuntime` still owns durable orchestrator plus transient modal PTYs; transient sessions are a separate audit pod.
+
+Duplicate adapters or protocol translations:
+
+- `apps/web/src/hooks/use-project-ws.ts` defines broad event and JSONL types that mirror runtime/server event shapes.
+- `apps/web/src/features/runtime/types.ts` mirrors server runtime snapshot/session/queue payloads.
+- `chat-session-reducer.ts` converts `session-replay` items back into `WsEnvelope` shape.
+- `usePendingPrompts.ts` confirms prompts by both queue item status and matching transcript text.
+
+## Dead Code And Drift
+
+- `turn-end` is marked vestigial in `packages/runtime/src/pty-session.ts` but remains part of web live-state derivation.
+- `events.jsonl` legacy fallback still exists for old sessions; no safe-delete decision yet.
+- The Phase 0 plan said transient terminal input should wait for ready, but current code intentionally allows raw terminal input while spawning for recovery.
+- Server sends `terminal-input-ack` failures, but the web contract and UI do not have an explicit display path for them.
+- `WsEnvelope` lives in `use-project-ws.ts` and is imported broadly, so a hook file is acting as a public cross-feature event contract.
+- Client heartbeat/reconnect pure helpers exist, but no dedicated web-side test file was found for focus/visibility/online reconnect behavior.
+- Agent transcript dedupe uses a serialized event key rather than a stable cursor or sequence id.
+- No unused runtime files or safe deletes were proven during this initial pass.
+
+## Tests And Gaps
+
+Existing focused tests:
+
+- `apps/server/test/runtime-host-websocket-server.test.ts`: connection validation, subscribe/detach, keepalive sweep, send callback closed-socket guard.
+- `apps/server/test/runtime-host-websocket-connect.test.ts`: connect snapshot ordering.
+- `apps/server/test/runtime-host-websocket-message.test.ts`: `client-ping`, ready send, busy queue, no-session creation, terminal/resize/interrupt/ask routing.
+- `apps/server/test/runtime-host-routes.test.ts`: runtime snapshot route, new/resume sessions, queue retry.
+- `apps/server/test/runtime-host-pty-handlers.test.ts`: ready drain, JSONL replay metadata/cursor/queue confirmation, path persistence, exit lifecycle.
+- `apps/server/test/orchestrator-send-queue-delivery.test.ts`: JSONL confirmation continues queued delivery while ready.
+- `apps/server/test/orchestrator-runtime-snapshot.test.ts`: replay high-water, line count, reconnect snapshot queue state.
+- `apps/server/test/orchestrator-runtime-health.test.ts`: health and wait point derivation.
+- `apps/server/test/session-replay.test.ts`: normalized replay loading, high-water, legacy fallback, malformed lines.
+- `apps/server/test/terminal-mode.test.ts`: terminal input validation and transcript tail containment.
+- `apps/server/test/web-pending-prompts.test.ts`: optimistic pending prompt metadata and confirmation.
+- `apps/server/test/web-boundaries.test.ts`: chat feature and client boundary guards.
+- `apps/server/test/websocket-hub.test.ts`: broadcast fanout, detach behavior, closed-socket skip, global broadcast.
+- `apps/server/test/project-runtime-session-resume.test.ts`: legacy resume when provider JSONL is missing.
+
+Missing tests or trace evidence:
+
+- No real user prompt trace has been captured yet from composer through JSONL confirmation.
+- No browser-level test covers heartbeat timeout, focus/online stale reconnect, and replay restoration together.
+- No client-side unit test file was found for `use-project-ws` heartbeat/backoff behavior.
+- No UI smoke was run for terminal transcript attach plus live raw-event overlap removal.
+- No test was found that asserts `terminal-input-ack` failures are visible to the user.
+- No test was found for the intentional terminal writability policy during spawning.
+- Agent transcript modal still needs active, historical, empty, failed, and missing transcript state coverage.
+
+## Cleanup Plan
+
+Do not change runtime behavior until a trace identifies a specific failure.
+
+Small cleanup candidates after trace:
+
+- Move shared WebSocket envelope contracts out of `use-project-ws.ts` into a feature contract module.
+- Add web-side tests around exported heartbeat/backoff helpers before touching reconnect logic.
+- Add a focused test for current terminal writability policy so the ready-vs-spawning decision is explicit.
+- Surface `terminal-input-ack` failures in the terminal/chat UI or remove the unused ack if product decides it is not useful.
+- Give agent transcript backfill/live merge stable cursor keys if the agent-runs audit confirms repeated identical events can collide.
+- Decide whether `turn-end` and `events.jsonl` legacy fallback are retained compatibility or safe-delete candidates.
+
+Verification commands to use before any cleanup patch:
+
+- `pnpm --filter @pc/server test -- runtime-host-websocket-server.test.ts runtime-host-websocket-message.test.ts runtime-host-websocket-connect.test.ts runtime-host-routes.test.ts runtime-host-pty-handlers.test.ts orchestrator-send-queue-delivery.test.ts orchestrator-runtime-snapshot.test.ts session-replay.test.ts terminal-mode.test.ts web-pending-prompts.test.ts websocket-hub.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
+- `git diff --check`
+
+## Completion Criteria
+
+Kickoff status:
+
+- `docs/system-map.md` exists.
+- `docs/pods/index.md` exists.
+- This pod audit file exists and has initial ownership, workflow, dependency, drift, test, and cleanup sections.
+- Runtime behavior has not been changed.
+- No app, dev server, dogfood app, Vite server, channel server, or restart endpoint has been touched.
+
+Commands run so far:
+
+- `git worktree list --porcelain`
+- `git status --short --branch`
+- `git log --oneline -8`
+- `git worktree add -b codex/phase-5-hardening "E:\Claude Code Projects\Personal\PC-PTY-Chat-phase5" dev`
+- `pnpm install --frozen-lockfile`
+- `rg --files` across server, web, DB, domain, runtime, and MCP areas.
+- `rg -n` for route registrations, WebSocket surfaces, MCP tools, DB tables, runtime-host tests, and terminal/input surfaces.
+- `Get-Content` for required kickoff docs and focused runtime-host, runtime, web, and agent transcript modules.
+- `pnpm --filter @pc/server exec tsx --test test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
+- `git diff --check`
+
+Verification results:
+
+- Focused runtime/WebSocket server tests: 58 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
+- Diff whitespace check: passed.
+
+Manual workflow checks run:
+
+- None yet.
+
+Open risks:
+
+- The first real trace still needs to be captured before choosing cleanup work.
+- Client-side reconnect behavior is partly protected by pure helper logic but lacks a browser-level smoke in this audit.
+- Terminal writability policy conflicts with the earlier Phase 0 wording and should be documented as an intentional product decision or revised.
