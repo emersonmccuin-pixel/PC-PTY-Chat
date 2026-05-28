@@ -9,6 +9,8 @@ import type {
 } from '../src/features/runtime-host/websocket-message.ts';
 import {
   handleRuntimeHostWsConnection,
+  runWsKeepaliveSweep,
+  type KeepaliveClient,
   type RuntimeHostWebSocketLike,
   type RuntimeHostWebSocketRuntime,
 } from '../src/features/runtime-host/websocket-server.ts';
@@ -216,6 +218,54 @@ test('accepted connection subscribes, sends connect snapshot, delegates messages
   ws.emit('close');
 
   assert.deepEqual(deps.detached, [projectId]);
+});
+
+class FakeKeepaliveClient implements KeepaliveClient {
+  isAlive?: boolean;
+  pings = 0;
+  terminated = 0;
+  constructor(isAlive?: boolean) {
+    this.isAlive = isAlive;
+  }
+  ping(): void {
+    this.pings++;
+  }
+  terminate(): void {
+    this.terminated++;
+  }
+}
+
+test('keepalive sweep pings live clients and marks them pending', () => {
+  const fresh = new FakeKeepaliveClient(true);
+  runWsKeepaliveSweep([fresh]);
+  assert.equal(fresh.pings, 1);
+  assert.equal(fresh.terminated, 0);
+  // Marked not-alive so the next sweep terminates it unless a pong arrives.
+  assert.equal(fresh.isAlive, false);
+});
+
+test('keepalive sweep terminates clients that missed a pong', () => {
+  const stale = new FakeKeepaliveClient(false);
+  runWsKeepaliveSweep([stale]);
+  assert.equal(stale.terminated, 1);
+  assert.equal(stale.pings, 0);
+});
+
+test('keepalive sweep terminates a client that stays unresponsive across two passes', () => {
+  const client = new FakeKeepaliveClient(true);
+  runWsKeepaliveSweep([client]); // ping, mark not-alive
+  runWsKeepaliveSweep([client]); // no pong arrived → terminate
+  assert.equal(client.pings, 1);
+  assert.equal(client.terminated, 1);
+});
+
+test('keepalive sweep keeps a client alive when its pong flips isAlive back', () => {
+  const client = new FakeKeepaliveClient(true);
+  runWsKeepaliveSweep([client]); // ping, mark not-alive
+  client.isAlive = true; // simulate pong listener firing
+  runWsKeepaliveSweep([client]); // still alive → ping again, not terminate
+  assert.equal(client.pings, 2);
+  assert.equal(client.terminated, 0);
 });
 
 test('message send callback does not write when socket is no longer open', () => {

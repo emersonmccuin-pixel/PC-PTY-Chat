@@ -146,7 +146,33 @@ export function handleRuntimeHostWsConnection<
  *  interval, terminate any that didn't pong since the last sweep. */
 const WS_KEEPALIVE_INTERVAL_MS = 30_000;
 
+export interface KeepaliveClient {
+  isAlive?: boolean;
+  ping(): void;
+  terminate(): void;
+}
+
 type Liveness = WsWebSocket & { isAlive?: boolean };
+
+/** One keepalive pass over the live client set. A client that hasn't ponged
+ *  since the previous pass (`isAlive === false`) is terminated; everyone else
+ *  is marked not-alive and pinged, so the next pass terminates them unless the
+ *  pong listener flips `isAlive` back to true in the meantime. Exported for
+ *  unit testing the terminate-vs-ping decision without a live socket. */
+export function runWsKeepaliveSweep(clients: Iterable<KeepaliveClient>): void {
+  for (const client of clients) {
+    if (client.isAlive === false) {
+      client.terminate();
+      continue;
+    }
+    client.isAlive = false;
+    try {
+      client.ping();
+    } catch {
+      /* best-effort; a failed ping means the next sweep terminates it */
+    }
+  }
+}
 
 export function registerRuntimeHostWebSocketServer<
   TPty extends RuntimeHostMessagePtySession,
@@ -173,23 +199,10 @@ export function registerRuntimeHostWebSocketServer<
     });
   });
 
+  // Terminate fires `close` → the connection's detachSubscriber(), cleaning the
+  // hub, and lets the browser observe the drop and reconnect.
   const sweep = setInterval(() => {
-    for (const client of wss.clients) {
-      const live = client as Liveness;
-      if (live.isAlive === false) {
-        // Missed a full interval — terminate(). The resulting `close` fires the
-        // connection's detachSubscriber(), cleaning the hub, and lets the
-        // browser observe the drop and reconnect.
-        live.terminate();
-        continue;
-      }
-      live.isAlive = false;
-      try {
-        live.ping();
-      } catch {
-        /* best-effort; a failed ping means the next sweep terminates it */
-      }
-    }
+    runWsKeepaliveSweep(wss.clients as Iterable<Liveness>);
   }, WS_KEEPALIVE_INTERVAL_MS);
   // Don't let the sweep timer keep the process alive on shutdown.
   if (typeof sweep.unref === 'function') sweep.unref();
