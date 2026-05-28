@@ -1,0 +1,258 @@
+# Unmerged Work Recovery - 2026-05-28
+
+Current base: local `dev` at `4a3cfe1` (`Merge refactor phases 1 and 2 into dev`).
+
+This document is the recovery map for all known work that is not currently in
+`dev`. The important point: the work is not gone. It is scattered across local
+branches, old-history worktrees, and stashes. Do not delete anything listed here
+until it is either ported, explicitly abandoned, or backed up elsewhere.
+
+## Safety Snapshot
+
+Backup tags were created for every important unmerged tip:
+
+- `backup/2026-05-28/section-33-account-profile`
+- `backup/2026-05-28/finish-runtime-relocation`
+- `backup/2026-05-28/fix-path-resolver-test`
+- `backup/2026-05-28/codex-mcp-tool-split-rescue`
+- `backup/2026-05-28/codex-phase4-chat-surface`
+- `backup/2026-05-28/codex-phase4-chat-surface-decomp`
+- `backup/2026-05-28/feature-terminal-mode`
+- `backup/2026-05-28/wf-c2e792b-workflows-mcp-tools`
+- `backup/2026-05-28/wf-5b5b70a-nav-directive`
+- `backup/2026-05-28/wf-067e716-yaml-save-refetch`
+- `backup/2026-05-28/wf-b4096a6-raw-yaml-tab`
+- `backup/2026-05-28/wf-6627fb8-smoke-docs-dirty-worktree-base`
+- `backup/2026-05-28/stash-section36-wip`
+- `backup/2026-05-28/stash-abilities-tray`
+
+These tags are non-destructive labels. They do not merge or modify app files.
+
+## What Is Already In Dev
+
+Merged into `dev`:
+
+- Phase 1 route extraction.
+- Phase 2 MCP split.
+- MCP tool catalog drift hardening.
+- Orchestrator now uses a curated tool allowlist rather than the broad
+  `mcp__pc-rig__*` wildcard.
+- Pod materialization renders tool docs from the final materialized allowlist.
+
+## Unmerged Groups
+
+### Recovered Candidate Branch
+
+Branch:
+
+- `recovery/phase3-client-split`
+
+Recovered onto current `dev`:
+
+- `0cb928b Split web API client by feature`
+- `a4b838a Decompose ChatSurface core helpers`
+- `3d81a68 Extract ChatSurface timeline container`
+
+Plain English:
+
+This branch recovers the next refactor slice on top of the clean `dev` base.
+It keeps the useful refactor work and avoids reviving the unrelated desktop
+updates / unread-project hook that was mixed into the old branch history.
+
+Verification:
+
+- `pnpm --filter @pc/web typecheck` passed.
+- `pnpm --filter @pc/web build` passed.
+- `pnpm run ci` passed.
+
+### 1. Small Ready Fix
+
+Branch:
+
+- `fix/path-resolver-test`
+- also on `origin/fix/path-resolver-test` and `origin/main`
+
+Plain English:
+
+This is a tiny test expectation correction for runtime path encoding after path
+scrubbing. It is likely safe to cherry-pick onto `dev`.
+
+Status:
+
+- Superseded / already present in current `dev`.
+- `git cherry-pick a073917` produced an empty cherry-pick.
+- Verified the expected strings are already in
+  `packages/runtime/test/path-resolver.test.ts`.
+- `pnpm --filter @pc/runtime test` passed: 252/252 tests.
+
+Recommended action: no port needed; keep branch only until cleanup.
+
+### 2. Refactor Work To Continue
+
+Branches:
+
+- `codex/phase4-chat-surface`
+- `codex/refactor-phase3-client-split`
+- `codex/phase4-chat-surface-decomp`
+
+Plain English:
+
+This is the next refactor thread after the route/MCP split. It includes:
+
+- splitting the web API client by feature
+- decomposing `ChatSurface` core helpers
+- extracting the `ChatSurface` timeline container
+
+Status:
+
+- Recovered onto `recovery/phase3-client-split`.
+- Do not merge the old branches directly.
+- Candidate branch passed full CI.
+
+Recommended action: review `recovery/phase3-client-split`; if accepted, merge
+that branch into `dev` rather than any of the old source branches.
+
+### 3. MCP Tool Pruning / Quick Tasks Decision
+
+Branch:
+
+- `codex/mcp-tool-split-rescue`
+
+Important commit:
+
+- `7b9ba17 Remove Quick Tasks and prune MCP surface`
+
+Plain English:
+
+This branch contains one real missing tool-audit piece, but it also mixes in
+product deletion. It:
+
+- removes Quick Tasks routes, seed, schema, pod references, and MCP tools
+- removes `pc_log`
+- removes MCP worktree tools
+- trims more orchestrator access to agent edit / knowledge tools
+- also carries Focus / initiative work that the user indicated should be
+  abandoned or restarted fresh
+
+Recommended action: do not merge the branch. Decide separately:
+
+- keep Quick Tasks and only prune the orchestrator/MCP tool surface, or
+- fully remove Quick Tasks as that commit did.
+
+Then port only the chosen pieces from current `dev`.
+
+### 4. Old-History Workflow Product Work
+
+Branches/worktrees:
+
+- 35 duplicate branches at `c2e792b`, all titled
+  `feat(workflows): add pc_fire_workflow + pc_complete_node MCP tools`
+- `wf-2BYS9WR2` and `wf-XD1X9C6H`: nav directive fix
+- `wf-90BA02AH`: YAML save triggers list refetch
+- `wf-2XGBCZNV`: Raw YAML tab editor
+- `wf-DKSQTERZ`: D39 agent-node smoke closeout docs, plus dirty local deletes
+
+Plain English:
+
+This is a large chunk of useful workflow app/product work, but it is based on
+the old mainline history, not the new clean `dev`. Git cannot merge it safely
+as a normal branch.
+
+Likely useful features inside this family include:
+
+- DB-backed workflow routes
+- workflow-builder prompt overhaul
+- workflow-builder draft/publish flow
+- Workflows list/detail UI improvements
+- Raw YAML editor tab
+- workflow run viewer changes
+- workflow route smoke tests
+- MCP tools for firing workflows and completing review nodes
+- smaller UI reliability fixes around workflow navigation and saving
+
+Recommended action: treat this as a product salvage queue. Port features one at
+a time after the refactor base is stable, starting with backend API contracts
+and tests, then UI.
+
+### 5. Runtime / Desktop / Account Work
+
+Branches:
+
+- `finish/runtime-relocation`
+- `section-33-account-profile`
+
+Plain English:
+
+This is a huge old-history line. It appears to contain valuable runtime and
+desktop work, including:
+
+- relocating Claude runtime files into session bundles
+- detecting remote-control readiness
+- hardening orchestrator chat sessions
+- runtime health snapshots
+- account/profile override work
+- desktop packaging/build work
+- cleanup around runtime sessions and git errors
+- usage cap display fixes
+- agentic build pipeline work
+
+Recommended action: preserve and audit separately. Do not merge wholesale.
+Break it into small recovery branches from current `dev`, starting with runtime
+relocation / readiness if those are still product-critical.
+
+### 6. Stashed Work
+
+Stashes:
+
+- `stash@{0}` / `backup/2026-05-28/stash-section36-wip`
+- `stash@{1}` / `backup/2026-05-28/stash-abilities-tray`
+
+Plain English:
+
+`stash@{0}` is Section 36 WIP around caisson/data-driven agent identity. It
+touches pod routes, orchestrator pod content, stock pod seeding, usage caps,
+domain exports, and tests.
+
+`stash@{1}` is dormant abilities-tray scaffolding. It only touches three files
+and should stay parked unless that idea becomes active again.
+
+Recommended action: keep both parked for now.
+
+### 7. Dirty Worktrees / Loose Files
+
+Main worktree:
+
+- untracked `docs/app-structure-overview.html`
+
+Workflow worktree:
+
+- `wf-DKSQTERZ` has uncommitted deletions of old workflow demo YAML files.
+
+Recommended action:
+
+- leave `docs/app-structure-overview.html` alone until the user decides whether
+  it is useful documentation.
+- inspect the `wf-DKSQTERZ` deletes before removing that worktree.
+
+## Recovery Order
+
+1. Stabilize and keep current `dev` as the new base.
+2. Cherry-pick the tiny path resolver test fix. Done: already present.
+3. Port the Phase 3/4 refactor work onto a fresh branch from current `dev`.
+   Done: `recovery/phase3-client-split`.
+4. Make a product decision on Quick Tasks, then port the chosen MCP/tool pruning.
+5. Audit workflow product work and recover it feature-by-feature.
+6. Audit runtime/account/desktop work and recover it feature-by-feature.
+7. Only after recovery decisions are made, delete duplicate worktree branches.
+
+## Branches Not Safe To Merge Wholesale
+
+These are useful as source material only:
+
+- `codex/mcp-tool-split-rescue`
+- `codex/phase4-chat-surface`
+- `codex/refactor-phase3-client-split`
+- `codex/phase4-chat-surface-decomp`
+- `finish/runtime-relocation`
+- `section-33-account-profile`
+- all `wf-*` workflow branches
