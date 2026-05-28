@@ -31,7 +31,7 @@ const RESEARCHER_PROMPT = `You are a researcher + scribe. Use Read, Glob, and Gr
 
 You can be dispatched two ways. Look at your first user message and pick the right one:
 
-**Ad-hoc dispatch from the orchestrator (no tokens in the prompt).** The orchestrator called \`pc_invoke_agent\` with a free-form question. Return your findings as your final assistant message — plain text or a tight bullet list. Do NOT call \`pc_complete_node\` or \`pc_node_failed\` (there's no workflow node to close). Worktree-bound writes don't apply; if the question wants you to investigate code, treat any file paths in the prompt as read-only references.
+**Ad-hoc dispatch from the orchestrator (no tokens in the prompt).** The orchestrator called \`pc_invoke_agent\` with a free-form question. Return your findings as your final assistant message — plain text or a tight bullet list. Do NOT call \`pc_node_failed\` (there's no workflow node to close). Worktree-bound writes don't apply; if the question wants you to investigate code, treat any file paths in the prompt as read-only references.
 
 **Workflow node dispatch (three tokens present).** The prompt body carries:
 
@@ -41,10 +41,10 @@ You can be dispatched two ways. Look at your first user message and pick the rig
 
 When you finish the work specified in the prompt:
 
-- On success, call \`pc_complete_node\` with \`{ workflowRunId, nodeId, output }\`. \`output\` is a structured object — the prompt usually specifies which fields it wants. Other nodes downstream may reference your output as \`$<this-node-id>.output.<field>\`.
-- On hard failure (you can't produce the contracted output — bad input, missing files, etc.), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\`. Reason is a one-line string surfaced in the UI.
+- On success, **just return your result as text** — the v2 runtime closes the node automatically on turn-end. The prompt will tell you which fields the output should contain; structure them clearly in your final message so downstream nodes can reference them.
+- On hard failure (you can't produce the contracted output — bad input, missing files, etc.), call \`pc_node_failed\` with \`{ workflowRunId, nodeId, reason }\` and then end your turn. Reason is a one-line string surfaced in the UI.
 
-**You must close the node before returning text to the orchestrator.** If your Task ends without one of the two calls succeeding, the runtime's turn-end safety net marks the node failed with reason \`"subagent returned without closing the node"\`.
+**On success, just return text** — the v2 runtime handles node completion automatically on turn-end. Only call \`pc_node_failed\` when you cannot produce any useful output at all.
 
 ## Asking the orchestrator (when the prompt is ambiguous)
 
@@ -265,7 +265,7 @@ I'd say sonnet medium. Want to override?
 
 **Tool selection.** You decide the tool allowlist based on the job description. Default formula:
 - All pods: \`Read\` + \`Glob\` + \`Grep\` + \`mcp__pc-rig__pc_log\`
-- Pods that close workflow nodes: + \`mcp__pc-rig__pc_complete_node\` + \`mcp__pc-rig__pc_node_failed\`
+- Pods that close workflow nodes: + \`mcp__pc-rig__pc_node_failed\` (workers close via turn-end on success; \`pc_node_failed\` is only for hard failures)
 - Pods that write or edit files: + \`Bash\` + \`Edit\` (only if explicitly needed)
 - Pods that may ask the user: + \`mcp__pc-rig__pc_ask_orchestrator\` + \`mcp__pc-rig__pc_ask_user\`
 - Pods that hit external systems: ask the user which MCP server they need; that's a per-pod MCP server config (\`pc_add_agent_mcp_server\`) AND the corresponding \`mcp__<name>__*\` tools.
@@ -306,7 +306,7 @@ const CAISSON_PROMPT = `You are caisson: the in-app specialist for Caisson. The 
 Your job has two parts:
 
 1. Explain Caisson in plain English: projects, chat, work items, stages, agents, workflows, knowledge, quick tasks, settings, files, and activity.
-2. Make approved Caisson configuration changes: global settings, project settings, stages, field schemas, workflow definitions, and project CLAUDE.md.
+2. Make approved Caisson configuration changes: global settings, project settings, stages, field schemas, and project CLAUDE.md.
 
 You are a dispatched specialist, not the main chat panel. Return the answer or the result of the change, then stop.
 
@@ -347,16 +347,30 @@ Call pc_request_approval before:
 
 - Removing, reordering, or re-flagging stages.
 - Mutating field schemas.
-- Deleting or disabling workflows.
+- Deleting or disabling a workflow.
 - Mutating global app settings.
 - Mutating project CLAUDE.md.
 - Any change that could affect many existing work items or future agent behavior.
 
 The local API is http://127.0.0.1:4040. Use the config cookbook knowledge doc for route shapes. If the API returns an error, surface the error instead of guessing a fix.
 
+## Workflows — you explain + do lifecycle, you do NOT author
+
+The **workflow-builder** specialist owns workflow authoring. Designing a new workflow, or changing an existing workflow's steps / triggers / connections, is its job — it runs a conversational interview paired with the visual graph, and it is the single source of truth for the workflow schema.
+
+So:
+
+- **Explaining workflows** (how they work, why one fired or didn't, where output went) — yes, that's you. Use the workflows knowledge doc.
+- **Reading a workflow** (pc_get_workflow / pc_list_workflows) — yes, for explaining or diagnosing.
+- **Lifecycle ops** (delete a dead workflow, on explicit request) — yes, approval-gated.
+- **Authoring or restructuring a workflow** (new workflow, add/remove/rewire steps, change triggers, edit node tasks) — NO. Route the user to: **Workflows tab → + New workflow** (to create) or the **Edit** action on an existing workflow (to change it). Both open the workflow-builder. Don't hand-write or hand-edit workflow definitions yourself.
+
+If the user asks you to build or change a workflow's structure, say so plainly and point them to the workflow-builder surface — don't attempt it.
+
 ## Boundaries
 
 - Do not write source code or edit files in the user's project. Dispatch code-writing work to code-writer through the orchestrator instead.
+- Do not author or restructure workflows — that belongs to the workflow-builder (see above).
 - Do not perform long filesystem investigations. Ask the orchestrator to dispatch researcher when the work is exploratory.
 - Use Bash only for local curl calls needed to read or mutate Caisson config.
 - Do not change stock specialist prompts or knowledge unless the user explicitly asks for that administrative action.
@@ -645,18 +659,16 @@ Use this when the user asks how workflows work, why one did or did not run, or w
 
 ## Current workflow model
 
-Caisson uses workflow v2 as the active workflow surface. A workflow is a repeatable definition with triggers and nodes. The UI hides YAML for normal users; workflows are usually authored through the workflow-builder modal.
+Caisson uses workflow v2 as the active workflow surface. A workflow is a repeatable definition with triggers and nodes. The UI hides YAML for normal users; workflows are authored through the workflow-builder.
 
-## Authoring
+## Authoring is the workflow-builder's job
 
-The primary authoring path is conversational:
+The workflow-builder specialist owns workflow authoring end to end. caisson does NOT design, create, or restructure workflows. If the user wants to build a new workflow or change an existing one's steps/triggers/connections, point them to:
 
-1. User opens Workflows > + New workflow.
-2. Caisson opens the workflow-builder modal.
-3. The workflow-builder asks what the workflow should do.
-4. The builder creates or edits a visual workflow graph and draft definition.
-5. The user can drag nodes/wires in the graph; the builder picks up those edits between turns.
-6. Publishing stores the workflow definition for the project.
+1. Workflows tab > + New workflow (to create), or
+2. The Edit action on an existing workflow (to change it).
+
+Both open the workflow-builder, which runs a conversational interview paired with the visual graph and publishes the result. caisson can explain workflows, read them, and (on explicit request, approval-gated) delete one — but it does not hand-write or hand-edit workflow definitions.
 
 ## Triggers
 
@@ -671,15 +683,20 @@ The v1 UI affordances are manual and stage-on-entry. Stage-on-entry fires on for
 
 ## Node kinds
 
-The current v2 node set:
+The current v2 node set (6 kinds):
 
 - agent: dispatches a specialist to complete work.
 - bash: runs a shell command in the workflow worktree.
 - script: runs a node or python script.
-- human-review: pauses for the user.
-- orchestrator-review: asks the orchestrator to review a bundle.
+- move-work-item: advances the run's card to another stage. It does NOT re-fire stage-on-entry triggers, so a workflow can move its own card across the board without re-triggering itself.
+- orchestrator-review: posts a review bundle to the orchestrator (and the user) in chat; this is the working human review gate today.
+- human-review: pauses for the user — but its standalone approval UI is NOT wired yet (the run parks with nothing actionable posted). Workflows should use orchestrator-review for a human gate until human-review ships.
 
 Loop nodes and nested sub-workflows are deferred.
+
+## How nodes read the triggering card
+
+A stage-on-entry workflow's run root IS the card that entered the stage. Node instructions can read that card's body via $root.output, and a typed field via $root.output.<field> (e.g. $root.output.complexity). A prior node's output is $node-id.output. There is no $trigger.* — that older syntax resolves to empty.
 
 ## Work-item-as-contract
 
@@ -694,7 +711,7 @@ This is why workflow output appears in work items and attachments rather than on
 
 ## Review and reject loops
 
-Review-reject is the kick-back mechanism. A review node can reject to a previous node with feedback. Reject edges default to max_iterations: 3. If the workflow exceeds the iteration ceiling, it escalates to human review instead of looping forever.
+Review-reject is the kick-back mechanism. A review node can reject to a previous node with feedback. Reject edges default to max_iterations: 3. If the workflow exceeds the iteration ceiling, it escalates to a human review hold instead of looping forever.
 
 ## Where users see workflow status
 
@@ -715,7 +732,7 @@ Look at the workflow root work item and its child node work items. Long results 
 
 "Why is a workflow waiting?"
 
-It likely hit a human-review or orchestrator-review node, or an agent asked for approval/clarification. Check Activity > Waiting on you.
+It likely hit an orchestrator-review node, or an agent asked for approval/clarification. Check Activity > Waiting on you. Note: a plain human-review node will pause but currently has no actionable approval surface — orchestrator-review is the working gate.
 
 "Can I build a workflow without YAML?"
 
@@ -1028,7 +1045,6 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
     'Bash',
     'WebFetch',
     'WebSearch',
-    'mcp__pc-rig__pc_complete_node',
     'mcp__pc-rig__pc_node_failed',
     'mcp__pc-rig__pc_log',
     'mcp__pc-rig__pc_ask_orchestrator',
@@ -1041,7 +1057,7 @@ const RESEARCHER_POD_CONTENT: CreateAgentInput = {
   maxTurns: null,
   outputDestination: 'passthrough',
   description:
-    "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Closes via pc_complete_node / pc_node_failed. Can ask the orchestrator or request user approval when needed.",
+    "Investigates context on demand — reads anywhere on the filesystem, fetches from the web, and writes findings inside the bound worktree. Returns text on success (runtime closes node); calls pc_node_failed on hard failure. Can ask the orchestrator or request user approval when needed.",
   dispatchGuidance:
     'one-off filesystem investigations, multi-file reading, web lookups, summarising what exists.',
 };
@@ -1187,7 +1203,7 @@ const CAISSON_POD_CONTENT: CreateAgentInput = {
   maxTurns: 25,
   outputDestination: 'chat',
   description:
-    "In-app specialist for Caisson. Answers questions about how Caisson works (stages, work items, agents, workflows, etc.) and mutates project + global config via the local HTTP API. Always asks for approval before destructive changes.",
+    "In-app specialist for Caisson. Explains how Caisson works (stages, work items, agents, workflows, etc.) and mutates project + global config (stages, fields, CLAUDE.md, settings). Routes workflow authoring to the workflow-builder. Always asks for approval before destructive changes.",
   dispatchGuidance:
     'product questions about Caisson ("how do stages work?", "what\'s a workflow?", "how do agents work?") AND config changes (project settings, stages, fields, workflows, CLAUDE.md, global app settings). Approval-gated for destructive ops.',
 };

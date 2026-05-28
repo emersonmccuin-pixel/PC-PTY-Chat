@@ -7,6 +7,7 @@ const WORKFLOW_BUILDER_SESSION_ID = 'wb-terminal-mode';
 
 type Surface = 'chat' | 'terminal';
 type CenterTab = 'orchestrator' | 'workflows';
+type TransientSessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
 
 declare global {
   interface Window {
@@ -94,14 +95,23 @@ function runtimeSnapshot() {
 async function setupTerminalHarness(
   page: Page,
   defaultSurface: Surface,
-  options: { initialMode?: Surface | null; initialTab?: CenterTab } = {},
+  options: {
+    initialMode?: Surface | null;
+    initialTab?: CenterTab;
+    workflowBuilderState?: TransientSessionState;
+  } = {},
 ) {
   let currentSettings = settings(defaultSurface);
 
   await page.route('**/api/**', async (route) => {
-    await fulfillApi(route, currentSettings, (next) => {
-      currentSettings = next;
-    });
+    await fulfillApi(
+      route,
+      currentSettings,
+      (next) => {
+        currentSettings = next;
+      },
+      options.workflowBuilderState ?? 'ready',
+    );
   });
 
   await page.addInitScript(
@@ -227,6 +237,7 @@ async function fulfillApi(
   route: Route,
   currentSettings: ReturnType<typeof settings>,
   updateSettings: (next: ReturnType<typeof settings>) => void,
+  workflowBuilderState: TransientSessionState,
 ) {
   const request = route.request();
   const url = new URL(request.url());
@@ -275,7 +286,7 @@ async function fulfillApi(
     return json({ ok: true, workflows: [] });
   }
   if (path === `/api/projects/${PROJECT_ID}/workflow-builder/start`) {
-    return json({ ok: true, state: 'ready', sessionId: WORKFLOW_BUILDER_SESSION_ID });
+    return json({ ok: true, state: workflowBuilderState, sessionId: WORKFLOW_BUILDER_SESSION_ID });
   }
   if (path === `/api/projects/${PROJECT_ID}/sessions/${WORKFLOW_BUILDER_SESSION_ID}/terminal-transcript`) {
     return json({
@@ -468,5 +479,26 @@ test.describe('Terminal mode smoke', () => {
     });
     expect(fitBox.width).toBeGreaterThan(1200);
     expect(fitBox.height).toBeGreaterThan(650);
+  });
+
+  test('workflow builder terminal is read-only while the session is starting', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await setupTerminalHarness(page, 'chat', {
+      initialTab: 'workflows',
+      workflowBuilderState: 'spawning',
+    });
+    await page.goto('/');
+    await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 10_000 });
+
+    await page.getByRole('button', { name: '+ New workflow' }).click();
+
+    await expect(page.locator('[data-testid="terminal-mode-panel"]')).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.locator('[data-testid="terminal-mode-fit-target"]').click();
+    await page.keyboard.type('abc');
+    await page.waitForTimeout(250);
+
+    expect(await terminalInputPayload(page)).toBe('');
   });
 });

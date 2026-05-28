@@ -52,14 +52,13 @@ test('claudeProjectsRoot composes correctly under both modes', () => {
 });
 
 test('encodeCwdForClaude collapses non-[A-Za-z0-9._-] to "-"', () => {
-  // Empirical samples from Section 0.
   assert.equal(
     encodeCwdForClaude('E:\\Projects\\Caisson'),
-    'E--Claude-Code-Projects-Personal-Caisson',
+    'E--Projects-Caisson',
   );
   assert.equal(
     encodeCwdForClaude('C:\\Users\\example\\AppData\\Local\\Temp\\cc-stream-test'),
-    'C--Users-emers-AppData-Local-Temp-cc-stream-test',
+    'C--Users-example-AppData-Local-Temp-cc-stream-test',
   );
   // Dot, underscore, hyphen preserved.
   assert.equal(encodeCwdForClaude('a.b_c-d/e f'), 'a.b_c-d-e-f');
@@ -87,7 +86,7 @@ test('claudeConfigDirFromJsonlPath returns the config root from a session JSONL 
   const file = join(
     root,
     'projects',
-    'E--Claude-Code-Projects-Personal-PC-PTY-Chat',
+    'E--Projects-PC-PTY-Chat',
     '32508f95-0ae5-471e-bb4c-93dd4ce8e7df.jsonl',
   );
 
@@ -98,7 +97,7 @@ test('claudeConfigDirFromJsonlPath rejects paths outside a projects root', () =>
   const file = join(
     resolve('tmp-claude-config-root'),
     'not-projects',
-    'E--Claude-Code-Projects-Personal-PC-PTY-Chat',
+    'E--Projects-PC-PTY-Chat',
     '32508f95-0ae5-471e-bb4c-93dd4ce8e7df.jsonl',
   );
 

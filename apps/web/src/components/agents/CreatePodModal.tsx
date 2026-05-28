@@ -22,7 +22,11 @@ import {
   type Project,
 } from '@/api/client';
 import type { WsEnvelope } from '@/hooks/use-project-ws';
-import { AgentDesignerChat } from './AgentDesignerChat';
+import {
+  AgentDesignerChat,
+  isAgentDesignerState,
+  type AgentDesignerState,
+} from './AgentDesignerChat';
 
 interface CreatePodModalProps {
   project: Project;
@@ -50,6 +54,8 @@ export function CreatePodModal({
   const [convoStarting, setConvoStarting] = useState(false);
   const [convoStartError, setConvoStartError] = useState<string | null>(null);
   const [convoSessionId, setConvoSessionId] = useState<string | null>(null);
+  const [convoInitialState, setConvoInitialState] =
+    useState<AgentDesignerState>('spawning');
   const initialTabSet = useRef(false);
 
   const projectNamesSet = useMemo(
@@ -108,13 +114,13 @@ export function CreatePodModal({
     if (convoStarting || convoStarted) return;
     setConvoStartError(null);
     setConvoStarting(true);
+    setConvoInitialState('spawning');
     try {
-      // Fire-and-track. The HTTP response carries the spawn's initial
-      // state, but WS envelopes drive the live state in AgentDesignerChat
-      // — don't setState off the response or we risk the transient-modal
-      // start-race ([[transient-modal-state-race]]).
       const started = await api.startAgentDesigner(project.id);
       setConvoSessionId(started.sessionId);
+      setConvoInitialState(
+        isAgentDesignerState(started.state) ? started.state : 'spawning',
+      );
       setConvoStarted(true);
     } catch (e) {
       setConvoStartError((e as Error).message);
@@ -163,6 +169,7 @@ export function CreatePodModal({
                 project={project}
                 events={events}
                 sessionId={convoSessionId}
+                initialState={convoInitialState}
               />
             ) : (
               <StartScreen

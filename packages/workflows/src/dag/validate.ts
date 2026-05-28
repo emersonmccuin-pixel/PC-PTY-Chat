@@ -27,13 +27,24 @@ const REVIEW_KINDS = new Set(['human-review', 'orchestrator-review']);
  *  expression is genuinely malformed — not merely that a value was absent. */
 const GRAMMAR_PROBE: RefResolver = () => '0';
 
+export interface CrossWorkflowValidationOpts {
+  /** Other active workflows in the project that have stage-on-entry triggers.
+   *  When provided, move-work-item nodes whose `to_stage` collides with one of
+   *  these stages produce an error unless `allow_stage_workflow_skip: true` is set. */
+  stageOnEntryWorkflows?: Array<{ workflowId: string; name: string; stage: string }>;
+}
+
 /**
  * Validate a v2 workflow graph. Checks (in order): shell shape · unique node
  * ids · known kinds + per-kind required fields · ref integrity (next /
  * reject.back_to / bundle_from point to real nodes) · forward-edge acyclicity ·
- * `when:` grammar · trigger shape. Returns every error found.
+ * `when:` grammar · trigger shape · cross-workflow stage collisions (when opts
+ * supplied). Returns every error found.
+ *
+ * `opts` is optional. When omitted, behavior is identical to the fire-time call
+ * (no cross-workflow checks), preserving back-compat for all existing call sites.
  */
-export function validateWorkflowV2(workflow: WorkflowV2.Workflow): ValidationResult {
+export function validateWorkflowV2(workflow: WorkflowV2.Workflow, opts?: CrossWorkflowValidationOpts): ValidationResult {
   const errors: string[] = [];
   const wf = workflow as unknown as {
     name?: unknown;
@@ -122,6 +133,23 @@ export function validateWorkflowV2(workflow: WorkflowV2.Workflow): ValidationRes
       errors.push('schedule trigger: missing "cron"');
     if (kind === 'event' && (typeof t.source !== 'string' || t.source === ''))
       errors.push('event trigger: missing "source"');
+  }
+
+  // ── cross-workflow stage-on-entry collision ──
+  if (opts?.stageOnEntryWorkflows && opts.stageOnEntryWorkflows.length > 0) {
+    for (const n of nodes) {
+      if ((n.kind as string) !== 'move-work-item') continue;
+      const toStage = n.to_stage as unknown;
+      if (typeof toStage !== 'string' || !toStage) continue;
+      if ((n as Record<string, unknown>).allow_stage_workflow_skip === true) continue;
+      const collision = opts.stageOnEntryWorkflows.find((w) => w.stage === toStage);
+      if (collision) {
+        const id = typeof n.id === 'string' ? n.id : '?';
+        errors.push(
+          `move-work-item node "${id}": destination stage is the on-entry trigger of workflow "${collision.name}" — that workflow will be silently skipped. Inline its steps, pick another stage, or set allow_stage_workflow_skip: true to do this intentionally.`,
+        );
+      }
+    }
   }
 
   return { ok: errors.length === 0, errors };

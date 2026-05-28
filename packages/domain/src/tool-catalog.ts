@@ -195,21 +195,72 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: 'Bind the current dispatch to a specific card.',
     source: 'pc-rig',
   },
-  // 19.17 — `pc_complete_node`, `pc_node_failed`, `pc_run_workflow`,
-  // `pc_update_workflow_draft` removed. Their handlers were repointed to
-  // dead v1 routes in 19.12; 19.17 prunes the catalog entries so the
-  // generated allowlist no longer advertises them. v2 equivalents land
-  // under 19.17b's orchestrator-prompt overhaul.
-  //
-  // 19.23 — `pc_create_workflow` + `pc_edit_workflow` likewise removed.
-  // Their handlers also pointed at the dead `/api/projects/:projectId/workflows`
-  // surface; the v2 workflow-builder pod publishes via `pc_publish_workflow`.
-  //
+  // Batch-A tool-audit remediation — pc_node_failed re-registered (was
+  // removed in 19.17 but the spawner + prompts still depended on it) + 8
+  // live tools that were never added to this catalog + AskUserQuestion (CC
+  // built-in granted to workflow-builder).
+  {
+    slug: 'mcp__pc-rig__pc_node_failed',
+    label: 'Signal node failure',
+    description: 'Signal a hard failure from a workflow agent node so the spawner closes it as agent-self-failed.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_fire_workflow',
+    label: 'Fire a workflow',
+    description: 'Trigger a workflow by slug or ULID; returns the new runId + root work item id.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_complete_node',
+    label: 'Complete review node (orchestrator)',
+    description: 'Submit an approve or reject decision for a workflow run paused at an orchestrator-review node.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_create_workflow',
+    label: 'Create a workflow',
+    description: 'Create a new v2 workflow definition (YAML or graph object) in the project.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_update_workflow',
+    label: 'Update a workflow',
+    description: 'Replace or patch an existing workflow definition by DB ULID.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_delete_workflow',
+    label: 'Delete a workflow',
+    description: 'Soft-delete a workflow by DB ULID; cancels in-flight runs when forced.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_get_workflow',
+    label: 'Read a workflow',
+    description: 'Fetch a single workflow row by DB ULID or slug.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_replace_stages',
+    label: 'Replace project stages',
+    description: "Replace the project's stage definitions in bulk (destructive — use with caution).",
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_replace_field_schemas',
+    label: 'Replace field schemas',
+    description: "Replace the project's custom work-item field schemas in bulk.",
+    source: 'pc-rig',
+  },
+  {
+    slug: 'AskUserQuestion',
+    label: 'Ask the user a question (CC built-in)',
+    description: 'CC built-in: pause and surface a question to the user during a workflow-builder session.',
+    source: 'cc-builtin',
+  },
   // 19.23 — v2 workflow-builder catalog additions. These four are the
   // live MCP tools the workflow-builder pod actually uses (19.9 + 19.17).
-  // Carried as a carry-over from 19.17 ("left to that thread on purpose")
-  // but the test asserting them has been red since; adding now since the
-  // matching MCP tools are stable.
   {
     slug: 'mcp__pc-rig__pc_save_workflow_draft',
     label: 'Save workflow draft',

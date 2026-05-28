@@ -791,6 +791,9 @@ interface ChatSurfaceProps {
   /** Keep the textarea editable, but prevent submitting. Used during a
    *  new-session transition so drafts don't leak into the previous session. */
   composerSendDisabled?: boolean;
+  /** Controls whether raw xterm input may reach the runtime. Defaults to the
+   *  same availability gates as the composer and live WS. */
+  terminalWritable?: boolean;
   /** Override composer placeholder. Defaults to the orchestrator string. */
   composerPlaceholder?: string;
   /** User-facing reason when the composer is disabled but still visible. */
@@ -833,6 +836,7 @@ export function ChatSurface({
   composerHidden,
   composerDisabled,
   composerSendDisabled,
+  terminalWritable,
   composerPlaceholder,
   composerDisabledReason,
   composerQueueing,
@@ -1138,6 +1142,12 @@ export function ChatSurface({
   }, [projectId, currentSessionId, terminalEligible, defaultOrchestratorSurface]);
 
   const terminalActive = terminalEligible && surfaceMode === 'terminal';
+  const resolvedTerminalWritable =
+    terminalActive &&
+    (terminalWritable ??
+      (!composerDisabled &&
+        !composerSendDisabled &&
+        (wsStatus === undefined || wsStatus === 'open')));
   useEffect(() => {
     if (!surfaceModeReady) return;
     onSurfaceModeChange?.(terminalActive ? 'terminal' : 'chat');
@@ -1496,7 +1506,7 @@ export function ChatSurface({
             sessionId={currentSessionId}
             events={events}
             visible={terminalActive}
-            writable={terminalActive && (wsStatus === undefined || wsStatus === 'open')}
+            writable={resolvedTerminalWritable}
             onInput={onTerminalInput}
             onResize={onTerminalResize}
           />

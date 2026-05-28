@@ -361,6 +361,30 @@ export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): voi
       return c.json({ ok: false, error: 'def.id (workflow slug) required' }, 400);
     }
 
+    // Cross-workflow stage-collision check at publish time.
+    // New workflow not in DB yet → no slug exclusion needed.
+    if (projectId && normalised.status === 'active' && normalised.parsedDefinition !== null) {
+      const stageOnEntryWorkflows: Array<{ workflowId: string; name: string; stage: string }> = [];
+      for (const r of workflowsRepo.listWorkflows({ projectId })) {
+        if (r.status !== 'active' || r.disabled) continue;
+        const def = r.parsedDefinition as WorkflowV2.Workflow | null;
+        if (!def) continue;
+        for (const t of (def.triggers ?? [])) {
+          if (t.kind === 'stage-on-entry' && typeof (t as { stage?: unknown }).stage === 'string' && (t as { stage: string }).stage) {
+            stageOnEntryWorkflows.push({ workflowId: r.slug, name: r.name, stage: (t as { stage: string }).stage });
+          }
+        }
+      }
+      if (stageOnEntryWorkflows.length > 0) {
+        const crossResult = validateWorkflowV2(normalised.parsedDefinition, { stageOnEntryWorkflows });
+        if (!crossResult.ok) {
+          normalised.status = 'invalid';
+          normalised.parseError = crossResult.errors.join('; ');
+          normalised.parsedDefinition = null;
+        }
+      }
+    }
+
     // Per-scope slug + name uniqueness — return 409 instead of a raw UNIQUE
     // violation so callers can surface a clean message.
     const slugCollision = workflowsRepo.getWorkflowBySlug({
@@ -450,6 +474,31 @@ export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): voi
       if ('error' in normalised) {
         return c.json({ ok: false, error: normalised.error }, 400);
       }
+
+      // Cross-workflow stage-collision check at publish time. Excludes self by slug.
+      const checkProjectId = existing.projectId;
+      if (checkProjectId && normalised.status === 'active' && normalised.parsedDefinition !== null) {
+        const stageOnEntryWorkflows: Array<{ workflowId: string; name: string; stage: string }> = [];
+        for (const r of workflowsRepo.listWorkflows({ projectId: checkProjectId })) {
+          if (r.status !== 'active' || r.disabled || r.slug === existing.slug) continue;
+          const def = r.parsedDefinition as WorkflowV2.Workflow | null;
+          if (!def) continue;
+          for (const t of (def.triggers ?? [])) {
+            if (t.kind === 'stage-on-entry' && typeof (t as { stage?: unknown }).stage === 'string' && (t as { stage: string }).stage) {
+              stageOnEntryWorkflows.push({ workflowId: r.slug, name: r.name, stage: (t as { stage: string }).stage });
+            }
+          }
+        }
+        if (stageOnEntryWorkflows.length > 0) {
+          const crossResult = validateWorkflowV2(normalised.parsedDefinition, { stageOnEntryWorkflows });
+          if (!crossResult.ok) {
+            normalised.status = 'invalid';
+            normalised.parseError = crossResult.errors.join('; ');
+            normalised.parsedDefinition = null;
+          }
+        }
+      }
+
       patch.yaml = normalised.yaml;
       patch.yamlHash = normalised.yamlHash;
       patch.parsedDefinition = normalised.parsedDefinition;

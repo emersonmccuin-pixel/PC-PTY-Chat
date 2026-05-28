@@ -155,3 +155,41 @@ test('collects multiple errors at once', () => {
   assert.equal(r.ok, false);
   assert.ok(r.errors.length >= 3, `expected ≥3 errors, got ${JSON.stringify(r.errors)}`);
 });
+
+// ── cross-workflow stage-on-entry collision (opts path) ──
+
+const OTHER_WORKFLOWS = [{ workflowId: 'other-wf', name: 'Onboarding', stage: 'review' }];
+
+test('move to a colliding stage without ack → error', () => {
+  const r = validateWorkflowV2(
+    wf([{ kind: 'move-work-item', id: 'mv', to_stage: 'review' } as unknown as Node]),
+    { stageOnEntryWorkflows: OTHER_WORKFLOWS },
+  );
+  expectError(
+    r,
+    /move-work-item node "mv": destination stage is the on-entry trigger of workflow "Onboarding" — that workflow will be silently skipped\./,
+  );
+});
+
+test('move to a colliding stage with allow_stage_workflow_skip: true → no error', () => {
+  const r = validateWorkflowV2(
+    wf([{ kind: 'move-work-item', id: 'mv', to_stage: 'review', allow_stage_workflow_skip: true } as unknown as Node]),
+    { stageOnEntryWorkflows: OTHER_WORKFLOWS },
+  );
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('opts omitted → no cross-workflow error (back-compat)', () => {
+  const r = validateWorkflowV2(
+    wf([{ kind: 'move-work-item', id: 'mv', to_stage: 'review' } as unknown as Node]),
+  );
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('move to a stage NOT in the stageOnEntryWorkflows list → no error', () => {
+  const r = validateWorkflowV2(
+    wf([{ kind: 'move-work-item', id: 'mv', to_stage: 'backlog' } as unknown as Node]),
+    { stageOnEntryWorkflows: OTHER_WORKFLOWS },
+  );
+  assert.deepEqual(r, { ok: true, errors: [] });
+});

@@ -24,6 +24,7 @@ interface AgentDesignerChatProps {
   project: Project;
   events: WsEnvelope[];
   sessionId: string | null;
+  initialState?: AgentDesignerState;
 }
 
 /** Warmup-turn user prompt from agent-run-manager. Filtered from the chat. */
@@ -48,9 +49,10 @@ function adaptAgentDesignerEvents(
   events: WsEnvelope[],
   projectId: string,
   sessionId: string | null,
+  initialState: AgentDesignerState,
 ): AdapterResult {
   const out: WsEnvelope[] = [];
-  let state: AgentDesignerState = 'spawning';
+  let state = initialState;
   let skipNextAssistant = false;
   for (const env of events) {
     if (env.type === 'agent-designer-state') {
@@ -104,14 +106,24 @@ function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
   return (env as { sessionId?: unknown }).sessionId === sessionId;
 }
 
+export function isAgentDesignerState(value: unknown): value is AgentDesignerState {
+  return (
+    value === 'spawning' ||
+    value === 'ready' ||
+    value === 'thinking' ||
+    value === 'exited'
+  );
+}
+
 export function AgentDesignerChat({
   project,
   events,
   sessionId,
+  initialState = 'spawning',
 }: AgentDesignerChatProps) {
   const { envelopes, state } = useMemo(
-    () => adaptAgentDesignerEvents(events, project.id, sessionId),
-    [events, project.id, sessionId],
+    () => adaptAgentDesignerEvents(events, project.id, sessionId, initialState),
+    [events, project.id, sessionId, initialState],
   );
 
   const emptyState =
@@ -163,6 +175,7 @@ export function AgentDesignerChat({
       }}
       composerHistoryKey={`agent-designer:${project.id}`}
       composerDisabled={state === 'spawning' || state === 'exited'}
+      terminalWritable={state === 'ready'}
       composerPlaceholder={composerPlaceholder}
       emptyState={emptyState}
     />

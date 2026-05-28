@@ -29,7 +29,7 @@ import { WorkflowV2 } from '@pc/domain';
 
 import { api, type OrchestratorSurfacePreference } from '@/api/client';
 import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
-import { WorkflowBuilderChat } from './WorkflowBuilderChat';
+import { WorkflowBuilderChat, type WorkflowBuilderState } from './WorkflowBuilderChat';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
 
 interface EditingWorkflowV2 {
@@ -48,7 +48,21 @@ interface WorkflowBuilderModalProps {
   editingWorkflow?: EditingWorkflowV2;
 }
 
-type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
+type SessionState = WorkflowBuilderState;
+
+function isSessionState(value: unknown): value is SessionState {
+  return (
+    value === 'spawning' ||
+    value === 'ready' ||
+    value === 'thinking' ||
+    value === 'exited'
+  );
+}
+
+function mergeSessionState(prev: SessionState, next: SessionState): SessionState {
+  if (prev !== 'spawning' && next === 'spawning') return prev;
+  return next;
+}
 
 function buildEditHandoff(editing: EditingWorkflowV2): string {
   return [
@@ -102,10 +116,11 @@ export function WorkflowBuilderModal({
       .startWorkflowBuilder(projectId)
       .then((r) => {
         if (cancelled) return;
-        // WS-driven state is authoritative — same pattern as v1 modal. Setting
-        // state from the start response can clobber an already-arrived `ready`
-        // envelope.
         setSessionId(r.sessionId);
+        const nextState = r.state;
+        if (isSessionState(nextState)) {
+          setState((prev) => mergeSessionState(prev, nextState));
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) setError((e as Error).message);
@@ -144,7 +159,7 @@ export function WorkflowBuilderModal({
       if (!env) continue;
       if (env.type === 'workflow-builder-state') {
         const s = (env as { state?: string }).state;
-        if (s) setState(s as SessionState);
+        if (isSessionState(s)) setState(s);
       } else if (env.type === 'workflow-builder-exit') {
         setState('exited');
       } else if (env.type === 'workflow-builder-draft') {
@@ -210,6 +225,7 @@ export function WorkflowBuilderModal({
       events={events}
       sessionId={sessionId}
       onAskReply={replyToAsk}
+      initialState={state}
       title={title}
       subtitle={subtitle}
       statusLabel={statusLabel}

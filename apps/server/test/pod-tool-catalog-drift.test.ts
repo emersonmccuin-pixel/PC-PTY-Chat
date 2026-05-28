@@ -1,11 +1,15 @@
 // Section 36 / builder-surface — catalog drift test.
 //
 // Asserts that:
-//   1. Every tool in CAISSON_POD_CONTENT.tools is a valid PC_RIG_TOOL_NAMES entry
-//      or a non-pc-rig tool (Read, Bash, etc.). No silently-dead mcp__pc-rig__ grants.
-//   2. The 6 new workspace-shaping tools (pc_create_workflow etc.) are listed in
+//   1. Every mcp__pc-rig__ grant in every stock pod AND the orchestrator
+//      resolves to a real PC_RIG_TOOL_NAMES entry. No phantom/dead grants.
+//   2. The 6 workspace-shaping tools (pc_create_workflow etc.) are listed in
 //      caisson's tools allowlist.
 //   3. PC_RIG_TOOL_NAMES is non-empty and derived from TOOLS (count parity).
+//
+// Generalized in Batch A of the tool-audit remediation — previously only
+// checked the caisson pod, which is why the researcher's pc_node_failed
+// phantom grant was never caught.
 //
 // Run via: pnpm --filter @pc/server test
 
@@ -13,12 +17,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PC_RIG_TOOL_NAMES } from '../src/services/pod-tool-catalog.ts';
 import { STOCK_POD_CONTENT } from '../src/services/stock-pod-seed.ts';
+import { ORCHESTRATOR_POD_CONTENT } from '../src/services/orchestrator-pod-content.ts';
 import { TOOLS } from '@pc/mcp';
 
 const caissonPod = STOCK_POD_CONTENT.find((p) => p.name === 'caisson');
 assert.ok(caissonPod, 'caisson pod missing from STOCK_POD_CONTENT');
 
 const caissonTools = caissonPod!.tools ?? [];
+
+// All pods to check for dead grants: every stock pod + the orchestrator.
+const ALL_PODS = [
+  ...STOCK_POD_CONTENT,
+  ORCHESTRATOR_POD_CONTENT,
+];
 
 test('PC_RIG_TOOL_NAMES is non-empty and matches TOOLS count', () => {
   assert.ok(PC_RIG_TOOL_NAMES.length > 0, 'PC_RIG_TOOL_NAMES must not be empty');
@@ -29,13 +40,15 @@ test('PC_RIG_TOOL_NAMES is non-empty and matches TOOLS count', () => {
   );
 });
 
-test('every mcp__pc-rig__ tool in caisson allowlist is a real PC_RIG_TOOL_NAMES entry', () => {
-  const rigTools = caissonTools.filter((t: string) => t.startsWith('mcp__pc-rig__'));
-  for (const name of rigTools) {
-    assert.ok(
-      PC_RIG_TOOL_NAMES.includes(name),
-      `caisson tool "${name}" is not in PC_RIG_TOOL_NAMES — dead grant`,
-    );
+test('every mcp__pc-rig__ grant in every stock pod + orchestrator is a real PC_RIG_TOOL_NAMES entry', () => {
+  for (const pod of ALL_PODS) {
+    const rigTools = (pod.tools ?? []).filter((t: string) => t.startsWith('mcp__pc-rig__'));
+    for (const name of rigTools) {
+      assert.ok(
+        PC_RIG_TOOL_NAMES.includes(name),
+        `${pod.name} tool "${name}" is not in PC_RIG_TOOL_NAMES — dead grant`,
+      );
+    }
   }
 });
 

@@ -13,7 +13,7 @@ import type {
   OrchestratorRuntimeSnapshot,
   OrchestratorRuntimeWaitPoint,
 } from '@/api/client';
-import type { WsStatus } from '@/hooks/use-project-ws';
+import type { WsDiagnostics, WsStatus } from '@/hooks/use-project-ws';
 
 // Re-export so other call sites still importing { UsageTotals } from this
 // module compile. The canonical home is now @/store/orchestrator-telemetry.
@@ -29,6 +29,7 @@ interface StatusBarProps {
   projectId: string | null;
   projectName: string | null;
   wsStatus: WsStatus;
+  wsDiagnostics?: WsDiagnostics;
   runtimeHealth?: OrchestratorRuntimeHealth | null;
   runtimeSnapshot?: OrchestratorRuntimeSnapshot | null;
 }
@@ -111,6 +112,21 @@ function formatDiagnosticTime(value: number | null | undefined): string {
   return new Date(value).toLocaleTimeString();
 }
 
+function wsTitle(baseTitle: string, diagnostics: WsDiagnostics | null | undefined): string {
+  if (!diagnostics) return baseTitle;
+  const parts = [
+    `reconnects: ${diagnostics.reconnectCount}`,
+    `last inbound: ${formatDiagnosticTime(diagnostics.lastInboundAt)}`,
+    `last inbound type: ${diagnostics.lastInboundType ?? 'none'}`,
+    `last heartbeat: ${formatDiagnosticTime(diagnostics.lastHeartbeatSentAt)}`,
+    `last pong: ${formatDiagnosticTime(diagnostics.lastPongAt)}`,
+  ];
+  if (diagnostics.lastHeartbeatTimeoutAt) {
+    parts.push(`last timeout: ${formatDiagnosticTime(diagnostics.lastHeartbeatTimeoutAt)}`);
+  }
+  return `${baseTitle} (${parts.join(' | ')})`;
+}
+
 function runtimeTitle(
   baseTitle: string,
   snapshot: OrchestratorRuntimeSnapshot | null | undefined,
@@ -132,6 +148,7 @@ function runtimeTitle(
 export function StatusBar({
   projectId,
   wsStatus,
+  wsDiagnostics,
   runtimeHealth,
   runtimeSnapshot,
 }: StatusBarProps) {
@@ -238,9 +255,15 @@ export function StatusBar({
 
         <span
           className="flex items-center gap-1.5"
-          title={WS_PILL[wsStatus].title}
+          title={wsTitle(WS_PILL[wsStatus].title, wsDiagnostics)}
           data-testid="ws-pill"
           data-ws-status={wsStatus}
+          data-ws-reconnect-count={wsDiagnostics?.reconnectCount ?? 0}
+          data-ws-last-inbound-at={wsDiagnostics?.lastInboundAt ?? 0}
+          data-ws-last-inbound-type={wsDiagnostics?.lastInboundType ?? 'none'}
+          data-ws-last-heartbeat-sent-at={wsDiagnostics?.lastHeartbeatSentAt ?? 0}
+          data-ws-last-pong-at={wsDiagnostics?.lastPongAt ?? 0}
+          data-ws-last-heartbeat-timeout-at={wsDiagnostics?.lastHeartbeatTimeoutAt ?? 0}
         >
           <span
             className={`inline-block h-1.5 w-1.5 rounded-full ${WS_PILL[wsStatus].dot}`}
