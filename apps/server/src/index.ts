@@ -1,12 +1,8 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { request as httpRequest } from 'node:http';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-import { homedir } from 'node:os';
 
 import type {
   ULID,
@@ -63,6 +59,10 @@ import { registerStatuslineRoutes } from './features/statusline/routes.ts';
 import { registerProjectContextRoutes } from './features/project-context/routes.ts';
 import { registerWorkflowCompatRoutes } from './features/workflow-compat/routes.ts';
 import { registerMcpBridgeRoutes } from './features/mcp-bridge/routes.ts';
+import {
+  createPendingAskStore,
+  registerChatBridgeRoutes,
+} from './features/chat-bridges/routes.ts';
 import { registerPodRoutes } from './routes/pod-routes.ts';
 import { registerQuickTasksRoutes } from './routes/quick-tasks-routes.ts';
 import { registerWorkflowRoutes } from './routes/workflow-routes.ts';
@@ -366,7 +366,7 @@ channelServer.start();
 const app = new Hono();
 
 /** Holds resolvers for in-flight AskUserQuestion / ExitPlanMode calls. */
-const pendingAsks = new Map<string, (answer: string) => void>();
+const pendingAsks = createPendingAskStore();
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -378,6 +378,13 @@ function resolveProject(projectId: string): ProjectRuntime | null {
 registerMcpBridgeRoutes(app, {
   dataDir: DATA,
   resolveProject,
+});
+
+registerChatBridgeRoutes(app, {
+  broadcastTo,
+  pendingAsks,
+  resolveProject,
+  channelPort: CHANNEL_PORT,
 });
 
 /**
@@ -505,42 +512,6 @@ function maybePersistPostTurnSummary(projectId: ULID, event: unknown): void {
     );
   }
 }
-
-/**
- * Ask intercept. Hook scripts POST { projectId, sessionId?, toolName, toolUseId, toolInput }.
- * We broadcast the ask only to the originating project's WS subscribers, then
- * block until the user answers (or the 10-minute timeout fires). `sessionId`
- * (forwarded from the hook's PC_SESSION_ID) lets transient-session modals
- * (workflow-creator, agent-creator) filter to asks originating from their own
- * claude.exe spawn; orchestrator UI ignores the field.
- */
-app.post('/api/ask', async (c) => {
-  const body = await c.req.json<{
-    projectId?: string;
-    sessionId?: string | null;
-    toolName: string;
-    toolUseId: string;
-    toolInput: unknown;
-  }>();
-  const { toolName, toolUseId, toolInput } = body;
-  const projectId = typeof body.projectId === 'string' ? (body.projectId as ULID) : null;
-  if (!projectId) return c.json({ answer: '(no projectId on ask payload)' });
-  const sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
-
-  broadcastTo(projectId, { type: 'ask', sessionId, toolName, toolUseId, toolInput });
-
-  const answer = await new Promise<string>((resolveAnswer) => {
-    pendingAsks.set(toolUseId, resolveAnswer);
-    setTimeout(() => {
-      if (pendingAsks.has(toolUseId)) {
-        pendingAsks.delete(toolUseId);
-        resolveAnswer('(timeout — no user response)');
-      }
-    }, 10 * 60 * 1000);
-  });
-
-  return c.json({ answer });
-});
 
 // ── Global settings (Q10 envelope) ────────────────────────────────────────
 
@@ -677,86 +648,6 @@ registerWorktreeRoutes(app, { resolveProject });
 // routes removed. v2 DAG handles node completion + approvals internally;
 // review responses go through POST /workflow-v2/review.
 
-/** Read a subagent transcript JSONL file, parse it, and return the per-line
- *  events. Path is required and MUST live under `~/.claude/projects/` — any
- *  attempt to escape (relative segments, paths outside the allowlist) returns
- *  403. Pure read-only; Section 3 / 3g transcript viewer is the only caller. */
-app.get('/api/subagent-transcript', async (c) => {
-  const rawPath = c.req.query('path');
-  if (!rawPath || !isAbsolute(rawPath)) {
-    return c.json({ ok: false, error: 'absolute path query param required' }, 400);
-  }
-  const allowedRoot = resolve(homedir(), '.claude', 'projects');
-  const requested = resolve(rawPath);
-  const rel = relative(allowedRoot, requested);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    return c.json({ ok: false, error: 'path must live under ~/.claude/projects/' }, 403);
-  }
-  if (!existsSync(requested)) return c.json({ ok: false, error: 'transcript not found' }, 404);
-  try {
-    const text = await readFile(requested, 'utf-8');
-    const events: unknown[] = [];
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        events.push(JSON.parse(trimmed));
-      } catch {
-        // Skip malformed lines — JSONL tolerates partial writes mid-tail.
-      }
-    }
-    return c.json({ ok: true, path: requested, relPath: rel, events });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 500);
-  }
-});
-
-// Proxy to the channel server. POSTs the UI's test message to the path-routed
-// channel entry at `/channel/<slug>/test` (4c / D35) so the channel server
-// accepts it. Source segment `test` matches the existing `X-Sender: test`
-// header.
-app.post('/api/projects/:projectId/channel-send', async (c) => {
-  const id = c.req.param('projectId');
-  const runtime = resolveProject(id);
-  if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-  const slug = runtime.project.slug;
-  const body = await c.req.json<{ message?: string }>();
-  const message = typeof body.message === 'string' ? body.message : '';
-  if (!message) return c.json({ ok: false, error: 'empty message' }, 400);
-
-  try {
-    const path = `/channel/${encodeURIComponent(slug)}/test`;
-    const result = await new Promise<{ status: number; body: string }>((res, rej) => {
-      const req = httpRequest(
-        {
-          host: '127.0.0.1',
-          port: CHANNEL_PORT,
-          method: 'POST',
-          path,
-          headers: {
-            'X-Sender': 'test',
-            'Content-Type': 'text/plain',
-            'Content-Length': Buffer.byteLength(message),
-          },
-        },
-        (r) => {
-          const chunks: Buffer[] = [];
-          r.on('data', (chunk) => chunks.push(chunk as Buffer));
-          r.on('end', () =>
-            res({ status: r.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8') }),
-          );
-        },
-      );
-      req.on('error', rej);
-      req.write(message);
-      req.end();
-    });
-    return c.json({ ok: result.status === 200, status: result.status, body: result.body });
-  } catch (err) {
-    return c.json({ ok: false, error: (err as Error).message }, 503);
-  }
-});
-
 registerAgentRunRoutes(app, {
   channelServer,
   broadcastTo,
@@ -844,10 +735,7 @@ registerRuntimeHostWebSocketServer<ReturnType<ProjectRuntime['ensurePty']>, Proj
   broadcastSendQueueSnapshot,
   ensureOrchestratorPty,
   resolvePendingAsk: (id, answer) => {
-    if (!pendingAsks.has(id)) return;
-    const resolveFn = pendingAsks.get(id)!;
-    pendingAsks.delete(id);
-    resolveFn(answer);
+    pendingAsks.resolve(id, answer);
   },
 });
 
