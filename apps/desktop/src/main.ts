@@ -87,6 +87,25 @@ async function createWindow(): Promise<void> {
     mainWindow?.setTitle(APP_NAME);
   });
 
+  // Reload affordances. The app menu is nulled (above) which also drops the
+  // default Ctrl+R / F5 accelerators, leaving no way to refresh the renderer.
+  // Add them back via raw key input plus a right-click context menu.
+  const { webContents } = mainWindow;
+  webContents.on('before-input-event', (_event, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = input.key.toLowerCase();
+    const isReload = key === 'f5' || (input.control && key === 'r');
+    if (!isReload) return;
+    if (input.shift) webContents.reloadIgnoringCache();
+    else webContents.reload();
+  });
+  webContents.on('context-menu', () => {
+    Menu.buildFromTemplate([
+      { label: 'Reload', click: () => webContents.reload() },
+      { label: 'Force Reload', click: () => webContents.reloadIgnoringCache() },
+    ]).popup({ window: mainWindow ?? undefined });
+  });
+
   // External links open in the system browser, not a new Electron window
   // (the OAuth login flow during onboarding relies on this — Phase 2).
   mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {

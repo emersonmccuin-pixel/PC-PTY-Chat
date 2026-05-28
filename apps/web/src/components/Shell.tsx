@@ -81,9 +81,17 @@ export function Shell({
   useEffect(() => {
     const panel = activityRef.current;
     if (!panel) return;
-    const collapsed = panel.isCollapsed();
-    if (activityPanelOpen && collapsed) panel.expand();
-    else if (!activityPanelOpen && !collapsed) panel.collapse();
+    if (activityPanelOpen) {
+      // Use resize(192) instead of expand() so we always land at the correct
+      // pixel size regardless of the stale percentage stored in expandToSize.
+      // expand() restores to the percentage saved at collapse-time; if the
+      // window was resized between collapse and expand that percentage no
+      // longer maps to 192px and the panel can land in the midpoint-collapse
+      // zone, making expand() a no-op that leaves the panel stuck at 36px.
+      if (panel.isCollapsed()) panel.resize(192);
+    } else {
+      if (!panel.isCollapsed()) panel.collapse();
+    }
   }, [activityPanelOpen, activityRef]);
 
   return (
@@ -93,7 +101,7 @@ export function Shell({
         id="pc-shell-v3"
         className="flex-1 min-h-0"
       >
-        <Panel id="rail" defaultSize={192} minSize={192} maxSize={192}>
+        <Panel id="rail" defaultSize={192} minSize={192} maxSize={192} groupResizeBehavior="preserve-pixel-size">
           <LeftRail
             projects={projects}
             activeProject={activeProject}
@@ -129,6 +137,7 @@ export function Shell({
           maxSize={192}
           collapsible
           collapsedSize={36}
+          groupResizeBehavior="preserve-pixel-size"
         >
           <ActivityPanel
             project={activeProject}
