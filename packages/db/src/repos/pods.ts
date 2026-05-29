@@ -86,6 +86,7 @@ function rowToAgent(row: typeof agents.$inferSelect): PodAgentRow {
     origin: row.origin,
     dispatchGuidance: row.dispatchGuidance ?? null,
     expectedOutput: row.expectedOutput ?? null,
+    rev: row.rev ?? 0,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt ?? null,
@@ -135,6 +136,7 @@ export function createAgent(input: CreateAgentInput, audit: AuditInput): PodAgen
     description: input.description ?? '',
     origin: input.origin ?? 'user-created',
     dispatchGuidance: input.dispatchGuidance ?? null,
+    rev: 1,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -299,7 +301,7 @@ export function updateAgent(
   if (changes.length === 0) return existing; // pure no-op; skip the UPDATE entirely
 
   const now = Date.now();
-  const set: Record<string, unknown> = { updatedAt: now };
+  const set: Record<string, unknown> = { updatedAt: now, rev: (existing.rev ?? 0) + 1 };
   for (const [patchKey, , column] of UPDATE_AGENT_FIELD_MAP) {
     if (effectivePatch[patchKey] !== undefined) set[column] = effectivePatch[patchKey];
   }
@@ -335,7 +337,7 @@ export function softDeleteAgent(id: ULID, audit: AuditInput): PodAgentRow | null
   const existing = getAgentById(id);
   if (!existing) return null;
   const now = Date.now();
-  const out = { ...existing, deletedAt: now, updatedAt: now };
+  const out = { ...existing, deletedAt: now, updatedAt: now, rev: (existing.rev ?? 0) + 1 };
   const auditValues = buildAuditRow(
     {
       agentId: id,
@@ -346,7 +348,7 @@ export function softDeleteAgent(id: ULID, audit: AuditInput): PodAgentRow | null
     now,
   );
   getDb().transaction((tx) => {
-    tx.update(agents).set({ deletedAt: now, updatedAt: now }).where(eq(agents.id, id)).run();
+    tx.update(agents).set({ deletedAt: now, updatedAt: now, rev: out.rev }).where(eq(agents.id, id)).run();
     tx.insert(agentAudit).values(auditValues).run();
   });
   return out;
@@ -360,7 +362,8 @@ export function restoreAgent(id: ULID): PodAgentRow | null {
   const row = getDb().select().from(agents).where(eq(agents.id, id)).get();
   if (!row || row.deletedAt === null) return null;
   const now = Date.now();
-  getDb().update(agents).set({ deletedAt: null, updatedAt: now }).where(eq(agents.id, id)).run();
+  const existing = rowToAgent(row);
+  getDb().update(agents).set({ deletedAt: null, updatedAt: now, rev: (existing.rev ?? 0) + 1 }).where(eq(agents.id, id)).run();
   return getAgentById(id);
 }
 
@@ -389,7 +392,7 @@ export function promoteAgentToGlobal(id: ULID, audit: AuditInput): PodAgentRow |
   );
   getDb().transaction((tx) => {
     tx.update(agents)
-      .set({ scope: 'global', projectId: null, updatedAt: now })
+      .set({ scope: 'global', projectId: null, updatedAt: now, rev: (existing.rev ?? 0) + 1 })
       .where(eq(agents.id, id))
       .run();
     tx.insert(agentAudit).values(auditRow).run();
@@ -571,6 +574,20 @@ export function cloneAgentToProject(
     agent: newAgent,
     copied: { knowledge: knowledgeRows.length, mcpServers: mcpRows.length },
   };
+}
+
+/** Bump an agent's rev + updatedAt without changing any other fields. Called
+ *  by nested-mutation paths (knowledge / secret / mcp-server changes) to
+ *  ensure the next full-snapshot broadcast carries a strictly-monotonic rev. */
+export function bumpAgentRev(id: ULID): void {
+  const existing = getAgentById(id);
+  if (!existing) return;
+  const now = Date.now();
+  getDb()
+    .update(agents)
+    .set({ rev: (existing.rev ?? 0) + 1, updatedAt: now })
+    .where(eq(agents.id, id))
+    .run();
 }
 
 // --- agent_knowledge --------------------------------------------------------

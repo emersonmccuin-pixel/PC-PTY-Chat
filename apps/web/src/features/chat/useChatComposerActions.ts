@@ -10,6 +10,7 @@ import type { WsEnvelope, WsStatus } from '@/features/runtime/ws-types';
 
 export function useChatComposerActions({
   events,
+  currentSessionId,
   inputCapabilities,
   onSend,
   onInterrupt,
@@ -22,6 +23,7 @@ export function useChatComposerActions({
   markInterrupted,
 }: {
   events: WsEnvelope[];
+  currentSessionId: string | null;
   inputCapabilities?: RuntimeInputCapabilities;
   onSend: (text: string, clientMessageId: string) => boolean;
   onInterrupt: () => boolean;
@@ -67,6 +69,7 @@ export function useChatComposerActions({
   );
 
   const { batchChunks, addChunk, cancelLast, cancelBatch } = useSendBatch({
+    sessionId: currentSessionId,
     isThinking,
     onFlush: doSend,
   });

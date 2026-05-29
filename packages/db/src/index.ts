@@ -83,6 +83,7 @@ export type { UpsertWorktreeInput } from './repos/worktrees.ts';
 export { getGlobalSettings, setGlobalSettings } from './repos/settings.ts';
 
 export {
+  bumpAgentRev,
   cloneAgentToProject,
   createAgent,
   createKnowledge,

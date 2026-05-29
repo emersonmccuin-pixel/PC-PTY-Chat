@@ -55,6 +55,8 @@ export function WorkItemsToolbar({ rightSlot, hide, hiddenAgentCount = 0 }: Work
   const setSort = useWorkItemsView((s) => s.setSort);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
   const setShowAgentContracts = useWorkItemsView((s) => s.setShowAgentContracts);
+  const showTopLevelOnly = useWorkItemsView((s) => s.showTopLevelOnly);
+  const setShowTopLevelOnly = useWorkItemsView((s) => s.setShowTopLevelOnly);
   const active = hasActiveFilters(filters);
 
   return (
@@ -133,6 +135,16 @@ export function WorkItemsToolbar({ rightSlot, hide, hiddenAgentCount = 0 }: Work
       )}
 
       <div className="flex-1" />
+
+      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground">
+        <input
+          type="checkbox"
+          checked={showTopLevelOnly}
+          onChange={(e) => setShowTopLevelOnly(e.target.checked)}
+          className="h-3 w-3 cursor-pointer accent-primary"
+        />
+        <span>Parent items only</span>
+      </label>
 
       <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground">
         <input

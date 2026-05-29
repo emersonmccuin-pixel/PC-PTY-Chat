@@ -43,6 +43,10 @@ const DEFAULT_SORT: WorkItemsSort = { by: 'activity', dir: 'desc' };
 interface WorkItemsViewState {
   showAgentContracts: boolean;
   setShowAgentContracts: (value: boolean) => void;
+  /** Section 38 — "Parent items only" toggle. When true, both kanban and table
+   *  only render items where parentId == null (top-level items). Default off. */
+  showTopLevelOnly: boolean;
+  setShowTopLevelOnly: (value: boolean) => void;
   activeSubTab: WorkItemsSubTab;
   setActiveSubTab: (tab: WorkItemsSubTab) => void;
   filters: WorkItemsFilters;
@@ -57,6 +61,8 @@ export const useWorkItemsView = create<WorkItemsViewState>()(
     (set, get) => ({
       showAgentContracts: false,
       setShowAgentContracts: (showAgentContracts) => set({ showAgentContracts }),
+      showTopLevelOnly: false,
+      setShowTopLevelOnly: (showTopLevelOnly) => set({ showTopLevelOnly }),
       activeSubTab: 'dashboard',
       setActiveSubTab: (activeSubTab) => set({ activeSubTab }),
       filters: DEFAULT_FILTERS,

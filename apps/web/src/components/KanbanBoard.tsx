@@ -90,6 +90,7 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     };
   }, []);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
+  const showTopLevelOnly = useWorkItemsView((s) => s.showTopLevelOnly);
   const filters = useWorkItemsView((s) => s.filters);
 
   // Section 26.7. Agent-contract work items render only when the toggle is on.
@@ -107,10 +108,12 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
   // (default 'activity' desc effectively becomes a tiebreaker on equal positions).
   // Kanban honors drag positions inside each column, so toolbar `sort` doesn't
   // apply here — only filters. Table view (37.7) is where sort is load-bearing.
+  // Section 38 — "Parent items only" toggle hides child items (parentId != null).
   const visibleItems = useMemo(() => {
-    const base = showAgentContracts ? items : items.filter((i) => !i.isAgentTask);
+    let base = showAgentContracts ? items : items.filter((i) => !i.isAgentTask);
+    if (showTopLevelOnly) base = base.filter((i) => i.parentId == null);
     return applyFilters(base, filters);
-  }, [items, showAgentContracts, filters]);
+  }, [items, showAgentContracts, showTopLevelOnly, filters]);
 
   const refetch = useCallback(() => {
     workItemsApi.workItems(project.id)

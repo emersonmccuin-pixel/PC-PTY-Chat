@@ -27,6 +27,7 @@ interface ProjectRow {
   folderPath: string;
   gitRemote: string | null;
   callsignSeq: number;
+  stagesRev: number;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -150,13 +151,23 @@ export function reorderProjects(orderedIds: ULID[]): void {
   });
 }
 
-/** Update the stored stages for a project. */
-export function updateProjectStages(id: ULID, stages: Stage[]): void {
+/** Update the stored stages for a project. Atomically increments `stagesRev`
+ *  and stamps each stage with the new rev so WS deltas carry a monotonic
+ *  version the frontend can use to discard stale/duplicate envelopes. */
+export function updateProjectStages(id: ULID, stages: Stage[]): Stage[] {
+  const existing = getDb()
+    .select({ stagesRev: projects.stagesRev })
+    .from(projects)
+    .where(eq(projects.id, id))
+    .get() as { stagesRev: number } | undefined;
+  const newRev = (existing?.stagesRev ?? 0) + 1;
+  const stamped = stages.map((s) => ({ ...s, rev: newRev }));
   getDb()
     .update(projects)
-    .set({ stages, updatedAt: Date.now() })
+    .set({ stages: stamped, stagesRev: newRev, updatedAt: Date.now() })
     .where(eq(projects.id, id))
     .run();
+  return stamped;
 }
 
 /** Soft-delete a project: flip `deleted_at`. Idempotent — returns the row
