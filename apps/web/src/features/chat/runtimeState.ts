@@ -1,5 +1,6 @@
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
-import type { ChatEvent, JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { OrchestratorRuntimeHealth } from '@/features/runtime/client';
+import type { ChatEvent, JsonlEvent, WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
 
 export const STALL_WARN_MS = 60_000;
 
@@ -13,6 +14,57 @@ export interface RuntimeInputCapabilities {
 }
 
 export type TransientRuntimeState = 'spawning' | 'ready' | 'thinking' | 'exited';
+
+export interface OrchestratorInputCapabilityInput {
+  composerHidden: boolean;
+  composerDisabled: boolean;
+  startingNewSession: boolean;
+  wsStatus: WsStatus;
+  runtimeHealth: OrchestratorRuntimeHealth | null;
+  latestRuntimeState: string | null;
+}
+
+export function orchestratorInputCapabilities({
+  composerHidden,
+  composerDisabled,
+  startingNewSession,
+  wsStatus,
+  runtimeHealth,
+  latestRuntimeState,
+}: OrchestratorInputCapabilityInput): RuntimeInputCapabilities {
+  // The raw terminal is the recovery fallback. It must accept input whenever
+  // the PTY child is alive, not only once the ready banner lands; otherwise an
+  // unexpected provider boot/resume menu can block readiness and also block
+  // the user's only way to dismiss the menu.
+  return {
+    canAcceptChatInput: !composerHidden && !composerDisabled,
+    canSubmitChatInput: !composerHidden && !composerDisabled && !startingNewSession,
+    canAcceptTerminalInput:
+      !composerHidden &&
+      !startingNewSession &&
+      wsStatus === 'open' &&
+      runtimeHealth !== null &&
+      runtimeHealth !== 'not_spawned' &&
+      runtimeHealth !== 'provider_missing' &&
+      runtimeHealth !== 'failed_resume' &&
+      runtimeHealth !== 'exited',
+    canResizeTerminal:
+      !composerHidden &&
+      wsStatus === 'open' &&
+      runtimeHealth !== 'not_spawned' &&
+      runtimeHealth !== 'provider_missing' &&
+      runtimeHealth !== 'failed_resume',
+    canInterrupt:
+      !composerHidden &&
+      !startingNewSession &&
+      wsStatus === 'open' &&
+      runtimeHealth !== null &&
+      runtimeHealth !== 'not_spawned' &&
+      runtimeHealth !== 'provider_missing' &&
+      runtimeHealth !== 'failed_resume',
+    stateLabel: runtimeHealth ?? latestRuntimeState ?? wsStatus,
+  };
+}
 
 export function transientInputCapabilities(
   state: TransientRuntimeState,

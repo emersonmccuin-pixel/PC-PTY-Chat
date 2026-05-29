@@ -126,6 +126,7 @@ Terminal trace:
 2. Live `raw` envelopes append by `terminalSeq`, with transcript/live overlap removal during attach.
 3. `terminal-input` validates a string payload, caps byte size, and writes to the live PTY.
 4. Invalid, oversized, and absent-PTY input are rejected server-side without queue mutation.
+5. Orchestrator and transient terminal stdin intentionally remain writable during `spawning` so a user can dismiss unexpected provider boot/resume prompts that block readiness.
 
 Session switch trace:
 
@@ -249,6 +250,7 @@ Existing focused tests:
 - `apps/server/test/session-replay.test.ts`: normalized replay loading, high-water, legacy fallback, malformed lines.
 - `apps/server/test/terminal-mode.test.ts`: terminal input validation and transcript tail containment.
 - `apps/server/test/web-pending-prompts.test.ts`: optimistic pending prompt metadata and confirmation.
+- `apps/server/test/web-terminal-capabilities.test.ts`: orchestrator/transient terminal writability during spawning and unavailable-state blocking.
 - `apps/server/test/web-ws-heartbeat.test.ts`: reconnect schedule, heartbeat timeout threshold, client ping shape.
 - `apps/server/test/web-boundaries.test.ts`: chat feature and client boundary guards.
 - `apps/server/test/websocket-hub.test.ts`: broadcast fanout, detach behavior, closed-socket skip, global broadcast.
@@ -261,7 +263,6 @@ Missing tests or trace evidence:
 - Browser-level reconnect behavior still lacks a UI smoke for focus/visibility/online recovery.
 - No UI smoke was run for terminal transcript attach plus live raw-event overlap removal.
 - No test was found that asserts `terminal-input-ack` failures are visible to the user.
-- No test was found for the intentional terminal writability policy during spawning.
 - Agent transcript modal still needs active, historical, empty, failed, and missing transcript state coverage.
 
 ## Cleanup Plan
@@ -272,7 +273,7 @@ Small cleanup candidates after trace:
 
 - Move shared WebSocket envelope contracts out of `use-project-ws.ts` into a feature contract module.
 - Done in this slice: extracted shared heartbeat/backoff helpers to `apps/web/src/hooks/ws-heartbeat.ts` and added focused tests.
-- Add a focused test for current terminal writability policy so the ready-vs-spawning decision is explicit.
+- Done in this slice: extracted orchestrator input capability calculation to `apps/web/src/features/chat/runtimeState.ts` and added spawning-policy tests.
 - Surface `terminal-input-ack` failures in the terminal/chat UI or remove the unused ack if product decides it is not useful.
 - Give agent transcript backfill/live merge stable cursor keys if the agent-runs audit confirms repeated identical events can collide.
 - Decide whether `turn-end` and `events.jsonl` legacy fallback are retained compatibility or safe-delete candidates.
@@ -306,6 +307,8 @@ Commands run so far:
 - `Get-Content` for required kickoff docs and focused runtime-host, runtime, web, and agent transcript modules.
 - `pnpm --filter @pc/server exec tsx --test test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-ws-heartbeat.test.ts test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts test/web-ws-heartbeat.test.ts test/web-pending-prompts.test.ts test/runtime-host-websocket-message.test.ts test/terminal-mode.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts test/web-ws-heartbeat.test.ts test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `git diff --check`
@@ -314,6 +317,8 @@ Verification results:
 
 - Focused runtime/WebSocket server tests: 58 passed, 0 failed.
 - Focused runtime/WebSocket plus heartbeat tests: 61 passed, 0 failed.
+- Focused terminal capability slice tests: 21 passed, 0 failed.
+- Focused runtime/WebSocket plus heartbeat and terminal capability tests: 64 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.
