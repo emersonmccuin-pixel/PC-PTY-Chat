@@ -7,7 +7,7 @@
 // conversion. Node OUTPUTS live on child work items, not here; this repo only
 // persists DAG bookkeeping (dag_state) + the append-only event log.
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { ULID, WorkflowV2 } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
@@ -29,6 +29,8 @@ export interface WorkflowRunV2Record {
   triggerContext: Record<string, unknown>;
   metadata: Record<string, unknown>;
   lastReason: string | null;
+  /** Monotonic write counter. Incremented inside every mutating write. */
+  rev: number;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;
@@ -75,6 +77,7 @@ export function createRun(input: CreateRunInput): WorkflowRunV2Record {
     triggerContext: input.triggerContext ?? {},
     metadata: input.metadata ?? {},
     lastReason: null,
+    rev: 0,
     createdAt: now,
     startedAt: null,
     endedAt: null,
@@ -121,11 +124,13 @@ export function getRunByWorkItem(workItemId: ULID): WorkflowRunV2Record | null {
   return row ?? null;
 }
 
+const REV_INC = sql`rev + 1` as unknown as number;
+
 /** Replace the DAG state blob (per-node records + reject-iteration counts). */
 export function setDagState(id: ULID, dagState: WorkflowV2.WorkflowDagState): void {
   getDb()
     .update(workflowRunsV2)
-    .set({ dagState, lastActivityAt: Date.now() })
+    .set({ dagState, lastActivityAt: Date.now(), rev: REV_INC })
     .where(eq(workflowRunsV2.id, id))
     .run();
 }
@@ -134,7 +139,7 @@ export function markStarted(id: ULID): void {
   const now = Date.now();
   getDb()
     .update(workflowRunsV2)
-    .set({ status: 'running', startedAt: now, lastActivityAt: now })
+    .set({ status: 'running', startedAt: now, lastActivityAt: now, rev: REV_INC })
     .where(eq(workflowRunsV2.id, id))
     .run();
 }
@@ -146,7 +151,7 @@ export function setStatus(
   opts: { lastReason?: string | null } = {}
 ): void {
   const now = Date.now();
-  const patch: Partial<WorkflowRunV2Record> = { status, lastActivityAt: now };
+  const patch: Partial<WorkflowRunV2Record> = { status, lastActivityAt: now, rev: REV_INC };
   if (opts.lastReason !== undefined) patch.lastReason = opts.lastReason;
   if (TERMINAL.has(status)) patch.endedAt = now;
   getDb().update(workflowRunsV2).set(patch).where(eq(workflowRunsV2.id, id)).run();

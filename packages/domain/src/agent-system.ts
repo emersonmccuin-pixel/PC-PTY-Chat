@@ -101,6 +101,9 @@ export interface AgentRunRow {
   spawnedAt: number | null;
   readyAt: number | null;
   completedAt: number | null;
+  /** Monotonic write counter. Incremented by every status transition so WS
+   *  deltas can carry a version the frontend uses to discard stale delivery. */
+  rev: number;
 }
 
 /** Pending-ask kind. Matches the agent-system glossary (`orchestrator` / `user`

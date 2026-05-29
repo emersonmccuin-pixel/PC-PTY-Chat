@@ -69,6 +69,9 @@ export const agentRuns = sqliteTable(
     spawnedAt: integer('spawned_at'),
     readyAt: integer('ready_at'),
     completedAt: integer('completed_at'),
+    /** Monotonic write counter — incremented on every status transition.
+     *  WS deltas carry this so the frontend can discard stale deliveries. */
+    rev: integer('rev').notNull().default(0),
   },
   (t) => [
     index('agent_runs_session_queued_idx').on(t.dispatcherSessionId, t.queuedAt),

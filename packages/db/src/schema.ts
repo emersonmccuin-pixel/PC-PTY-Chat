@@ -294,6 +294,10 @@ export const workflowRunsV2 = sqliteTable(
       .default(sql`'{}'`)
       .$type<Record<string, unknown>>(),
     lastReason: text('last_reason'),
+    /** Monotonic write counter. Incremented by every mutating write so the
+     *  announcing write-door can stamp WS deltas. Frontend discards deltas
+     *  where incoming rev ≤ stored rev (mirrors work_items.version). */
+    rev: integer('rev').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     startedAt: integer('started_at'),
     endedAt: integer('ended_at'),

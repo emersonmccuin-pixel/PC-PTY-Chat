@@ -59,6 +59,7 @@ export type { ReplaceFieldSchemasInput } from './repos/field-schemas.ts';
 // dropped in 19.12 (migration 0025 dropped the underlying table).
 // Access as workflowRunsV2Repo.createRun(...), .appendEvent(...), etc.
 export * as workflowRunsV2Repo from './repos/workflow-runs-v2.ts';
+export type { WorkflowRunV2Record } from './repos/workflow-runs-v2.ts';
 
 // Section 19.16 — promoted workflows table + audit log. Access as
 // workflowsRepo.createWorkflow(...), .listWorkflows(...), etc.
@@ -208,6 +209,7 @@ export {
   insertAgentRunRow,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
+  listAndReconcileOrphanedRuns,
   listNonTerminalAgentRuns,
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,

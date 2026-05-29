@@ -8,7 +8,7 @@
 // Continuation lineage via `continues` self-FK. `findActiveContinuation`
 // guards `pc_continue_agent` against double-continuation of the same parent.
 
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import type {
   AgentRunFailureCause,
@@ -66,6 +66,7 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     spawnedAt: null,
     readyAt: null,
     completedAt: null,
+    rev: 0,
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
@@ -84,10 +85,12 @@ export interface UpdateAgentRunStatusInput {
   podRevisionAtResume?: string | null;
 }
 
+const REV_INC = sql`rev + 1` as unknown as number;
+
 /** Non-terminal status transition. Idempotent at the row level — caller is
  *  responsible for ordering. */
 export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): void {
-  const patch: Partial<AgentRunRow> = { status: input.status };
+  const patch: Partial<AgentRunRow> = { status: input.status, rev: REV_INC };
   if (input.spawnedAt !== undefined) patch.spawnedAt = input.spawnedAt;
   if (input.readyAt !== undefined) patch.readyAt = input.readyAt;
   if (input.podRevisionAtResume !== undefined) {
@@ -116,6 +119,7 @@ export function markAgentRunTerminal(input: MarkAgentRunTerminalInput): void {
       failureCause: input.failureCause,
       failureReason: input.failureReason,
       completedAt: input.completedAt,
+      rev: REV_INC,
     })
     .where(eq(agentRuns.id, input.id))
     .run();
@@ -212,8 +216,45 @@ export function reconcileOrphanedRunningRuns(now: number): number {
       failureReason: 'server restarted before this run completed',
       failureCause: 'server-restart',
       completedAt: now,
+      rev: REV_INC,
     })
     .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
     .run();
   return res.changes;
+}
+
+/** Boot-time reconciliation sweep — announcing variant. Lists non-terminal
+ *  rows first, bulk-updates to failed (with rev++), then reads them back so
+ *  the caller can broadcast a `agent-run-changed` delta for each. Used by
+ *  the boot reconcile path to make `reconcileOrphanedRunningRuns` visible
+ *  in the right rail. */
+export function listAndReconcileOrphanedRuns(now: number): AgentRunRow[] {
+  const NON_TERMINAL: AgentRunStatus[] = ['queued', 'spawning', 'running', 'paused'];
+  const rows = getDb()
+    .select()
+    .from(agentRuns)
+    .where(inArray(agentRuns.status, NON_TERMINAL))
+    .all() as AgentRunRow[];
+
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((r) => r.id);
+  getDb()
+    .update(agentRuns)
+    .set({
+      status: 'failed',
+      failureReason: 'server restarted before this run completed',
+      failureCause: 'server-restart',
+      completedAt: now,
+      rev: REV_INC,
+    })
+    .where(inArray(agentRuns.id, ids))
+    .run();
+
+  // Read updated rows back so callers have the correct rev for announcement.
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(inArray(agentRuns.id, ids))
+    .all() as AgentRunRow[];
 }
