@@ -116,6 +116,7 @@ export function ChatSurface({
     cancelBatch,
   } = useChatComposerActions({
     events,
+    currentSessionId,
     inputCapabilities,
     onSend,
     onInterrupt,
