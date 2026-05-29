@@ -1,6 +1,6 @@
 # Transient Sessions Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -30,6 +30,7 @@ Runtime modules:
 Web modules:
 
 - `apps/web/src/features/transient-sessions/client.ts`: HTTP client for all transient session controls and workflow-builder draft save.
+- `apps/web/src/features/transient-sessions/events.ts`: shared transient event adapter, session-state helpers, session matching, and warmup prompt filtering.
 - `apps/web/src/components/TransientAgentConversation.tsx`: shared ChatSurface wrapper for transient modal conversations.
 - `apps/web/src/components/agents/AgentDesignerChat.tsx`: agent-designer WS envelope adapter and send/interrupt/terminal wiring.
 - `apps/web/src/components/WorkflowBuilderChat.tsx`: workflow-builder WS envelope adapter, ask passthrough, edit-handoff/warmup filtering, and send/interrupt/terminal wiring.
@@ -135,13 +136,13 @@ Existing focused tests:
 
 - `apps/server/test/transient-session-routes.test.ts`: shared route factory, start broadcasts, handler idempotence, send/interrupt/terminal-input/resize/stop, missing project/session, validation, and start errors.
 - `apps/server/test/workflow-builder-draft-store.test.ts`: ProjectRuntime workflow-builder draft save/read/isolation/clear/shutdown behavior.
+- `apps/server/test/web-transient-events.test.ts`: transient web event adapter state/jsonl/raw/exit normalization, warmup filtering, ask passthrough, setup-wizard session ids, session matching, and state merge helpers.
+- `apps/server/test/web-boundaries.test.ts`: guards transient event adaptation outside modal components.
 - `apps/server/test/web-pending-prompts.test.ts`: adjacent ChatSurface pending prompt behavior used by transient conversations.
 - `apps/server/test/web-terminal-capabilities.test.ts`: transient terminal input capability states.
 
 Missing tests or trace evidence:
 
-- No focused web adapter test covers agent-designer, workflow-builder, or setup-wizard event normalization.
-- No test verifies warmup-turn filtering parity across agent-designer and workflow-builder.
 - No test verifies setup-wizard closes only on `project-claude-md-changed` for the active project context.
 - No browser smoke verifies modal start, chat send, terminal mode, graph draft sync, ask reply, or close/stop behavior.
 
@@ -151,8 +152,9 @@ Do not change transient spawn or teardown semantics without a failing trace.
 
 Small cleanup candidates:
 
-- Extract shared transient event adapter helpers for session matching, state parsing, raw translation, state/jsonl adaptation, and warmup filtering.
-- Add focused web tests for agent-designer/workflow-builder/setup-wizard adapter outputs.
+- Done: extracted shared transient event adapter helpers into `apps/web/src/features/transient-sessions/events.ts`.
+- Done: added focused web tests for session matching, state parsing/merge, raw translation, state/jsonl adaptation, setup-wizard jsonl session ids, ask passthrough, and warmup filtering.
+- Done: added a boundary guard so transient event adaptation stays outside modal components.
 - Defer transient client method de-duplication unless another route prefix is added; explicit methods are noisy but easy to scan.
 
 Verification commands to use before any cleanup patch:
@@ -175,16 +177,22 @@ Commands run so far:
 - `rg -n` for transient sessions, agent-designer, workflow-builder, setup-wizard, modal wrappers, and draft surfaces.
 - `Get-Content` for transient route factory, transient web client, shared conversation wrapper, web adapters, modal owners, workflow draft routes, and existing tests.
 - `pnpm --filter @pc/server exec tsx --test test/transient-session-routes.test.ts test/workflow-builder-draft-store.test.ts test/web-pending-prompts.test.ts test/web-terminal-capabilities.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-transient-events.test.ts test/web-boundaries.test.ts test/transient-session-routes.test.ts test/workflow-builder-draft-store.test.ts test/web-pending-prompts.test.ts test/web-terminal-capabilities.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
 - Focused transient sessions tests: 18 passed, 0 failed.
+- Focused transient sessions cleanup tests: 30 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:
 
-- None.
+- None. In-app Browser backend was unavailable earlier in this session: `iab`.
 
 Open risks:
 

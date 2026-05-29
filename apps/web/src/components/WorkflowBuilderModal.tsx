@@ -29,6 +29,10 @@ import { WorkflowV2 } from '@pc/domain';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
+import {
+  isTransientSessionState,
+  mergeTransientSessionState,
+} from '@/features/transient-sessions/events';
 import type { WsEnvelope, WsOutbound } from '@/features/runtime/ws-types';
 import { WorkflowBuilderChat, type WorkflowBuilderState } from './WorkflowBuilderChat';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
@@ -50,20 +54,6 @@ interface WorkflowBuilderModalProps {
 }
 
 type SessionState = WorkflowBuilderState;
-
-function isSessionState(value: unknown): value is SessionState {
-  return (
-    value === 'spawning' ||
-    value === 'ready' ||
-    value === 'thinking' ||
-    value === 'exited'
-  );
-}
-
-function mergeSessionState(prev: SessionState, next: SessionState): SessionState {
-  if (prev !== 'spawning' && next === 'spawning') return prev;
-  return next;
-}
 
 function buildEditHandoff(editing: EditingWorkflowV2): string {
   return [
@@ -118,8 +108,8 @@ export function WorkflowBuilderModal({
         if (cancelled) return;
         setSessionId(r.sessionId);
         const nextState = r.state;
-        if (isSessionState(nextState)) {
-          setState((prev) => mergeSessionState(prev, nextState));
+        if (isTransientSessionState(nextState)) {
+          setState((prev) => mergeTransientSessionState(prev, nextState));
         }
       })
       .catch((e: unknown) => {
@@ -159,7 +149,7 @@ export function WorkflowBuilderModal({
       if (!env) continue;
       if (env.type === 'workflow-builder-state') {
         const s = (env as { state?: string }).state;
-        if (isSessionState(s)) setState(s);
+        if (isTransientSessionState(s)) setState(s);
       } else if (env.type === 'workflow-builder-exit') {
         setState('exited');
       } else if (env.type === 'workflow-builder-draft') {

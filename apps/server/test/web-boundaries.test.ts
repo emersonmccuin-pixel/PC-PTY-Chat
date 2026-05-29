@@ -197,3 +197,32 @@ test('create-project mode derivation lives outside the modal component', async (
     'create-project mode derivation should stay in @/features/projects/createMode',
   );
 });
+
+test('transient session event adapters live outside modal components', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/transient-sessions/events.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'transient session event adapters should live under features/transient-sessions',
+  );
+
+  const helperPattern =
+    /\bfunction\s+(?:adaptAgentDesignerEvents|adaptWorkflowBuilderEvents|adaptSetupWizardEvents|belongsToSession|mergeSessionState|isSessionState)\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'transient session event adaptation should stay in @/features/transient-sessions/events',
+  );
+});

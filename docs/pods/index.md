@@ -23,7 +23,7 @@ Base: `dev` at `44980f1`.
 | Chat/runtime/WebSocket | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/chat-runtime-websocket.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Project lifecycle | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/project-lifecycle.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
 | Terminal/PTY | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/terminal-pty.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
-| Transient sessions | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/transient-sessions.md` | Active audit after Project lifecycle. Agent designer, workflow builder, setup wizard shared adapter. |
+| Transient sessions | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/transient-sessions.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
 | Agents/pods/catalog/MCP | `not-started` | unassigned | none | pending | Pod records, stock pods, MCP tools, catalog, allowlists. |
 | Agent runs/transcripts | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Work items/stages/fields | `not-started` | unassigned | none | pending | Work item CRUD, Kanban, initiatives, stages, field schemas, attachments. |

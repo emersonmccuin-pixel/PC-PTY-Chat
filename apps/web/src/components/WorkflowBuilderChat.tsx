@@ -18,10 +18,15 @@ import { useMemo } from 'react';
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
-import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
+import {
+  adaptTransientEvents,
+  isWarmupOkUserText,
+  type TransientSessionState,
+} from '@/features/transient-sessions/events';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
-export type WorkflowBuilderState = 'spawning' | 'ready' | 'thinking' | 'exited';
+export type WorkflowBuilderState = TransientSessionState;
 
 /** First user message in an edit-mode session starts with this — the model
  *  uses it to switch behavior; the chat panel hides it. Kept in sync with the
@@ -45,82 +50,6 @@ interface WorkflowBuilderChatProps {
   onSurfaceModeChange?: (mode: OrchestratorSurfacePreference) => void;
 }
 
-function isWarmupUserText(text: string): boolean {
-  const trimmed = text.trim().toLowerCase();
-  return trimmed.startsWith('reply with only the word ok');
-}
-
-interface AdapterResult {
-  envelopes: WsEnvelope[];
-  state: WorkflowBuilderState;
-}
-
-function adaptWorkflowBuilderEvents(
-  events: WsEnvelope[],
-  projectId: string,
-  sessionId: string | null,
-  initialState: WorkflowBuilderState,
-): AdapterResult {
-  const out: WsEnvelope[] = [];
-  let state = initialState;
-  let skipNextAssistant = false;
-  for (const env of events) {
-    if (env.type === 'workflow-builder-state') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const s = (env as { state?: string }).state;
-      if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
-        state = s;
-      }
-      if (s === 'ready' || s === 'thinking') {
-        out.push({ projectId, type: 'state', state: s });
-      }
-      continue;
-    }
-    if (env.type === 'workflow-builder-jsonl') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const ev = (env as { event?: JsonlEvent }).event;
-      if (!ev) continue;
-      if (ev.kind === 'jsonl-user' && ev.text) {
-        if (ev.text.startsWith(EDIT_HANDOFF_PREFIX) || isWarmupUserText(ev.text)) {
-          skipNextAssistant = isWarmupUserText(ev.text);
-          continue;
-        }
-      }
-      if (ev.kind === 'jsonl-turn-end' && skipNextAssistant) {
-        skipNextAssistant = false;
-        continue;
-      }
-      out.push({ projectId, type: 'jsonl', event: ev });
-      continue;
-    }
-    if (env.type === 'workflow-builder-exit') {
-      if (!belongsToSession(env, sessionId)) continue;
-      state = 'exited';
-      continue;
-    }
-    if (env.type === 'workflow-builder-raw') {
-      const rawSessionId = (env as { sessionId?: unknown }).sessionId;
-      if (sessionId && rawSessionId === sessionId) {
-        out.push({ ...env, projectId, type: 'raw', sessionId });
-      }
-      continue;
-    }
-    if (env.type === 'ask') {
-      const askSessionId = (env as { sessionId?: string | null }).sessionId;
-      if (sessionId && askSessionId === sessionId) {
-        out.push(env);
-      }
-      continue;
-    }
-  }
-  return { envelopes: out, state };
-}
-
-function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
-  if (!sessionId) return true;
-  return (env as { sessionId?: unknown }).sessionId === sessionId;
-}
-
 export function WorkflowBuilderChat({
   projectId,
   events,
@@ -134,7 +63,19 @@ export function WorkflowBuilderChat({
   onSurfaceModeChange,
 }: WorkflowBuilderChatProps) {
   const { envelopes, state } = useMemo(
-    () => adaptWorkflowBuilderEvents(events, projectId, sessionId, initialState),
+    () =>
+      adaptTransientEvents({
+        events,
+        projectId,
+        sessionId,
+        initialState,
+        prefix: 'workflow-builder',
+        includeAsk: true,
+        hiddenUserText: (text) => {
+          if (text.startsWith(EDIT_HANDOFF_PREFIX)) return 'drop';
+          return isWarmupOkUserText(text) ? 'drop-with-next-turn-end' : false;
+        },
+      }),
     [events, projectId, sessionId, initialState],
   );
 
