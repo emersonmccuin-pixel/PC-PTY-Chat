@@ -254,7 +254,14 @@ test('jsonl-event broadcasts replay metadata, updates cursor, advances queue con
 
   pty.emit('jsonl-event', event, replay);
 
-  assert.deepEqual(broadcasts[0]?.msg, { type: 'jsonl', event, ...replay });
+  // Stage 1: the matched send's clientMessageId is stamped onto the canonical
+  // jsonl-user envelope so the client can reconcile its placeholder by id.
+  assert.deepEqual(broadcasts[0]?.msg, {
+    type: 'jsonl',
+    event,
+    ...replay,
+    clientMessageId: 'client-observed',
+  });
   assert.equal(getOrchestratorSession(session.id)?.jsonlLineCursor, 42);
   assert.equal(getOrchestratorSendQueueRow(delivered.id)?.status, 'observed_in_jsonl');
   assert.equal(queueBroadcasts.some((item) => item.sessionId === session.id), true);
@@ -263,6 +270,26 @@ test('jsonl-event broadcasts replay metadata, updates cursor, advances queue con
   assert.deepEqual(summaryEvents, [event]);
   assert.deepEqual(titleEvents, [event]);
   assert.deepEqual(aiTitleEvents, [event]);
+});
+
+test('jsonl-event without a matching delivered send broadcasts no clientMessageId', () => {
+  const { broadcasts, pty } = makeHarness();
+  const event = { kind: 'jsonl-user', text: 'no matching queued send' };
+  const replay = {
+    id: 'sess:9',
+    sessionId: 'sess',
+    seq: 9,
+    kind: 'jsonl-user' as const,
+    source: { kind: 'claude-jsonl' as const, cursor: 9 },
+  };
+
+  pty.emit('jsonl-event', event, replay);
+
+  assert.deepEqual(broadcasts[0]?.msg, { type: 'jsonl', event, ...replay });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(broadcasts[0]?.msg as object, 'clientMessageId'),
+    false,
+  );
 });
 
 test('jsonl-path-resolved persists path and broadcasts runtime snapshot', () => {

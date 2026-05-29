@@ -125,20 +125,26 @@ export async function deliverNextQueuedPromptOnce(
   broadcastSendQueueSnapshot(projectId, active.id);
 }
 
+/** Correlate a parsed `jsonl-user` event to its originating queued send (the
+ *  single one-time text+FIFO match), advancing it to `observed_in_jsonl` and
+ *  draining the next prompt. Returns the matched row so callers can stamp its
+ *  `clientMessageId` onto the canonical envelope (id-keyed placeholder reconcile,
+ *  docs/chat-canonical-source-redesign.md Stage 1); `undefined` when no match. */
 export function maybeAdvanceSendQueueConfirmation(
   projectId: ULID,
   sessionId: ULID | null,
   event: unknown,
   runtime: OrchestratorSendRuntime,
   broadcastSendQueueSnapshot: BroadcastSendQueueSnapshot,
-): void {
-  if (!sessionId || !event || typeof event !== 'object') return;
+): OrchestratorSendQueueRow | undefined {
+  if (!sessionId || !event || typeof event !== 'object') return undefined;
   const ev = event as { kind?: string; text?: unknown };
-  if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return;
+  if (ev.kind !== 'jsonl-user' || typeof ev.text !== 'string') return undefined;
   const observed = markNextDeliveredOrchestratorSendObservedInJsonl(sessionId, ev.text);
-  if (!observed) return;
+  if (!observed) return undefined;
   broadcastSendQueueSnapshot(projectId, sessionId);
   if (runtime.ptySession()?.getState() === 'ready') {
     deliverNextQueuedPrompt(projectId, runtime, broadcastSendQueueSnapshot);
   }
+  return observed;
 }

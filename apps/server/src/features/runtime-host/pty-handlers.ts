@@ -152,17 +152,27 @@ export function createRuntimeHostPtyController<
     });
     session.on('jsonl-event', (event: unknown, replay?: JsonlReplayMeta) => {
       deps.runtimeSnapshots.noteJsonl(projectId);
-      deps.broadcastTo(projectId, { type: 'jsonl', event, ...replayMetaPayload(replay) });
-      if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
-        deps.setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
-      }
-      maybeAdvanceSendQueueConfirmation(
+      // Correlate the send queue BEFORE broadcasting so the canonical jsonl-user
+      // envelope can carry its originating clientMessageId — the client replaces
+      // its optimistic placeholder by id (Stage 2), retiring fuzzy text-matching.
+      // The DB mark is the single one-time correlation point; reconnect reconcile
+      // rides the (already id-keyed) send-queue-snapshot, not the durable log.
+      const observed = maybeAdvanceSendQueueConfirmation(
         projectId,
         attachedSessionId,
         event,
         runtime,
         deps.broadcastSendQueueSnapshot,
       );
+      deps.broadcastTo(projectId, {
+        type: 'jsonl',
+        event,
+        ...replayMetaPayload(replay),
+        ...(observed ? { clientMessageId: observed.clientMessageId } : {}),
+      });
+      if (attachedSessionId && typeof replay?.source?.cursor === 'number') {
+        deps.setOrchestratorSessionJsonlCursor(attachedSessionId, replay.source.cursor);
+      }
       deps.broadcastRuntimeSnapshot(projectId, runtime);
       deps.maybePersistPostTurnSummary(projectId, event);
       deps.maybeSetSessionTitle(projectId, event);
