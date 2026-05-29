@@ -23,15 +23,17 @@ import {
   settingsApi,
   type GlobalSettings,
 } from '@/features/settings/client';
+import { useDesktopUpdates } from '@/hooks/use-desktop-updates';
 import { FolderBrowserModal } from './FolderBrowserModal';
 import { PodDetailModal } from './agents/PodDetailModal';
 
-type TabId = 'general' | 'storage' | 'usage' | 'specialists';
+type TabId = 'general' | 'storage' | 'usage' | 'updates' | 'specialists';
 
 const TABS: { id: TabId; label: string; danger?: boolean }[] = [
   { id: 'general', label: 'General' },
   { id: 'storage', label: 'Storage' },
   { id: 'usage', label: 'Usage' },
+  { id: 'updates', label: 'Updates' },
   { id: 'specialists', label: 'Specialists', danger: true },
 ];
 
@@ -288,6 +290,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                   />
                 )}
                 {active === 'usage' && <UsageTab />}
+                {active === 'updates' && <UpdatesTab />}
                 {active === 'specialists' && (
                   <SpecialistsTab
                     stockPods={stockPods}
@@ -307,7 +310,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
               )}
 
               <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
-                {active === 'specialists' ? (
+                {active === 'specialists' || active === 'updates' ? (
                   <button
                     type="button"
                     onClick={cancel}
@@ -731,6 +734,149 @@ function UsageTab() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Updates tab ───────────────────────────────────────────────────────────
+
+function UpdatesTab() {
+  const { isDesktop, state, check, download, install } = useDesktopUpdates();
+  const [busy, setBusy] = useState(false);
+
+  // Not in the desktop shell at all → updates are a desktop-only concern.
+  if (!isDesktop) {
+    return (
+      <div className="border border-border/60 bg-muted/20 px-3 py-3 text-xs text-muted-foreground">
+        Auto-update is part of the installed Caisson desktop app. You're viewing
+        PC in a browser, so there's nothing to update here.
+      </div>
+    );
+  }
+
+  // Desktop dev-run: the updater is inert (no signed feed).
+  if (state === null || state.status === 'unsupported') {
+    return (
+      <div className="flex flex-col gap-3">
+        <FieldRow label="Version" help="The running build of Caisson.">
+          <code className="self-start border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+            {state?.currentVersion ?? '—'}
+          </code>
+        </FieldRow>
+        <div className="border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          Auto-update runs in the packaged app only — this is a development run,
+          so checking for updates is disabled.
+        </div>
+      </div>
+    );
+  }
+
+  const checking = state.status === 'checking';
+  const downloading = state.status === 'downloading';
+  const canCheck = !busy && !checking && !downloading;
+
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    try {
+      await action();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <FieldRow label="Current version" help="The running build of Caisson.">
+        <code className="self-start border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground">
+          {state.currentVersion}
+        </code>
+      </FieldRow>
+
+      <div className="flex flex-col gap-2 border border-border bg-card px-3 py-3">
+        {state.status === 'available' && (
+          <>
+            <div className="text-sm text-foreground">
+              Version <span className="font-medium">{state.availableVersion}</span> is
+              available.
+            </div>
+            <button
+              type="button"
+              onClick={() => void run(download)}
+              disabled={busy}
+              className="self-start bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              Download update
+            </button>
+          </>
+        )}
+
+        {downloading && (
+          <>
+            <div className="text-sm text-foreground">
+              Downloading {state.availableVersion}… {state.percent ?? 0}%
+            </div>
+            <div className="relative h-1.5 w-full overflow-hidden bg-muted">
+              <div
+                className="absolute inset-y-0 left-0 bg-primary transition-[width]"
+                style={{ width: `${state.percent ?? 0}%` }}
+              />
+            </div>
+          </>
+        )}
+
+        {state.status === 'downloaded' && (
+          <>
+            <div className="text-sm text-foreground">
+              Version <span className="font-medium">{state.availableVersion}</span> is
+              ready. Caisson will restart to finish installing.
+            </div>
+            <button
+              type="button"
+              onClick={() => void install()}
+              className="self-start bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Restart &amp; install
+            </button>
+          </>
+        )}
+
+        {(state.status === 'idle' ||
+          state.status === 'not-available' ||
+          state.status === 'checking') && (
+          <div className="text-sm text-muted-foreground">
+            {checking
+              ? 'Checking for updates…'
+              : state.status === 'not-available'
+                ? "You're on the latest version."
+                : 'Check whether a newer build is available.'}
+          </div>
+        )}
+
+        {state.status === 'error' && (
+          <div className="text-sm text-destructive">
+            Update check failed: {state.error ?? 'unknown error'}
+          </div>
+        )}
+
+        {state.status !== 'available' &&
+          state.status !== 'downloading' &&
+          state.status !== 'downloaded' && (
+            <button
+              type="button"
+              onClick={() => void run(check)}
+              disabled={!canCheck}
+              className="self-start border border-border bg-card px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              {checking ? 'Checking…' : 'Check for updates'}
+            </button>
+          )}
+      </div>
+
+      {state.checkedAt && (
+        <div className="text-xs text-muted-foreground">
+          Last checked {new Date(state.checkedAt).toLocaleString()}.
         </div>
       )}
     </div>

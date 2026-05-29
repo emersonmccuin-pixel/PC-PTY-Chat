@@ -13,7 +13,8 @@
 //     process, hosts the bundled API server in-process, and loads the server's
 //     static bundle on 127.0.0.1:PORT.
 
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell, ipcMain } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import type { ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -47,6 +48,112 @@ let stoppingAgentHost = false;
 
 app.setName(APP_NAME);
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
+
+// ── Auto-update (electron-updater → public GitHub Releases feed) ───────────
+// The renderer is PC's web bundle and can't touch `autoUpdater` directly, so
+// the main process owns the update lifecycle and mirrors a single state object
+// to the UI over IPC (`pc:update-state`). Only meaningful in a packaged build:
+// in DEV the feed/signing don't exist, so the status stays `unsupported` and
+// every IPC verb short-circuits.
+
+type UpdateStatus =
+  | 'unsupported'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  availableVersion: string | null;
+  percent: number | null;
+  error: string | null;
+  checkedAt: number | null;
+}
+
+let updateState: UpdateState = {
+  status: DEV ? 'unsupported' : 'idle',
+  currentVersion: app.getVersion(),
+  availableVersion: null,
+  percent: null,
+  error: null,
+  checkedAt: null,
+};
+
+function pushUpdateState(patch: Partial<UpdateState>): void {
+  updateState = { ...updateState, ...patch };
+  mainWindow?.webContents.send('pc:update-state', updateState);
+}
+
+function updaterEnabled(): boolean {
+  return !DEV && app.isPackaged;
+}
+
+function initAutoUpdater(): void {
+  if (!updaterEnabled()) return;
+  // User-driven: the UI explicitly downloads and installs. We still install a
+  // staged update on the next quit so a downloaded-but-not-clicked update isn't
+  // lost.
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () =>
+    pushUpdateState({ status: 'checking', error: null }),
+  );
+  autoUpdater.on('update-available', (info) =>
+    pushUpdateState({
+      status: 'available',
+      availableVersion: info.version,
+      checkedAt: Date.now(),
+    }),
+  );
+  autoUpdater.on('update-not-available', () =>
+    pushUpdateState({ status: 'not-available', availableVersion: null, checkedAt: Date.now() }),
+  );
+  autoUpdater.on('download-progress', (p) =>
+    pushUpdateState({ status: 'downloading', percent: Math.round(p.percent) }),
+  );
+  autoUpdater.on('update-downloaded', (info) =>
+    pushUpdateState({ status: 'downloaded', availableVersion: info.version, percent: 100 }),
+  );
+  autoUpdater.on('error', (err) =>
+    pushUpdateState({ status: 'error', error: err == null ? 'unknown error' : err.message }),
+  );
+}
+
+ipcMain.handle('pc:update:get-state', () => updateState);
+
+ipcMain.handle('pc:update:check', async () => {
+  if (!updaterEnabled()) return updateState;
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    pushUpdateState({ status: 'error', error: (err as Error).message });
+  }
+  return updateState;
+});
+
+ipcMain.handle('pc:update:download', async () => {
+  if (!updaterEnabled() || updateState.status !== 'available') return updateState;
+  try {
+    pushUpdateState({ status: 'downloading', percent: 0 });
+    await autoUpdater.downloadUpdate();
+  } catch (err) {
+    pushUpdateState({ status: 'error', error: (err as Error).message });
+  }
+  return updateState;
+});
+
+ipcMain.handle('pc:update:install', () => {
+  if (!updaterEnabled() || updateState.status !== 'downloaded') return false;
+  // Reply to this IPC call first, then quit-and-install on the next tick.
+  setImmediate(() => autoUpdater.quitAndInstall());
+  return true;
+});
 
 /**
  * Boot the Hono/channel server inside this process. Packaged-mode only —
@@ -189,7 +296,16 @@ void app.whenReady().then(async () => {
     // PC_DATA_DIR is set in packaged mode (1.3) before the server boots.
     await startInProcessServer();
   }
+  initAutoUpdater();
   await createWindow();
+
+  // Background check on launch so the "update ready" banner can appear without
+  // the user opening settings. Errors (offline, no release yet) are non-fatal.
+  if (updaterEnabled()) {
+    autoUpdater
+      .checkForUpdates()
+      .catch((err) => pushUpdateState({ status: 'error', error: (err as Error).message }));
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();

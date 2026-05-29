@@ -16,6 +16,8 @@
     "dist:win": "pnpm prepackage && electron-builder --win nsis",
     "dist:mac": "pnpm prepackage && electron-builder --mac dmg zip",
     "dist:mac:dir": "pnpm prepackage && electron-builder --mac dir",
+    "publish:win": "pnpm prepackage && electron-builder --win nsis --publish always",
+    "publish:mac": "pnpm prepackage && electron-builder --mac dmg zip --publish always",
     "typecheck": "tsc --noEmit"
   },
   "build": {
@@ -24,6 +26,14 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "emersonmccuin-pixel",
+        "repo": "Caisson",
+        "releaseType": "release"
+      }
+    ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
@@ -57,6 +67,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
