@@ -1,6 +1,6 @@
 # Workflows Builder Visualizer Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -181,7 +181,7 @@ Cross-pod calls that should stay explicit:
 
 ## Dead Code And Drift
 
-- Web `fireWorkflowRow` types the success body as `{ runId, workItemId? }`, while server, service, MCP docs, and tests use `rootWorkItemId`.
+- Fixed: web `fireWorkflowRow` now types the success body as `{ ok, runId, rootWorkItemId }`, matching server, service, MCP docs, and tests.
 - Workflow route create and update paths duplicate the same stage-on-entry collision scan before calling `validateWorkflowV2`.
 - Legacy v2 compatibility routes and `WorkflowV2Registry` are still present. They may be intentional until all clients are on `/api/workflows`, but they are now secondary to DB rows.
 - `orchestrator-review-step.ts` uses an older domain shape and channel body helper separate from `dag-run-service.ts` review dispatch.
@@ -221,7 +221,7 @@ Do not change DAG execution semantics, review behavior, stage-on-entry firing, w
 
 Small cleanup candidates:
 
-- Align web `fireWorkflowRow` response type with server `rootWorkItemId` and add a focused contract test if practical.
+- Done: aligned web `fireWorkflowRow` response type with server `rootWorkItemId`.
 - Extract the duplicate workflow route stage-on-entry collision scan into a local helper and keep existing route tests as the guard.
 - Consider a prompt/tool allowlist drift test for the workflow-builder stock pod after source cleanup.
 - Leave compatibility routes and legacy registry in place unless a separate removal decision names all remaining consumers.
@@ -254,6 +254,9 @@ Commands run so far:
 - `pnpm --filter @pc/workflows test`
 - `pnpm --filter @pc/db exec tsx --test test/workflows-repo.test.ts test/workflow-runs-v2.test.ts test/work-item-workflow-root.test.ts`
 - `pnpm --filter @pc/mcp exec tsx --test test/workflows-tools.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/workflow-routes.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
@@ -262,6 +265,9 @@ Verification results:
 - Workflow package tests: 88 passed, 0 failed.
 - DB workflow repo/run/root tests: 23 passed, 0 failed.
 - MCP workflow tool tests: 4 passed, 0 failed.
+- Focused workflow route cleanup tests: 22 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:
