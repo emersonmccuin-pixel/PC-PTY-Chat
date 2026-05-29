@@ -298,6 +298,7 @@ function agentRunRecordFor(row: AgentRunRow, snapshot: AgentHostRunSnapshot): {
   failureReason: string | null;
   failureCause: AgentRunFailureCause | null;
   endedAt: number | null;
+  rev: number;
 } {
   return {
     runId: row.id,
@@ -321,6 +322,7 @@ function agentRunRecordFor(row: AgentRunRow, snapshot: AgentHostRunSnapshot): {
         ? null
         : coerceFailureCause(snapshot.terminalResult?.failureCause) ?? row.failureCause,
     endedAt: snapshot.terminalAt ?? row.completedAt,
+    rev: row.rev,
   };
 }
 

@@ -172,6 +172,8 @@ async function finishTerminalEffects(args: {
     });
   }
 
+  // Read updated row for the rev stamp (row was just updated by markTerminal).
+  const updatedRow = (deps.getAgentRun ?? defaultGetAgentRunRow)(input.runId);
   deps.broadcast?.(input.projectId, {
     type: 'agent-run-changed',
     record: {
@@ -190,6 +192,7 @@ async function finishTerminalEffects(args: {
       failureReason,
       failureCause,
       endedAt: completedAt,
+      rev: updatedRow?.rev ?? row.rev,
     },
   });
 }

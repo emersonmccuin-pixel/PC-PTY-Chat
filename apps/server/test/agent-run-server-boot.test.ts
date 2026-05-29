@@ -56,6 +56,7 @@ function row(id: string, status: AgentRunStatus = 'running'): AgentRunRow {
     spawnedAt: 1_700_000_000_100,
     readyAt: 1_700_000_000_200,
     completedAt: null,
+    rev: 0,
   };
 }
 

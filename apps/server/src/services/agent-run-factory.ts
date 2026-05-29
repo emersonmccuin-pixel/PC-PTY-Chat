@@ -36,6 +36,7 @@ import { resolve } from 'node:path';
 import {
   computePodRevision,
   resolveAgentForDispatch,
+  getAgentRunRow,
   getWorkItem,
   insertAgentRunRow,
   markAgentRunTerminal,
@@ -821,6 +822,7 @@ function broadcastAgentRunChanged(
   } = {},
 ): void {
   if (!args.deps.broadcast) return;
+  const currentRev = getAgentRunRow(args.agentRunId)?.rev ?? 0;
   const record = {
     runId: args.agentRunId,
     sessionId: args.ccSessionId,
@@ -839,6 +841,7 @@ function broadcastAgentRunChanged(
       : null,
     failureCause: extra.failureCause ?? null,
     endedAt: extra.endedAt ?? null,
+    rev: currentRev,
   };
   try {
     args.deps.broadcast({ type: 'agent-run-changed', record });
@@ -931,6 +934,9 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     extra: { result?: string; failureCause?: AgentRunFailureCause | null; endedAt?: number } = {},
   ): void => {
     if (!args.deps.broadcast) return;
+    // Read rev from DB after each write so the envelope carries the current
+    // monotonic version (enables frontend version-aware discard).
+    const currentRev = getAgentRunRow(args.agentRunId)?.rev ?? 0;
     const record = {
       runId: args.agentRunId,
       sessionId: args.ccSessionId,
@@ -953,6 +959,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
         : null,
       failureCause: extra.failureCause ?? null,
       endedAt: extra.endedAt ?? null,
+      rev: currentRev,
     };
     try {
       args.deps.broadcast({ type: 'agent-run-changed', record });

@@ -131,6 +131,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       failureReason: r.failureReason,
       failureCause: r.failureCause,
       endedAt: r.completedAt,
+      rev: r.rev,
     }));
     return c.json({ ok: true, runs: shimmed });
   });

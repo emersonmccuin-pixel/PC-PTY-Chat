@@ -64,6 +64,7 @@ export async function reattachAgentRunsDuringServerBoot(
     updateStatus: reattachDeps.updateStatus,
     resolveJsonlPath: reattachDeps.resolveJsonlPath,
     jsonlExists: reattachDeps.jsonlExists,
+    broadcast: reattachDeps.broadcast,
   });
 
   return {

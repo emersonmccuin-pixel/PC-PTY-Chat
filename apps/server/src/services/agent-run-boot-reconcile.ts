@@ -11,6 +11,7 @@ import { jsonlPathFor } from '@pc/runtime';
 import {
   getProjectById as defaultGetProjectById,
   hasOpenPendingAskForRun as defaultHasOpenPendingAskForRun,
+  listAndReconcileOrphanedRuns as defaultListAndReconcile,
   listNonTerminalAgentRuns as defaultListNonTerminalAgentRuns,
   markAgentRunTerminal as defaultMarkAgentRunTerminal,
   reconcileOrphanedRunningRuns as defaultLegacyReconcile,
@@ -25,12 +26,19 @@ export interface AgentRunBootReconcileDeps {
   now?: () => number;
   hostClient?: AgentRunHostSnapshotClient | null;
   legacyReconcile?: (now: number) => number;
+  /** Announcing variant of the legacy reconcile — lists rows, bulk-updates,
+   *  reads them back, and returns updated rows for announcement. When supplied,
+   *  the legacy path broadcasts `agent-run-changed` for each affected row. */
+  listAndReconcile?: (now: number) => AgentRunRow[];
   listNonTerminalRuns?: () => AgentRunRow[];
   hasOpenPendingAskForRun?: (runId: ULID) => boolean;
   resolveJsonlPath?: (row: AgentRunRow) => string | null;
   jsonlExists?: (path: string) => boolean;
   markTerminal?: typeof defaultMarkAgentRunTerminal;
   updateStatus?: typeof defaultUpdateAgentRunStatus;
+  /** Broadcast hook — receives `agent-run-changed` envelopes for reconciled
+   *  rows so the right rail shows the failure without a client refresh. */
+  broadcast?: (projectId: ULID, msg: unknown) => void;
 }
 
 export interface AgentRunBootReconcileResult {
@@ -61,7 +69,50 @@ export function reconcileAgentRunsOnBoot(
   const hostClient = deps.hostClient ?? null;
 
   if (!hostClient) {
-    const reconciled = (deps.legacyReconcile ?? defaultLegacyReconcile)(now);
+    const listAndReconcile = deps.listAndReconcile ?? defaultListAndReconcile;
+    const legacyReconcile = deps.legacyReconcile;
+
+    if (deps.broadcast) {
+      // Announcing path: list rows, bulk-update, broadcast each one so the
+      // right rail reflects the server-restart failure without a refresh.
+      const affectedRows = listAndReconcile(now);
+      for (const row of affectedRows) {
+        deps.broadcast(row.projectId, {
+          type: 'agent-run-changed',
+          record: {
+            runId: row.id,
+            sessionId: row.ccSessionId,
+            agentName: row.podName,
+            model: 'opus',
+            projectId: row.projectId,
+            parentWorkItemId: row.parentWorkItemId,
+            dispatcherSessionId: row.dispatcherSessionId,
+            wait: false,
+            worktreeDir: '',
+            startedAt: row.queuedAt,
+            status: row.status,
+            result: '',
+            failureReason: row.failureReason,
+            failureCause: row.failureCause,
+            endedAt: row.completedAt,
+            rev: row.rev,
+          },
+        });
+      }
+      const reconciled = affectedRows.length;
+      return {
+        mode: 'legacy',
+        hostRuns: 0,
+        checked: 0,
+        kept: 0,
+        failed: reconciled,
+        updated: 0,
+        reconciled,
+      };
+    }
+
+    // No broadcast dep — use plain count-only reconcile.
+    const reconciled = (legacyReconcile ?? defaultLegacyReconcile)(now);
     return {
       mode: 'legacy',
       hostRuns: 0,
