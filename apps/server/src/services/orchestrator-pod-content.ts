@@ -312,6 +312,10 @@ export const ORCHESTRATOR_POD_CONTENT: CreateAgentInput = {
     'mcp__pc-rig__pc_invoke_agent',
     'mcp__pc-rig__pc_continue_agent',
     'mcp__pc-rig__pc_list_my_runs',
+    // Run liveness controls — peek at a run's state/last-activity, force-kill a
+    // wedged or phantom run (kills the OS process, not just the row).
+    'mcp__pc-rig__pc_inspect_agent_run',
+    'mcp__pc-rig__pc_kill_agent_run',
     'mcp__pc-rig__pc_answer_pending',
     // Workflows — fire by slug only (authoring is workflow-builder's);
     // resolve a paused orchestrator-review node.

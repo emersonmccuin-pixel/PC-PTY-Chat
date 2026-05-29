@@ -12,6 +12,8 @@ const expectedAgentRunToolNames = [
   'pc_invoke_agent',
   'pc_continue_agent',
   'pc_list_my_runs',
+  'pc_inspect_agent_run',
+  'pc_kill_agent_run',
   'pc_ask_orchestrator',
   'pc_ask_user',
   'pc_request_approval',

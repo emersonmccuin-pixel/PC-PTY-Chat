@@ -179,10 +179,38 @@ export const ANSWER_PENDING_TOOL = {
   },
 } as const;
 
+export const INSPECT_AGENT_RUN_TOOL = {
+  name: 'pc_inspect_agent_run',
+  description:
+    "Peek at a single agent run: current status, OS pid + whether that process is still alive, how long since its last activity (idleMs), and the last thing it did (last JSONL action). Use this to tell a working run from a wedged one before deciding to wait or kill. Returns `{ ok, inspection: { runId, status, pid, processAlive, lastActivityAt, idleMs, lastAction, ... } }`. Read-only.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      runId: { type: 'string', description: 'ULID of the agent run to inspect' },
+    },
+    required: ['runId'],
+  },
+} as const;
+
+export const KILL_AGENT_RUN_TOOL = {
+  name: 'pc_kill_agent_run',
+  description:
+    "Force-end an agent run NOW: kills the real OS process (its persisted pid + child tree) AND finalizes the run row to `cancelled` with full effects (rail + dispatcher notify). Unlike a graceful cancel this works on a PHANTOM — a run wedged or whose in-memory handle was lost. Idempotent: an already-terminal run returns ok without re-killing. Use when `pc_inspect_agent_run` shows a run stuck with no activity. Returns `{ ok, status, alreadyTerminal, processKilled }`.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      runId: { type: 'string', description: 'ULID of the agent run to force-kill' },
+    },
+    required: ['runId'],
+  },
+} as const;
+
 export const AGENT_RUN_TOOLS = [
   INVOKE_AGENT_TOOL,
   CONTINUE_AGENT_TOOL,
   LIST_MY_RUNS_TOOL,
+  INSPECT_AGENT_RUN_TOOL,
+  KILL_AGENT_RUN_TOOL,
   ASK_ORCHESTRATOR_TOOL,
   ASK_USER_TOOL,
   REQUEST_APPROVAL_TOOL,
@@ -374,6 +402,81 @@ export async function handleAgentRunTool(
         return {
           content: [
             { type: 'text', text: `pc_list_my_runs failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_inspect_agent_run': {
+      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
+      if (!runId) {
+        return {
+          content: [{ type: 'text', text: 'pc_inspect_agent_run: runId required' }],
+          isError: true,
+        };
+      }
+      if (!ctx.projectId) {
+        return {
+          content: [{ type: 'text', text: 'pc_inspect_agent_run: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await ctx.getServer(
+          `/api/projects/${ctx.projectId}/agent-runs/${encodeURIComponent(runId)}/inspect`,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_inspect_agent_run failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_inspect_agent_run failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_kill_agent_run': {
+      const runId = typeof args.runId === 'string' ? args.runId.trim() : '';
+      if (!runId) {
+        return {
+          content: [{ type: 'text', text: 'pc_kill_agent_run: runId required' }],
+          isError: true,
+        };
+      }
+      if (!ctx.projectId) {
+        return {
+          content: [{ type: 'text', text: 'pc_kill_agent_run: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      try {
+        const res = await ctx.postServer(
+          `/api/projects/${ctx.projectId}/agent-runs/${encodeURIComponent(runId)}/kill`,
+          {},
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_kill_agent_run failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_kill_agent_run failed: ${(err as Error).message}` },
           ],
           isError: true,
         };

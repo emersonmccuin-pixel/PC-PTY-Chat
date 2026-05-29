@@ -309,6 +309,18 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     description: "List recent agent runs YOU dispatched (scoped to caller's session).",
     source: 'pc-rig',
   },
+  {
+    slug: 'mcp__pc-rig__pc_inspect_agent_run',
+    label: 'Inspect an agent run',
+    description: 'Peek a run: status, pid liveness, idle age, last action.',
+    source: 'pc-rig',
+  },
+  {
+    slug: 'mcp__pc-rig__pc_kill_agent_run',
+    label: 'Kill an agent run',
+    description: 'Force-end a run — kills the OS process + finalizes the row (works on phantoms).',
+    source: 'pc-rig',
+  },
 
   // --- pc-rig: pod CRUD (17b) ---------------------------------------------
   {
