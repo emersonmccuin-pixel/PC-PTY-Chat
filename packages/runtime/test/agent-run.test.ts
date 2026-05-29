@@ -547,3 +547,67 @@ test('jsonl-event with tool_use does NOT count as turn-end', async () => {
   assert.equal(run.getState(), 'running');
   assert.equal(terminal, null);
 });
+
+test('reattach: running run wires straight to running without ready/send', async () => {
+  const { run, stub } = makeRun({ reattach: { state: 'running' }, jsonlStartLine: 7 });
+  const states = collectStates(run);
+  const terminalP = awaitTerminal(run);
+
+  run.start();
+  await tick();
+
+  // No queue wait, no ready gate, no initialInput send.
+  assert.equal(run.getState(), 'running');
+  assert.equal(stub.started, true);
+  assert.deepEqual(stub.sent, [], 'reattach must not re-send initialInput');
+  assert.ok(!states.includes('spawning'), 'reattach skips the spawning phase');
+
+  // A turn-end completes it exactly like a normal run.
+  stub.fireAssistantTurnEnd('resumed result');
+  const t = await terminalP;
+  assert.equal(t.status, 'completed');
+  assert.equal(t.result, 'resumed result');
+});
+
+test('reattach: paused run restores paused state', async () => {
+  const { run } = makeRun({ reattach: { state: 'paused' } });
+  run.start();
+  await tick();
+  assert.equal(run.getState(), 'paused');
+});
+
+test('reattach: a gone PTY (exit) fails the run', async () => {
+  const { run, stub } = makeRun({ reattach: { state: 'running' } });
+  const terminalP = awaitTerminal(run);
+  run.start();
+  await tick();
+
+  stub.fireExit(); // host replied `gone` → RemoteSpawn emits exit
+  const t = await terminalP;
+  assert.equal(t.status, 'failed');
+  assert.equal(t.cause, 'unexpected-exit');
+});
+
+test('reattach: admits past a full cap (registry.reattach)', async () => {
+  const registry = new AgentRunRegistry({ maxConcurrent: 1 });
+  // Fill the cap with a normal run.
+  const blocker = new StubSpawn();
+  const occupying = new AgentRun(makeInput({ agentRunId: 'occupy' }), {
+    registry,
+    spawnFactory: () => blocker,
+  });
+  occupying.start();
+  await tick();
+  assert.equal(registry.getActiveCount(), 1);
+
+  // A reattached run starts running immediately despite the full cap.
+  const stub = new StubSpawn();
+  const re = new AgentRun(makeInput({ agentRunId: 'reattached', reattach: { state: 'running' } }), {
+    registry,
+    spawnFactory: () => stub,
+  });
+  re.start();
+  await tick();
+  assert.equal(re.getState(), 'running');
+  assert.equal(registry.getActiveCount(), 2);
+});

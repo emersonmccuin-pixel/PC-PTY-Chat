@@ -99,6 +99,19 @@ export interface AgentRunInput {
   mode?: 'fresh' | 'resume';
   /** Continuation lineage. Set by pc_continue_agent (Session 8 wiring). */
   continues?: string;
+  /** Reattach to an already-running host PTY after a server restart instead of
+   *  spawning. The spawnFactory must produce an attach-mode spawn
+   *  (HostClient.attachSpawn). Skips queue admission (uses registry.reattach()),
+   *  the ready wait, and the initialInput send — the run is already live. */
+  reattach?: { state: 'running' | 'paused' };
+  /** Source JSONL cursor handed to the spawn's tailer. On reattach this is the
+   *  file's line count at reattach time so prior turn-ends don't replay as
+   *  fresh events (and prematurely complete the run). */
+  jsonlStartLine?: number;
+  /** Pre-resolved JSONL path. On reattach this is the host-reported path from
+   *  the roster, so the server-side tailer reads the exact file the host PTY
+   *  writes (no path-resolver divergence). */
+  jsonlPath?: string;
   mcpConfigPath?: string;
   settingsPath?: string;
   settingSources?: string;
@@ -198,7 +211,11 @@ export class AgentRun extends EventEmitter {
       queuedAt: this.deps.now(),
       continues: input.continues,
     };
-    this.ticket = this.deps.registry.admit();
+    // Reattached runs were already admitted in the prior process lifetime —
+    // bypass the FIFO/cap so a restart doesn't queue live agents behind it.
+    this.ticket = input.reattach
+      ? this.deps.registry.reattach()
+      : this.deps.registry.admit();
   }
 
   /** Begin the lifecycle. Idempotent at the type level — calling twice
@@ -206,6 +223,15 @@ export class AgentRun extends EventEmitter {
   start(): void {
     if (this.started) throw new Error('AgentRun.start() called twice');
     this.started = true;
+    if (this.input.reattach) {
+      // Reattach is synchronous wiring — no queue wait, no ready wait, no send.
+      try {
+        this.reattachLifecycle();
+      } catch (err) {
+        this.toTerminal('failed', 'spawn-error', stringify(err));
+      }
+      return;
+    }
     // Run the async lifecycle; any unhandled error funnels to a terminal
     // failed state so the cap-slot can't leak.
     this.runLifecycle().catch((err) => {
@@ -333,28 +359,7 @@ export class AgentRun extends EventEmitter {
     mode: 'fresh' | 'resume',
     inputBody: string | undefined,
   ): Promise<void> {
-    // Build the LowLevelSpawn input. Caller (Session 9 wiring) is expected
-    // to have already materialized the pod + rewritten `.mcp.json`; here
-    // we just hand the descriptor through.
-    const llsInput: LowLevelSpawnInput = {
-      podDefinition: this.input.podDefinition,
-      worktreePath: this.input.worktreePath,
-      env: this.input.env,
-      ccProviderSessionId: this.input.ccProviderSessionId,
-      mode,
-      // initialInput is delivered explicitly via echo-ack after the gate
-      // opens; we don't pass it to LowLevelSpawn (LowLevelSpawn doesn't
-      // auto-send either — kept here as a no-op pass-through field).
-      mcpConfigPath: this.input.mcpConfigPath,
-      settingsPath: this.input.settingsPath,
-      settingSources: this.input.settingSources,
-      pluginDirs: this.input.pluginDirs,
-      claudeExe: this.input.claudeExe,
-      transcriptPath: this.input.transcriptPath,
-      handshakeTimeoutMs: this.timeouts.handshakeTimeoutMs,
-      readyTimeoutMs: this.timeouts.readyTimeoutMs,
-    };
-    const spawn = this.deps.spawnFactory(llsInput);
+    const spawn = this.deps.spawnFactory(this.buildSpawnInput(mode));
     this.spawn = spawn;
 
     spawn.on('jsonl-event', (ev: JsonlEvent) => this.onJsonlEvent(ev));
@@ -401,6 +406,65 @@ export class AgentRun extends EventEmitter {
 
     // From here, lifecycle is event-driven via onJsonlEvent / onSpawnExit /
     // cancel / _markPaused.
+  }
+
+  /** Build the LowLevelSpawn input. Caller (Session 9 wiring) is expected to
+   *  have already materialized the pod + rewritten `.mcp.json`; here we just
+   *  hand the descriptor through. Shared by fresh/resume spawn and reattach. */
+  private buildSpawnInput(mode: 'fresh' | 'resume'): LowLevelSpawnInput {
+    return {
+      podDefinition: this.input.podDefinition,
+      worktreePath: this.input.worktreePath,
+      env: this.input.env,
+      ccProviderSessionId: this.input.ccProviderSessionId,
+      mode,
+      // initialInput is delivered explicitly via echo-ack after the gate opens;
+      // we don't pass it to LowLevelSpawn (kept as a no-op pass-through field).
+      mcpConfigPath: this.input.mcpConfigPath,
+      settingsPath: this.input.settingsPath,
+      settingSources: this.input.settingSources,
+      pluginDirs: this.input.pluginDirs,
+      claudeExe: this.input.claudeExe,
+      transcriptPath: this.input.transcriptPath,
+      jsonlStartLine: this.input.jsonlStartLine,
+      jsonlPath: this.input.jsonlPath,
+      handshakeTimeoutMs: this.timeouts.handshakeTimeoutMs,
+      readyTimeoutMs: this.timeouts.readyTimeoutMs,
+    };
+  }
+
+  /** Reattach to an already-running host PTY after a server restart. Wires the
+   *  attach-mode spawn (the factory must call HostClient.attachSpawn), restores
+   *  the persisted state directly, and re-arms the wall-clock from the caller's
+   *  remaining budget (input.wallClockMs). No queue wait, no ready wait, no
+   *  initialInput send — the run never stopped running on the host. */
+  private reattachLifecycle(): void {
+    const reattachState = this.input.reattach!.state;
+    // Resume mode: continue the in-progress conversation; the caller sets
+    // jsonlStartLine to the file's current length so prior turn-ends don't
+    // replay as fresh events and prematurely complete the run.
+    const spawn = this.deps.spawnFactory(this.buildSpawnInput('resume'));
+    this.spawn = spawn;
+
+    spawn.on('jsonl-event', (ev: JsonlEvent) => this.onJsonlEvent(ev));
+    spawn.on('exit', (code, signal) => this.onSpawnExit(code, signal));
+    spawn.on('state', (s: SpawnState) => this.emit('spawn-state', s));
+    spawn.on('chunk', (text: string) => this.emit('chunk', text));
+    spawn.on('ready', (ts: ReadyTimestamps) => this.emit('ready', ts));
+
+    spawn.start(); // attach mode → sends `attach`; `gone` → exit → failed
+
+    this.record.readyAt = this.deps.now();
+    this.armWallClock();
+
+    if (reattachState === 'paused') {
+      this.record.pausedAt = this.deps.now();
+      this.setState('paused');
+      return;
+    }
+    this.setState('running');
+    this.record.runningAt = this.deps.now();
+    this.armIdleTimer();
   }
 
   private onJsonlEvent(ev: JsonlEvent): void {

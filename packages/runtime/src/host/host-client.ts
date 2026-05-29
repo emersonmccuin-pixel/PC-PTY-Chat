@@ -39,6 +39,15 @@ export class HostClient implements RemoteSpawnHost {
     return spawn;
   }
 
+  /** Construct a RemoteSpawn that REATTACHES to an already-running host PTY
+   *  (server-restart reattach) rather than spawning a fresh one. `.start()`
+   *  sends `attach`; the host replies `attached` or `gone`. */
+  attachSpawn(input: LowLevelSpawnInput): RemoteSpawn {
+    const spawn = new RemoteSpawn(input, this, { attach: true });
+    this.byKey.set(spawn.key, spawn);
+    return spawn;
+  }
+
   /** Ask the host for its live roster (phase-2 reattach uses this at boot). */
   roster(): Promise<RosterEntry[]> {
     const reqId = randomUUID();
@@ -117,11 +126,6 @@ export class HostClient implements RemoteSpawnHost {
         if (msg.key) this.byKey.get(msg.key)?.handleHostMsg({ t: 'exit', key: msg.key, code: null, signal: null });
         return;
       }
-      case 'attached':
-      case 'gone':
-        // Phase-2 reattach replies — routed to the spawn by key when that path
-        // lands. No-op in phase 1.
-        return;
       default: {
         // Key-addressed lifecycle event → route to the owning spawn.
         const key = (msg as { key?: string }).key;

@@ -243,7 +243,8 @@ host eventually cleans itself up.
    boot (no reattach yet) — but a server crash no longer kills running agents
    mid-flight (they finish, write JSONL; next boot still fails the *row* but the
    work/transcript survived). Validates the split.
-2. **Reattach + targeted reconcile.** Delivers the headline acceptance test.
+2. **Reattach + targeted reconcile.** ✅ **shipped (phase 2)** — delivers the
+   headline acceptance test (modulo live validation).
 3. **Host respawn + supervisor/Electron ownership wiring.** Delivers native-crash
    isolation.
 4. **Interactive sessions onto the host** (isolation), then their reattach.
@@ -262,15 +263,35 @@ host eventually cleans itself up.
   `RemoteSpawn` when the host client is connected; `index.ts` boot does a
   fire-and-forget connect when the flag is set.
 
-**How to try it (dev):** set `PC_AGENT_HOST=1` (optionally
-`PC_AGENT_HOST_PORT`) for the server. On boot it connects to the host, spawning
-one via tsx if none is listening (or run `pnpm --filter @pc/server agent-host`
-manually). With the flag off, nothing changes — in-process spawns as today.
+**Phase 2 — shipped (off by default).**
 
-**Phase-1 limits (by design):** no reattach yet (boot still blanket-fails
-rows); auto-spawn detachment isn't hardened against Windows job-object
-teardown; interactive PTYs not yet routed through the host. Those are phases
-2–4.
+- `RemoteSpawn` attach mode + `HostClient.attachSpawn`; `AgentHost` `attached`/
+  `gone` replies; `AgentRunRegistry.reattach()` (cap/FIFO bypass); `AgentRun`
+  reattach lifecycle (`input.reattach` + `jsonlPath`/`jsonlStartLine`
+  passthrough, skips queue/ready/initialInput).
+- `agent-run-factory` extracted a shared `wireAndStartRun(ctx)` (active-runs
+  registration + state persistence + broadcast + terminal/verification) used by
+  both fresh dispatch and reattach.
+- `apps/server/src/agent-host/reattach.ts`: pure `planReconcile(rows,
+  rosterKeys)` + `reconcileWithHost(client, deps)`. Boot (`index.ts`) defers to
+  roster reconcile when the host is enabled, blanket-fails otherwise (with a
+  fallback to blanket on connect/roster failure).
+- `listNonTerminalAgentRuns()` repo query.
+- Tests: registry reattach, host attach/gone, AgentRun reattach (running/paused/
+  gone/over-cap), `planReconcile`, DB-backed `reconcileWithHost`.
+
+**How to try it (dev):** set `PC_AGENT_HOST=1` (optionally `PC_AGENT_HOST_PORT`)
+for the server. On boot it connects to the host (spawning one via tsx if none is
+listening, or run `pnpm --filter @pc/server agent-host` manually), reattaches
+live runs, and fails only genuinely-dead ones. With the flag off, nothing
+changes — in-process spawns + blanket reconcile as today.
+
+**Remaining limits (by design):** auto-spawn detachment isn't hardened against
+Windows job-object teardown (phase 3); interactive PTYs not yet routed through
+the host (phase 4); reconcile fails (rather than completes-from-JSONL) a run
+whose PTY died in the gap — the JSONL completion-detection refinement is
+deferred. Phase 2 has **not been validated against a live restart** (needs the
+user to flip the flag + restart).
 
 ## What stays unchanged
 

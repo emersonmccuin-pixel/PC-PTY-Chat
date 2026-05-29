@@ -341,3 +341,38 @@ test('protocol codec round-trips both directions', () => {
   const inbound: HostToServerMsg = { t: 'ready', key: 'k', ts: READY };
   assert.deepEqual(decodeMsg(encodeMsg(inbound)), inbound);
 });
+
+test('attach binds to a live host PTY (attached)', async () => {
+  const { client, spawns } = wire();
+  const first = client.createSpawn(baseInput({ ccProviderSessionId: 'cc-x' }));
+  first.start();
+  await tick();
+  spawns[0].fireReady();
+  await tick();
+
+  // Simulate a restarted server reattaching to the same key.
+  const re = client.attachSpawn(baseInput({ ccProviderSessionId: 'cc-x' }));
+  let reReady = false;
+  re.on('ready', () => (reReady = true));
+  re.start();
+  await tick();
+
+  assert.equal(reReady, true, 'attach should resolve ready immediately');
+  assert.equal(re.getState(), 'ready');
+  await re.awaitReady();
+  // Only one PTY was ever spawned on the host.
+  assert.equal(spawns.length, 1);
+});
+
+test('attach to a missing key reports gone → exit', async () => {
+  const { client } = wire();
+  const re = client.attachSpawn(baseInput({ ccProviderSessionId: 'nope' }));
+  let exited = false;
+  re.on('exit', () => (exited = true));
+  re.start();
+  await tick();
+
+  assert.equal(exited, true);
+  assert.equal(re.getState(), 'exited');
+  await assert.rejects(re.awaitReady(), /no live PTY to attach/);
+});

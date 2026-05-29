@@ -55,6 +55,19 @@ export class AgentRunRegistry {
     return ticket;
   }
 
+  /** Admit a run that was ALREADY running before this process started — i.e. a
+   *  host-reattached run after a server restart. Bypasses the FIFO + cap: the
+   *  PTY never left the host, so it isn't subject to admission control; we only
+   *  account for its slot so the live count + dequeue math stay correct. This
+   *  can push `active` transiently over `cap`; the over-cap drains as
+   *  reattached runs reach terminal and release. */
+  reattach(): AdmissionTicket {
+    const ticket = new TicketImpl(this);
+    this.active++;
+    ticket.markAdmitted();
+    return ticket;
+  }
+
   getMaxConcurrent(): number {
     return this.cap;
   }

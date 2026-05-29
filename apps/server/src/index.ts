@@ -31,6 +31,7 @@ import {
 } from './services/orchestrator-send-queue-delivery.ts';
 import { isAgentHostEnabled } from './agent-host/constants.ts';
 import { initAgentHostClient } from './agent-host/connect-host.ts';
+import { reconcileWithHost } from './agent-host/reattach.ts';
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
@@ -328,12 +329,39 @@ channelServer.start();
   }
 }
 
-// Boot-time orphan sweep on agent_runs. Dispatch + broadcast wiring lives in
-// `agent-run-factory` per-spawn (the `broadcast` dep is injected at route
-// time). Orphan sweep stays as a boot-time idempotent UPDATE — any
-// non-terminal row outlives a prior server lifetime and gets flipped to
-// `failed` so the Activity Panel doesn't show stale running cards.
-{
+// Boot-time reconcile on agent_runs.
+//
+// Without the out-of-process host: a non-terminal row outlives a prior server
+// lifetime and gets flipped to `failed` so the Activity Panel doesn't show
+// stale running cards (the legacy blanket sweep).
+//
+// With the host (PC_AGENT_HOST=1): the host outlives a server restart, so we
+// defer to a roster-driven reattach once the client connects — reattaching live
+// PTYs and failing only genuinely-dead runs. On connect/roster failure we fall
+// back to the blanket sweep so we never leave stale running rows behind.
+if (isAgentHostEnabled()) {
+  initAgentHostClient().then(
+    async (client) => {
+      try {
+        const r = await reconcileWithHost(client, { channelServer, broadcastTo });
+        console.log(
+          `[agent-host] connected — reattached ${r.reattached}, failed ${r.failed}`,
+        );
+      } catch (err) {
+        console.error(
+          `[agent-host] roster reconcile failed; blanket-reconciling: ${(err as Error).message}`,
+        );
+        reconcileOrphanedRunningRuns(Date.now());
+      }
+    },
+    (err) => {
+      console.error(
+        `[agent-host] init failed; blanket-reconciling + staying in-process: ${(err as Error).message}`,
+      );
+      reconcileOrphanedRunningRuns(Date.now());
+    },
+  );
+} else {
   try {
     const reconciled = reconcileOrphanedRunningRuns(Date.now());
     if (reconciled > 0) {
@@ -344,20 +372,6 @@ channelServer.start();
   } catch (err) {
     console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
   }
-}
-
-// Out-of-process agent host (PC_AGENT_HOST=1 — opt-in until phase-2 reattach).
-// Fire-and-forget connect: dispatches before the host is ready fall back to the
-// in-process path (getAgentHostClient() returns null). Failure is non-fatal —
-// the server keeps running with in-process spawns.
-if (isAgentHostEnabled()) {
-  initAgentHostClient().then(
-    () => console.log('[agent-host] client ready — dispatches route out-of-process'),
-    (err) =>
-      console.error(
-        `[agent-host] init failed; staying in-process: ${(err as Error).message}`,
-      ),
-  );
 }
 
 const app = new Hono();

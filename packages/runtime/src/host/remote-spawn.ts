@@ -33,11 +33,19 @@ export interface RemoteSpawnHost {
   unregister(key: string): void;
 }
 
+/** Synthetic ready timestamps for a reattached PTY — it's already past the
+ *  ready gate, so awaitReady() resolves immediately on `attached`. */
+function attachedReady(): ReadyTimestamps {
+  return { handshakeAt: null, composerReadyAt: Date.now(), initCompleteAt: null };
+}
+
 export class RemoteSpawn extends EventEmitter implements SpawnLike {
   readonly key: string;
   private state: SpawnState = 'spawning';
   private readonly input: LowLevelSpawnInput;
   private readonly host: RemoteSpawnHost;
+  /** Attach to an already-running host PTY (reattach) instead of spawning. */
+  private readonly attachMode: boolean;
   private resolvedJsonlPath: string | null = null;
   private tailer: JsonlTailer | null = null;
   private jsonlPollTimer: NodeJS.Timeout | null = null;
@@ -46,10 +54,15 @@ export class RemoteSpawn extends EventEmitter implements SpawnLike {
   private readyResolve: ((ts: ReadyTimestamps) => void) | null = null;
   private readyReject: ((err: Error) => void) | null = null;
 
-  constructor(input: LowLevelSpawnInput, host: RemoteSpawnHost) {
+  constructor(
+    input: LowLevelSpawnInput,
+    host: RemoteSpawnHost,
+    opts: { attach?: boolean } = {},
+  ) {
     super();
     this.input = input;
     this.host = host;
+    this.attachMode = opts.attach ?? false;
     this.key = input.ccProviderSessionId;
     this.readyPromise = new Promise<ReadyTimestamps>((resolve, reject) => {
       this.readyResolve = resolve;
@@ -70,12 +83,17 @@ export class RemoteSpawn extends EventEmitter implements SpawnLike {
     this.resolvedJsonlPath =
       this.input.jsonlPath ??
       jsonlPathFor(this.input.worktreePath, this.input.ccProviderSessionId);
-    const spawnInput: LowLevelSpawnInput = {
-      ...this.input,
-      jsonlPath: this.resolvedJsonlPath,
-    };
 
-    this.host.sendToHost({ t: 'spawn', key: this.key, input: spawnInput });
+    if (this.attachMode) {
+      // Reattach: the host already owns this PTY. Don't spawn — just bind.
+      this.host.sendToHost({ t: 'attach', key: this.key });
+    } else {
+      const spawnInput: LowLevelSpawnInput = {
+        ...this.input,
+        jsonlPath: this.resolvedJsonlPath,
+      };
+      this.host.sendToHost({ t: 'spawn', key: this.key, input: spawnInput });
+    }
     setImmediate(() => this.attachJsonlTailer());
   }
 
@@ -134,6 +152,22 @@ export class RemoteSpawn extends EventEmitter implements SpawnLike {
       case 'spawned':
         if (msg.jsonlPath) this.resolvedJsonlPath = msg.jsonlPath;
         break;
+      case 'attached': {
+        // Reattach succeeded — the PTY is already past the ready gate.
+        if (msg.jsonlPath) this.resolvedJsonlPath = msg.jsonlPath;
+        this.setState(msg.state);
+        const ts = attachedReady();
+        this.emit('ready', ts);
+        this.readyResolve?.(ts);
+        this.readyResolve = null;
+        this.readyReject = null;
+        break;
+      }
+      case 'gone':
+        // The host had no live PTY for this key (it died between roster + attach).
+        this.rejectReady(new Error('RemoteSpawn: host has no live PTY to attach'));
+        this.onExit(null, null);
+        break;
       case 'state':
         this.setState(msg.state);
         break;
@@ -154,8 +188,8 @@ export class RemoteSpawn extends EventEmitter implements SpawnLike {
         this.onExit(msg.code, msg.signal);
         break;
       default:
-        // attached / gone / sendResult / rosterResult / error are handled by
-        // HostClient, not per-spawn.
+        // sendResult / rosterResult / error are handled by HostClient, not
+        // per-spawn.
         break;
     }
   }
@@ -232,6 +266,8 @@ export class RemoteSpawn extends EventEmitter implements SpawnLike {
         return;
       }
       this.jsonlPollTimer = setTimeout(tryAttach, 250);
+      // A pre-attach poll must not keep the process alive on its own.
+      this.jsonlPollTimer.unref?.();
     };
     tryAttach();
   }
