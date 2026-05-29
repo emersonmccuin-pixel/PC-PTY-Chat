@@ -8,9 +8,17 @@
 
 const STORAGE_KEY = 'caisson.chat.jsonlCanonical';
 
+// Default ON for A/B validation (effectively Stage 5, dev). The localStorage
+// override still wins, so legacy is one keystroke away:
+//   localStorage.setItem('caisson.chat.jsonlCanonical','0'); location.reload()
+// Env var can force a value if set; otherwise the default below applies.
+const DEFAULT_CANONICAL = true;
+
 function envDefault(): boolean {
   const raw = (import.meta.env as Record<string, string | undefined>).VITE_CHAT_JSONL_CANONICAL;
-  return raw === '1' || raw === 'true';
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  return DEFAULT_CANONICAL;
 }
 
 /** True when the JSONL-canonical chat renderer should be used. Read at render
