@@ -116,7 +116,7 @@ Cross-pod calls that should stay explicit:
 
 ## Dead Code And Drift
 
-- Resolved during cleanup: removed `GET /api/dev/canary` and the `CANARY-1` UI marker.
+- Resolved during cleanup: removed dev canary routes and UI markers.
 - Resolved during cleanup: removed the temporary backend reload marker from `/api/dev/status`, web type, and widget.
 - `docs/dev-dogfood-setup.md` still references the default Codex checkout rather than this Phase 5 worktree, but the repo-level AGENTS rule supersedes it for active work.
 - Resolved during cleanup: added focused route tests for dev-control gating, active-agent 409 behavior, and sentinel restart scheduling.
@@ -143,7 +143,7 @@ Do not call `/api/dev/restart`, reload the frontend, restart any server/app, run
 
 Completed cleanup:
 
-- Removed the canary route and matching UI marker.
+- Removed dev canary routes and matching UI markers.
 - Removed the backend reload marker from `/api/dev/status`, `DevStatus`, and `DevControls`.
 - Added injected active-run count, restart scheduler, and process-exit hooks to make dev-control routes unit-testable without touching the live server.
 - Added focused route tests for packaged-mode gating, status, active-agent restart rejection, safe restart scheduling, and forced restart scheduling.

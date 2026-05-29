@@ -46,7 +46,7 @@ Feature route groups:
 | Project worktrees | `features/project-worktrees/routes.ts` | worktree list/create/destroy |
 | Agent runs | `features/agent-runs/routes.ts` | active/list/cancel, invoke, continue, pending asks, transcript events |
 | Statusline | `features/statusline/routes.ts` | statusline snapshot, usage aggregate |
-| Dev controls | `features/dev-controls/routes.ts` | canary/status/restart endpoint; restart remains destructive and user-owned |
+| Dev controls | `features/dev-controls/routes.ts` | status/restart endpoint; restart remains destructive and user-owned |
 
 ## Web Feature Map
 
@@ -62,7 +62,7 @@ Feature clients:
 - `features/files` owns file browser/tree/preview contracts.
 - `features/project-context` owns memory/commands/Claude-md client contracts.
 - `features/settings` owns settings/onboarding client contracts.
-- `features/dev-controls` owns dev status/canary client contracts.
+- `features/dev-controls` owns dev status/restart client contracts.
 - `features/chat` owns chat surface rendering, composer actions, pending prompts, runtime thinking, terminal pane, JSONL normalization, tool grouping, approvals.
 
 Top-level adapters and views:

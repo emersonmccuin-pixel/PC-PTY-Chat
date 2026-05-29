@@ -89,15 +89,13 @@ export function DevControls() {
   return (
     <div className="pointer-events-none fixed bottom-2 right-2 z-50">
       <div className="pointer-events-auto flex items-center gap-1.5 rounded border border-border bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm">
-        {/* CANARY pipeline test — safe to revert */}
-        <span className="font-mono text-[10px] text-warning">CANARY-1</span>
-        {/* CANARY-4 pipeline test — safe to revert */}
-        {import.meta.env.DEV && <span className="font-mono text-[10px] text-warning">CANARY-4</span>}
-        <span className="select-none text-border">·</span>
         {status !== null && status.activeAgents > 0 && (
-          <span className="text-warning">
-            {status.activeAgents}&nbsp;{status.activeAgents === 1 ? 'agent' : 'agents'}
-          </span>
+          <>
+            <span className="text-warning">
+              {status.activeAgents}&nbsp;{status.activeAgents === 1 ? 'agent' : 'agents'}
+            </span>
+            <span className="select-none text-border">·</span>
+          </>
         )}
         <button
           type="button"

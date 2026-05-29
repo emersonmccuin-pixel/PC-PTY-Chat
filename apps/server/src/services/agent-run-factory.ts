@@ -63,7 +63,11 @@ import {
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import type { ChannelServer } from './channel-server.ts';
 
-import { getActiveRunRegistry, type ActiveRunRegistry } from './agent-active-runs.ts';
+import {
+  activeRunHandleForAgentRun,
+  getActiveRunRegistry,
+  type ActiveRunRegistry,
+} from './agent-active-runs.ts';
 import { enqueueAndPush } from './agent-delivery.ts';
 import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
 import {
@@ -581,7 +585,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   // Register with the active-runs index so pause-resume can find the run by
   // id or by cc-session.
   activeReg.register({
-    run,
+    run: activeRunHandleForAgentRun(run),
     projectId: args.input.projectId,
     dispatcherSessionId: args.input.dispatcherSessionId,
     ccSessionId: args.ccSessionId,

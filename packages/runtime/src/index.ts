@@ -128,3 +128,14 @@ export type {
   AgentRunJsonlEventKind,
   JsonlTailerOptionsForAgentRun,
 } from './agent-run-jsonl-tailer.ts';
+
+export type {
+  AgentHostCommand,
+  AgentHostEvent,
+  AgentHostIdentity,
+  AgentHostResumeRunRequest,
+  AgentHostRunSnapshot,
+  AgentHostRunState,
+  AgentHostStartRunRequest,
+  AgentHostTerminalResult,
+} from './agent-host-protocol.ts';

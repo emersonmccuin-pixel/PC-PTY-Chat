@@ -5,20 +5,43 @@
 // outstanding pause, or the CC provider session-id when the JSONL
 // pause-detector fires.
 //
-// The registry is a thin process-wide Map. It does NOT own AgentRun
-// lifecycle — callers `register(run)` after `run.start()` and the registry
-// auto-unregisters on the run's `terminal` event (cap-slot freed +
-// completed | failed | cancelled).
+// The registry is a thin process-wide Map. It does NOT own the run lifecycle.
+// Callers register an ActiveRunHandle after the run starts; the handle's
+// terminal callback auto-unregisters when the run completes.
 //
 // Each entry carries dispatcher metadata so the pause/resume layer can
 // build the channel-event body (which references projectId / dispatcher
 // session / parent work item) without re-querying the DB.
 
 import type { ULID } from '@pc/domain';
-import type { AgentRun } from '@pc/runtime';
+import type { AgentRun, AgentRunRecord, AgentRunState } from '@pc/runtime';
+
+export interface ActiveRunHandle {
+  getRecord(): Pick<AgentRunRecord, 'agentRunId'>;
+  getState(): AgentRunState;
+  cancel(): void;
+  notifyMcpHandshake(): void;
+  markPaused(askId: string): void;
+  resumeWithAnswer(answer: string): void;
+  onTerminal(listener: () => void): void;
+}
+
+export function activeRunHandleForAgentRun(run: AgentRun): ActiveRunHandle {
+  return {
+    getRecord: () => run.getRecord(),
+    getState: () => run.getState(),
+    cancel: () => run.cancel(),
+    notifyMcpHandshake: () => run.notifyMcpHandshake(),
+    markPaused: (askId) => run._markPaused(askId),
+    resumeWithAnswer: (answer) => run._resumeWithAnswer(answer),
+    onTerminal: (listener) => {
+      run.once('terminal', listener);
+    },
+  };
+}
 
 export interface ActiveRunEntry {
-  run: AgentRun;
+  run: ActiveRunHandle;
   projectId: ULID;
   dispatcherSessionId: string;
   ccSessionId: string;
@@ -32,7 +55,7 @@ export interface ActiveRunEntry {
 }
 
 export interface RegisterActiveRunInput {
-  run: AgentRun;
+  run: ActiveRunHandle;
   projectId: ULID;
   dispatcherSessionId: string;
   ccSessionId: string;
@@ -64,10 +87,7 @@ export class ActiveRunRegistry {
     // Auto-cleanup on terminal. The terminal event fires exactly once per
     // run lifetime; subsequent listeners are no-ops because the run won't
     // emit further.
-    const onTerminal = () => {
-      this.unregister(runId);
-    };
-    entry.run.once('terminal', onTerminal);
+    entry.run.onTerminal(() => this.unregister(runId));
     return entry;
   }
 

@@ -55,7 +55,7 @@ So the guard SHOULD fire but didn't for canary-4. Hypotheses to chase:
 ## Cleanup done + leftovers
 - Removed worktrees `wf-SWE9JE3M`, `wf-55X352M1` (+ branches). Cancelled canary cards `pc-pty-chat-79/92/93/94`. Removed my scratch files.
 - **LEFTOVER:** `data/worktrees/pc-pty-chat/wf-DMY8HNVS/` directory resisted deletion ("directory not empty") — branch/registration gone, but the loose dir remains. `rm -rf` it manually next session.
-- **dev marker pollution to revert:** canary test markers are committed on `dev` — `8ed52f7` (canary-1) and `8f1aec18` (canary-4) added dev-gated `/api/dev/canary*` routes + `CANARY-*` labels in `dev-controls/routes.ts` + `DevControls.tsx`. Harmless (dev-only) but should be reverted on a quiet tree: `git revert --no-edit 8f1aec18 8ed52f7` (didn't do it this session to avoid colliding with active parallel commits on dev).
+- **dev marker pollution:** canary test markers from `8ed52f7` / `8f1aec18` were removed in the post-Phase-5 Codex cleanup branch. No live app/server restart was used.
 
 ## Parallel-work awareness
 `dev` had heavy active parallel committing all session (crash diagnostics `7236e7eb`, supervisor port-wait `2a8b99e0`, chat-lag `86ff636b`, etc.) plus a `codex/phase-5-hardening` worktree. Before any runtime edits, check `git status` + recent log — don't collide with whoever's on the spawn/runtime files.
