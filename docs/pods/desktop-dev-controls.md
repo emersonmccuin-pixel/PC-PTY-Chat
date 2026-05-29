@@ -1,6 +1,6 @@
 # Desktop Dev Controls Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -19,7 +19,7 @@ Desktop shell:
 
 Dev controls:
 
-- `apps/server/src/features/dev-controls/routes.ts`: dev-only canary/status/restart routes.
+- `apps/server/src/features/dev-controls/routes.ts`: dev-only status/restart routes.
 - `apps/server/src/features/dev-controls/constants.ts`: sentinel restart exit code and dev-control gating.
 - `apps/web/src/features/dev-controls/client.ts` and `types.ts`: web client contracts for `/api/dev/status` and `/api/dev/restart`.
 - `apps/web/src/components/DevControls.tsx`: dev-only floating restart/reload widget.
@@ -45,7 +45,6 @@ Packaging:
 
 Dev-only HTTP:
 
-- `GET /api/dev/canary`
 - `GET /api/dev/status`
 - `POST /api/dev/restart`
 
@@ -117,17 +116,17 @@ Cross-pod calls that should stay explicit:
 
 ## Dead Code And Drift
 
-- `GET /api/dev/canary` and `CANARY-1` UI text are labeled pipeline-test markers and appear safe to remove after confirming no references.
-- `/api/dev/status` includes `marker: 'BE-RELOAD-TEST-1'`; web types and UI display the temporary marker.
-- `DevControls` uses visible text buttons and temporary diagnostic text; this is dev-only but visually noisy.
+- Resolved during cleanup: removed `GET /api/dev/canary` and the `CANARY-1` UI marker.
+- Resolved during cleanup: removed the temporary backend reload marker from `/api/dev/status`, web type, and widget.
 - `docs/dev-dogfood-setup.md` still references the default Codex checkout rather than this Phase 5 worktree, but the repo-level AGENTS rule supersedes it for active work.
-- No focused route test pins dev-control gating, active-agent 409 behavior, or sentinel restart scheduling.
+- Resolved during cleanup: added focused route tests for dev-control gating, active-agent 409 behavior, and sentinel restart scheduling.
 - No package smoke was run, by design, because packaging/relaunch can affect the dogfood workflow.
 
 ## Tests And Gaps
 
 Existing adjacent coverage:
 
+- `apps/server/test/dev-controls-routes.test.ts`: dev-control packaged-mode gating, status envelope, active-agent 409 guard, safe restart scheduling, and forced restart scheduling.
 - `apps/server` typecheck covers dev-control route and server boot typing.
 - `apps/web` typecheck covers `DevControls` and dev-control client typing.
 - `apps/desktop` typecheck covers Electron main/preload typing.
@@ -135,25 +134,27 @@ Existing adjacent coverage:
 
 Missing tests or trace evidence:
 
-- No focused `dev-controls` route test.
-- No test proves dev routes are disabled when `PC_ROOT` is set.
-- No test proves restart returns 409 when agents are active.
 - No browser smoke verified the dev widget.
 - No packaged desktop smoke or dogfood launch was attempted.
 
-## Cleanup Plan
+## Cleanup Completed
 
 Do not call `/api/dev/restart`, reload the frontend, restart any server/app, run packaging, or relaunch dogfood during this pod.
 
-Small cleanup candidates:
+Completed cleanup:
 
-- Remove the canary route/UI marker if no references depend on it.
-- Remove the temporary backend reload marker from `/api/dev/status`, web type, and widget.
-- Add focused route tests for dev-control gating and restart guard behavior if the active-agent registry can be controlled without side effects.
+- Removed the canary route and matching UI marker.
+- Removed the backend reload marker from `/api/dev/status`, `DevStatus`, and `DevControls`.
+- Added injected active-run count, restart scheduler, and process-exit hooks to make dev-control routes unit-testable without touching the live server.
+- Added focused route tests for packaged-mode gating, status, active-agent restart rejection, safe restart scheduling, and forced restart scheduling.
+
+Deferred:
+
 - Keep packaging and Electron behavior source-audited unless a failing trace appears.
 
-Verification commands to use before any cleanup patch:
+Verification commands used for this pod:
 
+- `pnpm --filter @pc/server exec tsx --test test/dev-controls-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `pnpm --filter @pc/desktop typecheck`
@@ -164,7 +165,7 @@ Verification commands to use before any cleanup patch:
 Kickoff status:
 
 - This pod audit file exists and maps ownership, workflows, dependencies, drift, tests, and cleanup candidates.
-- Runtime behavior has not been changed.
+- Runtime behavior has not been changed outside removing temporary dev-only diagnostics and adding test injection hooks.
 - No app, dev server, dogfood app, Vite server, channel server, packaging command, frontend reload, or restart endpoint has been touched.
 
 Commands run so far:
@@ -172,6 +173,7 @@ Commands run so far:
 - `git status --short --branch`
 - `rg --files` and `rg -n` for desktop, dev controls, restart, reload, dogfood, Electron, Vite, channel server, ports, and packaging surfaces.
 - `Get-Content` for dev-control routes/client/types/widget, Electron main/preload/build config, server index slices, supervisor, channel server, desktop package config, and runbook docs.
+- `pnpm --filter @pc/server exec tsx --test test/dev-controls-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `pnpm --filter @pc/desktop typecheck`
@@ -179,9 +181,13 @@ Commands run so far:
 
 Verification results:
 
-- PASS: server typecheck.
-- PASS: web typecheck.
-- PASS: desktop typecheck.
+- PASS: server typecheck, before cleanup.
+- PASS: web typecheck, before cleanup.
+- PASS: desktop typecheck, before cleanup.
+- PASS: dev-control route tests, 5 tests, after cleanup.
+- PASS: server typecheck, after cleanup.
+- PASS: web typecheck, after cleanup.
+- PASS: desktop typecheck, after cleanup.
 - PASS: `git diff --check`.
 
 Manual workflow checks run:

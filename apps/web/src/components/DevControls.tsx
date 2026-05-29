@@ -89,14 +89,6 @@ export function DevControls() {
   return (
     <div className="pointer-events-none fixed bottom-2 right-2 z-50">
       <div className="pointer-events-auto flex items-center gap-1.5 rounded border border-border bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm">
-        {/* TEMP reload-test markers — FE literal updates via HMR; BE value only
-            appears after a restart picks up the BE source. Remove after testing. */}
-        <span className="font-mono text-[10px] text-warning">
-          FE-RELOAD-TEST-1 · BE:{status?.marker ?? '—'}
-        </span>
-        {/* CANARY pipeline test — safe to revert */}
-        <span className="font-mono text-[10px] text-warning">CANARY-1</span>
-        <span className="select-none text-border">·</span>
         {status !== null && status.activeAgents > 0 && (
           <span className="text-warning">
             {status.activeAgents}&nbsp;{status.activeAgents === 1 ? 'agent' : 'agents'}
