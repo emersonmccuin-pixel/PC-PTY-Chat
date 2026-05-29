@@ -19,6 +19,14 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import type { Project } from '@/features/projects/client';
 import type { OrchestratorRuntimeSnapshot, SessionReplayItem, SessionTransitionKind, SessionTransitionResponse } from '@/features/runtime/client';
 import {
+  createHeartbeatPing,
+  heartbeatTimedOut,
+  nextBackoffMs,
+  RECONNECT_SCHEDULE_MS,
+  WS_HEARTBEAT_INTERVAL_MS,
+  type WsHeartbeatPing,
+} from './ws-heartbeat';
+import {
   chatSessionReducer,
   createChatSessionState,
   materializeChatSessionEvents,
@@ -525,7 +533,7 @@ export type WsOutbound =
   | { type: 'interrupt' }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'ask-reply'; toolUseId: string; answer: string }
-  | { type: 'client-ping'; nonce: string; sentAt: number };
+  | WsHeartbeatPing;
 
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
@@ -549,11 +557,6 @@ interface UseProjectWsResult {
   applySessionTransition: (transition: SessionTransitionResponse) => void;
 }
 
-/** Backoff schedule from legacy `apps/web/legacy/app.js:545` (Session F #4). */
-export const RECONNECT_SCHEDULE_MS = [2_000, 5_000, 15_000, 30_000] as const;
-export const WS_HEARTBEAT_INTERVAL_MS = 15_000;
-export const WS_HEARTBEAT_TIMEOUT_MS = 45_000;
-
 function eventTimestamp(env: WsEnvelope): string | null {
   if (env.type !== 'event') return null;
   const inner = (env.event as { ts?: unknown } | undefined) ?? {};
@@ -566,30 +569,6 @@ function sessionTransitionKind(env: WsEnvelope): SessionTransitionKind | null {
   return transition === 'new-session' || transition === 'resume-session'
     ? transition
     : null;
-}
-
-export function nextBackoffMs(prevDelay: number): number {
-  const idx = RECONNECT_SCHEDULE_MS.indexOf(prevDelay as (typeof RECONNECT_SCHEDULE_MS)[number]);
-  if (idx === -1 || idx === RECONNECT_SCHEDULE_MS.length - 1) return RECONNECT_SCHEDULE_MS[RECONNECT_SCHEDULE_MS.length - 1]!;
-  return RECONNECT_SCHEDULE_MS[idx + 1]!;
-}
-
-export function heartbeatTimedOut(
-  lastInboundAt: number,
-  now = Date.now(),
-  timeoutMs = WS_HEARTBEAT_TIMEOUT_MS,
-): boolean {
-  return now - lastInboundAt >= timeoutMs;
-}
-
-export function createHeartbeatPing(
-  now = Date.now(),
-): Extract<WsOutbound, { type: 'client-ping' }> {
-  return {
-    type: 'client-ping',
-    nonce: `${now}-${Math.random().toString(36).slice(2)}`,
-    sentAt: now,
-  };
 }
 
 function emptyWsDiagnostics(): WsDiagnostics {

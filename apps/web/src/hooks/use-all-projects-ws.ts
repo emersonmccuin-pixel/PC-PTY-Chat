@@ -25,8 +25,10 @@ import {
   nextBackoffMs,
   RECONNECT_SCHEDULE_MS,
   WS_HEARTBEAT_INTERVAL_MS,
-  type WsEnvelope,
-  type WsStatus,
+} from './ws-heartbeat';
+import type {
+  WsEnvelope,
+  WsStatus,
 } from './use-project-ws';
 
 const MAX_BUFFERED = 500;

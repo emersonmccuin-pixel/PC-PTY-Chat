@@ -41,6 +41,7 @@ Web modules:
 
 - `apps/web/src/hooks/use-project-ws.ts`: active-project WebSocket, heartbeat, reconnect, outbound messages, diagnostics.
 - `apps/web/src/hooks/use-all-projects-ws.ts`: sibling sockets for non-active project activity.
+- `apps/web/src/hooks/ws-heartbeat.ts`: shared heartbeat timeout, ping, and reconnect backoff helpers.
 - `apps/web/src/hooks/chat-session-reducer.ts`: replay ordering, high-water dedupe, active-session filtering.
 - `apps/web/src/features/runtime/client.ts` and `types.ts`: HTTP client and web-side runtime contracts.
 - `apps/web/src/components/Orchestrator.tsx`: runtime coordinator, session controls, input capability adapter.
@@ -90,6 +91,47 @@ MCP and workflow hooks:
 - The orchestrator process is spawned with the `orchestrator` pod, session-local MCP config, and PC session env.
 - Pending ask replies enter through the chat WebSocket `ask-reply` message.
 - Agent transcript and channel events share the same project WebSocket bus but belong primarily to the agent-runs/channel pods.
+
+## Trace Evidence
+
+Captured from the current implementation with focused tests, not by restarting or manually driving the live app.
+
+Connect/replay trace:
+
+1. `/ws?projectId=<id>` is accepted only when `projectId` resolves.
+2. Server subscribes the socket in `ProjectWebSocketHub`.
+3. Connect snapshot sends, in order: `session-changed`, optional live `state`, `runtime-state`, `session-replay`, `send-queue-snapshot`.
+4. Background PTY start happens after the snapshot, so reconnect can reconcile before process activity resumes.
+5. Replay high-water and queue state are rebuilt from disk/DB, not lifecycle memory.
+
+Heartbeat/reconnect trace:
+
+1. Client heartbeat sends `client-ping` every 15 seconds while the socket is open and inbound traffic is fresh.
+2. Server replies with `server-pong` carrying nonce, client sent timestamp, and server time.
+3. Client treats 45 seconds of inbound silence as stale, closes the socket, records timeout diagnostics, and schedules reconnect.
+4. Reconnect backoff advances `2s -> 5s -> 15s -> 30s` and caps there.
+5. Server protocol keepalive separately pings clients and terminates sockets that miss pong across sweeps.
+
+Prompt send trace:
+
+1. Web composer creates a `clientMessageId` and optimistic pending prompt.
+2. `send` with ready PTY writes to `PtySession.send()`, records `orchestrator_send_queue` as `delivered_to_pty`, sends `send-ack: received`, and broadcasts a queue snapshot.
+3. `send` while busy/spawning/backlogged inserts a queued row, sends `send-ack: queued`, and broadcasts a queue snapshot without writing to PTY.
+4. If no active session exists, send creates one, broadcasts `session-changed` plus `session-replay`, then queues/writes according to runtime state.
+5. A later `jsonl-user` event advances the delivered row to `observed_in_jsonl`; if the runtime is still ready, queued delivery continues.
+
+Terminal trace:
+
+1. Terminal mode loads `/terminal-transcript` for the active session.
+2. Live `raw` envelopes append by `terminalSeq`, with transcript/live overlap removal during attach.
+3. `terminal-input` validates a string payload, caps byte size, and writes to the live PTY.
+4. Invalid, oversized, and absent-PTY input are rejected server-side without queue mutation.
+
+Session switch trace:
+
+1. `sessions/new` cancels open sends for the replaced session and broadcasts its queue snapshot.
+2. A fresh session row is created, then `session-changed`, `session-replay`, and the new queue snapshot are broadcast.
+3. `sessions/:targetId/resume` reactivates the target, cancels replaced-session sends, broadcasts replay/queue surfaces, and starts the PTY in the background.
 
 ## User Workflows
 
@@ -207,15 +249,16 @@ Existing focused tests:
 - `apps/server/test/session-replay.test.ts`: normalized replay loading, high-water, legacy fallback, malformed lines.
 - `apps/server/test/terminal-mode.test.ts`: terminal input validation and transcript tail containment.
 - `apps/server/test/web-pending-prompts.test.ts`: optimistic pending prompt metadata and confirmation.
+- `apps/server/test/web-ws-heartbeat.test.ts`: reconnect schedule, heartbeat timeout threshold, client ping shape.
 - `apps/server/test/web-boundaries.test.ts`: chat feature and client boundary guards.
 - `apps/server/test/websocket-hub.test.ts`: broadcast fanout, detach behavior, closed-socket skip, global broadcast.
 - `apps/server/test/project-runtime-session-resume.test.ts`: legacy resume when provider JSONL is missing.
 
 Missing tests or trace evidence:
 
-- No real user prompt trace has been captured yet from composer through JSONL confirmation.
+- No live browser/user-driven prompt trace has been captured yet from composer through JSONL confirmation.
 - No browser-level test covers heartbeat timeout, focus/online stale reconnect, and replay restoration together.
-- No client-side unit test file was found for `use-project-ws` heartbeat/backoff behavior.
+- Browser-level reconnect behavior still lacks a UI smoke for focus/visibility/online recovery.
 - No UI smoke was run for terminal transcript attach plus live raw-event overlap removal.
 - No test was found that asserts `terminal-input-ack` failures are visible to the user.
 - No test was found for the intentional terminal writability policy during spawning.
@@ -228,7 +271,7 @@ Do not change runtime behavior until a trace identifies a specific failure.
 Small cleanup candidates after trace:
 
 - Move shared WebSocket envelope contracts out of `use-project-ws.ts` into a feature contract module.
-- Add web-side tests around exported heartbeat/backoff helpers before touching reconnect logic.
+- Done in this slice: extracted shared heartbeat/backoff helpers to `apps/web/src/hooks/ws-heartbeat.ts` and added focused tests.
 - Add a focused test for current terminal writability policy so the ready-vs-spawning decision is explicit.
 - Surface `terminal-input-ack` failures in the terminal/chat UI or remove the unused ack if product decides it is not useful.
 - Give agent transcript backfill/live merge stable cursor keys if the agent-runs audit confirms repeated identical events can collide.
@@ -262,6 +305,7 @@ Commands run so far:
 - `rg -n` for route registrations, WebSocket surfaces, MCP tools, DB tables, runtime-host tests, and terminal/input surfaces.
 - `Get-Content` for required kickoff docs and focused runtime-host, runtime, web, and agent transcript modules.
 - `pnpm --filter @pc/server exec tsx --test test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-ws-heartbeat.test.ts test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `git diff --check`
@@ -269,6 +313,7 @@ Commands run so far:
 Verification results:
 
 - Focused runtime/WebSocket server tests: 58 passed, 0 failed.
+- Focused runtime/WebSocket plus heartbeat tests: 61 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.

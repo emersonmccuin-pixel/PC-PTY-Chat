@@ -69,6 +69,7 @@ Top-level adapters and views:
 
 - `hooks/use-project-ws.ts` owns active project WebSocket connection, heartbeat, outbound messages, diagnostics, and reducer dispatch.
 - `hooks/use-all-projects-ws.ts` owns non-active project WebSocket subscriptions.
+- `hooks/ws-heartbeat.ts` owns shared reconnect backoff, heartbeat timeout, and client ping helpers.
 - `hooks/chat-session-reducer.ts` owns replay/dedupe/session ordering and materialized chat events.
 - `components/Orchestrator.tsx` coordinates runtime client, project WebSocket, chat surface, sessions, and status.
 - `components/TransientAgentConversation.tsx`, `AgentDesignerChat.tsx`, `WorkflowBuilderChat.tsx`, and `SetupWizardModal.tsx` adapt transient modal sessions into chat.
