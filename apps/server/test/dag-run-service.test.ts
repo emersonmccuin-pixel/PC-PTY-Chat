@@ -55,8 +55,8 @@ beforeEach(() => {
     getProject: () => project,
     getFieldSchemas: () => [],
     broadcast: (ev: unknown) => {
-      const e = ev as { type?: string; change?: string; workItem?: { title: string; body: string } };
-      if (e.type === 'work-items-changed' && e.change === 'created' && e.workItem) {
+      const e = ev as { type?: string; workItem?: { title: string; body: string } };
+      if (e.type === 'work-item-changed' && e.workItem) {
         createdBodies.push({ title: e.workItem.title, body: e.workItem.body });
       }
     },
@@ -307,8 +307,8 @@ test('move-work-item node moves run-root card to target stage and returns stage 
   assert.equal(run.dagState.nodes.mv!.state, 'completed');
   assert.equal(run.dagState.nodes.mv!.output, 'review');
 
-  // A work-items-changed broadcast was emitted (UI sync).
-  assert.ok(broadcastEvents.some((e) => (e as { type: string }).type === 'work-items-changed'));
+  // A work-item-changed broadcast was emitted (UI sync).
+  assert.ok(broadcastEvents.some((e) => (e as { type: string }).type === 'work-item-changed'));
 });
 
 test('move-work-item does NOT invoke the spawner (no stage-on-entry fire)', async () => {

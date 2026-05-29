@@ -145,8 +145,8 @@ test('work item CRUD routes preserve legacy, filtered, and versioned envelopes',
   assert.equal(created.title, 'First card');
   assert.equal(
     events.some((event) => {
-      const msg = event.msg as { type?: string; change?: string };
-      return msg.type === 'work-items-changed' && msg.change === 'created';
+      const msg = event.msg as { type?: string; workItem?: { id: string } };
+      return msg.type === 'work-item-changed' && msg.workItem?.id === created.id;
     }),
     true,
   );

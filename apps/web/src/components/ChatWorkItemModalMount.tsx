@@ -46,11 +46,11 @@ export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMou
     };
   }, [workItemId, project.id]);
 
-  // Live refresh on work-items-changed envelopes while modal is open.
+  // Live refresh on work-item-changed envelopes while modal is open.
   useEffect(() => {
     if (!workItemId || events.length === 0) return;
     const last = events[events.length - 1];
-    if (last?.type !== 'work-items-changed') return;
+    if (last?.type !== 'work-item-changed') return;
     workItemsApi.workItems(project.id)
       .then(setItems)
       .catch(() => {});

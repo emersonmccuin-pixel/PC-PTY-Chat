@@ -11,9 +11,10 @@
 // becomes a shim that delegates here (per the 2b spec — single place that does
 // stage + field validation).
 //
-// Broadcasts: every successful mutation fires a `work-items-changed` envelope
-// via the provided broadcast fn so the UI's KanbanBoard stays in sync without
-// a refetch.
+// Broadcasts: every successful mutation fires a `work-item-changed` (singular)
+// full-snapshot envelope via the provided broadcast fn. The version stamp is
+// the work item's existing `version` counter — the frontend discards stale
+// or duplicate WS deliveries where incoming version ≤ stored version.
 
 import type {
   AcceptanceCriteria,
@@ -41,6 +42,7 @@ import {
   softDeleteWorkItem as dbSoftDeleteWorkItem,
   WorkItemVersionConflictError,
 } from '@pc/db';
+import { announceWorkItemRow, type WorkItemBroadcast } from './work-item-writer.ts';
 
 /** Crockford base-32 ULID — 26 chars, no I/L/O/U. Case-insensitive.
  *  Used to discriminate a ULID reference from a callsign in the modal
@@ -70,11 +72,7 @@ export function resolveWorkItemRef(projectId: ULID, ref: string): WorkItem | nul
   return dbGetWorkItemByCallsign(projectId, trimmed);
 }
 
-export type WorkItemBroadcast = (event: {
-  type: 'work-items-changed';
-  change: 'created' | 'updated' | 'moved' | 'deleted' | 'restored';
-  workItem: WorkItem;
-}) => void;
+export type { WorkItemBroadcast };
 
 export interface WorkItemServiceOptions {
   projectId: ULID;
@@ -298,7 +296,7 @@ export class WorkItemService {
         : {}),
       ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
     });
-    this.opts.broadcast({ type: 'work-items-changed', change: 'created', workItem });
+    announceWorkItemRow(workItem, this.opts.projectId, this.opts.broadcast);
     return workItem;
   }
 
@@ -331,7 +329,7 @@ export class WorkItemService {
       ...(fields !== undefined ? { fields } : {}),
     });
     if (!patched) throw new Error(`unknown work item: ${id}`);
-    this.opts.broadcast({ type: 'work-items-changed', change: 'updated', workItem: patched });
+    announceWorkItemRow(patched, this.opts.projectId, this.opts.broadcast);
     return patched;
   }
 
@@ -380,21 +378,21 @@ export class WorkItemService {
         result = moved;
       }
     }
-    this.opts.broadcast({ type: 'work-items-changed', change: 'moved', workItem: result });
+    announceWorkItemRow(result, this.opts.projectId, this.opts.broadcast);
     return result;
   }
 
   softDelete(id: ULID): WorkItem {
     const deleted = dbSoftDeleteWorkItem(id);
     if (!deleted) throw new Error(`unknown work item: ${id}`);
-    this.opts.broadcast({ type: 'work-items-changed', change: 'deleted', workItem: deleted });
+    announceWorkItemRow(deleted, this.opts.projectId, this.opts.broadcast);
     return deleted;
   }
 
   restore(id: ULID): WorkItem {
     const restored = dbRestoreWorkItem(id);
     if (!restored) throw new Error(`unknown work item: ${id} (or not archived)`);
-    this.opts.broadcast({ type: 'work-items-changed', change: 'restored', workItem: restored });
+    announceWorkItemRow(restored, this.opts.projectId, this.opts.broadcast);
     return restored;
   }
 

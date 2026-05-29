@@ -1073,15 +1073,13 @@ function ActivityTab({
     }
     // Live broadcasts captured this session that reference this work item.
     for (const env of events) {
-      if (env.type === 'work-items-changed') {
+      if (env.type === 'work-item-changed') {
         const wi = (env as { workItem?: WorkItem }).workItem;
         if (wi?.id === workItem.id) {
-          const change = (env as { change?: string }).change ?? 'updated';
-          if (change === 'created') continue; // already covered by createdAt row
           out.push({
             ts: wi.updatedAt,
             actor: 'edit',
-            text: `${change} · v${wi.version}`,
+            text: `updated · v${wi.version}`,
           });
         }
       }

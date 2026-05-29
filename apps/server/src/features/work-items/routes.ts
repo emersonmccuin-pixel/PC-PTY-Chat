@@ -147,7 +147,8 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
         toStage: resolvedStage,
         notes: notes || null,
       });
-      deps.broadcastTo(id as ULID, { type: 'work-items-changed', change: 'moved', workItem });
+      // Announce is fired inside moveAndFireV2 (via workItemService or
+      // project-runtime's write-door); no additional broadcast here.
       return c.json({ ok: true, workItem });
     } catch (err) {
       const msg = (err as Error).message;
@@ -184,14 +185,14 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
         if (titleText !== undefined) patchInput.title = titleText;
         if (bodyText !== undefined) patchInput.body = bodyText;
         if (fields) patchInput.fields = fields;
+        // patch() announces internally — no separate broadcastTo call.
         const workItem = runtime.workItemService().patch(wiId as ULID, patchInput);
-        deps.broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });
         return c.json({ ok: true, workItem });
       }
       const workItem = dbUpdateWorkItemFields(wiId as ULID, fields!);
       if (!workItem) return c.json({ ok: false, error: `unknown work item: ${wiId}` }, 404);
-      void runtime;
-      deps.broadcastTo(id as ULID, { type: 'work-items-changed', change: 'updated', workItem });
+      // dbUpdateWorkItemFields bypasses the service; announce through the door.
+      deps.broadcastTo(id as ULID, { type: 'work-item-changed', projectId: id as ULID, workItem });
       return c.json({ ok: true, workItem });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 500);

@@ -400,14 +400,12 @@ export function makeExecutorDeps(
     if (!wi) {
       return { state: 'failed', error: `move-work-item: run root work item ${run.workItemId} not found` };
     }
-    moveWorkItemStage(run.workItemId, node.to_stage);
-    opts.broadcast({
-      type: 'work-items-changed',
-      projectId: opts.projectId,
-      change: 'moved',
-      workItemId: run.workItemId,
-      toStage: node.to_stage,
-    });
+    const moved = moveWorkItemStage(run.workItemId, node.to_stage);
+    if (moved) {
+      // Full-snapshot announce (write-door pattern): read back the updated row
+      // and broadcast so the frontend can patch in place by id + version.
+      opts.broadcast({ type: 'work-item-changed', projectId: opts.projectId, workItem: moved });
+    }
     return { state: 'completed', output: node.to_stage };
   };
 

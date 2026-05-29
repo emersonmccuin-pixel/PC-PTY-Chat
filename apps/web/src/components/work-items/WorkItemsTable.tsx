@@ -6,13 +6,14 @@
 // `is_pinned` column from 37.2 (high-collision; parked); Assignee + Tags
 // have no backing data yet.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import { workItemsApi, type WorkItem, type WorkItemType } from '@/features/work-items/client';
+import { type WorkItem, type WorkItemType } from '@/features/work-items/client';
 import { WORK_ITEM_STATUS_DOT_CLASS, WORK_ITEM_STATUS_LABEL } from '@/features/work-items/status';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useWorkItemsView } from '@/store/work-items-view';
+import { useProjectWorkItems } from '@/hooks/use-project-work-items';
 import { WorkItemDetailModal } from './WorkItemDetailModal';
 import { WorkItemsToolbar } from './WorkItemsToolbar';
 import { applyFiltersAndSort } from './filter-sort';
@@ -58,31 +59,13 @@ const COLUMNS: { key: string; label: string; sortBy?: SortBy; widthClass: string
 ];
 
 export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
-  const [items, setItems] = useState<WorkItem[]>([]);
+  const { workItems: items } = useProjectWorkItems(project, events);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
   const filters = useWorkItemsView((s) => s.filters);
   const sort = useWorkItemsView((s) => s.sort);
   const setSort = useWorkItemsView((s) => s.setSort);
-
-  const refetch = useCallback(() => {
-    workItemsApi.workItems(project.id)
-      .then(setItems)
-      .catch((e) => setError((e as Error).message));
-  }, [project.id]);
-
-  useEffect(() => {
-    setItems([]);
-    refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'work-items-changed') refetch();
-  }, [events, refetch]);
 
   const hiddenAgentCount = useMemo(
     () => items.filter((i) => i.isAgentTask).length,
@@ -219,9 +202,9 @@ export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
           events={events}
           onClose={() => setOpenItemId(null)}
           onSwitchItem={(id) => setOpenItemId(id)}
-          onItemCreated={(wi) =>
-            setItems((prev) => (prev.some((p) => p.id === wi.id) ? prev : [...prev, wi]))
-          }
+          onItemCreated={() => {
+            // useProjectWorkItems refetches on unknown-id WS broadcast.
+          }}
         />
       )}
 

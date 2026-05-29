@@ -335,7 +335,7 @@ export class ProjectRuntime {
       const out = moveWorkItemStage(args.id as ULID, args.toStage, targetStatus, args.notes ?? null);
       if (!out) throw new Error(`unknown work item: ${args.id}`);
       moved = out;
-      this.opts.broadcast({ type: 'work-items-changed', change: 'moved', workItem: moved });
+      this.opts.broadcast({ type: 'work-item-changed', projectId: this.project.id, workItem: moved });
     }
 
     if (fromStageId !== args.toStage) {

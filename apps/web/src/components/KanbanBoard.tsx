@@ -9,6 +9,7 @@
 //    + position, horizontal scroll affordance (fade + chevrons on overflow).
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { WorkItemChangedEnvelope } from '@/features/runtime/ws-types';
 import {
   DndContext,
   DragOverlay,
@@ -122,15 +123,57 @@ export function KanbanBoard({ project, events }: KanbanBoardProps) {
     refetch();
   }, [refetch]);
 
-  // Live-refresh on server-broadcast work-item changes. Server emits
-  // `work-items-changed` after create/patch/move/delete. Also pick up `event`
-  // envelopes that include workItemId (workflow lifecycle) as a cheap hint.
+  // UI Spine step 3 — version-aware patch-in-place for work-item-changed
+  // envelopes. Patches the known items map without a whole-list refetch;
+  // only triggers refetch for new (unknown-id) or deleted items.
+  const kanbanLastIdx = useRef(0);
+  const kanbanItemsRef = useRef<WorkItem[]>([]);
+  // Keep ref in sync with state so the effect below can read current ids.
+  kanbanItemsRef.current = items;
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'work-items-changed') refetch();
-  }, [events, refetch]);
+    if (events.length < kanbanLastIdx.current) kanbanLastIdx.current = 0;
+    const start = kanbanLastIdx.current;
+    kanbanLastIdx.current = events.length;
+    if (start >= events.length) return;
+
+    const patches: WorkItem[] = [];
+    const removes: string[] = [];
+
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (!env || env.type !== 'work-item-changed') continue;
+      const e = env as WorkItemChangedEnvelope;
+      if (!e.workItem || e.workItem.projectId !== project.id) continue;
+      const wi = e.workItem as unknown as WorkItem;
+      if (wi.deletedAt != null) removes.push(wi.id);
+      else patches.push(wi);
+    }
+
+    if (patches.length === 0 && removes.length === 0) return;
+
+    // Check for new ids before batching — use the ref so we read current state.
+    const knownIds = new Set(kanbanItemsRef.current.map((i) => i.id));
+    const hasNew = patches.some((wi) => !knownIds.has(wi.id));
+
+    setItems((prev) => {
+      let next = prev;
+      for (const wi of patches) {
+        const idx = next.findIndex((i) => i.id === wi.id);
+        if (idx === -1) {
+          next = [...next, wi];
+        } else if (wi.version > (next[idx]?.version ?? 0)) {
+          next = [...next.slice(0, idx), wi, ...next.slice(idx + 1)];
+        }
+      }
+      for (const id of removes) {
+        next = next.filter((i) => i.id !== id);
+      }
+      return next;
+    });
+
+    if (hasNew || removes.length > 0) refetch();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, project.id]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),

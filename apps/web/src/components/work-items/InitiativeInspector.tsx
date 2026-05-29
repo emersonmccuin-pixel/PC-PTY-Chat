@@ -293,7 +293,7 @@ function ChildrenTab({
   useEffect(() => {
     if (events.length === 0) return;
     const last = events[events.length - 1];
-    if (last?.type === 'work-items-changed') refetch();
+    if (last?.type === 'work-item-changed') refetch();
   }, [events, refetch]);
 
   const children = useMemo(
@@ -578,7 +578,7 @@ function formatRelative(ts: number): string {
 // Day-grouped reverse-chronological feed pulled from three sources:
 //   1. workItem.history          (server-persisted, survives refresh)
 //   2. attachments               (treated as "X attached Y")
-//   3. live WS work-items-changed events for this item (current session only)
+//   3. live WS work-item-changed events for this item (current session only)
 // Out-of-scope for v1: descendant events. The buildout proposes them but each
 // row would need a recursive fetch; defer until the Children tab pushes a
 // concrete need.
@@ -672,11 +672,10 @@ function ActivityTab({
       });
     }
     for (const env of events) {
-      if (env.type === 'work-items-changed') {
+      if (env.type === 'work-item-changed') {
         const wi = (env as { workItem?: WorkItem }).workItem;
         if (wi?.id === workItem.id) {
-          const change = (env as { change?: string }).change ?? 'updated';
-          if (change === 'created') continue;
+          const change = 'updated';
           out.push({
             ts: wi.updatedAt,
             actor: 'human',
