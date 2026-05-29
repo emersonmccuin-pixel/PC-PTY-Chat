@@ -281,16 +281,23 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
   // --- /api/agents/pods ---------------------------------------------------
 
   /** List live pods. Without `?projectId`: globals only. With
-   *  `?projectId=<ulid>`: union of globals + that project's project-scope rows
-   *  (the Agents-tab view). Each row carries `driftedFields: string[] | null`
+   *  `?projectId=<ulid>`: project-scope rows for the project + stock globals
+   *  (the Agents-tab view). Global user-created pods are excluded from the
+   *  project view — they belong only to the global/create-agent surface.
+   *  Each row carries `driftedFields: string[] | null`
    *  (Section 36+ — null for non-stock, [] for pristine stock, populated for
    *  customised stock) so the UI can render the "Customized" pill without a
    *  second round trip. */
   app.get('/api/agents/pods', (c) => {
     const qs = new URL(c.req.url).searchParams;
     const projectId = qs.get('projectId') as ULID | null;
+    // When a projectId is present: fetch project-scope + all globals then
+    // exclude global user-created pods (origin='user-created', scope='global').
+    // Stock globals (origin='stock') remain visible as the Built-in panel.
     const pods = projectId
-      ? listAgents({ projectId, includeGlobals: true })
+      ? listAgents({ projectId, includeGlobals: true }).filter(
+          (p) => p.scope === 'project' || p.origin === 'stock',
+        )
       : listAgents({ scope: 'global' });
     const detectDrift = deps.detectStockPodDrift;
     const annotated = pods.map((p) => ({

@@ -151,7 +151,7 @@ test('POST /api/agents/pods rejects scope="project" without projectId', async ()
   assert.equal(data.ok, false);
 });
 
-test('GET /api/agents/pods?projectId merges globals and that project\'s rows', async () => {
+test('GET /api/agents/pods?projectId shows project-scope rows only (no global user-created)', async () => {
   const { app } = freshApp();
   const projectId = '01HZZZZZZZZZZZZZZZZZZZZZBB';
   const otherProject = '01HZZZZZZZZZZZZZZZZZZZZZCC';
@@ -170,8 +170,11 @@ test('GET /api/agents/pods?projectId merges globals and that project\'s rows', a
   });
   const { data } = await fetchJson(app, 'GET', `/api/agents/pods?projectId=${projectId}`);
   const names = (data.pods as Array<{ name: string }>).map((p) => p.name);
-  assert.ok(names.includes('mix-global-1'));
+  // Global user-created pods are excluded from the project view (scope enforcement).
+  assert.ok(!names.includes('mix-global-1'));
+  // Project-scope row for this project must appear.
   assert.ok(names.includes('mix-project-1'));
+  // Other projects' pods must not appear.
   assert.ok(!names.includes('mix-other-1'));
 });
 

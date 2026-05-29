@@ -80,10 +80,15 @@ export function useProjectPods(
         continue;
       }
       if (e.pod) {
-        // Filter to rows visible to this project: globals + this project's
-        // project-scope rows. Other projects' rows arrive on the broadcast
-        // because broadcastAll() is app-wide; ignore them.
-        if (e.pod.scope === 'global' || e.pod.projectId === project.id) {
+        // Accept: project-scope pods for this project + stock globals
+        // (the Built-in panel). Reject: global user-created pods — project
+        // context only sees project-scoped agents per the scope-enforcement
+        // policy (Section 17d.x). Other projects' rows arrive on the broadcast
+        // because broadcastAll() is app-wide; ignore those too.
+        if (
+          (e.pod.scope === 'project' && e.pod.projectId === project.id) ||
+          (e.pod.scope === 'global' && e.pod.origin === 'stock')
+        ) {
           upserts.push(e.pod);
         }
       } else {

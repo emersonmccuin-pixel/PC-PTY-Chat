@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 
 import type { Hono } from 'hono';
 import {
+  getAgentByName,
   listWorkflowAudit,
   workflowsRepo,
   type WorkflowAuditInput,
@@ -267,6 +268,31 @@ function emitChanged(
   }
 }
 
+/** Verify that every `agent` node in `def` references a live project-scoped
+ *  pod in `projectId`. Returns one error string per offending node; empty
+ *  when all pods are present. Pure policy check — no DB side-effects. */
+function validateAgentNodesProjectScoped(
+  def: WorkflowV2.Workflow,
+  projectId: ULID,
+): string[] {
+  const nodes = Array.isArray((def as unknown as { nodes?: unknown }).nodes)
+    ? ((def as unknown as { nodes: Record<string, unknown>[] }).nodes)
+    : [];
+  const errors: string[] = [];
+  for (const node of nodes) {
+    if (node.kind !== 'agent') continue;
+    const agentName = typeof node.agent === 'string' ? node.agent : '';
+    if (!agentName) continue;
+    const row = getAgentByName({ name: agentName, scope: 'project', projectId });
+    if (!row) {
+      errors.push(
+        `agent node "${String(node.id ?? '?')}": pod "${agentName}" is not a project-scoped pod in this project — clone it into the project first`,
+      );
+    }
+  }
+  return errors;
+}
+
 /** Register every workflow route on `app`. Idempotent — call once per Hono
  *  instance. */
 export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): void {
@@ -385,6 +411,15 @@ export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): voi
       }
     }
 
+    // Pod-scope enforcement: for project workflows every agent node must
+    // reference a project-scoped pod. Reject publish if any pod is missing.
+    if (scope === 'project' && projectId && normalised.status === 'active' && normalised.parsedDefinition !== null) {
+      const podErrors = validateAgentNodesProjectScoped(normalised.parsedDefinition, projectId);
+      if (podErrors.length > 0) {
+        return c.json({ ok: false, error: `workflow has unresolvable pods: ${podErrors.join('; ')}` }, 400);
+      }
+    }
+
     // Per-scope slug + name uniqueness — return 409 instead of a raw UNIQUE
     // violation so callers can surface a clean message.
     const slugCollision = workflowsRepo.getWorkflowBySlug({
@@ -496,6 +531,14 @@ export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): voi
             normalised.parseError = crossResult.errors.join('; ');
             normalised.parsedDefinition = null;
           }
+        }
+      }
+
+      // Pod-scope enforcement on update: same rule as on create.
+      if (existing.scope === 'project' && existing.projectId && normalised.status === 'active' && normalised.parsedDefinition !== null) {
+        const podErrors = validateAgentNodesProjectScoped(normalised.parsedDefinition, existing.projectId);
+        if (podErrors.length > 0) {
+          return c.json({ ok: false, error: `workflow has unresolvable pods: ${podErrors.join('; ')}` }, 400);
         }
       }
 
@@ -767,6 +810,18 @@ export function registerWorkflowRoutes(app: Hono, deps: WorkflowRoutesDeps): voi
       body.trigger && typeof body.trigger === 'object'
         ? (body.trigger as WorkflowV2.WorkflowTrigger)
         : ({ kind: 'manual' } as WorkflowV2.WorkflowTrigger);
+
+    // Pod-scope enforcement at fire time (last-mile guard). Even if the
+    // workflow was published before enforcement was added, firing it with
+    // unresolvable pods would produce confusing runtime failures — surface a
+    // clear error here instead.
+    {
+      const def = row.parsedDefinition as WorkflowV2.Workflow;
+      const podErrors = validateAgentNodesProjectScoped(def, projectId);
+      if (podErrors.length > 0) {
+        return c.json({ ok: false, error: `workflow cannot be fired: ${podErrors.join('; ')}` }, 400);
+      }
+    }
 
     try {
       const def = row.parsedDefinition as WorkflowV2.Workflow;
