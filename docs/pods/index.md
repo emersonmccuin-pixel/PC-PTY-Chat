@@ -27,7 +27,7 @@ Base: `dev` at `44980f1`.
 | Agents/pods/catalog/MCP | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agents-pods-catalog-mcp.md` | Source audit and cleanup slice recorded. Browser smoke not run; no frontend behavior changed. |
 | Agent runs/transcripts | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Work items/stages/fields | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/work-items-stages-fields.md` | Source audit and cleanup slice recorded. Browser smoke not run; status helper/type drift only. |
-| Workflows/builder/visualizer | `not-started` | unassigned | none | pending | Workflow rows, v2 compatibility, builder chat, graph UI, review. |
+| Workflows/builder/visualizer | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/workflows-builder-visualizer.md` | Workflow rows, v2 compatibility, builder chat, graph UI, review. |
 | Files/project context/settings | `not-started` | unassigned | none | pending | File browser, preview, memory, commands, settings, onboarding. |
 | Desktop/dev controls | `not-started` | unassigned | none | pending | Electron shell, dev status, reload/restart controls, dogfood assumptions. |
 
