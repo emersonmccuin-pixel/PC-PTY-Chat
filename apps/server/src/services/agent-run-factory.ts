@@ -36,7 +36,6 @@ import { resolve } from 'node:path';
 import {
   computePodRevision,
   resolveAgentForDispatch,
-  getProjectById,
   getWorkItem,
   insertAgentRunRow,
   markAgentRunTerminal,
@@ -45,7 +44,6 @@ import {
   updateAgentRunStatus,
 } from '@pc/db';
 import type {
-  AgentFailedPayload,
   AgentInboxEventKind,
   AgentRunFailureCause,
   ExpectedOutput,
@@ -63,10 +61,7 @@ import {
 import type { AgentRunRecord } from '@pc/runtime';
 
 import {
-  buildAgentCompletedBody,
-  buildAgentFailedBody,
   buildAgentQueuedStartedBody,
-  type VerificationBlock,
 } from './agent-event-header.ts';
 import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import type { ChannelServer } from './channel-server.ts';
@@ -87,8 +82,11 @@ import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
 import {
   runVerificationOnTerminal,
   type VerificationDeps,
-  type VerificationOutcome,
 } from './agent-verification.ts';
+import {
+  applyAgentRunTerminalEffects,
+  describeAgentRunFailure,
+} from './agent-run-terminal-effects.ts';
 
 /** Process-wide cap-and-queue registry shared by every dispatch. Lives in
  *  the runtime layer; we hold one singleton in this module so every
@@ -598,16 +596,31 @@ async function startHostBackedRun(
 
   unsubscribe = hostClient.onEvent?.((event) => {
     if (!hostEventBelongsToRun(event, args.agentRunId)) return;
+    if (event.type === 'run-terminal') {
+      const applied = applyHostTerminalSnapshot(event.run, {
+        activeRunRegistry: activeReg,
+        broadcast: broadcastForFactory(args),
+        channelServer: args.deps.channelServer,
+        verifyOnTerminal: args.deps.verifyOnTerminal,
+        verificationDeps: args.deps.verificationDeps,
+        terminalCleanup: () => args.podPrep.cleanup(),
+        onTerminalError: (err) => {
+          console.error(
+            `[agent-run-factory] host terminal handler failed for run ${args.agentRunId}:`,
+            err,
+          );
+        },
+      });
+      handle?.applySnapshot(event.run);
+      if (applied > 0) unsubscribe?.();
+      return;
+    }
     applyAgentHostEvent(event, {
       activeRunRegistry: activeReg,
       broadcast: broadcastForFactory(args),
     });
-    if (handle && (event.type === 'run-state' || event.type === 'run-terminal')) {
+    if (handle && event.type === 'run-state') {
       handle.applySnapshot(event.run);
-    }
-    if (event.type === 'run-terminal') {
-      args.podPrep.cleanup();
-      unsubscribe?.();
     }
   });
 
@@ -668,6 +681,16 @@ async function startHostBackedRun(
     applyHostTerminalSnapshot(snapshot, {
       activeRunRegistry: activeReg,
       broadcast: broadcastForFactory(args),
+      channelServer: args.deps.channelServer,
+      verifyOnTerminal: args.deps.verifyOnTerminal,
+      verificationDeps: args.deps.verificationDeps,
+      terminalCleanup: () => args.podPrep.cleanup(),
+      onTerminalError: (err) => {
+        console.error(
+          `[agent-run-factory] host terminal handler failed for run ${args.agentRunId}:`,
+          err,
+        );
+      },
     });
   } else {
     updateAgentRunStatus({
@@ -812,7 +835,7 @@ function broadcastAgentRunChanged(
     status,
     result: extra.result ?? '',
     failureReason: extra.failureCause
-      ? describeFailure(extra.failureCause) ?? null
+      ? describeAgentRunFailure(extra.failureCause) ?? null
       : null,
     failureCause: extra.failureCause ?? null,
     endedAt: extra.endedAt ?? null,
@@ -926,7 +949,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
       status,
       result: extra.result ?? '',
       failureReason: extra.failureCause
-        ? describeFailure(extra.failureCause) ?? null
+        ? describeAgentRunFailure(extra.failureCause) ?? null
         : null,
       failureCause: extra.failureCause ?? null,
       endedAt: extra.endedAt ?? null,
@@ -1008,233 +1031,48 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
 
   // Terminal handling: persist row + run tier-1 verification (Section 26.5) +
   // emit channel envelope to dispatcher + emit Activity Panel envelope.
-  //
-  // Verification is async — `bash_exit_zero` predicates run real child
-  // processes with a 30s cap. The async work is fire-and-forget from the
-  // listener's perspective; we use `void handleTerminal(...)` so the
-  // EventEmitter callback stays sync and uncaught rejections are surfaced
-  // through `.catch`.
   run.once(
     'terminal',
     (info: { status: 'completed' | 'failed' | 'cancelled'; cause?: string; result?: string }) => {
-      void handleTerminal(info).catch((err) => {
-        // Tier-1 verification or the channel-event emit threw. Both are
-        // best-effort downstream of the terminal row write; log loudly so
-        // future logs surface the case but don't crash the process.
-        // eslint-disable-next-line no-console
-        console.error(
-          `[agent-run-factory] terminal handler failed for run ${args.agentRunId}:`,
-          err,
-        );
-      });
+      applyAgentRunTerminalEffects(
+        {
+          runId: args.agentRunId,
+          ccSessionId: args.ccSessionId,
+          podName: args.podName,
+          projectId: args.input.projectId,
+          dispatcherSessionId: args.input.dispatcherSessionId,
+          parentWorkItemId: args.input.parentWorkItemId ?? null,
+          worktreeDir: args.input.worktreeDir,
+          status: info.status,
+          result: info.result ?? '',
+          failureCause: info.cause ?? null,
+          completedAt: Date.now(),
+          startedAt,
+          workItemId: args.workItemId,
+          slug: args.input.slug,
+          cleanup: () => args.podPrep.cleanup(),
+        },
+        {
+          activeRunRegistry: activeReg,
+          channelServer: args.deps.channelServer,
+          broadcast: (_projectId, msg) => {
+            args.deps.broadcast?.(msg as { type: string; [key: string]: unknown });
+          },
+          verifyOnTerminal: args.deps.verifyOnTerminal,
+          verificationDeps: args.deps.verificationDeps,
+          onError: (err) => {
+            console.error(
+              `[agent-run-factory] terminal handler failed for run ${args.agentRunId}:`,
+              err,
+            );
+          },
+        },
+      );
     },
   );
 
-  async function handleTerminal(info: {
-    status: 'completed' | 'failed' | 'cancelled';
-    cause?: string;
-    result?: string;
-  }): Promise<void> {
-    const completedAt = Date.now();
-    const failureCause: AgentRunFailureCause | null =
-      info.status === 'completed' ? null : (info.cause as AgentRunFailureCause) ?? null;
-    markAgentRunTerminal({
-      id: args.agentRunId,
-      status: info.status,
-      result: info.status === 'completed' ? info.result ?? '' : null,
-      failureCause,
-      failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
-      completedAt,
-    });
-
-    // Pod-materialised session runtime files are disposable now that the
-    // agent has exited. Removing them before verification keeps the worktree
-    // free of run-scoped junk while the verification pass runs. The worktree
-    // itself + any files the agent wrote stay intact for `files_exist` /
-    // `bash_exit_zero` predicates.
-    args.podPrep.cleanup();
-
-    // Section 26.5 — run tier-1 verification when the dispatch was a
-    // contract dispatch. `runVerificationOnTerminal` returns null when no
-    // verification ran (non-contract, missing WI, cancelled) — the channel
-    // envelope then ships without a verification block.
-    const verifier = args.deps.verifyOnTerminal ?? runVerificationOnTerminal;
-    const project = getProjectById(args.input.projectId);
-    let outcome: VerificationOutcome | null = null;
-    if (args.workItemId && project) {
-      outcome = await verifier(
-        {
-          workItemId: args.workItemId,
-          terminalStatus: info.status,
-          failureReason: info.status === 'completed' ? null : describeFailure(failureCause),
-          projectFolderPath: project.folderPath,
-          worktreeDir: args.input.worktreeDir,
-          project,
-        },
-        args.deps.verificationDeps ?? {},
-      );
-    }
-    const verification: VerificationBlock | null = outcome
-      ? {
-          workItemId: outcome.workItemId,
-          status: outcome.verificationStatus,
-          tier: outcome.verificationTier,
-          notes: outcome.notes,
-        }
-      : null;
-
-    emitTerminalEnvelope({
-      channelServer: args.deps.channelServer,
-      projectId: args.input.projectId,
-      dispatcherSessionId: args.input.dispatcherSessionId,
-      slug: args.input.slug,
-      runId: args.agentRunId,
-      ccSessionId: args.ccSessionId,
-      podName: args.podName,
-      parentWorkItemId: args.input.parentWorkItemId ?? null,
-      terminalStatus: info.status,
-      result: info.result ?? '',
-      failureCause,
-      verification,
-    });
-    broadcastStateChanged(info.status, {
-      result: info.result,
-      failureCause,
-      endedAt: completedAt,
-    });
-  }
-
   run.start();
   return run;
-}
-
-// ─────────────────────────────── TERMINAL ENVELOPE ───────────────────────────
-
-interface EmitTerminalArgs {
-  channelServer: ChannelServer;
-  projectId: ULID;
-  dispatcherSessionId: string;
-  slug: string;
-  runId: ULID;
-  ccSessionId: string;
-  podName: string;
-  parentWorkItemId: ULID | null;
-  terminalStatus: 'completed' | 'failed' | 'cancelled';
-  result: string;
-  failureCause: AgentRunFailureCause | null;
-  /** Section 26.5 — contract-WI verification outcome (null when the dispatch
-   *  was not a contract dispatch). The builder appends `[workItemId: ...]`
-   *  / `[verification: ...]` / `[verificationTier: ...]` / optional
-   *  `[verificationNotes: ...]` tags on the channel envelope. */
-  verification: VerificationBlock | null;
-}
-
-function emitTerminalEnvelope(args: EmitTerminalArgs): void {
-  const kind: AgentInboxEventKind =
-    args.terminalStatus === 'completed' ? 'agent-completed' : 'agent-failed';
-  const body =
-    args.terminalStatus === 'completed'
-      ? buildAgentCompletedBody({
-          runId: args.runId,
-          sessionId: args.ccSessionId,
-          agentName: args.podName,
-          parentWorkItemId: args.parentWorkItemId,
-          result: args.result,
-          verification: args.verification,
-        })
-      : buildAgentFailedBody({
-          runId: args.runId,
-          sessionId: args.ccSessionId,
-          agentName: args.podName,
-          parentWorkItemId: args.parentWorkItemId,
-          reason: describeFailure(args.failureCause) ?? args.terminalStatus,
-          cause: agentFailureCauseToPayload(args.failureCause, args.terminalStatus),
-          verification: args.verification,
-        });
-  enqueueAndPush(args.channelServer, {
-    projectId: args.projectId,
-    pcSessionId: args.dispatcherSessionId,
-    kind,
-    slug: args.slug,
-    source: 'agent',
-    body,
-    sender: 'pc',
-  });
-}
-
-/** Map v2's `AgentRunFailureCause` to the channel-event payload's
- *  `cause` field. The orchestrator pod prompt parses these to pick a
- *  next-step suggestion (retry / drop / hand-write); preserve the v1 enum
- *  shape so the parser doesn't need to change. */
-function agentFailureCauseToPayload(
-  cause: AgentRunFailureCause | null,
-  terminalStatus: 'completed' | 'failed' | 'cancelled',
-): AgentFailedPayload['cause'] {
-  if (terminalStatus === 'cancelled') return 'cancelled';
-  switch (cause) {
-    case 'wall-clock-timeout':
-    case 'idle-timeout':
-    case 'ready-timeout':
-      return 'timeout';
-    case 'cancelled':
-    case 'cancel-while-queued':
-      return 'cancelled';
-    case 'spawn-stuck':
-    case 'spawn-error':
-    case 'send-failed':
-    case 'unexpected-exit':
-    case 'mcp-handshake-never':
-    case 'kill-during-spawn':
-    case 'server-restart':
-    case 'host-unavailable':
-    case 'host-lost':
-    case 'host-crashed':
-    case 'host-protocol-error':
-      return 'spawn-failed';
-    case null:
-    default:
-      return 'error';
-  }
-}
-
-function describeFailure(cause: AgentRunFailureCause | null): string | null {
-  if (!cause) return null;
-  switch (cause) {
-    case 'spawn-stuck':
-      return 'agent never transitioned out of spawning within the spawn-stuck cap';
-    case 'idle-timeout':
-      return 'agent produced no output for the idle window';
-    case 'wall-clock-timeout':
-      return 'agent exceeded the wall-clock cap';
-    case 'ready-timeout':
-      return 'agent never reached ready within the ready-timeout window';
-    case 'spawn-error':
-      return 'agent spawn failed before becoming ready';
-    case 'send-failed':
-      return 'failed to deliver the initial input to the agent';
-    case 'unexpected-exit':
-      return 'agent process exited unexpectedly';
-    case 'cancel-while-queued':
-      return 'cancelled before the queue admitted the run';
-    case 'cancelled':
-      return 'run cancelled';
-    case 'mcp-handshake-never':
-      return 'agent MCP handshake never completed';
-    case 'kill-during-spawn':
-      return 'agent was killed during spawn';
-    case 'server-restart':
-      return 'server restarted before this run completed';
-    case 'host-unavailable':
-      return 'agent host was unavailable before the run could start';
-    case 'host-lost':
-      return 'agent host no longer owns this non-terminal run';
-    case 'host-crashed':
-      return 'agent host crashed while owning this run';
-    case 'host-protocol-error':
-      return 'agent host returned an invalid protocol response';
-    default:
-      return cause;
-  }
 }
 
 // ─────────────────────────────── DEFAULT FACTORY ─────────────────────────────

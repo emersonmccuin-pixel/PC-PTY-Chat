@@ -1,0 +1,346 @@
+import {
+  AGENT_RUN_FAILURE_CAUSES,
+  type AgentFailedPayload,
+  type AgentInboxEventKind,
+  type AgentRunFailureCause,
+  type AgentRunRow,
+  type Project,
+  type ULID,
+} from '@pc/domain';
+import {
+  getAgentRunRow as defaultGetAgentRunRow,
+  getProjectById as defaultGetProjectById,
+  markAgentRunTerminal as defaultMarkAgentRunTerminal,
+  type MarkAgentRunTerminalInput,
+} from '@pc/db';
+
+import {
+  buildAgentCompletedBody,
+  buildAgentFailedBody,
+  type VerificationBlock,
+} from './agent-event-header.ts';
+import type { ActiveRunRegistry } from './agent-active-runs.ts';
+import type { ChannelServer } from './channel-server.ts';
+import { enqueueAndPush } from './agent-delivery.ts';
+import {
+  runVerificationOnTerminal,
+  type VerificationDeps,
+  type VerificationOutcome,
+} from './agent-verification.ts';
+
+type TerminalStatus = 'completed' | 'failed' | 'cancelled';
+
+export interface AgentRunTerminalEffectsInput {
+  runId: ULID;
+  ccSessionId: string;
+  podName: string;
+  projectId: ULID;
+  dispatcherSessionId: string;
+  parentWorkItemId: ULID | null;
+  worktreeDir: string;
+  status: TerminalStatus;
+  result?: string | null;
+  failureCause?: string | null;
+  failureReason?: string | null;
+  defaultFailureCause?: AgentRunFailureCause | null;
+  defaultFailureReason?: string | null;
+  completedAt?: number | null;
+  startedAt?: number | null;
+  workItemId?: ULID | null;
+  slug?: string | null;
+  cleanup?: () => void;
+}
+
+export interface AgentRunTerminalEffectsDeps {
+  activeRunRegistry?: ActiveRunRegistry;
+  channelServer?: ChannelServer;
+  broadcast?: (projectId: ULID, msg: unknown) => void;
+  getAgentRun?: (id: ULID) => AgentRunRow | null;
+  markTerminal?: (input: MarkAgentRunTerminalInput) => void;
+  verifyOnTerminal?: typeof runVerificationOnTerminal;
+  verificationDeps?: VerificationDeps;
+  now?: () => number;
+  onError?: (error: Error) => void;
+}
+
+export interface AgentRunTerminalEffectsResult {
+  applied: number;
+}
+
+export function applyAgentRunTerminalEffects(
+  input: AgentRunTerminalEffectsInput,
+  deps: AgentRunTerminalEffectsDeps = {},
+): AgentRunTerminalEffectsResult {
+  const row = (deps.getAgentRun ?? defaultGetAgentRunRow)(input.runId);
+  if (!row || isDbTerminal(row.status)) return { applied: 0 };
+
+  const completedAt = input.completedAt ?? (deps.now ?? Date.now)();
+  const failureCause = terminalFailureCause(input);
+  const failureReason =
+    input.status === 'completed'
+      ? null
+      : input.failureReason ??
+        describeAgentRunFailure(failureCause) ??
+        input.defaultFailureReason ??
+        input.failureCause ??
+        null;
+
+  (deps.markTerminal ?? defaultMarkAgentRunTerminal)({
+    id: input.runId,
+    status: input.status,
+    result: input.status === 'completed' ? input.result ?? '' : null,
+    failureCause,
+    failureReason,
+    completedAt,
+  });
+
+  deps.activeRunRegistry?.unregister(input.runId);
+
+  try {
+    input.cleanup?.();
+  } catch {
+    /* best-effort */
+  }
+
+  void finishTerminalEffects({
+    input,
+    row,
+    completedAt,
+    failureCause,
+    failureReason,
+    deps,
+  }).catch((err) => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    deps.onError?.(error);
+  });
+
+  return { applied: 1 };
+}
+
+async function finishTerminalEffects(args: {
+  input: AgentRunTerminalEffectsInput;
+  row: AgentRunRow;
+  completedAt: number;
+  failureCause: AgentRunFailureCause | null;
+  failureReason: string | null;
+  deps: AgentRunTerminalEffectsDeps;
+}): Promise<void> {
+  const { input, row, completedAt, failureCause, failureReason, deps } = args;
+  const project = safeGetProject(input.projectId);
+  const workItemId = input.workItemId !== undefined ? input.workItemId : row.parentWorkItemId;
+
+  const verifier = deps.verifyOnTerminal ?? runVerificationOnTerminal;
+  let outcome: VerificationOutcome | null = null;
+  if (workItemId && project) {
+    outcome = await verifier(
+      {
+        workItemId,
+        terminalStatus: input.status,
+        failureReason,
+        projectFolderPath: project.folderPath,
+        worktreeDir: input.worktreeDir,
+        project,
+      },
+      deps.verificationDeps ?? {},
+    );
+  }
+
+  const verification: VerificationBlock | null = outcome
+    ? {
+        workItemId: outcome.workItemId,
+        status: outcome.verificationStatus,
+        tier: outcome.verificationTier,
+        notes: outcome.notes,
+      }
+    : null;
+
+  const slug = input.slug ?? project?.slug ?? null;
+  if (deps.channelServer && slug) {
+    emitTerminalEnvelope({
+      channelServer: deps.channelServer,
+      projectId: input.projectId,
+      dispatcherSessionId: input.dispatcherSessionId,
+      slug,
+      runId: input.runId,
+      ccSessionId: input.ccSessionId,
+      podName: input.podName,
+      parentWorkItemId: row.parentWorkItemId,
+      terminalStatus: input.status,
+      result: input.result ?? '',
+      failureCause,
+      verification,
+    });
+  }
+
+  deps.broadcast?.(input.projectId, {
+    type: 'agent-run-changed',
+    record: {
+      runId: input.runId,
+      sessionId: input.ccSessionId,
+      agentName: input.podName,
+      model: 'opus',
+      projectId: input.projectId,
+      parentWorkItemId: row.parentWorkItemId,
+      dispatcherSessionId: input.dispatcherSessionId,
+      wait: false,
+      worktreeDir: input.worktreeDir,
+      startedAt: input.startedAt ?? row.queuedAt,
+      status: input.status,
+      result: input.status === 'completed' ? input.result ?? '' : '',
+      failureReason,
+      failureCause,
+      endedAt: completedAt,
+    },
+  });
+}
+
+interface EmitTerminalArgs {
+  channelServer: ChannelServer;
+  projectId: ULID;
+  dispatcherSessionId: string;
+  slug: string;
+  runId: ULID;
+  ccSessionId: string;
+  podName: string;
+  parentWorkItemId: ULID | null;
+  terminalStatus: TerminalStatus;
+  result: string;
+  failureCause: AgentRunFailureCause | null;
+  verification: VerificationBlock | null;
+}
+
+function emitTerminalEnvelope(args: EmitTerminalArgs): void {
+  const kind: AgentInboxEventKind =
+    args.terminalStatus === 'completed' ? 'agent-completed' : 'agent-failed';
+  const body =
+    args.terminalStatus === 'completed'
+      ? buildAgentCompletedBody({
+          runId: args.runId,
+          sessionId: args.ccSessionId,
+          agentName: args.podName,
+          parentWorkItemId: args.parentWorkItemId,
+          result: args.result,
+          verification: args.verification,
+        })
+      : buildAgentFailedBody({
+          runId: args.runId,
+          sessionId: args.ccSessionId,
+          agentName: args.podName,
+          parentWorkItemId: args.parentWorkItemId,
+          reason: describeAgentRunFailure(args.failureCause) ?? args.terminalStatus,
+          cause: agentFailureCauseToPayload(args.failureCause, args.terminalStatus),
+          verification: args.verification,
+        });
+  enqueueAndPush(args.channelServer, {
+    projectId: args.projectId,
+    pcSessionId: args.dispatcherSessionId,
+    kind,
+    slug: args.slug,
+    source: 'agent',
+    body,
+    sender: 'pc',
+  });
+}
+
+function terminalFailureCause(
+  input: AgentRunTerminalEffectsInput,
+): AgentRunFailureCause | null {
+  if (input.status === 'completed') return null;
+  return (
+    coerceFailureCause(input.failureCause) ??
+    input.defaultFailureCause ??
+    null
+  );
+}
+
+function agentFailureCauseToPayload(
+  cause: AgentRunFailureCause | null,
+  terminalStatus: TerminalStatus,
+): AgentFailedPayload['cause'] {
+  if (terminalStatus === 'cancelled') return 'cancelled';
+  switch (cause) {
+    case 'wall-clock-timeout':
+    case 'idle-timeout':
+    case 'ready-timeout':
+      return 'timeout';
+    case 'cancelled':
+    case 'cancel-while-queued':
+      return 'cancelled';
+    case 'spawn-stuck':
+    case 'spawn-error':
+    case 'send-failed':
+    case 'unexpected-exit':
+    case 'mcp-handshake-never':
+    case 'kill-during-spawn':
+    case 'server-restart':
+    case 'host-unavailable':
+    case 'host-lost':
+    case 'host-crashed':
+    case 'host-protocol-error':
+      return 'spawn-failed';
+    case null:
+    default:
+      return 'error';
+  }
+}
+
+export function describeAgentRunFailure(
+  cause: AgentRunFailureCause | null,
+): string | null {
+  if (!cause) return null;
+  switch (cause) {
+    case 'spawn-stuck':
+      return 'agent never transitioned out of spawning within the spawn-stuck cap';
+    case 'idle-timeout':
+      return 'agent produced no output for the idle window';
+    case 'wall-clock-timeout':
+      return 'agent exceeded the wall-clock cap';
+    case 'ready-timeout':
+      return 'agent never reached ready within the ready-timeout window';
+    case 'spawn-error':
+      return 'agent spawn failed before becoming ready';
+    case 'send-failed':
+      return 'failed to deliver the initial input to the agent';
+    case 'unexpected-exit':
+      return 'agent process exited unexpectedly';
+    case 'cancel-while-queued':
+      return 'cancelled before the queue admitted the run';
+    case 'cancelled':
+      return 'run cancelled';
+    case 'mcp-handshake-never':
+      return 'agent MCP handshake never completed';
+    case 'kill-during-spawn':
+      return 'agent was killed during spawn';
+    case 'server-restart':
+      return 'server restarted before this run completed';
+    case 'host-unavailable':
+      return 'agent host was unavailable before the run could start';
+    case 'host-lost':
+      return 'agent host no longer owns this non-terminal run';
+    case 'host-crashed':
+      return 'agent host crashed while owning this run';
+    case 'host-protocol-error':
+      return 'agent host returned an invalid protocol response';
+    default:
+      return cause;
+  }
+}
+
+function coerceFailureCause(value: string | null | undefined): AgentRunFailureCause | null {
+  if (!value) return null;
+  return (AGENT_RUN_FAILURE_CAUSES as readonly string[]).includes(value)
+    ? (value as AgentRunFailureCause)
+    : null;
+}
+
+function safeGetProject(projectId: ULID): Project | null {
+  try {
+    return defaultGetProjectById(projectId);
+  } catch {
+    return null;
+  }
+}
+
+function isDbTerminal(status: AgentRunRow['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}

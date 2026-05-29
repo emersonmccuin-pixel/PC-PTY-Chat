@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,7 @@ import type {
   AgentHostStartRunRequest,
 } from '@pc/runtime';
 import type { AgentHostReattachClient } from '../src/services/agent-host-reattach.ts';
+import type { RunVerificationInput } from '../src/services/agent-verification.ts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-server-host-dispatch-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -23,8 +24,10 @@ const {
   closeDb,
   createAgent,
   createProject,
+  createWorkItem,
   getAgentRunRow,
   insertAgentRunRow,
+  listPendingForSession,
   markAgentRunTerminal,
   newId,
   runMigrations,
@@ -72,6 +75,10 @@ class FakeHostClient extends EventEmitter implements AgentHostReattachClient {
   onEvent(listener: (event: AgentHostEvent) => void): () => void {
     this.on('event', listener);
     return () => this.off('event', listener);
+  }
+
+  emitHostEvent(event: AgentHostEvent): void {
+    this.emit('event', event);
   }
 }
 
@@ -207,6 +214,117 @@ test('dispatchContinueAgent sends resume-run with the parent run id and reused C
   assert.equal(continuation.continues, parent.id);
   assert.equal(continuation.status, 'running');
   assert.equal(activeRunRegistry.get(result.agentRunId)?.ccSessionId, parent.ccSessionId);
+});
+
+test('host terminal events reuse verification, inbox delivery, broadcast, and cleanup effects', async () => {
+  const contract = createWorkItem({
+    projectId: project.id as ULID,
+    stageId: 'backlog',
+    title: 'host terminal contract',
+    body: 'write the report',
+    isAgentTask: true,
+    expectedOutput: { kind: 'text', sections: ['summary'] },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  const host = new FakeHostClient();
+  const activeRunRegistry = new ActiveRunRegistry();
+  const broadcasts: unknown[] = [];
+  const verified: unknown[] = [];
+
+  const result = await dispatchFreshAgent(
+    {
+      projectId: project.id as ULID,
+      worktreeDir: project.folderPath,
+      agentName: 'researcher',
+      input: 'finish the contract',
+      dispatcherSessionId: 'dispatcher-terminal',
+      workItemId: contract.id,
+      invokeDepth: 1,
+      slug: project.slug,
+    },
+    {
+      channelServer: server,
+      hostClient: host,
+      activeRunRegistry,
+      scratchDirFor: (_projectId, runId) => join(tmpDir, 'scratch', runId),
+      verifyOnTerminal: (async (input: RunVerificationInput) => {
+        verified.push(input);
+        return {
+          workItemId: input.workItemId as ULID,
+          workItemStatus: 'complete',
+          verificationStatus: 'passed',
+          verificationTier: 'auto',
+          notes: 'verified by fake host test',
+          predicatesEvaluated: 0,
+        };
+      }) as never,
+      broadcast: (env) => broadcasts.push(env),
+      now: () => 1_700_000_002_000,
+    },
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  const command = host.commands[0]!;
+  assert.equal(command.type, 'start-run');
+  if (command.type !== 'start-run') return;
+  assert.equal(existsSync(command.request.mcpConfigPath ?? ''), true);
+
+  host.emitHostEvent({
+    seq: 1,
+    type: 'run-terminal',
+    run: {
+      ...snapshotFromRequest(command.request),
+      state: 'completed',
+      terminalAt: 1_700_000_002_500,
+      terminalResult: {
+        status: 'completed',
+        result: 'host produced a report',
+        failureCause: null,
+        failureReason: null,
+      },
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const row = getAgentRunRow(result.agentRunId) as AgentRunRow;
+  assert.equal(row.status, 'completed');
+  assert.equal(row.result, 'host produced a report');
+  assert.equal(activeRunRegistry.get(result.agentRunId), null);
+  assert.equal(existsSync(command.request.mcpConfigPath ?? ''), false);
+  assert.equal((verified[0] as { workItemId?: string }).workItemId, contract.id);
+
+  const pending = listPendingForSession('dispatcher-terminal');
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.kind, 'agent-completed');
+  assert.match(pending[0]?.body ?? '', /host produced a report/);
+  assert.match(pending[0]?.body ?? '', /verification: passed/);
+
+  const terminalBroadcast = broadcasts.at(-1) as {
+    type?: string;
+    record?: { status?: string; result?: string };
+  };
+  assert.equal(terminalBroadcast.type, 'agent-run-changed');
+  assert.equal(terminalBroadcast.record?.status, 'completed');
+  assert.equal(terminalBroadcast.record?.result, 'host produced a report');
+
+  host.emitHostEvent({
+    seq: 2,
+    type: 'run-terminal',
+    run: {
+      ...snapshotFromRequest(command.request),
+      state: 'completed',
+      terminalAt: 1_700_000_002_500,
+      terminalResult: {
+        status: 'completed',
+        result: 'host produced a report',
+        failureCause: null,
+        failureReason: null,
+      },
+    },
+  });
+  assert.equal(listPendingForSession('dispatcher-terminal').length, 1);
 });
 
 function snapshotFromRequest(request: AgentHostStartRunRequest): AgentHostRunSnapshot {

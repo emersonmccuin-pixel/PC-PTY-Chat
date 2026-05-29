@@ -26,10 +26,18 @@ import {
   type ActiveRunRegistry,
   type AgentHostCommandSender,
 } from './agent-active-runs.ts';
+import type { ChannelServer } from './channel-server.ts';
 import {
   reconcileAgentRunsOnBoot,
   type AgentRunBootReconcileResult,
 } from './agent-run-boot-reconcile.ts';
+import {
+  applyAgentRunTerminalEffects,
+} from './agent-run-terminal-effects.ts';
+import {
+  runVerificationOnTerminal,
+  type VerificationDeps,
+} from './agent-verification.ts';
 
 type NonTerminalAgentState = Extract<
   AgentHostRunSnapshot['state'],
@@ -53,6 +61,11 @@ export interface AgentHostReattachDeps {
   resolveJsonlPath?: (row: AgentRunRow) => string | null;
   jsonlExists?: (path: string) => boolean;
   broadcast?: (projectId: ULID, msg: unknown) => void;
+  channelServer?: ChannelServer;
+  verifyOnTerminal?: typeof runVerificationOnTerminal;
+  verificationDeps?: VerificationDeps;
+  terminalCleanup?: () => void;
+  onTerminalError?: (error: Error) => void;
   onHostCommandError?: (error: Error) => void;
 }
 
@@ -198,29 +211,38 @@ export function applyHostTerminalSnapshot(
 
   const terminal = snapshot.terminalResult;
   const status = terminal?.status ?? snapshot.state;
-  const failureCause =
-    status === 'completed'
-      ? null
-      : coerceFailureCause(terminal?.failureCause) ?? 'host-protocol-error';
-  const failureReason =
-    status === 'completed'
-      ? null
-      : terminal?.failureReason ?? terminal?.failureCause ?? 'agent host reported terminal run';
-
-  (deps.markTerminal ?? defaultMarkAgentRunTerminal)({
-    id: snapshot.runId,
-    status,
-    result: status === 'completed' ? terminal?.result ?? '' : null,
-    failureCause,
-    failureReason,
-    completedAt: snapshot.terminalAt ?? (deps.now ?? Date.now)(),
-  });
-  deps.activeRunRegistry?.unregister(snapshot.runId);
-  deps.broadcast?.(row.projectId, {
-    type: 'agent-run-changed',
-    record: agentRunRecordFor(row, snapshot),
-  });
-  return 1;
+  return applyAgentRunTerminalEffects(
+    {
+      runId: snapshot.runId,
+      ccSessionId: snapshot.ccSessionId,
+      podName: snapshot.podName,
+      projectId: snapshot.projectId,
+      dispatcherSessionId: snapshot.dispatcherSessionId,
+      parentWorkItemId: row.parentWorkItemId,
+      worktreeDir: snapshot.worktreeDir,
+      status,
+      result: terminal?.result ?? '',
+      failureCause: terminal?.failureCause ?? null,
+      failureReason: terminal?.failureReason ?? null,
+      defaultFailureCause: 'host-protocol-error',
+      defaultFailureReason: 'agent host reported terminal run',
+      completedAt: snapshot.terminalAt,
+      startedAt: row.queuedAt,
+      workItemId: row.parentWorkItemId,
+      cleanup: deps.terminalCleanup,
+    },
+    {
+      activeRunRegistry: deps.activeRunRegistry,
+      channelServer: deps.channelServer,
+      broadcast: deps.broadcast,
+      getAgentRun: deps.getAgentRun,
+      markTerminal: deps.markTerminal,
+      verifyOnTerminal: deps.verifyOnTerminal,
+      verificationDeps: deps.verificationDeps,
+      now: deps.now,
+      onError: deps.onTerminalError,
+    },
+  ).applied;
 }
 
 function backfillAgentRunJsonl(

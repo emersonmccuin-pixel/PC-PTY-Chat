@@ -333,6 +333,7 @@ channelServer.start();
   try {
     const result = await reattachAgentRunsDuringServerBoot({
       broadcast: broadcastTo,
+      channelServer,
     });
     if (result.mode === 'host') {
       const reattach = result.reattach;
