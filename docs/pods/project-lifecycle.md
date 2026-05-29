@@ -1,6 +1,6 @@
 # Project Lifecycle Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -35,6 +35,7 @@ Web modules:
 
 - `apps/web/src/features/projects/client.ts`: project HTTP client and compatibility type re-export.
 - `apps/web/src/features/projects/types.ts`: web project and create mode contracts.
+- `apps/web/src/features/projects/createMode.ts`: pure folder probe to create-project mode derivation.
 - `apps/web/src/App.tsx`: project list load, active project reconciliation, create modal wiring, project updates/deletes/reorder.
 - `apps/web/src/store/active-project.ts`: persisted active project slug.
 - `apps/web/src/components/CreateProjectModal.tsx`: folder probe, create mode derivation, project create submit.
@@ -141,6 +142,8 @@ Existing focused tests:
 - `apps/server/test/project-routes.test.ts`: create route validation/delegation, list/patch/detail/soft-delete, file cleanup, reveal delegation.
 - `apps/server/test/worktree-routes.test.ts`: worktree cached list/create/destroy route envelopes and service errors.
 - `apps/server/test/worktree-scratch.test.ts`: scratch dir ensure/wipe/sweep behavior.
+- `apps/server/test/web-project-create-mode.test.ts`: web create-project mode derivation from folder probe results.
+- `apps/server/test/web-boundaries.test.ts`: guards create-project mode derivation outside the modal component.
 - `apps/server/test/project-runtime-move-v2.test.ts`: project runtime stage move behavior.
 - `apps/server/test/project-runtime-session-resume.test.ts`: project runtime session resume behavior.
 - `packages/db/test/work-items.test.ts` and related DB tests indirectly cover project creation as a dependency.
@@ -149,7 +152,6 @@ Missing tests or trace evidence:
 
 - No focused test covers `ProjectCreate` default stages, slug uniqueness, scaffold write mode, or git commit staging behavior.
 - No focused test covers `ProjectScaffold.buildTokens`, README rendering, or workflow seed copy behavior.
-- No focused web helper test covers create mode derivation from folder probe results.
 - No browser smoke verifies create modal, rail reorder, reveal, archive, or PC-file deletion flows.
 - No route test covers project reorder validation and canonical order after partial/stale ids.
 
@@ -159,7 +161,9 @@ Do not change project filesystem or git behavior without a failing trace.
 
 Small cleanup candidates:
 
-- Extract create-project mode derivation from `CreateProjectModal.tsx` into a pure web helper with focused tests.
+- Done: extracted create-project mode derivation from `CreateProjectModal.tsx` into `apps/web/src/features/projects/createMode.ts`.
+- Done: added focused tests for unavailable folders, non-directory paths, already-scaffolded git repos, empty folders, in-place folders, and attach-to-git folders.
+- Done: added a boundary guard so create-project mode derivation stays outside the modal component.
 - Add focused `ProjectScaffold` tests for token rendering, README skip behavior, and workflow seed copy.
 - Add a project reorder route/repo test for stale ids and live-row ordering.
 - Decide later whether worktree registry contracts should be shared between route/service; defer unless active code starts using the worktree route from web.
@@ -184,16 +188,22 @@ Commands run so far:
 - `rg -n` for project lifecycle, project CRUD, worktree, scaffold, reveal, and create-project surfaces.
 - `Get-Content` for project routes, worktree routes, project create/scaffold/registry/worktree services, web project client/types, App, CreateProjectModal, ProjectRail, ProjectSettingsPanel, ProjectDangerModals, and existing tests.
 - `pnpm --filter @pc/server exec tsx --test test/project-routes.test.ts test/worktree-routes.test.ts test/worktree-scratch.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-project-create-mode.test.ts test/web-boundaries.test.ts test/project-routes.test.ts test/worktree-routes.test.ts test/worktree-scratch.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
 - Focused project lifecycle tests: 15 passed, 0 failed.
+- Focused project lifecycle cleanup tests: 24 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:
 
-- None.
+- None. In-app Browser backend was unavailable earlier in this session: `iab`.
 
 Open risks:
 

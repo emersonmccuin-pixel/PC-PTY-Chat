@@ -169,3 +169,31 @@ test('terminal transcript helpers live outside the xterm component', async () =>
     'terminal transcript parsing and overlap helpers should stay in @/features/chat/terminalTranscript',
   );
 });
+
+test('create-project mode derivation lives outside the modal component', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/projects/createMode.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'create-project mode derivation should live under features/projects',
+  );
+
+  const helperPattern = /\bfunction\s+derivedMode\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'create-project mode derivation should stay in @/features/projects/createMode',
+  );
+});
