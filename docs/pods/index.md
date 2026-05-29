@@ -28,7 +28,7 @@ Base: `dev` at `44980f1`.
 | Agent runs/transcripts | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Work items/stages/fields | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/work-items-stages-fields.md` | Source audit and cleanup slice recorded. Browser smoke not run; status helper/type drift only. |
 | Workflows/builder/visualizer | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/workflows-builder-visualizer.md` | Source audit and cleanup slice recorded. Browser smoke not run; type-only fire response contract drift. |
-| Files/project context/settings | `not-started` | unassigned | none | pending | File browser, preview, memory, commands, settings, onboarding. |
+| Files/project context/settings | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/files-project-context-settings.md` | File browser, preview, memory, commands, settings, onboarding. |
 | Desktop/dev controls | `not-started` | unassigned | none | pending | Electron shell, dev status, reload/restart controls, dogfood assumptions. |
 
 ## Parallel Safety
