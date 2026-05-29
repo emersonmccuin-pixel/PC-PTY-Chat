@@ -21,6 +21,10 @@ export interface Stage {
   /** Section 27 — intake stage. At most one per project. `pc_log_bug` +
    *  `create-work-item` step land new cards here when no explicit stage is supplied. */
   isNew?: boolean;
+  /** UI Spine step 3 — monotonic write counter stamped from the project's
+   *  stagesRev. Updated atomically with the stages JSON array; the frontend
+   *  uses it to discard stale or duplicate WS deliveries. */
+  rev?: number;
 }
 
 /** Section 27 — the post-move status for a card that just landed in this stage.

@@ -7,6 +7,9 @@ export interface Stage {
   isDone?: boolean;
   isCancelled?: boolean;
   isNew?: boolean;
+  /** UI Spine step 3 — stamped from project.stagesRev on every stages write.
+   *  Frontend store-slice uses this to discard stale WS deliveries. */
+  rev?: number;
 }
 
 export interface ProjectSettings {

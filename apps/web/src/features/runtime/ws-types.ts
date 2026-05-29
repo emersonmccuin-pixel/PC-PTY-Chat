@@ -134,6 +134,23 @@ export interface ApprovalRequiredEvent extends ChatEventBase {
   on_reject_prompt?: string;
 }
 
+/** UI Spine step 3 — versioned full-snapshot delta for the project's stages set.
+ *  Every stage in the array carries `rev` (stamped from the project's stagesRev
+ *  counter). The frontend store-slice discards the batch if the incoming
+ *  stage rev ≤ the stored rev for any stage in the map (all stages in a batch
+ *  share the same rev, so one check suffices). */
+export interface StagesChangedEnvelope extends WsEnvelope {
+  type: 'stages-changed';
+  projectId: string;
+  stages: Array<{
+    id: string;
+    name: string;
+    order: number;
+    rev?: number;
+    [k: string]: unknown;
+  }>;
+}
+
 /** UI Spine step 3 — versioned full-snapshot delta for a single work item.
  *  Replaces the dumb `work-items-changed` list-refetch signal.
  *  The `workItem` object carries `version`; the frontend discards any incoming

@@ -61,6 +61,10 @@ export const projects = sqliteTable(
      *  bump the column in the same transaction (SQLite serializes writes
      *  → race-free). Archived numbers don't come back. */
     callsignSeq: integer('callsign_seq').notNull().default(0),
+    /** UI Spine step 3 — monotonic counter for the stages set. Incremented
+     *  every time the stages JSON is replaced; the new value is stamped into
+     *  each Stage.rev so the frontend can discard stale WS deltas. */
+    stagesRev: integer('stages_rev').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),

@@ -52,6 +52,7 @@ function makeAgent(patch: Partial<PodAgentRow> = {}): PodAgentRow {
     origin: 'stock',
     dispatchGuidance: null,
     expectedOutput: null,
+    rev: 0,
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     deletedAt: null,

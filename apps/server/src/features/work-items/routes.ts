@@ -695,11 +695,14 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
       }
     }
 
-    updateProjectStages(id, incoming);
+    // updateProjectStages now returns the rev-stamped stages.
+    const stamped = updateProjectStages(id, incoming);
     const updated = getProjectById(id);
     if (!updated) return c.json({ ok: false, error: 'project disappeared after stage update' }, 500);
     deps.refreshProject(updated);
-    deps.broadcastTo(id, { type: 'stages-changed', stages: updated.stages });
+    // Carry the stamped stages (with rev) in the envelope so the frontend
+    // version-aware store-slice can discard stale/duplicate WS deliveries.
+    deps.broadcastTo(id, { type: 'stages-changed', stages: stamped });
     return c.json({ ok: true, project: updated });
   });
 
