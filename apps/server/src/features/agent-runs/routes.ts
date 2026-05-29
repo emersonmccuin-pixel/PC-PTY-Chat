@@ -28,6 +28,7 @@ import { getActiveRunRegistry as defaultGetActiveRunRegistry } from '../../servi
 import { recordAgentInvoke as defaultRecordAgentInvoke } from '../../services/agent-audit.ts';
 import { checkInvokeDepth as defaultCheckInvokeDepth } from '../../services/invoke-depth.ts';
 import type { ChannelServer } from '../../services/channel-server.ts';
+import type { AgentHostReattachClient } from '../../services/agent-host-reattach.ts';
 
 interface AgentRunCancelEntry {
   projectId: ULID;
@@ -41,6 +42,7 @@ export interface AgentRunActiveRegistry {
 export interface AgentRunRouteDeps {
   channelServer: ChannelServer;
   broadcastTo(projectId: ULID, msg: unknown): void;
+  hostClient?: AgentHostReattachClient | null;
   getActiveRunRegistry?: () => AgentRunActiveRegistry;
   dispatchFreshAgent?: typeof defaultDispatchFreshAgent;
   dispatchContinueAgent?: typeof defaultDispatchContinueAgent;
@@ -235,6 +237,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       {
         channelServer: deps.channelServer,
         broadcast: (env) => deps.broadcastTo(projectId, env),
+        ...(deps.hostClient ? { hostClient: deps.hostClient } : {}),
       },
     );
 
@@ -334,6 +337,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       {
         channelServer: deps.channelServer,
         broadcast: (env) => deps.broadcastTo(projectId, env),
+        ...(deps.hostClient ? { hostClient: deps.hostClient } : {}),
       },
     );
 

@@ -184,11 +184,14 @@ test('approve: unknown id → throws wi-not-found', () => {
 function mkDispatchStub(): {
   fn: (input: DispatchContinueAgentInput, deps: unknown) => Promise<DispatchAgentResult>;
   calls: DispatchContinueAgentInput[];
+  deps: unknown[];
   result: DispatchAgentResult;
 } {
   const calls: DispatchContinueAgentInput[] = [];
+  const deps: unknown[] = [];
   const state = {
     calls,
+    deps,
     result: {
       ok: true,
       agentRunId: 'run-cont',
@@ -199,12 +202,16 @@ function mkDispatchStub(): {
     } as DispatchAgentResult,
   };
   return {
-    fn: async (input) => {
+    fn: async (input, dispatchDeps) => {
       state.calls.push(input);
+      state.deps.push(dispatchDeps);
       return state.result;
     },
     get calls() {
       return state.calls;
+    },
+    get deps() {
+      return state.deps;
     },
     get result() {
       return state.result;
@@ -222,6 +229,7 @@ test('reject: tier-2 awaiting-verification → in-progress + failed, feedback pe
     withAssignedRunId: 'run-producer' as ULID,
   });
   const dispatch = mkDispatchStub();
+  const hostClient = { listRuns: () => [] };
   const result = await rejectAgentWorkItem(
     {
       workItemId: wi.id,
@@ -229,7 +237,7 @@ test('reject: tier-2 awaiting-verification → in-progress + failed, feedback pe
       dispatcherSessionId: 'dispatcher-1',
       project: p,
     },
-    { channelServer: noopChannel, dispatch: dispatch.fn },
+    { channelServer: noopChannel, dispatch: dispatch.fn, hostClient: hostClient as never },
   );
   assert.equal(result.workItem.status, 'in-progress');
   assert.equal(result.workItem.verificationStatus, 'failed');
@@ -246,6 +254,7 @@ test('reject: tier-2 awaiting-verification → in-progress + failed, feedback pe
   assert.equal(passed.workItemId, wi.id);
   assert.match(passed.input, /the summary section is missing/);
   assert.match(passed.input, /Reviewer rejected/);
+  assert.equal((dispatch.deps[0] as { hostClient?: unknown }).hostClient, hostClient);
 });
 
 test('reject: long feedback truncates in history note', async () => {

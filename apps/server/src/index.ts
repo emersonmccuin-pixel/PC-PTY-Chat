@@ -73,6 +73,7 @@ import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
+import type { AgentHostReattachClient } from './services/agent-host-reattach.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up. In a packaged
@@ -326,6 +327,8 @@ channelServer.start();
   }
 }
 
+let agentHostClientForDispatch: AgentHostReattachClient | null = null;
+
 // Boot-time agent-run reconciliation. Phase C can reattach through an
 // already-connected host client; until Phase D supplies that client, this
 // preserves the legacy idempotent orphan sweep.
@@ -336,6 +339,7 @@ channelServer.start();
       channelServer,
     });
     if (result.mode === 'host') {
+      agentHostClientForDispatch = result.hostClient;
       const reattach = result.reattach;
       const changed =
         reattach.reconcile.reconciled +
@@ -627,6 +631,7 @@ registerWorkItemRoutes(app, {
   broadcastTo,
   refreshProject: (project) => projectRegistry.refresh(project),
   channelServer,
+  hostClient: agentHostClientForDispatch,
 });
 
 registerWorkflowCompatRoutes(app, { resolveProject, broadcastTo });
@@ -640,6 +645,7 @@ registerWorktreeRoutes(app, { resolveProject });
 registerAgentRunRoutes(app, {
   channelServer,
   broadcastTo,
+  hostClient: agentHostClientForDispatch,
 });
 
 registerStatuslineRoutes(app, { broadcastTo });

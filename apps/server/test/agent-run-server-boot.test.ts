@@ -122,6 +122,7 @@ test('server boot reattaches active handles through a provided fake host client'
   });
 
   assert.equal(result.mode, 'host');
+  assert.equal(result.hostClient, host);
   assert.equal(result.reattach.registered, 1);
   assert.equal(result.reattach.reconcile.mode, 'host');
   assert.equal(result.reattach.reconcile.kept, 1);

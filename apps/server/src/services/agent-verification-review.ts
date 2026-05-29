@@ -30,6 +30,7 @@ import {
   dispatchContinueAgent,
   type DispatchAgentResult,
 } from './agent-run-factory.ts';
+import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 
 /** Error class for v1 422 surfaces (precondition / not-found that the route
  *  maps to a clean HTTP status). Carrying the cause through lets the route
@@ -111,6 +112,7 @@ export interface RejectAgentWorkItemResult {
 
 export interface RejectAgentWorkItemDeps {
   channelServer: ChannelServer;
+  hostClient?: AgentHostReattachClient | null;
   broadcast?: (env: { type: string; [k: string]: unknown }) => void;
   /** Test seam — production uses `dispatchContinueAgent` from the agent-run
    *  factory. Injecting lets unit tests stub the continuation result without
@@ -169,6 +171,7 @@ export async function rejectAgentWorkItem(
     {
       channelServer: deps.channelServer,
       ...(deps.broadcast ? { broadcast: deps.broadcast } : {}),
+      ...(deps.hostClient ? { hostClient: deps.hostClient } : {}),
     },
   );
 

@@ -18,6 +18,7 @@ export type AgentRunServerBootResult =
     }
   | {
       mode: 'host';
+      hostClient: AgentHostReattachClient;
       reconcile: AgentRunBootReconcileResult;
       reattach: AgentHostReattachResult;
     };
@@ -48,6 +49,7 @@ export async function reattachAgentRunsDuringServerBoot(
     });
     return {
       mode: 'host',
+      hostClient,
       reconcile: reattach.reconcile,
       reattach,
     };
