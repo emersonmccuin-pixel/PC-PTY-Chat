@@ -138,8 +138,12 @@ Duplicate adapters or protocol translations:
 
 ## Dead Code And Drift
 
-- `model: 'opus'` is hard-coded in the active run list shim.
-- The older `/api/subagent-transcript` bridge still exists for chat bubble transcript paths and is separate from agent-run transcript backfill.
+- No safe deletes were proven during this pass.
+
+Retained compatibility and fallback paths:
+
+- `model: 'opus'` remains a display-only fallback for Activity Panel run cards because `agent_runs` does not persist the model used at dispatch. Persisting a dispatch-time model needs a DB/domain contract decision.
+- `/api/subagent-transcript` remains owned by `chat-bridges` for older chat bubble transcript paths. Agent-run transcript backfill stays on `/api/projects/:projectId/agent-runs/:runId/events`.
 
 ## Tests And Gaps
 
@@ -148,6 +152,7 @@ Existing focused tests:
 - `apps/server/test/agent-run-routes.test.ts`: active list, cancel, event backfill, missing/empty transcript status, invoke, continue, list-by-dispatcher, pending ask answer/cancel status mapping.
 - `apps/server/test/web-agent-transcript.test.ts`: transcript backfill/live merge preserves repeated identical events, dedupes stable row ids, and maps empty/missing transcript copy.
 - `apps/server/test/web-boundaries.test.ts`: includes an agent-run transcript boundary guard so `agent-jsonl-event` envelope contracts stay in the feature module instead of modal components.
+- `apps/server/test/chat-bridges-routes.test.ts`: legacy `/api/subagent-transcript` path containment and JSONL parsing compatibility.
 - `apps/server/test/agent-invoke-route.test.ts`: dispatch factory route integration.
 - `apps/server/test/agent-pause-resume.test.ts`: pending ask pause/resume state transitions.
 - `apps/server/test/agent-verification-review.test.ts`: review/verification continuation surfaces.
@@ -168,12 +173,15 @@ Small cleanup candidates:
 - Done in this slice: extracted transcript merge/dedupe into `apps/web/src/features/agent-runs/transcript.ts` with stable keys and repeated-identical-event coverage.
 - Done in this slice: added explicit `ready | empty | missing` transcript backfill status and modal empty-state copy coverage.
 - Done in this slice: added a boundary guard for agent-run WebSocket transcript contracts.
-- Decide whether the legacy `/api/subagent-transcript` bridge remains under chat-bridges or should link to this pod as a retained compatibility path.
+- Done in this slice: classified the Activity Panel model fallback and legacy `/api/subagent-transcript` bridge as retained compatibility/fallback paths.
+
+No additional source-level cleanup is planned in this pod without a browser trace or a DB/product decision.
 
 Verification commands to use before any cleanup patch:
 
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/chat-bridges-routes.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
@@ -194,6 +202,7 @@ Commands run so far:
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/chat-bridges-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `git diff --check`
@@ -203,6 +212,7 @@ Verification results:
 - Focused transcript merge/status tests: 3 passed, 0 failed.
 - Agent-run route plus transcript merge/status tests: 9 passed, 0 failed.
 - Web boundary tests: 5 passed, 0 failed.
+- Chat bridge compatibility tests: 4 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.
@@ -214,4 +224,5 @@ Manual workflow checks run:
 Open risks:
 
 - Transcript modal behavior remains source-audited only.
-- Backfill/live merge needs stable identity coverage before cleanup.
+- Browser/UI-level active, historical, failed, empty, and missing transcript modal states are not smoke-tested because the in-app Browser backend was unavailable.
+- Persisting dispatch-time agent model remains a product/DB decision.
