@@ -20,12 +20,12 @@ Base: `dev` at `44980f1`.
 
 | Pod | Status | Owner | Worktree/branch | Audit file | Notes |
 |---|---|---|---|---|---|
-| Chat/runtime/WebSocket | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/chat-runtime-websocket.md` | First Phase 5 pod. Highest product risk and most cross-layer behavior. |
+| Chat/runtime/WebSocket | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/chat-runtime-websocket.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Project lifecycle | `not-started` | unassigned | none | pending | Project create/list/update/delete, worktrees, reveal, scaffold cleanup. |
 | Terminal/PTY | `not-started` | unassigned | none | pending | Raw terminal mode, resize, writability, PTY lifecycle. |
 | Transient sessions | `not-started` | unassigned | none | pending | Agent designer, workflow builder, setup wizard shared adapter. |
 | Agents/pods/catalog/MCP | `not-started` | unassigned | none | pending | Pod records, stock pods, MCP tools, catalog, allowlists. |
-| Agent runs/transcripts | `not-started` | unassigned | none | pending | Dispatch, active registry, pending asks, transcript modal, JSONL backfill. |
+| Agent runs/transcripts | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Active audit after chat/runtime handoff. Dispatch, active registry, pending asks, transcript modal, JSONL backfill. |
 | Work items/stages/fields | `not-started` | unassigned | none | pending | Work item CRUD, Kanban, initiatives, stages, field schemas, attachments. |
 | Workflows/builder/visualizer | `not-started` | unassigned | none | pending | Workflow rows, v2 compatibility, builder chat, graph UI, review. |
 | Files/project context/settings | `not-started` | unassigned | none | pending | File browser, preview, memory, commands, settings, onboarding. |
