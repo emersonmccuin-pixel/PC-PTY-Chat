@@ -36,6 +36,15 @@ Behavior now covered:
 - Host-backed active handles route cancel, pause, answer, and MCP handshake to host commands.
 - Reattach coordinator can register host-backed handles, backfill JSONL, broadcast host JSONL events, and apply host terminal events once.
 
+Continuation update:
+
+- Added the API-side JSON-lines host client seam and server boot coordinator.
+- Wired server boot to use host reattach when a host client is available, preserving legacy reconcile when not.
+- Routed fresh/continue agent dispatch through host `start-run` / `resume-run` when the API has a host client.
+- Reused API-owned terminal side effects for host terminal events: DB terminal persistence, Activity Panel broadcast, inbox/channel delivery, contract verification, and cleanup.
+- Threaded the boot-resolved host client into invoke/continue routes and verification-reject continuations.
+- Added fake-host coverage for boot reattach, dispatch, terminal replay, route wiring, and multi-run boot reattach.
+
 ## Verification Run
 
 Passed:
@@ -56,38 +65,24 @@ Agent host test result: 5 passed.
 
 ## Not Done Yet
 
-Phase C is not complete.
+Phase C API-side seams are complete under the no-real-host constraint.
 
-Remaining Phase C work:
+Remaining durable-host work:
 
-- Wire `reattachAgentRunsOnBoot` into server boot.
-- Add a real API-side host client for the Phase B JSON-lines host process.
-- Route orchestrator-dispatched agent start/continue through host `start-run` and `resume-run`.
-- Reuse terminal side effects for host terminal events:
-  - DB terminal persistence
-  - Activity Panel broadcast
-  - inbox/channel delivery
-  - contract verification
-  - cleanup where still API-owned
-- Add boot-level fake-host integration tests around API startup behavior.
-- Decide whether legacy in-process mode remains default until Phase D supervisor wiring exists.
-
-Later phases:
-
-- Phase D: dev supervisor and Electron packaged host startup/shutdown.
+- Phase D: start/supervise the agent host from dev supervisor and packaged Electron.
+- Phase D: wire real host discovery into `resolveAgentHostClientForBoot()`.
+- Phase D: define shutdown semantics for user quit vs. API restart.
 - Phase E: workflow subagent migration.
 
 ## Suggested Next Slice
 
-Build a server-side host client seam without starting real processes yet.
+Start Phase D without restarting the live app:
 
-Recommended order:
-
-1. Add an interface around the JSON-lines host process command/event stream.
-2. Add a fake-host implementation for server boot tests.
-3. Wire `reconcileAgentRunsOnBoot()` call in `apps/server/src/index.ts` to use host mode only when a host client is available.
-4. Register reattached host handles after boot using `reattachAgentRunsOnBoot`.
-5. Keep production in legacy mode until Phase D starts/supervises the host.
+1. Add a host lock-file schema under `PC_DATA_DIR/agent-host`.
+2. Teach the dev supervisor to launch the host as a sibling child process.
+3. Keep sentinel API restart scoped to the API child only.
+4. Wire `resolveAgentHostClientForBoot()` to discover/connect to the lock-file host.
+5. Add fake process/transport tests first; do not run manual restart smoke until the user explicitly allows it.
 
 ## Startup Checks For Next Session
 

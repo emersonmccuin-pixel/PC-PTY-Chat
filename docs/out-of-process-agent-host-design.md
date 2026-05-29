@@ -1,6 +1,6 @@
 # Out-of-Process Agent Host Design
 
-Status: Phase B host process MVP complete; Phase C API reattach next.
+Status: Phase C API reattach seams complete; Phase D supervisor integration next.
 
 Owner: Codex.
 
@@ -319,9 +319,11 @@ Phase B - host process MVP:
 
 Phase C - API reattach:
 
-- Replace blanket `reconcileOrphanedRunningRuns` with host-aware reconcile.
-- Register host-backed active handles after boot.
-- Backfill live transcript state from JSONL and replay host terminal events idempotently.
+- Done: replaced blanket `reconcileOrphanedRunningRuns` with host-aware reconcile.
+- Done: registered host-backed active handles after boot through the API host client seam.
+- Done: backfilled live transcript state from JSONL and replayed host terminal events idempotently.
+- Done: routed orchestrator-dispatched fresh/continue runs through `start-run` / `resume-run` when a host client is available.
+- Done: reused API-owned terminal effects for host terminal events: DB terminal persistence, verification, inbox/channel delivery, Activity Panel broadcast, and cleanup.
 
 Phase D - supervisor integration:
 
@@ -347,10 +349,10 @@ Unit tests:
 
 Integration tests with fake host:
 
-- API boot reattaches two running rows and one paused row.
-- Cancel route sends `cancel` to host.
-- Answer route sends `answer-pending` to host.
-- Events route backfills JSONL for a reattached run.
+- Done: API boot reattaches multiple running/spawning rows and one paused row.
+- Done: cancel-capable host-backed handles send `cancel` to host.
+- Done: answer-capable host-backed handles send `answer-pending` to host.
+- Done: events route backfills JSONL for a reattached run.
 
 Manual smoke later:
 
