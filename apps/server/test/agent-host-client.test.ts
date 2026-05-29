@@ -12,6 +12,8 @@ import type {
   AgentHostEvent,
   AgentHostIdentity,
   AgentHostRunSnapshot,
+  AgentHostWorkflowSubagentSnapshot,
+  SubagentSpawnRequest,
 } from '@pc/runtime';
 import { agentHostLockFilePath } from '@pc/runtime';
 
@@ -106,6 +108,33 @@ function hostRun(
   };
 }
 
+function workflowRequest(): SubagentSpawnRequest {
+  return {
+    agentName: 'researcher',
+    worktreeDir: 'E:/workflow-worktree',
+    initialInput: 'do workflow work',
+    sessionDataDir: 'E:/pc-data/sessions/wf-1',
+    pcSessionId: 'wf-1',
+  };
+}
+
+function workflowSnapshot(
+  req: SubagentSpawnRequest = workflowRequest(),
+): AgentHostWorkflowSubagentSnapshot {
+  return {
+    pcSessionId: req.pcSessionId,
+    ccSessionId: 'cc-wf-1',
+    agentName: req.agentName,
+    worktreeDir: req.worktreeDir,
+    state: 'running',
+    transcriptPath: 'E:/pc-data/sessions/wf-1/transcript.log',
+    jsonlPath: null,
+    startedAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_100,
+    terminalAt: null,
+  };
+}
+
 test('JsonLineAgentHostClient sends commands, caches snapshots, and emits events', async () => {
   const { client, nextRequest, writeHost } = createHarness();
   const hostIdentity = identity();
@@ -179,6 +208,34 @@ test('JsonLineAgentHostClient sends commands, caches snapshots, and emits events
     command: 'cancel',
     run: paused,
     lastSeq: 4,
+  });
+
+  const wfReq = workflowRequest();
+  const wfSnapshot = workflowSnapshot(wfReq);
+  const workflowStart = client.sendCommand({
+    type: 'start-workflow-subagent',
+    request: wfReq,
+  });
+  const workflowRequestSent = await nextRequest();
+  assert.deepEqual(workflowRequestSent.command, {
+    type: 'start-workflow-subagent',
+    request: wfReq,
+  });
+  writeHost({
+    type: 'response',
+    id: workflowRequestSent.id,
+    response: {
+      ok: true,
+      command: 'start-workflow-subagent',
+      workflowSubagent: wfSnapshot,
+      lastSeq: 5,
+    },
+  });
+  assert.deepEqual(await workflowStart, {
+    ok: true,
+    command: 'start-workflow-subagent',
+    workflowSubagent: wfSnapshot,
+    lastSeq: 5,
   });
 
   off();

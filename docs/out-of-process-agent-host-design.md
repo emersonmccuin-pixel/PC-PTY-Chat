@@ -335,9 +335,15 @@ Phase D - supervisor integration:
 
 Phase E - workflow migration:
 
-- Add workflow subagent host command.
-- Move `spawnSubagent` users in `dag-run-service` to host-backed handles.
-- Reuse existing workflow-subagent handshake tests against host commands.
+- Done: added workflow subagent host commands/events around the existing
+  `SubagentSpawnRequest` / `SubagentSpawnResult` contract.
+- Done: `dag-run-service` now prefers host-backed workflow handles when a host
+  client is connected, with the old in-process spawner retained as the no-host
+  fallback.
+- Done: workflow MCP handshakes can route through the host
+  `notify-mcp-handshake` command.
+- Pending manual smoke: workflow agent node survives API restart/kill mid-run,
+  only when app/server restarts are explicitly allowed.
 
 ## Verification Plan
 

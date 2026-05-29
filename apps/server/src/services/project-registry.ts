@@ -6,6 +6,7 @@ import type { Project, ULID } from '@pc/domain';
 import { getProjectById, listProjects } from '@pc/db';
 
 import { ProjectRuntime, type BroadcastFn } from './project-runtime.ts';
+import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 
 export interface ProjectRegistryDeps {
   dataDir: string;
@@ -16,6 +17,7 @@ export interface ProjectRegistryDeps {
   trunkPath: string;
   serverPort: number;
   channelPort: number;
+  getHostClient?: () => AgentHostReattachClient | null;
   /** Factory: produces a broadcast fn pre-bound to the given project id. */
   broadcastFor: (projectId: ULID) => BroadcastFn;
 }
@@ -107,6 +109,7 @@ export class ProjectRegistry {
       serverPort: this.deps.serverPort,
       channelPort: this.deps.channelPort,
       broadcast: this.deps.broadcastFor(project.id),
+      ...(this.deps.getHostClient ? { getHostClient: this.deps.getHostClient } : {}),
     });
   }
 }

@@ -142,6 +142,9 @@ export type {
   AgentHostRunState,
   AgentHostStartRunRequest,
   AgentHostTerminalResult,
+  AgentHostWorkflowSubagentRequest,
+  AgentHostWorkflowSubagentSnapshot,
+  AgentHostWorkflowSubagentState,
 } from './agent-host-protocol.ts';
 
 export {

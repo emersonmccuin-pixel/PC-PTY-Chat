@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import {
   registerMcpBridgeRoutes,
   type McpBridgeActiveRunRegistry,
+  type McpBridgeHostClient,
 } from '../src/features/mcp-bridge/routes.ts';
 
 async function json<T>(res: Response): Promise<T> {
@@ -79,6 +80,7 @@ test('mcp status route preserves missing, alive, stale, and corrupt envelopes', 
 test('mcp handshake route preserves validation and agent/workflow/orchestrator priority', async () => {
   const notified: string[] = [];
   const workflowNotifications: string[] = [];
+  const hostNotifications: string[] = [];
   const orchestratorNotifications: string[] = [];
   const registry: McpBridgeActiveRunRegistry = {
     getByCcSession: (sessionId) =>
@@ -91,6 +93,28 @@ test('mcp handshake route preserves validation and agent/workflow/orchestrator p
         : null,
   };
   const app = new Hono();
+  const hostClient: McpBridgeHostClient = {
+    sendCommand: (command) => {
+      if (command.type !== 'notify-mcp-handshake') {
+        throw new Error(`unexpected command ${command.type}`);
+      }
+      hostNotifications.push(command.ccSessionId);
+      if (command.ccSessionId === 'host-workflow-session') {
+        return {
+          ok: true,
+          command: 'notify-mcp-handshake',
+          lastSeq: 1,
+        };
+      }
+      return {
+        ok: false,
+        command: 'notify-mcp-handshake',
+        code: 'not-found',
+        error: 'missing',
+        lastSeq: 1,
+      };
+    },
+  };
   registerMcpBridgeRoutes(app, {
     dataDir: 'E:/pc-data',
     resolveProject: (projectId) =>
@@ -108,6 +132,7 @@ test('mcp handshake route preserves validation and agent/workflow/orchestrator p
       workflowNotifications.push(sessionId);
       return sessionId === 'workflow-session';
     },
+    getHostClient: () => hostClient,
   });
 
   let res = await app.request('/api/internal/mcp-handshake', {
@@ -139,6 +164,16 @@ test('mcp handshake route preserves validation and agent/workflow/orchestrator p
   });
   assert.equal(res.status, 200);
   assert.deepEqual(await json(res), { ok: true, found: true, transport: 'workflow' });
+  assert.deepEqual(hostNotifications, []);
+
+  res = await app.request('/api/internal/mcp-handshake', {
+    method: 'POST',
+    body: JSON.stringify({ projectId: 'project-1', agentSessionId: 'host-workflow-session' }),
+    headers: { 'content-type': 'application/json' },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await json(res), { ok: true, found: true, transport: 'workflow-host' });
+  assert.deepEqual(hostNotifications, ['host-workflow-session']);
 
   res = await app.request('/api/internal/mcp-handshake', {
     method: 'POST',
@@ -147,6 +182,7 @@ test('mcp handshake route preserves validation and agent/workflow/orchestrator p
   });
   assert.equal(res.status, 200);
   assert.deepEqual(await json(res), { ok: true, found: true, transport: 'orchestrator' });
+  assert.deepEqual(hostNotifications, ['host-workflow-session', 'orchestrator-session']);
 
   res = await app.request('/api/internal/mcp-handshake', {
     method: 'POST',
@@ -155,4 +191,9 @@ test('mcp handshake route preserves validation and agent/workflow/orchestrator p
   });
   assert.equal(res.status, 200);
   assert.deepEqual(await json(res), { ok: true, found: false });
+  assert.deepEqual(hostNotifications, [
+    'host-workflow-session',
+    'orchestrator-session',
+    'missing-session',
+  ]);
 });
