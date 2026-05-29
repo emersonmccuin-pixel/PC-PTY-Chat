@@ -565,6 +565,11 @@ export const agents = sqliteTable(
      *  createAgentWorkItem uses this before the stock map (pod-defaults.ts).
      *  Null for stock pods and user-created pods that haven't declared one. */
     expectedOutput: text('expected_output', { mode: 'json' }).$type<ExpectedOutput | null>(),
+    /** UI Spine step 3 — monotonic write counter. Incremented inside every
+     *  mutating write so the pod write-door can stamp WS deltas. Frontend
+     *  discards deltas where incoming rev ≤ stored rev (mirrors
+     *  workflow_runs_v2.rev / work_items.version). */
+    rev: integer('rev').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),

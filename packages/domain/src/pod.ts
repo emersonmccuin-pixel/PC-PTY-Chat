@@ -114,6 +114,10 @@ export interface PodAgentRow {
    *  pod-defaults.ts. Null for stock pods (they use the hardcoded map) and
    *  for user-created pods that haven't declared a default. */
   expectedOutput: ExpectedOutput | null;
+  /** UI Spine step 3 — monotonic write counter. Incremented by every
+   *  mutating write; the pod write-door stamps WS deltas so the frontend
+   *  can discard stale/duplicate envelopes. */
+  rev: number;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;

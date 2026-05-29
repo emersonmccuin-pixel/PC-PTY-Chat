@@ -43,6 +43,8 @@ export interface Pod {
   origin: PodOrigin;
   dispatchGuidance: string | null;
   driftedFields: string[] | null;
+  /** UI Spine step 3 — monotonic write counter for version-aware WS patching. */
+  rev: number;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
