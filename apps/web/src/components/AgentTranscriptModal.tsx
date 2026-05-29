@@ -16,7 +16,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
-import { mergeAgentTranscriptEvents } from '@/features/agent-runs/transcript';
+import {
+  agentTranscriptEmptyMessage,
+  mergeAgentTranscriptEvents,
+  type AgentTranscriptLoadStatus,
+} from '@/features/agent-runs/transcript';
+import type { AgentRunTranscriptStatus } from '@/features/agent-runs/types';
 import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 
 interface AgentTranscriptModalProps {
@@ -27,12 +32,14 @@ interface AgentTranscriptModalProps {
 
 export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptModalProps) {
   const [backfill, setBackfill] = useState<{
-    status: 'loading' | 'ready' | 'error';
+    status: AgentTranscriptLoadStatus;
+    transcriptStatus: AgentRunTranscriptStatus | null;
     events: JsonlEvent[];
     jsonlPath: string | null;
     error: string | null;
   }>({
     status: 'loading',
+    transcriptStatus: null,
     events: [],
     jsonlPath: null,
     error: null,
@@ -40,13 +47,20 @@ export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptMo
 
   useEffect(() => {
     let cancelled = false;
-    setBackfill({ status: 'loading', events: [], jsonlPath: null, error: null });
+    setBackfill({
+      status: 'loading',
+      transcriptStatus: null,
+      events: [],
+      jsonlPath: null,
+      error: null,
+    });
     agentRunsApi
       .getAgentRunEvents(run.projectId, run.runId)
       .then((response) => {
         if (cancelled) return;
         setBackfill({
           status: 'ready',
+          transcriptStatus: response.transcriptStatus,
           events: response.events as JsonlEvent[],
           jsonlPath: response.jsonlPath,
           error: null,
@@ -56,6 +70,7 @@ export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptMo
         if (cancelled) return;
         setBackfill({
           status: 'error',
+          transcriptStatus: null,
           events: [],
           jsonlPath: null,
           error: err instanceof Error ? err.message : String(err),
@@ -152,7 +167,10 @@ export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptMo
         >
           {transcriptItems.length === 0 ? (
             <div className="text-xs italic text-muted-foreground">
-              {emptyTranscriptMessage(backfill.status)}
+              {agentTranscriptEmptyMessage({
+                loadStatus: backfill.status,
+                transcriptStatus: backfill.transcriptStatus,
+              })}
             </div>
           ) : (
             <ul className="flex flex-col gap-2">
@@ -170,12 +188,6 @@ export function AgentTranscriptModal({ run, events, onClose }: AgentTranscriptMo
       </aside>
     </div>
   );
-}
-
-function emptyTranscriptMessage(status: 'loading' | 'ready' | 'error'): string {
-  if (status === 'loading') return 'Loading transcript...';
-  if (status === 'error') return 'Live transcript starts here.';
-  return 'No transcript events yet.';
 }
 
 function TranscriptRow({ event }: { event: JsonlEvent }) {

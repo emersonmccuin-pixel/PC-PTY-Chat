@@ -105,8 +105,8 @@ Error and empty states:
 - Unknown run returns 404.
 - Wrong project returns 400.
 - Cancel only works against the active in-memory registry.
-- Transcript backfill currently returns `ok: true` with an empty event list when the provider JSONL is missing or empty.
-- Modal copy distinguishes loading, empty, and backfill error, but missing provider JSONL is not a distinct UI state.
+- Transcript backfill returns `transcriptStatus: ready | empty | missing` so the modal can distinguish missing provider JSONL from an empty file.
+- Modal copy distinguishes loading, missing, empty, generic no-events, and backfill error states.
 
 ## Dependency Map
 
@@ -138,7 +138,6 @@ Duplicate adapters or protocol translations:
 
 ## Dead Code And Drift
 
-- Missing provider JSONL returns an empty successful transcript response; the UI cannot distinguish missing history from a legitimately empty transcript.
 - `model: 'opus'` is hard-coded in the active run list shim.
 - The older `/api/subagent-transcript` bridge still exists for chat bubble transcript paths and is separate from agent-run transcript backfill.
 
@@ -146,8 +145,8 @@ Duplicate adapters or protocol translations:
 
 Existing focused tests:
 
-- `apps/server/test/agent-run-routes.test.ts`: active list, cancel, event backfill, invoke, continue, list-by-dispatcher, pending ask answer/cancel status mapping.
-- `apps/server/test/web-agent-transcript.test.ts`: transcript backfill/live merge preserves repeated identical events and dedupes stable row ids.
+- `apps/server/test/agent-run-routes.test.ts`: active list, cancel, event backfill, missing/empty transcript status, invoke, continue, list-by-dispatcher, pending ask answer/cancel status mapping.
+- `apps/server/test/web-agent-transcript.test.ts`: transcript backfill/live merge preserves repeated identical events, dedupes stable row ids, and maps empty/missing transcript copy.
 - `apps/server/test/agent-invoke-route.test.ts`: dispatch factory route integration.
 - `apps/server/test/agent-pause-resume.test.ts`: pending ask pause/resume state transitions.
 - `apps/server/test/agent-verification-review.test.ts`: review/verification continuation surfaces.
@@ -156,7 +155,7 @@ Existing focused tests:
 
 Missing tests or trace evidence:
 
-- No test proves active, historical, empty, failed, and missing transcript UI states.
+- No browser/UI-level test proves active, historical, failed, empty, and missing transcript modal states.
 - No browser smoke was run for opening an active or historical transcript modal.
 - No boundary test asserts agent-run WebSocket envelope contracts live outside the modal.
 
@@ -167,7 +166,7 @@ Do not change dispatch/runtime behavior before a trace identifies a failure.
 Small cleanup candidates:
 
 - Done in this slice: extracted transcript merge/dedupe into `apps/web/src/features/agent-runs/transcript.ts` with stable keys and repeated-identical-event coverage.
-- Add missing-provider transcript status only if product wants a distinct UI state.
+- Done in this slice: added explicit `ready | empty | missing` transcript backfill status and modal empty-state copy coverage.
 - Decide whether the legacy `/api/subagent-transcript` bridge remains under chat-bridges or should link to this pod as a retained compatibility path.
 
 Verification commands to use before any cleanup patch:
@@ -198,8 +197,8 @@ Commands run so far:
 
 Verification results:
 
-- Focused transcript merge tests: 2 passed, 0 failed.
-- Agent-run route plus transcript merge tests: 7 passed, 0 failed.
+- Focused transcript merge/status tests: 3 passed, 0 failed.
+- Agent-run route plus transcript merge/status tests: 9 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.

@@ -191,12 +191,14 @@ test('agent-run events route backfills canonical JSONL events', async () => {
     runId: ULID;
     status: string;
     jsonlPath: string;
+    transcriptStatus: string;
     events: Array<{ kind: string; text?: string; model?: string | null }>;
   }>(res);
   assert.equal(body.ok, true);
   assert.equal(body.runId, run.id);
   assert.equal(body.status, 'running');
   assert.equal(body.jsonlPath, jsonlPath);
+  assert.equal(body.transcriptStatus, 'ready');
   assert.deepEqual(body.events.map((event) => event.kind), [
     'jsonl-user',
     'jsonl-usage',
@@ -205,6 +207,52 @@ test('agent-run events route backfills canonical JSONL events', async () => {
   assert.equal(body.events[0]?.text, 'research this');
   assert.equal(body.events[1]?.model, 'claude-test');
   assert.equal(body.events[2]?.text, 'done');
+});
+
+test('agent-run events route distinguishes missing and empty provider transcripts', async () => {
+  const project = makeProject('events-missing');
+  const missingRun = makeRun(project.id, {
+    status: 'running',
+    ccSessionId: 'cc-events-missing',
+  });
+  const emptyRun = makeRun(project.id, {
+    status: 'running',
+    ccSessionId: 'cc-events-empty',
+  });
+  const emptyJsonlPath = jsonlPathFor(project.folderPath, 'cc-events-empty');
+  mkdirSync(dirname(emptyJsonlPath), { recursive: true });
+  writeFileSync(emptyJsonlPath, '');
+
+  const app = new Hono();
+  registerAgentRunRoutes(app, {
+    channelServer: {} as never,
+    broadcastTo: () => {},
+  });
+
+  let res = await app.request(`/api/projects/${project.id}/agent-runs/${missingRun.id}/events`);
+  assert.equal(res.status, 200);
+  let body = await json<{
+    ok: boolean;
+    jsonlPath: string;
+    transcriptStatus: string;
+    events: unknown[];
+  }>(res);
+  assert.equal(body.ok, true);
+  assert.equal(body.transcriptStatus, 'missing');
+  assert.deepEqual(body.events, []);
+
+  res = await app.request(`/api/projects/${project.id}/agent-runs/${emptyRun.id}/events`);
+  assert.equal(res.status, 200);
+  body = await json<{
+    ok: boolean;
+    jsonlPath: string;
+    transcriptStatus: string;
+    events: unknown[];
+  }>(res);
+  assert.equal(body.ok, true);
+  assert.equal(body.jsonlPath, emptyJsonlPath);
+  assert.equal(body.transcriptStatus, 'empty');
+  assert.deepEqual(body.events, []);
 });
 
 test('invoke route validates inputs, delegates dispatch, audits, and returns async envelope', async () => {

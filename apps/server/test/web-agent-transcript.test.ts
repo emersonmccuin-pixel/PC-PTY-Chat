@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 type AgentTranscriptModule = {
+  agentTranscriptEmptyMessage: (input: {
+    loadStatus: 'loading' | 'ready' | 'error';
+    transcriptStatus: 'ready' | 'empty' | 'missing' | null;
+  }) => string;
   mergeAgentTranscriptEvents: (input: {
     runId: string;
     backfillEvents: Array<Record<string, unknown>>;
@@ -27,6 +31,23 @@ test('agent transcript merge preserves repeated identical events without stable 
   assert.equal(merged.length, 2);
   assert.notEqual(merged[0]?.key, merged[1]?.key);
   assert.deepEqual(merged.map((item) => item.event), [event, event]);
+});
+
+test('agent transcript empty copy distinguishes missing and empty backfills', async () => {
+  const { agentTranscriptEmptyMessage } = await loadAgentTranscriptModule();
+
+  assert.equal(
+    agentTranscriptEmptyMessage({ loadStatus: 'ready', transcriptStatus: 'missing' }),
+    'Provider transcript is missing. Live transcript starts here.',
+  );
+  assert.equal(
+    agentTranscriptEmptyMessage({ loadStatus: 'ready', transcriptStatus: 'empty' }),
+    'Transcript file is empty. Live transcript starts here.',
+  );
+  assert.equal(
+    agentTranscriptEmptyMessage({ loadStatus: 'ready', transcriptStatus: 'ready' }),
+    'No transcript events yet.',
+  );
 });
 
 test('agent transcript merge dedupes backfill and live events by stable row id', async () => {

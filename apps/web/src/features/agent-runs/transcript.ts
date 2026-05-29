@@ -1,4 +1,5 @@
 import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
+import type { AgentRunTranscriptStatus } from './types';
 
 export interface AgentJsonlEnvelope extends WsEnvelope {
   type: 'agent-jsonl-event';
@@ -10,6 +11,8 @@ export interface AgentTranscriptItem {
   key: string;
   event: JsonlEvent;
 }
+
+export type AgentTranscriptLoadStatus = 'loading' | 'ready' | 'error';
 
 export function isAgentJsonlEnvelope(env: WsEnvelope): env is AgentJsonlEnvelope {
   return env.type === 'agent-jsonl-event';
@@ -44,6 +47,21 @@ export function mergeAgentTranscriptEvents(input: {
     push(env.event, 'live');
   }
   return out;
+}
+
+export function agentTranscriptEmptyMessage(input: {
+  loadStatus: AgentTranscriptLoadStatus;
+  transcriptStatus: AgentRunTranscriptStatus | null;
+}): string {
+  if (input.loadStatus === 'loading') return 'Loading transcript...';
+  if (input.loadStatus === 'error') return 'Live transcript starts here.';
+  if (input.transcriptStatus === 'missing') {
+    return 'Provider transcript is missing. Live transcript starts here.';
+  }
+  if (input.transcriptStatus === 'empty') {
+    return 'Transcript file is empty. Live transcript starts here.';
+  }
+  return 'No transcript events yet.';
 }
 
 function stableTranscriptEventId(event: JsonlEvent): string | null {

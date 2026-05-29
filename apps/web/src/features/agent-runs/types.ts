@@ -60,10 +60,13 @@ export interface AgentRunRecord {
   endedAt: number | null;
 }
 
+export type AgentRunTranscriptStatus = 'ready' | 'empty' | 'missing';
+
 export interface AgentRunEventsResponse {
   ok: true;
   runId: ULID;
   status: AgentRunStatus;
   jsonlPath: string;
+  transcriptStatus: AgentRunTranscriptStatus;
   events: unknown[];
 }
