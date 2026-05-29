@@ -150,6 +150,66 @@ export function reattachAgentRunsOnBoot(
   };
 }
 
+export interface ReconcileSweepResult {
+  checked: number;
+  terminalApplied: number;
+  statusUpdated: number;
+}
+
+/**
+ * Continuous post-boot reconcile sweep — Step 1 of the state-propagation
+ * overhaul (`docs/state-propagation-decision.md`). Idempotent; safe to call on
+ * an interval. Re-derives each non-terminal DB run from the host's live
+ * snapshots, so a terminal transition the live event stream dropped still lands
+ * — full effects via `applyHostTerminalSnapshot` (DB flip + orchestrator
+ * `agent-completed`/`agent-failed` + rail broadcast) — within one sweep instead
+ * of waiting for the next server restart. THE fix for phantom "still running"
+ * runs.
+ *
+ * Caller MUST refresh the host snapshot first (a `list-runs` command) so we
+ * reconcile against a fresh pull, not the client's stale cache. This does NOT
+ * register live handles or subscribe to events — boot reattach owns that; the
+ * sweep only catches transitions the stream missed. Conservative on
+ * host-missing rows: left untouched here (boot reconcile + later epoch handling
+ * own orphan finalization) so a just-dispatched run is never killed by a race.
+ */
+export function reconcileAgentRunsAgainstHost(
+  deps: AgentHostReattachDeps,
+): ReconcileSweepResult {
+  const rows = (deps.listNonTerminalRuns ?? defaultListNonTerminalAgentRuns)();
+  const hostRuns = deps.hostClient.listRuns();
+  const hostByRunId = new Map(hostRuns.map((run) => [run.runId, run]));
+
+  let terminalApplied = 0;
+  let statusUpdated = 0;
+
+  for (const row of rows) {
+    const hostRun = hostByRunId.get(row.id);
+    if (!hostRun || !hostSnapshotMatchesRow(row, hostRun)) continue;
+
+    if (isTerminalState(hostRun.state)) {
+      terminalApplied += applyHostTerminalSnapshot(hostRun, deps);
+      continue;
+    }
+
+    if (shouldUpdateFromHost(row, hostRun)) {
+      (deps.updateStatus ?? defaultUpdateAgentRunStatus)({
+        id: row.id,
+        status: hostRun.state,
+        ...(hostRun.spawnedAt !== null ? { spawnedAt: hostRun.spawnedAt } : {}),
+        ...(hostRun.readyAt !== null ? { readyAt: hostRun.readyAt } : {}),
+      });
+      deps.broadcast?.(row.projectId, {
+        type: 'agent-run-changed',
+        record: agentRunRecordFor(row, hostRun),
+      });
+      statusUpdated += 1;
+    }
+  }
+
+  return { checked: rows.length, terminalApplied, statusUpdated };
+}
+
 export interface ApplyAgentHostEventResult {
   statusUpdated: number;
   terminalApplied: number;

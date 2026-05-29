@@ -1,10 +1,11 @@
 # Caisson — Project Tracker
 
 Living "where are we / what's next." The durable course doc — update it at each session close.
-Last updated: 2026-05-29.
+Last updated: 2026-05-29 (state-propagation decision locked + build started).
 
 ## ⏭ Next session — discuss first
 Open threads to triage at the top of the next session (detail in "Open threads" below):
+0. **🚧 ACTIVE BUILD — State-propagation overhaul** (see "Active workstream" below). Locked decision: `docs/state-propagation-decision.md`. Resume at the next unchecked step. This is the current primary thread; supersedes open #4 (WS store/slice) and absorbs the agent-host lifecycle drift (open #2 evidence).
 1. **Verify unread-project indicators** — feature landed (`52b606fa`) + crash-guard added (`f52c70a8`); not yet eyeballed in the browser after the fix. Quick Ctrl+R + confirm dots behave, then it's done.
 2. **Packaged agent-host: crash-isolation vs. survival** (open #2) — release-gating decision.
 3. **Workflow isolation bug** `pc-pty-chat-82` (open #3) — agents sometimes commit to `dev` not their worktree; correctness hazard. Has a canary repro plan.
@@ -13,6 +14,23 @@ Open threads to triage at the top of the next session (detail in "Open threads" 
 6. **node-pty `AttachConsole failed`** (open #6) — recurring native crash; mitigation tied to #2.
 
 Housekeeping: `dev` is unpushed (now @ `1fa589c9`); integration worktrees still need pruning (see Cleanup).
+
+## Active workstream — State-propagation overhaul (outbox spine + watch/reconcile)
+**Decision doc:** `docs/state-propagation-decision.md` (locked 2026-05-29). Generalizes `ui-change-propagation-spine.md` to every hop.
+**One-line:** DB-owned facts ride a versioned `changes` outbox w/ cursor catch-up; externally-owned state (host runs, JSONL) is re-derived by a continuous idempotent reconcile loop; firehose streams are pass-through. Events = latency, reconcile = correctness.
+**Why:** agent-host terminal transitions are lost when the API isn't listening (no reconnect/heartbeat) → phantom "running" runs, orchestrator never notified, stages don't flip. Evidence: 2 runs terminal in host, stuck `queued` in DB (verified 2026-05-29).
+**Build order is reconcile-FIRST** (ship the backstop before the fragile reconnect, else the bug returns in a new costume).
+
+- [~] **Step 1 — Continuous reconcile + sweep.** ✅ CORE SHIPPED (uncommitted on dev, 2026-05-29): `reconcileAgentRunsAgainstHost()` in `agent-host-reattach.ts` (idempotent, full effects via `applyHostTerminalSnapshot` → DB flip + orchestrator notify + rail broadcast) + 15s interval in `index.ts` (host-mode only, `list-runs` pull → reconcile, unref'd, cleared in gracefulShutdown) + 2 tests (reproduces the stuck-`queued`/host-`completed` bug). Server typecheck + 5/5 reattach tests green. **This self-heals the phantom-running bug within 15s.** REMAINING sub-items (don't close Step 1 yet): (a) `GET /host/runs` exposing `hostEpoch` + per-run `pid`+`pidStartTime`; (b) full precedence ladder w/ **waitpid** rung + **artifact-wins-on-disagreement** (stop trusting `hostRun.terminalResult` in `agent-run-boot-reconcile.ts:156-174`); (c) `hostEpoch`-flip orphan finalization for host-missing rows (sweep currently leaves them alone — conservative); (d) lazy JSONL tail + per-run coalesce/debounce. NOTE: takes effect on next dev-server restart (user-triggered).
+- [ ] **Step 2 — Agent-runs per-entity `rev` + write-door.** Add `rev` to `AgentRunRecord` (`packages/domain/src/agent-system.ts`); create `agent-run-writer.ts`; fix `use-project-agent-runs.ts` → `getVersion: r => r.rev`.
+- [ ] **Step 3 — Harden stream as latency layer.** Split lifecycle events from chunk/jsonl into a separate large/monotonic log; `getEventsAfter` returns `{ truncatedBelow }`; heartbeat + reconnect-with-backoff in `HttpAgentHostClient` (abort-race guarded); `res.write` backpressure in host `streamEvents`. On `truncatedBelow` → fall to Layer-2 level read.
+- [ ] **Step 4 — Artifact backstop (tier 3).** JSONL/exit-file terminal detection as the precedence-ladder rung + sweep last-resort for stuck rows.
+- [ ] **Step 5 — Host self-durability.** Append-only journal + snapshot/checkpoint in `PC_DATA_DIR`; reattach by **PID+process-start-time** (never bare PID — win32); deliver-until-acked by `(runId, hostSeq)`; idempotent apply; `markTerminal` compare-and-set on source priority (artifact > journal > host claim).
+- [ ] **Step 6 — Unified `changes` outbox + global `version`, dual-write first.** `changes(version, domain, entityId, rev, payload)` + commit-and-announce chokepoint in API write helper; existing broadcasts *also* append a row (zero behavior change yet).
+- [ ] **Step 7 — Cut WS to cursor catch-up (one atomic infra build).** Subscribe handshake: client sends `lastVersion` → server snapshots max version → replays `(lastVersion, snapshot]` → attaches listener → client dedupes by rev. Prune outbox by size/age; stale `lastVersion` → full domain reload. `websocket-hub.ts` has no cursor today — build it once for all domains.
+- [ ] **Step 8 — Generalize.** Orchestrator runtime + send-queue ride `changes` via the write helper; usage/telemetry on a SEPARATE coalesced channel; in-process (no-host) runs stream via local file/pipe so boot-reattach works there too.
+
+**Guardrails (from the doc — do NOT):** no second event-log-as-truth; only API writes SQLite; never trust one host event / `terminalResult` over the artifact; don't conflate `version` (global cursor) vs `rev` (per-entity); never `hub.broadcast` inside a `db.transaction()`; no transcript bytes through the outbox; PTY/chunks stay pass-through; reconnect never before reconcile.
 
 ## Current state
 - `dev` @ `1fa589c9` (local; NOT yet pushed to `origin`). Phase D + schema-intact guard + unread indicators landed; applies on next `pnpm dev` restart.

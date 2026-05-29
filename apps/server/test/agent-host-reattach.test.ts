@@ -18,6 +18,7 @@ import { ActiveRunRegistry } from '../src/services/agent-active-runs.ts';
 import {
   applyHostTerminalSnapshot,
   reattachAgentRunsOnBoot,
+  reconcileAgentRunsAgainstHost,
   type AgentHostReattachClient,
 } from '../src/services/agent-host-reattach.ts';
 
@@ -250,6 +251,71 @@ test('reattached host event stream updates state, broadcasts JSONL, and applies 
     broadcasts.map((msg) => (msg as { type?: string }).type),
     ['agent-run-changed', 'agent-jsonl-event', 'agent-run-changed'],
   );
+});
+
+test('reconcileAgentRunsAgainstHost converges a stuck non-terminal row whose host snapshot is terminal (the phantom-running bug)', () => {
+  // Mirrors the live drift observed 2026-05-29: DB row stuck `queued` while the
+  // host already ran it to `completed`. The sweep must finalize it.
+  let currentRow = row('run-stuck', { status: 'queued', spawnedAt: null, readyAt: null });
+  const terminals: MarkAgentRunTerminalInput[] = [];
+  const broadcasts: unknown[] = [];
+  const host = new FakeHostClient([
+    hostRun('run-stuck', 'completed', {
+      terminalAt: 1_700_000_003_000,
+      terminalResult: {
+        status: 'completed',
+        result: 'deliverable persisted',
+        failureCause: null,
+        failureReason: null,
+      },
+    }),
+  ]);
+
+  const res = reconcileAgentRunsAgainstHost({
+    hostClient: host,
+    listNonTerminalRuns: () => [currentRow],
+    getAgentRun: () => currentRow,
+    markTerminal: (input) => {
+      terminals.push(input);
+      currentRow = {
+        ...currentRow,
+        status: input.status,
+        result: input.result,
+        completedAt: input.completedAt,
+      };
+    },
+    broadcast: (_projectId, msg) => { broadcasts.push(msg); },
+  });
+
+  assert.equal(res.terminalApplied, 1);
+  assert.equal(res.statusUpdated, 0);
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0]?.status, 'completed');
+  assert.equal(terminals[0]?.result, 'deliverable persisted');
+  assert.ok(broadcasts.some((m) => (m as { type?: string }).type === 'agent-run-changed'));
+});
+
+test('reconcileAgentRunsAgainstHost no-ops when the host agrees the run is live, and leaves host-missing rows alone', () => {
+  const liveRow = row('run-live2', { status: 'running' });
+  const missingRow = row('run-missing', { status: 'running' });
+  const terminals: unknown[] = [];
+  const updates: unknown[] = [];
+  // Host knows run-live2 (still running, identical timings) but NOT run-missing.
+  const host = new FakeHostClient([hostRun('run-live2', 'running')]);
+
+  const res = reconcileAgentRunsAgainstHost({
+    hostClient: host,
+    listNonTerminalRuns: () => [liveRow, missingRow],
+    getAgentRun: (id) => (id === liveRow.id ? liveRow : missingRow),
+    markTerminal: (input) => { terminals.push(input); },
+    updateStatus: (input) => { updates.push(input); },
+    broadcast: () => {},
+  });
+
+  assert.equal(res.terminalApplied, 0);
+  assert.equal(res.statusUpdated, 0);
+  assert.deepEqual(terminals, []);
+  assert.deepEqual(updates, []);
 });
 
 test('applyHostTerminalSnapshot is idempotent once the DB row is terminal', () => {

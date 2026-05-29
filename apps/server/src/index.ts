@@ -74,6 +74,7 @@ import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
 import type { AgentHostReattachClient } from './services/agent-host-reattach.ts';
+import { reconcileAgentRunsAgainstHost } from './services/agent-host-reattach.ts';
 import { writeRunStatus } from './services/workflow-run-writer.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -361,6 +362,39 @@ let agentHostClientForDispatch: AgentHostReattachClient | null = null;
     console.error('[agent-runs] boot reattach failed:', (err as Error).message);
   }
 }
+
+// State-propagation overhaul Step 1 (docs/state-propagation-decision.md):
+// continuous reconcile sweep. Events = latency, reconcile = correctness — a
+// terminal transition the live host event stream dropped still converges here
+// within one tick (full effects: DB flip + orchestrator notify + rail
+// broadcast), instead of waiting for the next server restart. Host-mode only;
+// no-ops when there's no out-of-process host.
+const AGENT_RUN_RECONCILE_SWEEP_MS = 15_000;
+const agentRunReconcileSweep = setInterval(() => {
+  const client = agentHostClientForDispatch;
+  if (!client) return;
+  void (async () => {
+    try {
+      // Pull fresh host snapshots (updates the client's run cache), then
+      // reconcile non-terminal DB rows against them.
+      await client.sendCommand({ type: 'list-runs' });
+      const res = reconcileAgentRunsAgainstHost({
+        hostClient: client,
+        broadcast: broadcastTo,
+        channelServer,
+      });
+      if (res.terminalApplied > 0 || res.statusUpdated > 0) {
+        console.log(
+          `[agent-runs] reconcile sweep: terminal=${res.terminalApplied}, status=${res.statusUpdated}, checked=${res.checked}`,
+        );
+      }
+    } catch (err) {
+      console.warn('[agent-runs] reconcile sweep failed:', (err as Error).message);
+    }
+  })();
+}, AGENT_RUN_RECONCILE_SWEEP_MS);
+// Don't let the sweep timer keep the process alive on shutdown.
+if (typeof agentRunReconcileSweep.unref === 'function') agentRunReconcileSweep.unref();
 
 const app = new Hono();
 
@@ -739,6 +773,7 @@ registerRuntimeHostWebSocketServer<ReturnType<ProjectRuntime['ensurePty']>, Proj
 });
 
 function gracefulShutdown(): void {
+  clearInterval(agentRunReconcileSweep);
   projectRegistry.shutdownAll();
   channelServer.shutdown();
 }
