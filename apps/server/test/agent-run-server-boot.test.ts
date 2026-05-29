@@ -59,7 +59,10 @@ function row(id: string, status: AgentRunStatus = 'running'): AgentRunRow {
   };
 }
 
-function hostRun(id: string): AgentHostRunSnapshot {
+function hostRun(
+  id: string,
+  state: AgentHostRunSnapshot['state'] = 'running',
+): AgentHostRunSnapshot {
   return {
     runId: id as ULID,
     projectId: '01KBOOTPROJECT00000000001' as ULID,
@@ -67,7 +70,7 @@ function hostRun(id: string): AgentHostRunSnapshot {
     ccSessionId: `cc-${id}`,
     podName: 'researcher',
     worktreeDir: 'E:/worktree',
-    state: 'running',
+    state,
     jsonlPath: null,
     transcriptPath: null,
     queuedAt: 1_700_000_000_000,
@@ -134,5 +137,57 @@ test('server boot reattaches active handles through a provided fake host client'
   entry.run.cancel();
   assert.deepEqual(host.commands, [
     { type: 'cancel', runId: runRow.id },
+  ]);
+});
+
+test('server boot reattaches multiple running and paused rows from a fake host', async () => {
+  const runningA = row('run-boot-a');
+  const runningB = row('run-boot-b', 'spawning');
+  const paused = row('run-boot-paused', 'paused');
+  const host = new FakeHostClient([
+    hostRun(runningA.id),
+    hostRun(runningB.id),
+    hostRun(paused.id, 'paused'),
+  ]);
+  const registry = new ActiveRunRegistry();
+  const updates: unknown[] = [];
+  const terminals: unknown[] = [];
+
+  const result = await reattachAgentRunsDuringServerBoot({
+    getHostClient: () => host,
+    activeRunRegistry: registry,
+    listNonTerminalRuns: () => [runningA, runningB, paused],
+    getAgentRun: (runId) =>
+      [runningA, runningB, paused].find((candidate) => candidate.id === runId) ?? null,
+    hasOpenPendingAskForRun: () => true,
+    resolveJsonlPath: () => null,
+    updateStatus: (input) => { updates.push(input); },
+    markTerminal: (input) => { terminals.push(input); },
+  });
+
+  assert.equal(result.mode, 'host');
+  assert.equal(result.hostClient, host);
+  assert.equal(result.reattach.registered, 3);
+  assert.equal(result.reattach.reconcile.hostRuns, 3);
+  assert.equal(result.reattach.reconcile.checked, 3);
+  assert.equal(result.reattach.reconcile.kept, 3);
+  assert.equal(result.reattach.reconcile.failed, 0);
+  assert.deepEqual(updates, [
+    {
+      id: runningB.id,
+      status: 'running',
+      spawnedAt: 1_700_000_000_100,
+      readyAt: 1_700_000_000_200,
+    },
+  ]);
+  assert.deepEqual(terminals, []);
+  assert.equal(registry.list().length, 3);
+  assert.equal(registry.get(paused.id)?.run.getState(), 'paused');
+
+  registry.get(paused.id)?.run.resumeWithAnswer('answer');
+  registry.get(runningA.id)?.run.cancel();
+  assert.deepEqual(host.commands, [
+    { type: 'answer-pending', runId: paused.id, text: 'answer' },
+    { type: 'cancel', runId: runningA.id },
   ]);
 });
