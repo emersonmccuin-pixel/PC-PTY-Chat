@@ -89,6 +89,9 @@ export interface SpawnLike extends EventEmitter {
   kill(graceMs?: number): void;
   getState(): SpawnState;
   getJsonlPath(): string | null;
+  /** OS pid of the spawned child, or null before start / after a failed spawn.
+   *  Optional so test fakes need not implement it. */
+  getPid?(): number | null;
 }
 
 export type SpawnFactory = (input: LowLevelSpawnInput) => SpawnLike;
@@ -327,6 +330,12 @@ export class AgentRun extends EventEmitter {
 
   getJsonlPath(): string | null {
     return this.spawn?.getJsonlPath() ?? null;
+  }
+
+  /** OS pid of the live spawn, or null before the spawn phase / after exit.
+   *  Used by the factory to persist the pid for the liveness sweep + hard-kill. */
+  getPid(): number | null {
+    return this.spawn?.getPid?.() ?? null;
   }
 
   getState(): AgentRunState {

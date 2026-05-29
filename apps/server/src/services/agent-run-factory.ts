@@ -42,6 +42,8 @@ import {
   markAgentRunTerminal,
   newId,
   setAssignedAgentRunId,
+  touchAgentRunActivity,
+  updateAgentRunPid,
   updateAgentRunStatus,
 } from '@pc/db';
 import type {
@@ -968,6 +970,14 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     }
   };
 
+  // Persist the spawned OS pid so the liveness sweep can probe process
+  // existence and hard-kill can target the real process. Idempotent; no-ops
+  // until the spawn child exists (run.getPid() returns null pre-spawn).
+  const persistPid = (): void => {
+    const pid = run.getPid();
+    if (pid !== null) updateAgentRunPid(args.agentRunId, pid);
+  };
+
   // Fire initial 'queued' envelope so the panel renders the card the moment
   // the row lands. State events from AgentRun only fire on TRANSITIONS, not
   // the initial state, so we emit explicitly here.
@@ -983,13 +993,21 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
         status: 'spawning',
         spawnedAt: Date.now(),
       });
+      // The child may not exist yet at the spawning edge (spawn is created
+      // inside runSpawnPhase); capture opportunistically and again at running.
+      persistPid();
       broadcastStateChanged('spawning');
     } else if (next === 'running') {
+      const at = Date.now();
       updateAgentRunStatus({
         id: args.agentRunId,
         status: 'running',
-        readyAt: Date.now(),
+        readyAt: at,
       });
+      // Definitive pid capture — the spawn child exists once we're ready, and
+      // baseline the activity clock so the liveness sweep has a starting point.
+      persistPid();
+      touchAgentRunActivity(args.agentRunId, at);
       broadcastStateChanged('running');
     } else if (next === 'paused') {
       broadcastStateChanged('paused');
@@ -1000,6 +1018,10 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
   // `agent-jsonl-event` envelopes filtered by runId. Fan every JSONL event
   // out via the broadcast dep so the panel sees the same surface v1 produced.
   run.on('jsonl-event', (event: unknown) => {
+    // Liveness signal for the reconcile sweep: every JSONL event = the run is
+    // making progress. Stamp before the (optional) broadcast so activity is
+    // recorded even when no broadcast dep is wired (tests).
+    touchAgentRunActivity(args.agentRunId, Date.now());
     if (!args.deps.broadcast) return;
     try {
       args.deps.broadcast({

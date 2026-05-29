@@ -26,6 +26,8 @@ function row(id: string, status: AgentRunStatus): AgentRunRow {
     queuedAt: 1_700_000_000_000,
     spawnedAt: null,
     readyAt: null,
+    pid: null,
+    lastActivityAt: null,
     completedAt: null,
     rev: 0,
   };

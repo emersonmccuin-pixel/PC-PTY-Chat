@@ -214,6 +214,8 @@ export {
   listNonTerminalAgentRuns,
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,
+  touchAgentRunActivity,
+  updateAgentRunPid,
   updateAgentRunStatus,
 } from './repos/agent-runs.ts';
 export type {
