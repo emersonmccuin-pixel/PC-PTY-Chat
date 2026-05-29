@@ -1,6 +1,6 @@
 # Out-of-Process Agent Host Design
 
-Status: Phase A adapter seams complete; Phase B host process MVP next.
+Status: Phase B host process MVP complete; Phase C API reattach next.
 
 Owner: Codex.
 
@@ -312,10 +312,10 @@ Phase A - contracts and adapter seams:
 
 Phase B - host process MVP:
 
-- Add `apps/agent-host` or `packages/agent-host` executable.
-- Move `AgentRunRegistry` singleton into the host.
-- Implement `start-run`, `cancel`, `notify-mcp-handshake`, `list-runs`, and event stream.
-- Keep terminal verification/channel delivery in API.
+- Done: added the `@pc/agent-host` package with a JSON-lines host executable.
+- Done: moved host-side admission into `AgentHostService` through its own `AgentRunRegistry`.
+- Done: implemented `hello`, `list-runs`, `start-run`, `resume-run`, `send`, `answer-pending`, `cancel`, `notify-mcp-handshake`, `shutdown`, and a buffered event stream.
+- Done: kept terminal verification, DB writes, inbox persistence, and channel delivery out of the host package.
 
 Phase C - API reattach:
 

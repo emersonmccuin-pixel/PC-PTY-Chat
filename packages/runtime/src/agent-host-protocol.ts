@@ -77,6 +77,46 @@ export type AgentHostCommand =
   | { type: 'notify-mcp-handshake'; ccSessionId: string }
   | { type: 'shutdown'; mode: 'host-exit' | 'cancel-runs' };
 
+export type AgentHostCommandErrorCode =
+  | 'not-found'
+  | 'protocol-error'
+  | 'run-exists'
+  | 'send-failed'
+  | 'unsupported'
+  | 'host-shutting-down';
+
+export type AgentHostCommandResponse =
+  | {
+      ok: true;
+      command: 'hello';
+      identity: AgentHostIdentity;
+      lastSeq: number;
+    }
+  | {
+      ok: true;
+      command: 'list-runs';
+      runs: AgentHostRunSnapshot[];
+      lastSeq: number;
+    }
+  | {
+      ok: true;
+      command: 'start-run' | 'resume-run' | 'send' | 'answer-pending' | 'cancel';
+      run: AgentHostRunSnapshot;
+      lastSeq: number;
+    }
+  | {
+      ok: true;
+      command: 'notify-mcp-handshake' | 'shutdown';
+      lastSeq: number;
+    }
+  | {
+      ok: false;
+      command: AgentHostCommand['type'];
+      code: AgentHostCommandErrorCode;
+      error: string;
+      lastSeq: number;
+    };
+
 export type AgentHostEvent =
   | { seq: number; type: 'host-ready'; identity: AgentHostIdentity }
   | { seq: number; type: 'run-state'; run: AgentHostRunSnapshot }

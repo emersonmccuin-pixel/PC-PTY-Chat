@@ -292,6 +292,17 @@ export class AgentRun extends EventEmitter {
     this.spawn?.notifyMcpHandshake();
   }
 
+  async send(body: string, echoTimeoutMs?: number): Promise<SendResult> {
+    if (this.state !== 'running' || !this.spawn || this.isTerminal()) {
+      return 'exited';
+    }
+    return this.spawn.send(body, echoTimeoutMs);
+  }
+
+  getJsonlPath(): string | null {
+    return this.spawn?.getJsonlPath() ?? null;
+  }
+
   getState(): AgentRunState {
     return this.state;
   }

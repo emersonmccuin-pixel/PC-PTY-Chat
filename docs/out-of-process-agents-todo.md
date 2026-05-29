@@ -1,6 +1,6 @@
 # TODO — Out-of-process agent host (durable crash isolation)
 
-Status: Phase A seams complete; Phase B host process MVP next. Owner: Codex. Logged 2026-05-28.
+Status: Phase B host process MVP complete; Phase C API reattach next. Owner: Codex. Logged 2026-05-28.
 
 Design: `docs/out-of-process-agent-host-design.md`.
 

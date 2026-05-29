@@ -131,6 +131,8 @@ export type {
 
 export type {
   AgentHostCommand,
+  AgentHostCommandErrorCode,
+  AgentHostCommandResponse,
   AgentHostEvent,
   AgentHostIdentity,
   AgentHostResumeRunRequest,
