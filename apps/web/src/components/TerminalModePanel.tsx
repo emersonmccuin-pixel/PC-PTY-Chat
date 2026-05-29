@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
@@ -32,10 +33,16 @@ export function TerminalModePanel({
   const fitTargetRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const webglRef = useRef<WebglAddon | null>(null);
   const dataDisposableRef = useRef<{ dispose(): void } | null>(null);
   const sessionKeyRef = useRef<string | null>(null);
   const eventsRef = useRef(events);
   const lastTerminalSeqRef = useRef(0);
+  // Index cursor into `events` so the live-write effect only scans the new tail
+  // each change instead of re-walking the whole array (O(history) per keystroke
+  // echo → O(history^2) over a session). The seq check below stays the
+  // correctness guard; this is purely the perf cursor.
+  const lastScannedIdxRef = useRef(0);
   const attachingRef = useRef(false);
   const attachLiveBufferRef = useRef('');
   const writeQueueRef = useRef('');
@@ -100,6 +107,9 @@ export function TerminalModePanel({
     disposeTerminal();
     sessionKeyRef.current = sessionKey;
     lastTerminalSeqRef.current = maxTerminalSeq(eventsRef.current, sessionId);
+    // Everything currently in the array is accounted for (loaded via the
+    // transcript fetch); the live effect only needs to process appends after this.
+    lastScannedIdxRef.current = eventsRef.current.length;
     attachingRef.current = true;
     attachLiveBufferRef.current = '';
     setReadyToReveal(false);
@@ -119,6 +129,21 @@ export function TerminalModePanel({
     term.open(hostRef.current);
     termRef.current = term;
     fitRef.current = fit;
+    // GPU renderer — xterm's default DOM renderer is the terminal's main perf
+    // bottleneck under heavy output/scroll. Load after open(); fall back
+    // silently to the DOM renderer if WebGL is unavailable or its GPU context
+    // is lost.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        if (webglRef.current === webgl) webglRef.current = null;
+      });
+      term.loadAddon(webgl);
+      webglRef.current = webgl;
+    } catch {
+      /* WebGL unavailable — stays on the DOM renderer */
+    }
     term.attachCustomKeyEventHandler((event) => {
       if (
         event.type === 'keydown' &&
@@ -172,18 +197,25 @@ export function TerminalModePanel({
       disposeTerminal();
       sessionKeyRef.current = null;
       lastTerminalSeqRef.current = 0;
+      lastScannedIdxRef.current = 0;
       setReadyToReveal(false);
     }
   }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
+    // Only walk events appended since the last run. If the array was replaced or
+    // shrank (session reset / replay), fall back to a full rescan once; the seq
+    // check still prevents any double-write.
+    let startIdx = lastScannedIdxRef.current;
+    if (startIdx > events.length) startIdx = 0;
     const pending: Array<{ seq: number; text: string }> = [];
-    for (const env of events) {
-      const raw = terminalRawFromEnvelope(env, sessionId);
+    for (let i = startIdx; i < events.length; i++) {
+      const raw = terminalRawFromEnvelope(events[i], sessionId);
       if (!raw || raw.seq <= lastTerminalSeqRef.current) continue;
       pending.push(raw);
     }
+    lastScannedIdxRef.current = events.length;
     pending.sort((a, b) => a.seq - b.seq);
     for (const raw of pending) {
       if (attachingRef.current) {
@@ -260,6 +292,8 @@ export function TerminalModePanel({
     attachingRef.current = false;
     dataDisposableRef.current?.dispose();
     dataDisposableRef.current = null;
+    webglRef.current?.dispose();
+    webglRef.current = null;
     fitRef.current?.dispose();
     fitRef.current = null;
     termRef.current?.dispose();
