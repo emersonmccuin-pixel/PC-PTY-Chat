@@ -1,6 +1,6 @@
 # Agents Pods Catalog MCP Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -188,7 +188,7 @@ Do not change pod dispatch, materialization, stock seed, or restart-on-edit sema
 
 Small cleanup candidates:
 
-- Extract a focused MCP config parser/normalizer from `pod-routes.ts` and cover it directly, then keep route behavior unchanged.
+- Done: extracted focused MCP config parsing into `apps/server/src/services/pod-mcp-config.ts` and covered it directly in `apps/server/test/pod-mcp-config.test.ts`.
 - Extract MCP agent-tool id/name resolution or repeated HTTP response handling only after adding a project-scoped name-resolution test.
 - Add a web-side helper for MCP config JSON parsing if the UI error path becomes part of this cleanup.
 - Keep stock seed content movement out of this pod pass; it is high-churn prompt data.
@@ -216,11 +216,17 @@ Commands run so far:
 - `rg --files` and `rg -n` for pod, agent, catalog, MCP, stock, materializer, route, web, and test surfaces.
 - `Get-Content` for DB pod repos, runtime materializer, pod spawn service, MCP agent tools, web Agents components, existing pod docs, and focused tests.
 - `pnpm --filter @pc/server exec tsx --test test/pod-routes.test.ts test/pod-drift.test.ts test/pod-tool-catalog-drift.test.ts test/stock-pod-seed.test.ts test/pod-spawn.test.ts test/mcp-bridge-routes.test.ts test/mcp-config-rewrite.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/pod-mcp-config.test.ts test/pod-routes.test.ts test/pod-drift.test.ts test/pod-tool-catalog-drift.test.ts test/stock-pod-seed.test.ts test/pod-spawn.test.ts test/mcp-bridge-routes.test.ts test/mcp-config-rewrite.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
 - Focused agents/pods/catalog/MCP audit tests: 72 passed, 0 failed.
+- Focused agents/pods/catalog/MCP cleanup tests: 75 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:

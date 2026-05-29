@@ -53,7 +53,6 @@ import type {
   PodAuditField,
   PodKnowledgeKind,
   PodKnowledgeRow,
-  PodMcpServerConfig,
   PodMcpServerRow,
   PodScope,
   PodSecretRow,
@@ -64,6 +63,7 @@ import {
   POD_AUDIT_FIELDS,
   POD_KNOWLEDGE_KINDS,
 } from '@pc/domain';
+import { parsePodMcpServerConfig } from '../services/pod-mcp-config.ts';
 
 export type PodMutationKind = 'created' | 'updated' | 'deleted';
 
@@ -239,40 +239,6 @@ function asKnowledgeKind(v: unknown): PodKnowledgeKind | undefined {
     return v as PodKnowledgeKind;
   }
   throw new Error(`invalid kind: ${JSON.stringify(v)}`);
-}
-
-function asMcpConfig(v: unknown): PodMcpServerConfig {
-  if (!v || typeof v !== 'object') {
-    throw new Error('mcp server config must be an object');
-  }
-  const cfg = v as Record<string, unknown>;
-  const out: PodMcpServerConfig = {};
-  if (cfg.command !== undefined) {
-    if (typeof cfg.command !== 'string') throw new Error('mcp.command must be a string');
-    out.command = cfg.command;
-  }
-  if (cfg.args !== undefined) {
-    if (!Array.isArray(cfg.args) || !cfg.args.every((a) => typeof a === 'string')) {
-      throw new Error('mcp.args must be string[]');
-    }
-    out.args = cfg.args as string[];
-  }
-  if (cfg.env !== undefined) {
-    if (!cfg.env || typeof cfg.env !== 'object' || Array.isArray(cfg.env)) {
-      throw new Error('mcp.env must be an object of string=string');
-    }
-    const env: Record<string, string> = {};
-    for (const [k, val] of Object.entries(cfg.env as Record<string, unknown>)) {
-      if (typeof val !== 'string') throw new Error(`mcp.env.${k} must be a string`);
-      env[k] = val;
-    }
-    out.env = env;
-  }
-  if (cfg.url !== undefined) {
-    if (typeof cfg.url !== 'string') throw new Error('mcp.url must be a string');
-    out.url = cfg.url;
-  }
-  return out;
 }
 
 /** Register every pod route on `app`. Idempotent — call once per Hono
@@ -839,7 +805,7 @@ export function registerPodRoutes(app: Hono, deps: PodRoutesDeps): void {
     if (!name) return c.json({ ok: false, error: 'name required' }, 400);
     let row: PodMcpServerRow;
     try {
-      const config = asMcpConfig(body.config);
+      const config = parsePodMcpServerConfig(body.config);
       // Section 22.2 — mcp servers inherit agent.scope/projectId. See above.
       row = createMcpServer(
         {
