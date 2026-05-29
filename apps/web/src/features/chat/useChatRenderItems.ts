@@ -1,16 +1,36 @@
 import { useMemo } from 'react';
 
-import type { WsEnvelope } from '@/features/runtime/ws-types';
+import { rowPolicy } from '@pc/runtime/chat-policy';
+
+import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 import { injectTodoSnapshots, normalizeJsonlEnvelope } from '@/features/chat/normalizeJsonlEnvelope';
 import { synthesizeRenderItems } from '@/features/chat/toolGrouping';
 import { pendingPromptEnvelope } from '@/features/chat/usePendingPrompts';
 import type { PendingPrompt, RenderItem, StableEnvelope } from '@/features/chat/types';
+
+/** Stage 3 debug-reveal shape for a hidden row that normalizeJsonlEnvelope can't
+ *  map (internal kinds). Reuses the system-row renderer so the reveal needs no
+ *  new UI. */
+function debugRevealEnvelope(env: WsEnvelope, ev: JsonlEvent): WsEnvelope {
+  return {
+    projectId: env.projectId,
+    type: 'event',
+    event: {
+      kind: 'system',
+      subtype: `debug:${ev.kind}`,
+      level: 'debug',
+      message: ev.kind,
+      raw: ev,
+    },
+  };
+}
 
 interface BuildEnvelopesArgs {
   events: WsEnvelope[];
   currentSessionId: string | null;
   projectId: string;
   visiblePendingPrompts: PendingPrompt[];
+  revealHidden?: boolean;
 }
 
 /**
@@ -33,6 +53,7 @@ export function buildCanonicalChatEnvelopes({
   currentSessionId,
   projectId,
   visiblePendingPrompts,
+  revealHidden = false,
 }: BuildEnvelopesArgs): StableEnvelope[] {
   const content = events.filter((env) => env.type === 'jsonl' || env.type === 'ask');
   const withTodos = injectTodoSnapshots(content);
@@ -51,8 +72,17 @@ export function buildCanonicalChatEnvelopes({
       continue;
     }
     if (env.type === 'jsonl') {
+      // Stage 3: rowPolicy is the suppression authority. Hidden rows are filtered
+      // at the view (revealable via the debug toggle), never dropped at parse.
+      // normalizeJsonlEnvelope is now just the shape converter — its null set is
+      // proven equal to policy's hidden set (chat-policy.test.ts), so the gate and
+      // the converter agree. Stage 6 replaces the converter with a policy-driven one.
+      const ev = env.event as JsonlEvent | undefined;
+      if (!ev) continue;
+      if (rowPolicy(ev).visibility === 'hidden' && !revealHidden) continue;
       const normalized = normalizeJsonlEnvelope(env);
       if (normalized) out.push({ origIdx: i, env: normalized });
+      else if (revealHidden) out.push({ origIdx: i, env: debugRevealEnvelope(env, ev) });
     }
   }
   for (let i = 0; i < visiblePendingPrompts.length; i++) {
@@ -72,16 +102,24 @@ export function useChatRenderItems({
   projectId,
   visiblePendingPrompts,
   canonical = false,
+  revealHidden = false,
 }: {
   events: WsEnvelope[];
   currentSessionId: string | null;
   projectId: string;
   visiblePendingPrompts: PendingPrompt[];
   canonical?: boolean;
+  revealHidden?: boolean;
 }): { chatEnvelopes: StableEnvelope[]; renderItems: RenderItem[] } {
   const chatEnvelopes = useMemo<StableEnvelope[]>(() => {
     if (canonical) {
-      return buildCanonicalChatEnvelopes({ events, currentSessionId, projectId, visiblePendingPrompts });
+      return buildCanonicalChatEnvelopes({
+        events,
+        currentSessionId,
+        projectId,
+        visiblePendingPrompts,
+        revealHidden,
+      });
     }
     // --- legacy path (frozen; the trustworthy A/B baseline) ---
     const eventsWithTodos = injectTodoSnapshots(events);
@@ -116,7 +154,7 @@ export function useChatRenderItems({
       });
     }
     return out;
-  }, [events, currentSessionId, projectId, visiblePendingPrompts, canonical]);
+  }, [events, currentSessionId, projectId, visiblePendingPrompts, canonical, revealHidden]);
 
   const renderItems = useMemo(
     () => synthesizeRenderItems(chatEnvelopes),

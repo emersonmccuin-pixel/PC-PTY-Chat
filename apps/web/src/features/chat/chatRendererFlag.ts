@@ -35,3 +35,25 @@ export function setJsonlCanonicalChatOverride(value: boolean | null): void {
     // no-op when storage is unavailable
   }
 }
+
+const REVEAL_HIDDEN_KEY = 'caisson.chat.revealHidden';
+
+/** Debug toggle: render rows the policy marks `hidden` (queue churn, titles,
+ *  file-history, etc.) instead of filtering them. Off by default; canonical
+ *  renderer only. */
+export function isRevealHiddenChatRows(): boolean {
+  try {
+    return localStorage.getItem(REVEAL_HIDDEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setRevealHiddenChatRows(value: boolean): void {
+  try {
+    if (value) localStorage.setItem(REVEAL_HIDDEN_KEY, '1');
+    else localStorage.removeItem(REVEAL_HIDDEN_KEY);
+  } catch {
+    // no-op when storage is unavailable
+  }
+}

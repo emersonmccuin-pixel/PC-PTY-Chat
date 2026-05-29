@@ -16,7 +16,7 @@ import { useChatRuntimeThinking } from '@/features/chat/useChatRuntimeThinking';
 import { useChatSurfaceMode } from '@/features/chat/useChatSurfaceMode';
 import { usePendingPrompts } from '@/features/chat/usePendingPrompts';
 import { useChatRenderItems } from '@/features/chat/useChatRenderItems';
-import { isJsonlCanonicalChat } from '@/features/chat/chatRendererFlag';
+import { isJsonlCanonicalChat, isRevealHiddenChatRows } from '@/features/chat/chatRendererFlag';
 import { useChatTimelineRenderer } from '@/features/chat/useChatTimelineRenderer';
 
 // ── ChatSurface ──────────────────────────────────────────────────────────
@@ -65,6 +65,7 @@ export function ChatSurface({
     projectId,
     visiblePendingPrompts,
     canonical: isJsonlCanonicalChat(),
+    revealHidden: isRevealHiddenChatRows(),
   });
 
   const renderTimelineItem = useChatTimelineRenderer({
