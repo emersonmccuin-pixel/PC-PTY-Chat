@@ -238,14 +238,39 @@ host eventually cleans itself up.
 
 ## Phasing
 
-1. **Host process + control WS + `RemoteSpawn`**, agents only. Server still
-   blanket-fails on boot (no reattach yet) — but a server crash no longer kills
-   running agents mid-flight (they finish, write JSONL; next boot still fails the
-   *row* but the work/transcript survived). Validates the split.
+1. **Host process + control WS + `RemoteSpawn`**, agents only. ✅ **shipped
+   (phase 1)** — see Implementation status below. Server still blanket-fails on
+   boot (no reattach yet) — but a server crash no longer kills running agents
+   mid-flight (they finish, write JSONL; next boot still fails the *row* but the
+   work/transcript survived). Validates the split.
 2. **Reattach + targeted reconcile.** Delivers the headline acceptance test.
 3. **Host respawn + supervisor/Electron ownership wiring.** Delivers native-crash
    isolation.
 4. **Interactive sessions onto the host** (isolation), then their reattach.
+
+## Implementation status
+
+**Phase 1 — shipped (off by default).**
+
+- Runtime core (`packages/runtime/src/host/`): `protocol.ts`, `agent-host.ts`,
+  `remote-spawn.ts`, `host-client.ts`; `LowLevelSpawn` gains `getPid()` +
+  `suppressJsonlTailer`. 11 tests in `test/agent-host.test.ts`.
+- Server wiring (`apps/server/src/agent-host/`): `ws-channel.ts`,
+  `host-main.ts` (standalone host entry), `connect-host.ts` (connect +
+  best-effort detached spawn-if-not-running), `constants.ts` (the
+  `PC_AGENT_HOST` flag + port). `agent-run-factory` swaps the `spawnFactory` to
+  `RemoteSpawn` when the host client is connected; `index.ts` boot does a
+  fire-and-forget connect when the flag is set.
+
+**How to try it (dev):** set `PC_AGENT_HOST=1` (optionally
+`PC_AGENT_HOST_PORT`) for the server. On boot it connects to the host, spawning
+one via tsx if none is listening (or run `pnpm --filter @pc/server agent-host`
+manually). With the flag off, nothing changes — in-process spawns as today.
+
+**Phase-1 limits (by design):** no reattach yet (boot still blanket-fails
+rows); auto-spawn detachment isn't hardened against Windows job-object
+teardown; interactive PTYs not yet routed through the host. Those are phases
+2–4.
 
 ## What stays unchanged
 

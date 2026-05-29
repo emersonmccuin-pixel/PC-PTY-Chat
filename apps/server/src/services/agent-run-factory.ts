@@ -64,6 +64,7 @@ import { preparePodSpawn, type PodSpawnPrep } from './pod-spawn.ts';
 import type { ChannelServer } from './channel-server.ts';
 
 import { getActiveRunRegistry, type ActiveRunRegistry } from './agent-active-runs.ts';
+import { getAgentHostClient } from '../agent-host/connect-host.ts';
 import { enqueueAndPush } from './agent-delivery.ts';
 import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
 import {
@@ -924,6 +925,17 @@ function defaultAgentRunFactory(
   },
 ): AgentRun {
   const { registry, ...runInput } = input;
+  // When the out-of-process host is connected (PC_AGENT_HOST=1), route the PTY
+  // through a RemoteSpawn over the control channel instead of an in-process
+  // LowLevelSpawn — the AgentRun state machine is identical either way (the
+  // SpawnLike seam). Falls back to in-process if the host isn't up yet.
+  const hostClient = getAgentHostClient();
+  if (hostClient) {
+    return new AgentRun(runInput, {
+      registry,
+      spawnFactory: (llsInput) => hostClient.createSpawn(llsInput),
+    });
+  }
   return new AgentRun(runInput, { registry });
 }
 

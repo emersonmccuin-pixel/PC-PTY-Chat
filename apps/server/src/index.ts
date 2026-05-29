@@ -29,6 +29,8 @@ import {
   maybeAdvanceSendQueueConfirmation,
   sendQueueSnapshotPayload,
 } from './services/orchestrator-send-queue-delivery.ts';
+import { isAgentHostEnabled } from './agent-host/constants.ts';
+import { initAgentHostClient } from './agent-host/connect-host.ts';
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
@@ -342,6 +344,20 @@ channelServer.start();
   } catch (err) {
     console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
   }
+}
+
+// Out-of-process agent host (PC_AGENT_HOST=1 — opt-in until phase-2 reattach).
+// Fire-and-forget connect: dispatches before the host is ready fall back to the
+// in-process path (getAgentHostClient() returns null). Failure is non-fatal —
+// the server keeps running with in-process spawns.
+if (isAgentHostEnabled()) {
+  initAgentHostClient().then(
+    () => console.log('[agent-host] client ready — dispatches route out-of-process'),
+    (err) =>
+      console.error(
+        `[agent-host] init failed; staying in-process: ${(err as Error).message}`,
+      ),
+  );
 }
 
 const app = new Hono();
