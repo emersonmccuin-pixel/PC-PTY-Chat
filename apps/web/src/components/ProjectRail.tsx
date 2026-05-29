@@ -31,6 +31,8 @@ interface ProjectRailProps {
   unreadProjectIds: ReadonlySet<string>;
 }
 
+const EMPTY_UNREAD: ReadonlySet<string> = new Set();
+
 interface MenuPos {
   project: Project;
   x: number;
@@ -51,7 +53,7 @@ export function ProjectRail({
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
-  unreadProjectIds,
+  unreadProjectIds = EMPTY_UNREAD,
 }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
