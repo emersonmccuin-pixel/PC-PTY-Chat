@@ -3,11 +3,15 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
+import {
+  maxTerminalSeq,
+  removeOverlappingPrefix,
+  terminalRawBatchFromEvents,
+} from '@/features/chat/terminalTranscript';
 import { runtimeApi } from '@/features/runtime/client';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
-const OVERLAP_SCAN_BYTES = 64 * 1024;
 
 interface TerminalModePanelProps {
   projectId: string;
@@ -178,13 +182,7 @@ export function TerminalModePanel({
 
   useEffect(() => {
     if (!sessionId) return;
-    const pending: Array<{ seq: number; text: string }> = [];
-    for (const env of events) {
-      const raw = terminalRawFromEnvelope(env, sessionId);
-      if (!raw || raw.seq <= lastTerminalSeqRef.current) continue;
-      pending.push(raw);
-    }
-    pending.sort((a, b) => a.seq - b.seq);
+    const pending = terminalRawBatchFromEvents(events, sessionId, lastTerminalSeqRef.current);
     for (const raw of pending) {
       if (attachingRef.current) {
         attachLiveBufferRef.current += raw.text;
@@ -290,36 +288,4 @@ function terminalTheme() {
     brightCyan: '#29b8db',
     brightWhite: '#e5e5e5',
   };
-}
-
-function terminalRawFromEnvelope(
-  env: WsEnvelope | undefined,
-  sessionId: string,
-): { seq: number; text: string } | null {
-  if (!env || env.type !== 'raw' || typeof env.text !== 'string') return null;
-  if (env.sessionId !== sessionId) return null;
-  const seq = env.terminalSeq;
-  if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq <= 0) return null;
-  return { seq, text: env.text };
-}
-
-function maxTerminalSeq(events: WsEnvelope[], sessionId: string): number {
-  let max = 0;
-  for (const env of events) {
-    const raw = terminalRawFromEnvelope(env, sessionId);
-    if (raw) max = Math.max(max, raw.seq);
-  }
-  return max;
-}
-
-function removeOverlappingPrefix(previous: string, next: string): string {
-  if (!previous || !next) return next;
-  const prevTail = previous.slice(-OVERLAP_SCAN_BYTES);
-  const max = Math.min(prevTail.length, next.length);
-  for (let len = max; len > 0; len--) {
-    if (prevTail.endsWith(next.slice(0, len))) {
-      return next.slice(len);
-    }
-  }
-  return next;
 }

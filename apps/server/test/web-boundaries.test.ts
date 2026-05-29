@@ -140,3 +140,32 @@ test('agent run websocket envelope contracts live outside transcript components'
     'agent-jsonl-event contracts should stay in @/features/agent-runs/transcript',
   );
 });
+
+test('terminal transcript helpers live outside the xterm component', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/chat/terminalTranscript.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'terminal transcript helpers should live under features/chat',
+  );
+
+  const helperPattern =
+    /\bfunction\s+(?:terminalRawFromEnvelope|maxTerminalSeq|removeOverlappingPrefix)\b|\bconst\s+OVERLAP_SCAN_BYTES\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'terminal transcript parsing and overlap helpers should stay in @/features/chat/terminalTranscript',
+  );
+});

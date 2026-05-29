@@ -1,6 +1,6 @@
 # Terminal And PTY Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -30,6 +30,7 @@ Web modules:
 
 - `apps/web/src/components/TerminalModePanel.tsx`: xterm mount, transcript tail attach, live raw merge, input, resize, dispose.
 - `apps/web/src/features/chat/TerminalPane.tsx`: terminal panel and chat/terminal surface toggle.
+- `apps/web/src/features/chat/terminalTranscript.ts`: pure terminal raw envelope parsing, pending raw ordering, duplicate sequence filtering, and transcript/live overlap removal.
 - `apps/web/src/features/chat/runtimeState.ts`: orchestrator/transient input capability gates for terminal input, resize, interrupt, and chat.
 - `apps/web/src/features/runtime/client.ts`: terminal transcript HTTP client.
 - `apps/web/src/features/runtime/ws-types.ts`: terminal outbound/input ack and raw envelope contracts.
@@ -127,6 +128,8 @@ Existing focused tests:
 
 - `apps/server/test/terminal-mode.test.ts`: terminal input validation, oversized input rejection, missing PTY rejection, transcript tail containment, missing transcript, and tail byte caps.
 - `apps/server/test/web-terminal-capabilities.test.ts`: orchestrator/transient terminal writability while spawning, terminal/unavailable state blocking, terminal input failure status text.
+- `apps/server/test/web-terminal-transcript.test.ts`: terminal raw envelope parsing, max sequence discovery, pending raw ordering, duplicate sequence filtering, and transcript/live overlap removal.
+- `apps/server/test/web-boundaries.test.ts`: guards terminal transcript helpers outside the xterm component.
 - `apps/server/test/runtime-host-websocket-message.test.ts`: terminal input, resize, interrupt, ask routing, stale resize handling.
 - `apps/server/test/runtime-host-pty-handlers.test.ts`: ready drain, raw/event/JSONL lifecycle broadcasts.
 - `apps/server/test/runtime-host-routes.test.ts`: terminal transcript route coverage through runtime routes.
@@ -134,8 +137,6 @@ Existing focused tests:
 Missing tests or trace evidence:
 
 - No browser smoke verifies xterm attach, fit, live raw merge, and typing.
-- No focused web helper test covers `removeOverlappingPrefix` or `terminalRawFromEnvelope`.
-- No test covers duplicate or out-of-order `raw` envelopes at the web merge boundary.
 - No test captures terminal transcript attach plus live raw overlap removal end to end.
 
 ## Cleanup Plan
@@ -144,8 +145,9 @@ Do not change PTY process behavior without a failing trace.
 
 Small cleanup candidates:
 
-- Extract terminal raw envelope parsing and transcript/live overlap merge into a pure web helper with focused tests.
-- Add a boundary guard so terminal transcript/raw helpers stay outside the xterm component if extraction happens.
+- Done: extracted terminal raw envelope parsing and transcript/live overlap merge into `apps/web/src/features/chat/terminalTranscript.ts`.
+- Done: added focused tests for raw envelope parsing, sequence ordering, duplicate sequence filtering, and overlap removal.
+- Done: added a boundary guard so terminal transcript/raw helpers stay outside the xterm component.
 - Decide later whether `PtySession` and `LowLevelSpawn` should share a small raw input/resize guard helper; defer until more low-level spawn work is active.
 
 Verification commands to use before any cleanup patch:
@@ -168,16 +170,22 @@ Commands run so far:
 - `rg -n` for terminal, PTY, resize, transcript, raw input, and raw envelope surfaces.
 - `Get-Content` for terminal server service, terminal tests, PtySession, LowLevelSpawn, TerminalModePanel, terminal transcript route, and WebSocket message handling.
 - `pnpm --filter @pc/server exec tsx --test test/terminal-mode.test.ts test/web-terminal-capabilities.test.ts test/runtime-host-websocket-message.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-terminal-transcript.test.ts test/web-boundaries.test.ts test/terminal-mode.test.ts test/web-terminal-capabilities.test.ts test/runtime-host-websocket-message.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
 - Focused terminal/PTY WebSocket tests: 16 passed, 0 failed.
+- Focused terminal/PTY cleanup tests: 26 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:
 
-- None. In-app Browser backend was unavailable during earlier smoke attempts.
+- Browser smoke attempted for the existing local app without restarting anything, but the in-app Browser backend reported unavailable: `iab`.
 
 Open risks:
 
