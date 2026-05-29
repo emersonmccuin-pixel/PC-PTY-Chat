@@ -33,7 +33,7 @@ Base: `dev` at `44980f1`.
 
 ## Parallel Safety
 
-- One active pod per worktree.
-- Chat/runtime/WebSocket is owned here until this audit is handed off or completed.
-- Do not edit overlapping runtime, WebSocket, chat reducer, or ChatSurface files from another pod without coordination.
+- All listed pods are complete in this worktree.
+- Start any follow-up as a new scoped pod or work item before editing overlapping source.
+- Do not edit overlapping runtime, WebSocket, chat reducer, ChatSurface, desktop, or dev-control files from another worktree without coordination.
 - Do not restart dev servers, Vite, channel server, dogfood app, or the desktop app.
