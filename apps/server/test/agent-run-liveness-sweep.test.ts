@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { AgentRunRow, AgentRunStatus, ULID } from '@pc/domain';
 
-import { sweepAgentRunLiveness } from '../src/services/agent-run-liveness-sweep.ts';
+import { sweepAgentRunLiveness, type LivenessSweepDeps } from '../src/services/agent-run-liveness-sweep.ts';
 
 const NOW = 1_800_000_000_000;
 const IDLE = 10 * 60_000;
@@ -41,7 +41,7 @@ interface Harness {
   alivePids: Set<number>;
   finalized: Array<{ id: string; cause: string | null | undefined }>;
   killed: number[];
-  deps: Parameters<typeof sweepAgentRunLiveness>[0];
+  deps: LivenessSweepDeps;
 }
 
 function harness(rows: AgentRunRow[], alivePids: number[]): Harness {

@@ -25,6 +25,7 @@ import {
   recordExplicitPause as defaultRecordExplicitPause,
 } from '../../services/pause-resume.ts';
 import { getActiveRunRegistry as defaultGetActiveRunRegistry } from '../../services/agent-active-runs.ts';
+import { hardKillAgentRun, inspectAgentRun } from '../../services/agent-run-control.ts';
 import { recordAgentInvoke as defaultRecordAgentInvoke } from '../../services/agent-audit.ts';
 import { checkInvokeDepth as defaultCheckInvokeDepth } from '../../services/invoke-depth.ts';
 import type { ChannelServer } from '../../services/channel-server.ts';
@@ -178,6 +179,44 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
     }
     entry.run.cancel();
     return c.json({ ok: true, status: 'cancelled' });
+  });
+
+  /** Hard-kill: force-end a run even when it's a PHANTOM (registry handle lost
+   *  / process already dead) — the gap /cancel can't cover. Force-kills the
+   *  persisted pid's process tree + finalizes the row to `cancelled` with full
+   *  effects. Idempotent: already-terminal returns ok. */
+  app.post('/api/projects/:projectId/agent-runs/:runId/kill', (c) => {
+    const projectId = c.req.param('projectId') as ULID;
+    const project = getProjectById(projectId);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+    const runId = c.req.param('runId') as ULID;
+    const row = getAgentRunRow(runId);
+    if (!row) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+    if (row.projectId !== projectId) {
+      return c.json({ ok: false, error: `run ${runId} not in project ${projectId}` }, 400);
+    }
+    const result = hardKillAgentRun(runId, {
+      activeRunRegistry: defaultGetActiveRunRegistry(),
+      channelServer: deps.channelServer,
+      broadcast: deps.broadcastTo,
+    });
+    return c.json(result, result.ok ? 200 : 404);
+  });
+
+  /** Inspect / peek: status + pid liveness + idle age + last JSONL action.
+   *  "Is it working or wedged?" without digging through the DB by hand. */
+  app.get('/api/projects/:projectId/agent-runs/:runId/inspect', (c) => {
+    const projectId = c.req.param('projectId') as ULID;
+    const project = getProjectById(projectId);
+    if (!project) return c.json({ ok: false, error: `unknown project: ${projectId}` }, 404);
+    const runId = c.req.param('runId') as ULID;
+    const row = getAgentRunRow(runId);
+    if (!row) return c.json({ ok: false, error: `unknown run: ${runId}` }, 404);
+    if (row.projectId !== projectId) {
+      return c.json({ ok: false, error: `run ${runId} not in project ${projectId}` }, 400);
+    }
+    const result = inspectAgentRun(runId);
+    return c.json(result, result.ok ? 200 : 404);
   });
 
   /** `pc_invoke_agent` HTTP surface. Every spawn goes through the `AgentRun`
