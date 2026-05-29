@@ -13,8 +13,8 @@
 //                              answer) OR HTTP user-answer route fires.
 //                              Atomic open→answered flip on the row,
 //                              persists `spawning` + podRevisionAtResume to
-//                              agent_runs_v2, drives AgentRun
-//                              ._resumeWithAnswer (which spawns the resumed
+//                              agent_runs_v2, drives the active run handle
+//                              resume path (which spawns the resumed
 //                              LowLevelSpawn). Same agent_run_id; the run
 //                              record continues across the pause boundary.
 //
@@ -141,8 +141,8 @@ export function recordExplicitPause(
     now,
   });
 
-  // Mark the run paused (in-memory state machine + persisted row).
-  entry.run._markPaused(pendingAskId);
+  // Mark the run paused (active handle state machine + persisted row).
+  entry.run.markPaused(pendingAskId);
   updateAgentRunStatus({ id: input.agentRunId, status: 'paused' });
 
   // Deliver the agent-asks-* event to the dispatcher session.
@@ -294,11 +294,11 @@ export function answerPendingAsk(
     podRevisionAtResume,
   });
 
-  // Drive the run. AgentRun._resumeWithAnswer transitions paused → spawning
-  // → running and constructs a fresh LowLevelSpawn in resume mode with the
-  // answer as the typed first user turn.
+  // Drive the run. The active handle transitions paused -> spawning ->
+  // running and constructs a fresh LowLevelSpawn in resume mode with the
+  // answer as the typed first user turn in in-process mode.
   try {
-    entry.run._resumeWithAnswer(input.answer);
+    entry.run.resumeWithAnswer(input.answer);
   } catch (err) {
     return {
       ok: false,

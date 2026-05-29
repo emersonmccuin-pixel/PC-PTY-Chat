@@ -3,8 +3,8 @@
 // Exercises the three primitives + active-runs registry against:
 //  - A real @pc/db (temp data dir).
 //  - A real ChannelServer (ephemeral port).
-//  - A fake AgentRun implementing the SpawnLike-shaped wrapper surface
-//    (state machine + _markPaused / _resumeWithAnswer + terminal event).
+//  - A fake active-run handle implementing the server registry surface
+//    (state machine + pause / resume + terminal callback).
 //
 // Section 9's MCP tools and Session 11's cutover are the production
 // callers; this suite pins the contract they'll integrate against.
@@ -193,6 +193,22 @@ class FakeAgentRun extends EventEmitter {
     this.record.state = status;
     this.emit('terminal', { status, cause: status === 'cancelled' ? 'cancelled' : undefined });
   }
+
+  markPaused(askId: string) {
+    this._markPaused(askId);
+  }
+
+  resumeWithAnswer(answer: string) {
+    this._resumeWithAnswer(answer);
+  }
+
+  notifyMcpHandshake() {
+    /* no-op for pause/resume tests */
+  }
+
+  onTerminal(listener: () => void) {
+    this.once('terminal', listener);
+  }
 }
 
 function seedAgentRunRow(
@@ -241,7 +257,7 @@ test('recordExplicitPause — happy path writes ask row + marks paused + deliver
   seedAgentRunRow(runId, ccSession);
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -306,7 +322,7 @@ test('recordExplicitPause — pausing a non-running run rejects', () => {
   seedAgentRunRow(runId, ccSession, 'paused');
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession, state: 'paused' });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -335,7 +351,7 @@ test('recordExplicitPause — pushes event over a live registrant', async () => 
   seedAgentRunRow(runId, ccSession);
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: dispatcherSession,
     ccSessionId: ccSession,
@@ -401,7 +417,7 @@ test('answerPendingAsk — happy path: flips row + drives resume', () => {
   });
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession, state: 'paused' });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -459,7 +475,7 @@ test('answerPendingAsk — already-answered row rejects', () => {
   });
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession, state: 'paused' });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -499,7 +515,7 @@ test('answerPendingAsk — flag drift when pod row revision changes', () => {
   });
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession, state: 'paused' });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -536,7 +552,7 @@ test('cancelPendingAsk — flips row to cancelled and cancels the run', () => {
   });
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession, state: 'paused' });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -651,7 +667,7 @@ test('ActiveRunRegistry — register + lookup by id and ccSession', () => {
   const ccSession = `cc-${runId}`;
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,
@@ -672,7 +688,7 @@ test('ActiveRunRegistry — auto-unregisters on terminal event', () => {
   const ccSession = `cc-${runId}`;
   const run = new FakeAgentRun({ agentRunId: runId, ccSessionId: ccSession });
   reg.register({
-    run: run as never,
+    run,
     projectId,
     dispatcherSessionId: 'orch-sess',
     ccSessionId: ccSession,

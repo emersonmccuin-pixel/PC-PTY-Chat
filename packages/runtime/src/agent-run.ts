@@ -48,7 +48,14 @@ export type AgentRunFailureCause =
   | 'send-failed'
   | 'unexpected-exit'
   | 'cancel-while-queued'
-  | 'cancelled';
+  | 'cancelled'
+  | 'mcp-handshake-never'
+  | 'kill-during-spawn'
+  | 'server-restart'
+  | 'host-unavailable'
+  | 'host-lost'
+  | 'host-crashed'
+  | 'host-protocol-error';
 
 export interface AgentRunRecord {
   agentRunId: string;
@@ -309,6 +316,17 @@ export class AgentRun extends EventEmitter {
    *  /api/internal/mcp-handshake route calls this. Idempotent. */
   notifyMcpHandshake(): void {
     this.spawn?.notifyMcpHandshake();
+  }
+
+  async send(body: string, echoTimeoutMs?: number): Promise<SendResult> {
+    if (this.state !== 'running' || !this.spawn || this.isTerminal()) {
+      return 'exited';
+    }
+    return this.spawn.send(body, echoTimeoutMs);
+  }
+
+  getJsonlPath(): string | null {
+    return this.spawn?.getJsonlPath() ?? null;
   }
 
   getState(): AgentRunState {

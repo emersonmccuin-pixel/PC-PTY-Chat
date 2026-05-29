@@ -30,6 +30,7 @@ import {
   dispatchContinueAgent,
   type DispatchAgentResult,
 } from './agent-run-factory.ts';
+import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 
 /** Error class for v1 422 surfaces (precondition / not-found that the route
  *  maps to a clean HTTP status). Carrying the cause through lets the route
@@ -111,6 +112,7 @@ export interface RejectAgentWorkItemResult {
 
 export interface RejectAgentWorkItemDeps {
   channelServer: ChannelServer;
+  hostClient?: AgentHostReattachClient | null;
   broadcast?: (env: { type: string; [k: string]: unknown }) => void;
   /** Test seam — production uses `dispatchContinueAgent` from the agent-run
    *  factory. Injecting lets unit tests stub the continuation result without
@@ -120,10 +122,10 @@ export interface RejectAgentWorkItemDeps {
 
 /** Reject a tier-2/3 verification hold + wake the producer run with the
  *  feedback. Returns the updated WI + the continuation dispatch result. */
-export function rejectAgentWorkItem(
+export async function rejectAgentWorkItem(
   input: RejectAgentWorkItemInput,
   deps: RejectAgentWorkItemDeps,
-): RejectAgentWorkItemResult {
+): Promise<RejectAgentWorkItemResult> {
   const feedback = input.feedback?.trim() ?? '';
   if (!feedback) {
     throw new VerificationReviewError('feedback-required', 'feedback required for reject');
@@ -156,7 +158,7 @@ export function rejectAgentWorkItem(
   const continuationInput = `Reviewer rejected your previous report on work item ${wi.id} with this feedback:\n\n${feedback}\n\nRe-read the work item (pc_get_work_item) for the latest body + verification notes, address the feedback, and produce a revised report. Update body / attachments as needed before reporting done.`;
 
   const dispatch = deps.dispatch ?? dispatchContinueAgent;
-  const continuation = dispatch(
+  const continuation = await dispatch(
     {
       projectId: input.project.id,
       worktreeDir: input.project.folderPath,
@@ -169,6 +171,7 @@ export function rejectAgentWorkItem(
     {
       channelServer: deps.channelServer,
       ...(deps.broadcast ? { broadcast: deps.broadcast } : {}),
+      ...(deps.hostClient ? { hostClient: deps.hostClient } : {}),
     },
   );
 

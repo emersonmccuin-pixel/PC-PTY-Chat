@@ -5,20 +5,160 @@
 // outstanding pause, or the CC provider session-id when the JSONL
 // pause-detector fires.
 //
-// The registry is a thin process-wide Map. It does NOT own AgentRun
-// lifecycle — callers `register(run)` after `run.start()` and the registry
-// auto-unregisters on the run's `terminal` event (cap-slot freed +
-// completed | failed | cancelled).
+// The registry is a thin process-wide Map. It does NOT own the run lifecycle.
+// Callers register an ActiveRunHandle after the run starts; the handle's
+// terminal callback auto-unregisters when the run completes.
 //
 // Each entry carries dispatcher metadata so the pause/resume layer can
 // build the channel-event body (which references projectId / dispatcher
 // session / parent work item) without re-querying the DB.
 
 import type { ULID } from '@pc/domain';
-import type { AgentRun } from '@pc/runtime';
+import type {
+  AgentHostCommand,
+  AgentHostCommandResponse,
+  AgentHostRunSnapshot,
+  AgentRun,
+  AgentRunRecord,
+  AgentRunState,
+} from '@pc/runtime';
+
+export interface ActiveRunHandle {
+  getRecord(): Pick<AgentRunRecord, 'agentRunId'>;
+  getState(): AgentRunState;
+  cancel(): void;
+  notifyMcpHandshake(): void;
+  markPaused(askId: string): void;
+  resumeWithAnswer(answer: string): void;
+  onTerminal(listener: () => void): void;
+}
+
+export function activeRunHandleForAgentRun(run: AgentRun): ActiveRunHandle {
+  return {
+    getRecord: () => run.getRecord(),
+    getState: () => run.getState(),
+    cancel: () => run.cancel(),
+    notifyMcpHandshake: () => run.notifyMcpHandshake(),
+    markPaused: (askId) => run._markPaused(askId),
+    resumeWithAnswer: (answer) => run._resumeWithAnswer(answer),
+    onTerminal: (listener) => {
+      run.once('terminal', listener);
+    },
+  };
+}
+
+export interface AgentHostCommandSender {
+  sendCommand(
+    command: AgentHostCommand,
+  ): AgentHostCommandResponse | Promise<AgentHostCommandResponse> | void;
+}
+
+export interface HostBackedActiveRunHandleOptions {
+  onCommandError?: (error: Error, command: AgentHostCommand) => void;
+  now?: () => number;
+}
+
+export class HostBackedActiveRunHandle implements ActiveRunHandle {
+  private snapshot: AgentHostRunSnapshot;
+  private readonly terminalListeners: Array<() => void> = [];
+  private terminalFired = false;
+  private readonly now: () => number;
+
+  constructor(
+    snapshot: AgentHostRunSnapshot,
+    private readonly host: AgentHostCommandSender,
+    private readonly options: HostBackedActiveRunHandleOptions = {},
+  ) {
+    this.snapshot = snapshot;
+    this.now = options.now ?? Date.now;
+    this.maybeFireTerminal();
+  }
+
+  getRecord(): Pick<AgentRunRecord, 'agentRunId'> {
+    return { agentRunId: this.snapshot.runId };
+  }
+
+  getState(): AgentRunState {
+    return this.snapshot.state;
+  }
+
+  cancel(): void {
+    this.issue({ type: 'cancel', runId: this.snapshot.runId });
+  }
+
+  notifyMcpHandshake(): void {
+    this.issue({
+      type: 'notify-mcp-handshake',
+      ccSessionId: this.snapshot.ccSessionId,
+    });
+  }
+
+  markPaused(askId: string): void {
+    this.snapshot = {
+      ...this.snapshot,
+      state: 'paused',
+      updatedAt: this.now(),
+    };
+    this.issue({ type: 'mark-paused', runId: this.snapshot.runId, askId });
+  }
+
+  resumeWithAnswer(answer: string): void {
+    this.issue({
+      type: 'answer-pending',
+      runId: this.snapshot.runId,
+      text: answer,
+    });
+  }
+
+  onTerminal(listener: () => void): void {
+    if (this.terminalFired) {
+      listener();
+      return;
+    }
+    this.terminalListeners.push(listener);
+  }
+
+  applySnapshot(snapshot: AgentHostRunSnapshot): void {
+    if (snapshot.runId !== this.snapshot.runId) return;
+    this.snapshot = snapshot;
+    this.maybeFireTerminal();
+  }
+
+  private issue(command: AgentHostCommand): void {
+    try {
+      const response = this.host.sendCommand(command);
+      if (!response || typeof (response as Promise<AgentHostCommandResponse>).then !== 'function') {
+        this.applyCommandResponse(response as AgentHostCommandResponse | void);
+        return;
+      }
+      void (response as Promise<AgentHostCommandResponse>)
+        .then((res) => this.applyCommandResponse(res))
+        .catch((err) => this.reportCommandError(err, command));
+    } catch (err) {
+      this.reportCommandError(err, command);
+    }
+  }
+
+  private applyCommandResponse(response: AgentHostCommandResponse | void): void {
+    if (!response || !response.ok || !('run' in response)) return;
+    this.applySnapshot(response.run);
+  }
+
+  private reportCommandError(error: unknown, command: AgentHostCommand): void {
+    const err = error instanceof Error ? error : new Error(String(error));
+    this.options.onCommandError?.(err, command);
+  }
+
+  private maybeFireTerminal(): void {
+    if (!isTerminalState(this.snapshot.state) || this.terminalFired) return;
+    this.terminalFired = true;
+    const listeners = this.terminalListeners.splice(0);
+    for (const listener of listeners) listener();
+  }
+}
 
 export interface ActiveRunEntry {
-  run: AgentRun;
+  run: ActiveRunHandle;
   projectId: ULID;
   dispatcherSessionId: string;
   ccSessionId: string;
@@ -32,7 +172,7 @@ export interface ActiveRunEntry {
 }
 
 export interface RegisterActiveRunInput {
-  run: AgentRun;
+  run: ActiveRunHandle;
   projectId: ULID;
   dispatcherSessionId: string;
   ccSessionId: string;
@@ -64,10 +204,7 @@ export class ActiveRunRegistry {
     // Auto-cleanup on terminal. The terminal event fires exactly once per
     // run lifetime; subsequent listeners are no-ops because the run won't
     // emit further.
-    const onTerminal = () => {
-      this.unregister(runId);
-    };
-    entry.run.once('terminal', onTerminal);
+    entry.run.onTerminal(() => this.unregister(runId));
     return entry;
   }
 
@@ -110,4 +247,8 @@ export function getActiveRunRegistry(): ActiveRunRegistry {
  *  next `getActiveRunRegistry()` call. */
 export function setActiveRunRegistryForTest(reg: ActiveRunRegistry | null): void {
   singleton = reg;
+}
+
+function isTerminalState(state: AgentRunState): boolean {
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
 }

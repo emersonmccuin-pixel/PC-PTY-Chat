@@ -42,7 +42,11 @@ export type AgentRunFailureCause =
   | 'cancelled'
   | 'mcp-handshake-never'
   | 'kill-during-spawn'
-  | 'server-restart';
+  | 'server-restart'
+  | 'host-unavailable'
+  | 'host-lost'
+  | 'host-crashed'
+  | 'host-protocol-error';
 
 export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'spawn-stuck',
@@ -57,6 +61,10 @@ export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'mcp-handshake-never',
   'kill-during-spawn',
   'server-restart',
+  'host-unavailable',
+  'host-lost',
+  'host-crashed',
+  'host-protocol-error',
 ];
 
 /** One persisted agent_runs row. Mirrors the in-memory AgentRunRecord plus

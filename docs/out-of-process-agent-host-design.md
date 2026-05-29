@@ -1,312 +1,373 @@
-# Design — Out-of-process agent host (durable crash isolation)
+# Out-of-Process Agent Host Design
 
-Status: draft for review. Logged 2026-05-28. Supersedes the sketch in
-`out-of-process-agents-todo.md` (keep that as the problem statement).
+Status: Phase C API reattach seams complete; Phase D supervisor integration next.
+
+Owner: Codex.
+
+Related: `docs/out-of-process-agents-todo.md`.
 
 ## Goal
 
-Agent PTYs survive an API-server crash/restart; the server reattaches on boot.
-A native node-pty crash isolates to the host — API/UI stay up.
+Keep dispatched agents alive when the API server restarts or crashes.
 
-Acceptance (from the TODO):
-- Kill the API server mid-run → agents keep running → server restarts and shows
-  them live again (no spurious `failed`).
-- A native node-pty crash isolates to the host; API/UI stay up.
+The API server should be able to reconnect to a long-lived agent host, rebuild active-run state from DB plus host snapshots, re-tail JSONL from disk, and keep the UI truthful.
 
-## Today's coupling (why a restart kills agents)
+## Current Shape
 
-- Every `claude.exe` is `pty.spawn`'d **inside the server process** via
-  `LowLevelSpawn` (`packages/runtime/src/low-level-spawn.ts`). ConPTY tears the
-  children down when their parent (the server) dies.
-- Live run state is **in-memory only**:
-  - `AgentRun` instances — state machine + idle/wall-clock/spawn-stuck timers
-    (`packages/runtime/src/agent-run.ts`).
-  - `ActiveRunRegistry` — `byRunId` / `byCcSession` maps
-    (`apps/server/src/services/agent-active-runs.ts`).
-  - `AgentRunRegistry` — cap + FIFO queue (`packages/runtime/src/agent-run-registry.ts`).
-- On boot `reconcileOrphanedRunningRuns` blanket-flips every
-  `queued|spawning|running|paused` row to `failed/server-restart`
-  (`packages/db/src/repos/agent-runs.ts:197`).
-- Packaged app runs the server **in-process inside Electron main**
-  (`apps/desktop/src/main.ts:55`), so a native node-pty crash currently kills the
-  whole app, not just a worker.
+In-process ownership today:
 
-## The seam we exploit
+- `packages/runtime/src/low-level-spawn.ts` owns `node-pty`, Claude process IO, ready gate, JSONL tail attach, raw transcript writes, resize, interrupt, send, and kill.
+- `packages/runtime/src/agent-run.ts` owns dispatched-agent state, timers, cap admission, `LowLevelSpawn` construction, pause/resume, and terminal decisions.
+- `packages/runtime/src/agent-run-registry.ts` owns a process-local concurrency queue.
+- `apps/server/src/services/agent-run-factory.ts` validates pods, materializes runtime files, inserts `agent_runs`, constructs `AgentRun`, registers active runs, persists transitions, broadcasts live JSONL, and emits terminal channel events.
+- `apps/server/src/services/agent-active-runs.ts` owns the process-local active-run index used by cancel, pause, answer, continuation, and MCP handshake routing.
+- `packages/db/src/repos/agent-runs.ts` currently treats any non-terminal row at boot as orphaned and marks it `failed/server-restart`.
+- `apps/server/src/services/dag-run-service.ts` uses `spawnSubagent` directly for workflow agent nodes and separately mirrors those nodes into `agent_runs`.
+- `apps/server/scripts/dev-supervisor.mjs` supervises only the API server child.
+- `apps/desktop/src/main.ts` hosts the packaged server in the Electron process.
 
-`AgentRun` already depends on PTYs only through the `SpawnLike` interface,
-injected via `spawnFactory` (`agent-run.ts:74-87, 125-131`). If we provide a
-`SpawnLike` implementation that proxies an out-of-process PTY, **the state
-machine, timeouts, terminal logic, and all the existing wiring in
-`agent-run-factory.ts` stay essentially unchanged.** This is the spine of the
-design.
+The fault line is `LowLevelSpawn`: when `node-pty` lives in the API server process, a server crash tears down the PTY children too.
 
-Second seam: `jsonl-event` (the conversation content) is independent of PTY
-ownership. JSONL is canonical on disk (memory `reference_chat_jsonl_canonical_source`).
-So we split responsibilities along the natural line:
+## Target Boundary
 
-- **Host owns the PTY control plane** — `pty.spawn`, raw stdout, trust/channel
-  auto-confirm, `ReadyGate`, the bracketed-paste/echo-ack `send` (needs the raw
-  buffer), resize/interrupt/kill, transcript write.
-- **Server owns content + lifecycle** — tails JSONL from disk (`JsonlTailer`),
-  runs the `AgentRun` state machine, persists rows, drives the UI.
+Introduce one long-lived agent host process per app instance.
 
-Because content is re-derived from disk, **reattach needs no IPC replay**: the
-server just re-opens the tailer at the persisted cursor.
+The host owns:
 
-## Process topology
+- `LowLevelSpawn` and all `node-pty` interaction.
+- Live child process handles.
+- Per-run send, cancel, interrupt, resize, and kill.
+- Ready/handshake notification delivery to live spawns.
+- Host-local timers that must survive API restarts.
+- Host-local registry of live run ids, session ids, JSONL paths, and terminal state.
 
-```
-                  ┌─────────────────────────────┐
-   outermost      │  Agent Host  (long-lived)   │  owns node-pty + claude.exe
-   supervisor ───▶│  - LowLevelSpawn (PTY only) │  children; survives server
-   (dev-super /   │  - ReadyGate, send-protocol │  restart; own respawn
-    electron main)│  - control WS server :PORT  │
-                  └──────────────┬──────────────┘
-                                 │ localhost WS (control channel)
-                  ┌──────────────┴──────────────┐
-                  │  API Server  (volatile)     │  reconnects on every boot
-                  │  - AgentRun state machine   │
-                  │  - RemoteSpawn (SpawnLike)  │  ← dropped into spawnFactory
-                  │  - JsonlTailer (disk)       │
-                  │  - Active/Run registries    │
-                  └─────────────────────────────┘
-                                 │ tails
-                          <dataDir>/.../*.jsonl  (canonical content)
+The API server owns:
+
+- HTTP routes and WebSocket broadcasts.
+- DB row creation and durable transition persistence.
+- Pod resolution and materialization policy.
+- Channel delivery and inbox persistence.
+- Verification and work-item side effects on terminal.
+- Reattach/reconcile decisions after boot.
+
+The DB remains the source of record for user-visible run state.
+
+The host is the source of truth for whether a PTY is actually alive.
+
+JSONL remains the source of truth for transcript backfill.
+
+## Host Identity
+
+The host should persist a boot id and expose it through every snapshot.
+
+```ts
+export interface AgentHostIdentity {
+  hostId: string;
+  pid: number;
+  startedAt: number;
+  protocolVersion: 1;
+}
 ```
 
-- **Host is the stable anchor; server is the volatile client.** The host is
-  started once by the outermost owner and is *not* restarted when the server
-  restarts.
-- **Dev:** `dev-supervisor.mjs` spawns the host as a sibling and keeps it alive
-  across server sentinel-75 restarts; tears it down only on its own SIGINT/SIGTERM.
-- **Packaged:** Electron `main.ts` **forks the host as a child process** (today it
-  imports the server in-process). The host child must be separate so a native
-  crash can't kill Electron main. App `before-quit` kills the host.
+The API server should not assume a host restart is harmless.
 
-## Transport
+If the host restarts, live PTYs are gone unless the host can prove otherwise.
 
-Localhost **WebSocket** control channel on a dedicated port (dev `:88xx`,
-dogfood `:87xx` — pick free ports adjacent to the existing channel ports). WS,
-not `child_process.fork` IPC, because in dev the server is not a child of the
-host (both are siblings under the supervisor); WS is uniform across dev/packaged
-and the codebase already has WS reconnect plumbing (the channel server).
+## Run Snapshot Contract
 
-The control channel carries **commands + lifecycle events only** — never JSONL
-content (that stays on disk).
+The API reattaches by asking the host for a complete live-run snapshot.
 
-### Messages
+```ts
+export type AgentHostRunState =
+  | 'queued'
+  | 'spawning'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
-Server → Host:
-| msg | payload | reply |
-|---|---|---|
-| `spawn` | `{ key, spawnInput, transcriptPath }` | `spawned{ key, pid }` (async) |
-| `attach` | `{ key }` | `attached{ key, pid, state } \| gone{ key }` |
-| `send` | `{ key, body, echoTimeoutMs, reqId }` | `send-result{ reqId, result }` |
-| `writeRaw` | `{ key, bytes }` | — |
-| `interrupt` | `{ key }` | — |
-| `resize` | `{ key, cols, rows }` | — |
-| `kill` | `{ key, graceMs }` | — |
-| `notify-handshake` | `{ key }` | — |
-| `roster` | `{ reqId }` | `roster{ reqId, sessions:[{ key, pid, state }] }` |
-
-Host → Server:
-| msg | payload |
-|---|---|
-| `state` | `{ key, state }` |
-| `ready` | `{ key, ts }` |
-| `chunk` | `{ key, text }` — interactive/live-terminal only (see Scope) |
-| `exit` | `{ key, code, signal }` |
-
-`key` = `agentRunId` (durable; reused on reattach so the host re-binds the same
-PTY). `ccSessionId` is also carried so the host can resolve the JSONL path.
-
-## Server-side: `RemoteSpawn implements SpawnLike`
-
-A `RemoteSpawn` wraps **(a)** an IPC control proxy and **(b)** a server-side
-`JsonlTailer`, re-emitting the union as the exact events `AgentRun` already
-expects:
-
-- `start()` → send `spawn`; on `spawned` begin tailer once JSONL appears.
-- `awaitReady()` → resolves on `ready` IPC event (or timeout, mirroring today).
-- `send()` → `send` command, await `send-result`.
-- `writeRaw/interrupt/resize/kill/notifyMcpHandshake` → fire IPC commands.
-- `jsonl-event` → from the **local tailer** (disk), not the wire.
-- `state/ready/exit/chunk` → from IPC.
-
-Injected unchanged via `deps.spawnFactory` in `agent-run-factory.ts:557`.
-`AgentRun` itself needs **no changes**.
-
-The MCP-handshake HTTP route (`/api/internal/mcp-handshake`) keeps calling
-`run.notifyMcpHandshake()` → `RemoteSpawn` forwards it as `notify-handshake`.
-
-## Reattach + targeted reconcile (the core behavior change)
-
-`reconcileOrphanedRunningRuns` stops being a blanket fail. New boot sequence:
-
-1. Server connects to the host; sends `roster`.
-2. For each DB row in `{queued,spawning,running,paused}`:
-   - **Host has a live PTY** (`key` in roster) → **reattach**:
-     - Construct an `AgentRun` in attach mode with a `RemoteSpawn` that sends
-       `attach` (not `spawn`) and starts a tailer at the **persisted JSONL
-       cursor**.
-     - Re-register in `ActiveRunRegistry`; re-admit into `AgentRunRegistry` via a
-       new `reattach()` that takes a slot **without** going through the FIFO
-       (it's already running).
-     - Re-arm timers from persisted timestamps (see Durability).
-     - Keep status as-is.
-   - **Host has no PTY** for it:
-     - If JSONL shows a turn-end after the row's last cursor → mark `completed`
-       (we missed the terminal during the gap).
-     - Else → `failed/server-restart` (the *only* surviving blanket-ish case,
-       now narrowed to genuinely-dead runs).
-3. `queued` rows the host never spawned (server died before spawn) → re-dispatch
-   or fail per policy (recommend: fail with a distinct cause so the orchestrator
-   can retry cleanly).
-
-## Run-state durability on reattach
-
-| State | Today | Reattach plan |
-|---|---|---|
-| wall-clock timer | in-memory | re-arm `wallClockMs - (now - spawnedAt)` from DB |
-| idle timer | in-memory | re-arm fresh (idle is a safety net; resetting on a rare restart is acceptable) |
-| spawn-stuck timer | in-memory | only relevant in `spawning`; re-arm fresh, or fail if host says PTY already gone |
-| cap slot | in-memory | rebuild by `reattach()`-admitting each live run at boot |
-| pause + pendingAskId | `paused` status + pending-asks repo (persisted) | rehydrate from DB + `pending-asks` repo |
-
-No new schema strictly required if we accept fresh idle timers; optionally
-persist `lastActivityAt` for exact idle restoration (defer).
-
-## Host crash containment + respawn
-
-- The host can still hit the native crash. When it does its agents die — that is
-  the **irreducible** blast radius — but the API/UI (separate process) survive.
-  This is already strictly better than today (same crash kills everything).
-- The host has its **own respawn** (small supervisor loop, mirrors
-  `dev-supervisor`'s healthy-then-crash auto-recover + cap).
-- After a host respawn the host has no PTYs → the server's next `roster` sync
-  finds them gone → targeted-fail/complete per the reconcile rules above.
-- **Future blast-radius reduction (not in v1):** one host per N agents, or a
-  host subprocess per agent. Start with a single shared host.
-
-## Lifecycle / ownership (resolved 2026-05-28)
-
-Restart semantics differ by mode (confirmed in code):
-
-- **Dev:** server is a `tsx` child under `dev-supervisor.mjs`.
-  `POST /api/dev/restart` → `exit(75)` → supervisor respawns. Soft restarts are
-  frequent. (`dev-controls/routes.ts`, `constants.ts`.)
-- **Packaged:** dev-controls are **disabled** (`isDevControlsEnabled()` is false
-  when `PC_ROOT` is set — `constants.ts:11`), so there is **no soft restart**.
-  The server runs **in-process inside Electron main** with no supervisor
-  (`apps/desktop/src/main.ts:55`). The only "restart" is a full app quit +
-  relaunch (e.g. `/promote-to-dogfood`). On Windows, Electron's job object kills
-  child processes when the parent dies — so a plain child host would die on the
-  exact event we need it to survive (an Electron-main native crash / relaunch).
-
-**Unified model — the host is a standalone, detached process** addressed by a
-well-known port + lock/pidfile, identical in both modes:
-
-- **Spawn-if-not-running on connect.** Whoever boots first starts the host; later
-  boots just connect. (Dev: the supervisor. Packaged: Electron main, spawning the
-  host **detached** and excluded from the kill-on-parent-death job.)
-- **Same host binary, same connect/reattach protocol, same reap logic** in dev
-  and packaged — only the launcher differs. (Matches the "one system to maintain"
-  goal.)
-- **Idle-reap:** host exits when it has no live PTYs *and* no connected client for
-  N minutes — so it doesn't linger forever after the app quits.
-- **Explicit shutdown affordance** for "kill everything" (app uninstall, hard
-  stop): a `shutdown` control message + a CLI/quit hook.
-
-Net effect: a native crash kills only the host (API/UI/app survive); a server
-restart *or* a full app relaunch reattaches to still-running agents; and an idle
-host eventually cleans itself up.
-
-## Scope decisions (settled 2026-05-28)
-
-1. **All PTYs move to the host** — agents *and* interactive
-   (`interactive-session.ts`, `pty-session.ts`). One spawn path, one supervisor,
-   one reattach protocol to maintain; full crash isolation. Interactive sessions
-   move to the host for isolation in phase 4; their reattach (reconnecting xterm
-   after a server restart) is a later sub-phase.
-2. **Single shared host in v1.** One host process holds every PTY. A native crash
-   kills all live PTYs at once (irreducible for a shared process) but the API/UI
-   survive — the headline win over today. Per-agent / host-per-N is a future
-   blast-radius reduction, **not a one-way door**: the `key`-addressed protocol
-   (`spawn{key}` / `attach{key}` / `roster`) is identical whether keys live in
-   one host or many, so splitting later is a knob, not a redesign. Revisit only
-   if the native crash recurs and the shared blast radius proves painful.
-
-## Phasing
-
-1. **Host process + control WS + `RemoteSpawn`**, agents only. ✅ **shipped
-   (phase 1)** — see Implementation status below. Server still blanket-fails on
-   boot (no reattach yet) — but a server crash no longer kills running agents
-   mid-flight (they finish, write JSONL; next boot still fails the *row* but the
-   work/transcript survived). Validates the split.
-2. **Reattach + targeted reconcile.** ✅ **shipped (phase 2)** — delivers the
-   headline acceptance test (modulo live validation).
-3. **Host respawn + supervisor/Electron ownership wiring.** Delivers native-crash
-   isolation.
-4. **Interactive sessions onto the host** (isolation), then their reattach.
-
-## Implementation status
-
-**Phase 1 — shipped (off by default).**
-
-- Runtime core (`packages/runtime/src/host/`): `protocol.ts`, `agent-host.ts`,
-  `remote-spawn.ts`, `host-client.ts`; `LowLevelSpawn` gains `getPid()` +
-  `suppressJsonlTailer`. 11 tests in `test/agent-host.test.ts`.
-- Server wiring (`apps/server/src/agent-host/`): `ws-channel.ts`,
-  `host-main.ts` (standalone host entry), `connect-host.ts` (connect +
-  best-effort detached spawn-if-not-running), `constants.ts` (the
-  `PC_AGENT_HOST` flag + port). `agent-run-factory` swaps the `spawnFactory` to
-  `RemoteSpawn` when the host client is connected; `index.ts` boot does a
-  fire-and-forget connect when the flag is set.
-
-**Phase 2 — shipped (off by default).**
-
-- `RemoteSpawn` attach mode + `HostClient.attachSpawn`; `AgentHost` `attached`/
-  `gone` replies; `AgentRunRegistry.reattach()` (cap/FIFO bypass); `AgentRun`
-  reattach lifecycle (`input.reattach` + `jsonlPath`/`jsonlStartLine`
-  passthrough, skips queue/ready/initialInput).
-- `agent-run-factory` extracted a shared `wireAndStartRun(ctx)` (active-runs
-  registration + state persistence + broadcast + terminal/verification) used by
-  both fresh dispatch and reattach.
-- `apps/server/src/agent-host/reattach.ts`: pure `planReconcile(rows,
-  rosterKeys)` + `reconcileWithHost(client, deps)`. Boot (`index.ts`) defers to
-  roster reconcile when the host is enabled, blanket-fails otherwise (with a
-  fallback to blanket on connect/roster failure).
-- `listNonTerminalAgentRuns()` repo query.
-- Tests: registry reattach, host attach/gone, AgentRun reattach (running/paused/
-  gone/over-cap), `planReconcile`, DB-backed `reconcileWithHost`.
-
-**How to try it (dev):** set `PC_AGENT_HOST=1` (optionally `PC_AGENT_HOST_PORT`)
-for the server. On boot it connects to the host (spawning one via tsx if none is
-listening, or run `pnpm --filter @pc/server agent-host` manually), reattaches
-live runs, and fails only genuinely-dead ones. With the flag off, nothing
-changes — in-process spawns + blanket reconcile as today.
-
-**Remaining limits (by design):** auto-spawn detachment isn't hardened against
-Windows job-object teardown (phase 3); interactive PTYs not yet routed through
-the host (phase 4); reconcile fails (rather than completes-from-JSONL) a run
-whose PTY died in the gap — the JSONL completion-detection refinement is
-deferred. Phase 2 has **not been validated against a live restart** (needs the
-user to flip the flag + restart).
-
-## What stays unchanged
-
-`AgentRun`, `AgentRunRegistry` (plus a `reattach()` method), `JsonlTailer`,
-`ReadyGate`, `send-protocol`, `ansi`, pod materialization, the MCP-handshake
-route, and almost all of `agent-run-factory.ts`. The new code is the host
-process, the WS protocol, `RemoteSpawn`, and the reconcile rewrite.
-
-## Open questions
-
-- Exact host ports (dev/dogfood) — adjacent to existing channel ports.
-- `queued`-never-spawned policy: re-dispatch vs fail-with-retry-cause.
-- Whether to persist `lastActivityAt` for exact idle-timer restoration (defer).
-- Idle-reap window + the detached-spawn / job-object-exclusion mechanics on
-  Windows (validate empirically in phase 3).
-- Lock/pidfile vs port-probe for the spawn-if-not-running race (two boots racing
-  to start the host).
+export interface AgentHostRunSnapshot {
+  runId: string;
+  projectId: string;
+  dispatcherSessionId: string;
+  ccSessionId: string;
+  podName: string;
+  worktreeDir: string;
+  state: AgentHostRunState;
+  jsonlPath: string | null;
+  transcriptPath: string | null;
+  queuedAt: number;
+  spawnedAt: number | null;
+  readyAt: number | null;
+  updatedAt: number;
+  terminalAt: number | null;
+  terminalResult?: {
+    status: 'completed' | 'failed' | 'cancelled';
+    result: string | null;
+    failureCause: string | null;
+    failureReason: string | null;
+  };
+}
 ```
+
+Rules:
+
+- `runId`, `projectId`, `dispatcherSessionId`, and `ccSessionId` must match DB rows.
+- `state` must not be inferred by the API from stale memory.
+- `jsonlPath` should be known before spawn when `ccSessionId` is deterministic.
+- `terminalResult` is delivered once and can be replayed on reconnect until the API acknowledges it.
+
+## Command Contract
+
+The first API slice should use request/response IPC plus a host event stream.
+
+```ts
+export type AgentHostCommand =
+  | { type: 'hello'; apiPid: number; protocolVersion: 1 }
+  | { type: 'list-runs' }
+  | { type: 'start-run'; request: AgentHostStartRunRequest }
+  | { type: 'resume-run'; request: AgentHostResumeRunRequest }
+  | { type: 'send'; runId: string; text: string }
+  | { type: 'answer-pending'; runId: string; text: string }
+  | { type: 'cancel'; runId: string; reason?: string }
+  | { type: 'notify-mcp-handshake'; ccSessionId: string }
+  | { type: 'shutdown'; mode: 'host-exit' | 'cancel-runs' };
+```
+
+`start-run` request:
+
+- `runId`
+- `projectId`
+- `dispatcherSessionId`
+- `ccSessionId`
+- `podDefinition`
+- `worktreePath`
+- `env`
+- `initialInput`
+- `mcpConfigPath`
+- `settingsPath`
+- `settingSources`
+- `pluginDirs`
+- `transcriptPath`
+- timeout values
+
+The request intentionally mirrors `AgentRunInput` plus the resolved runtime files.
+
+The API should still materialize pods before `start-run`; the host should not query DB.
+
+## Event Contract
+
+The host emits append-only events with monotonic host sequence numbers.
+
+```ts
+export type AgentHostEvent =
+  | { seq: number; type: 'host-ready'; identity: AgentHostIdentity }
+  | { seq: number; type: 'run-state'; run: AgentHostRunSnapshot }
+  | { seq: number; type: 'run-jsonl'; runId: string; event: unknown; cursor?: number }
+  | { seq: number; type: 'run-chunk'; runId: string; text: string }
+  | { seq: number; type: 'run-terminal'; run: AgentHostRunSnapshot }
+  | { seq: number; type: 'run-error'; runId: string; error: string };
+```
+
+Rules:
+
+- The host keeps enough recent events to replay from `lastSeq` after API reconnect.
+- The API may always fall back to DB plus JSONL if host event replay is truncated.
+- `run-terminal` is at-least-once; DB terminal writes must stay idempotent.
+- JSONL events may duplicate backfilled events; the web transcript merge already needs stable dedupe keys.
+
+## Reattach On API Boot
+
+Boot sequence after migrations/settings:
+
+1. Connect to or start the host.
+2. Send `hello`.
+3. Request `list-runs`.
+4. Load DB rows where status is `queued | spawning | running | paused`.
+5. Match DB rows to host snapshots by `runId`.
+6. For matched rows, persist any newer host state and register lightweight API proxies in the active-run registry.
+7. For DB rows missing from the host:
+   - `queued`: keep queued only if the host has a queued ticket model; otherwise mark `failed/host-lost`.
+   - `spawning` or `running`: mark `failed/host-lost`.
+   - `paused`: keep paused if there is an open pending ask and JSONL exists; otherwise mark `failed/host-lost`.
+8. Start JSONL backfill from each live row's `ccSessionId`.
+9. Broadcast `agent-run-changed` snapshots for affected projects.
+
+This replaces the current blanket `reconcileOrphanedRunningRuns()` call.
+
+## Active Registry After Reattach
+
+`ActiveRunRegistry` should stop storing only concrete `AgentRun` instances.
+
+Target shape:
+
+```ts
+export interface ActiveRunHandle {
+  getState(): AgentHostRunState;
+  cancel(): void;
+  notifyMcpHandshake(): void;
+  resumeWithAnswer?(answer: string): void;
+}
+```
+
+In-process mode can adapt `AgentRun`.
+
+Host mode can adapt IPC commands.
+
+Pause/resume, cancel, and MCP handshake routes should depend on this handle contract, not on `AgentRun` directly.
+
+## Concurrency
+
+Move admission to the host before the first implementation lands.
+
+Reason:
+
+- API server restarts would reset `AgentRunRegistry`.
+- A restarted API must not admit more runs than the still-live host is already running.
+
+Host snapshot should include:
+
+- `maxConcurrent`
+- `activeCount`
+- `queuedCount`
+- queued run order
+
+The API may reject or enqueue based on host response, but it must not maintain a separate authoritative cap.
+
+## Pause And Resume
+
+Current pause semantics:
+
+- `recordExplicitPause` writes `pending_asks`, calls `_markPaused`, persists `paused`, and delivers an inbox event.
+- `answerPendingAsk` flips the ask row, persists `spawning`, and calls `_resumeWithAnswer`.
+
+Host mode:
+
+- Pause detection remains API-owned because MCP tools call API routes.
+- The API sends `pause` or `mark-paused` to the host only if the live process needs a local state transition.
+- Answer sends `answer-pending` to the host.
+- The host creates the resume `LowLevelSpawn` with the same `ccSessionId`.
+- The API persists `spawning/running/paused/terminal` from host events.
+
+## Workflow Agent Nodes
+
+Workflow DAG nodes currently call `spawnSubagent` directly and mirror rows into `agent_runs`.
+
+Do not solve this in the first host slice.
+
+Order:
+
+1. Move orchestrator-dispatched agent runs to the host.
+2. Keep workflow DAG `spawnSubagent` in-process until the host contract is proven.
+3. Add a second host command for workflow subagents with the existing `SubagentSpawnRequest` shape.
+4. Route workflow MCP handshakes through the same `notify-mcp-handshake` command.
+
+This keeps the workflow runtime from blocking the durable-agent MVP.
+
+## Supervisor And Packaging
+
+Dev:
+
+- `apps/server/scripts/dev-supervisor.mjs` should supervise two children: API server and agent host.
+- Sentinel API restart should restart only the API child.
+- Host crash should restart the host and then force API reconcile against an empty or new host snapshot.
+- SIGINT/SIGTERM should shut down API and host.
+
+Packaged:
+
+- `apps/desktop/src/main.ts` should start the host as a sibling child process before importing `server.mjs`.
+- The packaged API server should connect to that host over a local IPC endpoint.
+- On app quit, Electron should shut down the host explicitly.
+
+IPC transport:
+
+- Prefer a localhost HTTP/WebSocket listener bound to `127.0.0.1` and a random port written to a lock file under `PC_DATA_DIR/agent-host`.
+- Avoid Node `process.send` as the only transport because packaged Electron and dev supervisor have different parent/child topology.
+- The lock file must include pid, hostId, port, startedAt, and protocolVersion.
+
+## Failure Semantics
+
+New failure causes added before implementation:
+
+- `host-unavailable`: API could not reach host before starting a run.
+- `host-lost`: DB row was non-terminal but the reattached host does not own it.
+- `host-crashed`: host process died while owning the run.
+- `host-protocol-error`: IPC contract violation.
+
+Do not reuse `server-restart` once the host is introduced.
+
+`server-restart` should mean only the legacy in-process mode killed the run.
+
+## Implementation Plan
+
+Phase A - contracts and adapter seams:
+
+- Done: added host protocol types in `packages/runtime/src/agent-host-protocol.ts`.
+- Done: replaced `ActiveRunRegistry`'s hard dependency on `AgentRun` with `ActiveRunHandle`.
+- Done: added focused tests proving host-style handles support cancel, MCP handshake, pause, answer, and terminal unregister.
+- Done: kept production backed by in-process `AgentRun` through `activeRunHandleForAgentRun`.
+- Done: extracted boot reconciliation behind a host-aware fake-host seam while preserving legacy behavior when no host exists.
+- Done: added the host-specific failure taxonomy to domain/runtime/web types and server failure descriptions.
+
+Phase B - host process MVP:
+
+- Done: added the `@pc/agent-host` package with a JSON-lines host executable.
+- Done: moved host-side admission into `AgentHostService` through its own `AgentRunRegistry`.
+- Done: implemented `hello`, `list-runs`, `start-run`, `resume-run`, `send`, `answer-pending`, `cancel`, `notify-mcp-handshake`, `shutdown`, and a buffered event stream.
+- Done: kept terminal verification, DB writes, inbox persistence, and channel delivery out of the host package.
+
+Phase C - API reattach:
+
+- Done: replaced blanket `reconcileOrphanedRunningRuns` with host-aware reconcile.
+- Done: registered host-backed active handles after boot through the API host client seam.
+- Done: backfilled live transcript state from JSONL and replayed host terminal events idempotently.
+- Done: routed orchestrator-dispatched fresh/continue runs through `start-run` / `resume-run` when a host client is available.
+- Done: reused API-owned terminal effects for host terminal events: DB terminal persistence, verification, inbox/channel delivery, Activity Panel broadcast, and cleanup.
+
+Phase D - supervisor integration:
+
+- Start host from dev supervisor.
+- Add packaged host boot in Electron.
+- Add shutdown semantics for user quit vs API restart.
+
+Phase E - workflow migration:
+
+- Add workflow subagent host command.
+- Move `spawnSubagent` users in `dag-run-service` to host-backed handles.
+- Reuse existing workflow-subagent handshake tests against host commands.
+
+## Verification Plan
+
+Unit tests:
+
+- Active registry handle contract.
+- Host-aware reconcile: matched host rows stay active; missing running rows fail; paused rows with open asks stay paused only when JSONL exists.
+- Host event terminal idempotency.
+- Host admission survives API reconnect.
+- MCP handshake routes to host-backed handles.
+
+Integration tests with fake host:
+
+- Done: API boot reattaches multiple running/spawning rows and one paused row.
+- Done: cancel-capable host-backed handles send `cancel` to host.
+- Done: answer-capable host-backed handles send `answer-pending` to host.
+- Done: events route backfills JSONL for a reattached run.
+
+Manual smoke later:
+
+- Start a long-running agent.
+- Kill only the API server process.
+- Confirm the agent keeps running.
+- Let the API reconnect.
+- Confirm Activity Panel still shows the run and transcript keeps updating.
+
+Do not run the manual smoke until the user explicitly allows a server kill/restart.
+
+## Non-Goals
+
+- Do not move orchestrator `PtySession` in this pass.
+- Do not change workflow DAG semantics in the durable-agent MVP.
+- Do not replace JSONL as the canonical transcript source.
+- Do not make the host query product DB tables.
+- Do not restart the current dev server to validate this design.

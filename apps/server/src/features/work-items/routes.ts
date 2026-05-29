@@ -27,6 +27,7 @@ import {
   rejectAgentWorkItem,
   VerificationReviewError,
 } from '../../services/agent-verification-review.ts';
+import type { AgentHostReattachClient } from '../../services/agent-host-reattach.ts';
 import {
   FieldValidationError,
   looksLikeUlid,
@@ -55,6 +56,7 @@ export interface WorkItemRoutesDeps {
   broadcastTo(projectId: ULID, msg: unknown): void;
   refreshProject(project: Project): void;
   channelServer: ChannelServer;
+  hostClient?: AgentHostReattachClient | null;
 }
 
 function verificationReviewStatus(err: VerificationReviewError): 400 | 404 | 409 {
@@ -359,7 +361,7 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
       );
     }
     try {
-      const result = rejectAgentWorkItem(
+      const result = await rejectAgentWorkItem(
         {
           workItemId: wiId,
           feedback: typeof body.feedback === 'string' ? body.feedback : '',
@@ -370,6 +372,7 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
         {
           channelServer: deps.channelServer,
           broadcast: (env) => deps.broadcastTo(projectId, env),
+          ...(deps.hostClient ? { hostClient: deps.hostClient } : {}),
         },
       );
       if (result.workItem.projectId !== projectId) {

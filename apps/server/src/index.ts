@@ -15,7 +15,6 @@ import {
   getProjectById,
   listProjects,
   newId,
-  reconcileOrphanedRunningRuns,
   runMigrations,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
@@ -29,9 +28,6 @@ import {
   maybeAdvanceSendQueueConfirmation,
   sendQueueSnapshotPayload,
 } from './services/orchestrator-send-queue-delivery.ts';
-import { isAgentHostEnabled } from './agent-host/constants.ts';
-import { initAgentHostClient } from './agent-host/connect-host.ts';
-import { reconcileWithHost } from './agent-host/reattach.ts';
 import { OrchestratorRuntimeSnapshots } from './services/orchestrator-runtime-snapshot.ts';
 import { ProjectWebSocketHub } from './services/websocket-hub.ts';
 import { drainPendingForSession } from './services/agent-delivery.ts';
@@ -76,6 +72,8 @@ import { cleanupLegacyProjectRuntimeFiles } from './services/legacy-runtime-clea
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
+import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
+import type { AgentHostReattachClient } from './services/agent-host-reattach.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up. In a packaged
@@ -329,48 +327,37 @@ channelServer.start();
   }
 }
 
-// Boot-time reconcile on agent_runs.
-//
-// Without the out-of-process host: a non-terminal row outlives a prior server
-// lifetime and gets flipped to `failed` so the Activity Panel doesn't show
-// stale running cards (the legacy blanket sweep).
-//
-// With the host (PC_AGENT_HOST=1): the host outlives a server restart, so we
-// defer to a roster-driven reattach once the client connects — reattaching live
-// PTYs and failing only genuinely-dead runs. On connect/roster failure we fall
-// back to the blanket sweep so we never leave stale running rows behind.
-if (isAgentHostEnabled()) {
-  initAgentHostClient().then(
-    async (client) => {
-      try {
-        const r = await reconcileWithHost(client, { channelServer, broadcastTo });
-        console.log(
-          `[agent-host] connected — reattached ${r.reattached}, failed ${r.failed}`,
-        );
-      } catch (err) {
-        console.error(
-          `[agent-host] roster reconcile failed; blanket-reconciling: ${(err as Error).message}`,
-        );
-        reconcileOrphanedRunningRuns(Date.now());
-      }
-    },
-    (err) => {
-      console.error(
-        `[agent-host] init failed; blanket-reconciling + staying in-process: ${(err as Error).message}`,
-      );
-      reconcileOrphanedRunningRuns(Date.now());
-    },
-  );
-} else {
+let agentHostClientForDispatch: AgentHostReattachClient | null = null;
+
+// Boot-time agent-run reconciliation. Phase C can reattach through an
+// already-connected host client; until Phase D supplies that client, this
+// preserves the legacy idempotent orphan sweep.
+{
   try {
-    const reconciled = reconcileOrphanedRunningRuns(Date.now());
-    if (reconciled > 0) {
+    const result = await reattachAgentRunsDuringServerBoot({
+      broadcast: broadcastTo,
+      channelServer,
+    });
+    if (result.mode === 'host') {
+      agentHostClientForDispatch = result.hostClient;
+      const reattach = result.reattach;
+      const changed =
+        reattach.reconcile.reconciled +
+        reattach.registered +
+        reattach.backfilledEvents +
+        reattach.terminalReplayed;
+      if (changed > 0) {
+        console.log(
+          `[agent-runs] host boot reattach: registered=${reattach.registered}, backfilled=${reattach.backfilledEvents}, terminal=${reattach.terminalReplayed}, reconciled=${reattach.reconcile.reconciled}`,
+        );
+      }
+    } else if (result.reconcile.reconciled > 0) {
       console.log(
-        `[agent-runs] reconciled ${reconciled} orphaned running row(s) from prior server lifetime`,
+        `[agent-runs] reconciled ${result.reconcile.reconciled} agent run row(s) on boot (${result.reconcile.mode})`,
       );
     }
   } catch (err) {
-    console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
+    console.error('[agent-runs] boot reattach failed:', (err as Error).message);
   }
 }
 
@@ -644,6 +631,7 @@ registerWorkItemRoutes(app, {
   broadcastTo,
   refreshProject: (project) => projectRegistry.refresh(project),
   channelServer,
+  hostClient: agentHostClientForDispatch,
 });
 
 registerWorkflowCompatRoutes(app, { resolveProject, broadcastTo });
@@ -657,6 +645,7 @@ registerWorktreeRoutes(app, { resolveProject });
 registerAgentRunRoutes(app, {
   channelServer,
   broadcastTo,
+  hostClient: agentHostClientForDispatch,
 });
 
 registerStatuslineRoutes(app, { broadcastTo });

@@ -1,6 +1,8 @@
 # TODO — Out-of-process agent host (durable crash isolation)
 
-Status: planned. Owner: TBD. Logged 2026-05-28.
+Status: Phase C API-side reattach seams complete; Phase D supervisor integration next. Owner: Codex. Logged 2026-05-28.
+
+Design: `docs/out-of-process-agent-host-design.md`.
 
 ## Problem
 
@@ -28,7 +30,7 @@ this.
 Run agent PTYs in a **separate, long-lived host process** the API server talks to
 over IPC, so a server crash/restart leaves agents alive and the server reattaches.
 
-Key pieces to work out:
+Key pieces now drafted in the design:
 - **Agent host process**: owns `LowLevelSpawn`/node-pty; survives API server restarts.
   Could be a sibling under the dev supervisor (and the packaged app's main process).
 - **Reattach on restart**: server reconnects to the host, re-subscribes to live
@@ -47,3 +49,9 @@ Key pieces to work out:
 - Kill the API server mid-run → agents keep running → server restarts and shows them
   live again (no spurious `failed`).
 - A native node-pty crash isolates to the host; API/UI stay up.
+
+## Current implementation state
+
+- Done: Phase B JSON-lines host process MVP.
+- Done: Phase C API host client seam, boot reattach, host-backed active handles, dispatch routing, terminal side effects, and fake-host tests.
+- Next: Phase D starts/supervises the host in dev and packaged Electron, then wires real host discovery into `resolveAgentHostClientForBoot()`.

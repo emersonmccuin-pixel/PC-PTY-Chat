@@ -86,6 +86,16 @@ export function listOpenPendingAsksForSession(ccSessionId: string): PendingAskRo
     .all();
 }
 
+/** Fast boot/reconcile predicate for paused runs. */
+export function hasOpenPendingAskForRun(agentRunId: ULID): boolean {
+  const row = getDb()
+    .select({ id: pendingAsks.id })
+    .from(pendingAsks)
+    .where(and(eq(pendingAsks.agentRunId, agentRunId), eq(pendingAsks.status, 'open')))
+    .get();
+  return row !== undefined;
+}
+
 export interface AnswerPendingAskInput {
   id: ULID;
   answer: string;

@@ -173,6 +173,16 @@ export function listActiveAgentRunsForProject(projectId: ULID): AgentRunRow[] {
     .all();
 }
 
+/** Boot/reconcile feeder. Lists every non-terminal row across projects. */
+export function listNonTerminalAgentRuns(): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
+    .orderBy(desc(agentRuns.queuedAt))
+    .all();
+}
+
 /** Concurrent-continuation guard. Returns a non-terminal continuation row
  *  if one exists for `priorRunId`. `pc_continue_agent` rejects with 409
  *  when this comes back non-null. */
@@ -188,19 +198,6 @@ export function findActiveContinuation(priorRunId: ULID): AgentRunRow | null {
     )
     .get();
   return row ?? null;
-}
-
-/** All non-terminal rows across every project. Boot-time reattach reads this
- *  to decide, per row, whether the host still has the PTY (reattach) or it's
- *  genuinely gone (fail). Replaces the blanket UPDATE when the agent host is
- *  enabled. Newest first. */
-export function listNonTerminalAgentRuns(): AgentRunRow[] {
-  return getDb()
-    .select()
-    .from(agentRuns)
-    .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
-    .orderBy(desc(agentRuns.queuedAt))
-    .all();
 }
 
 /** Boot-time reconciliation sweep. Any row stuck in a non-terminal status

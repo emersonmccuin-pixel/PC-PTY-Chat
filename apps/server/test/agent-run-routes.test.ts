@@ -258,16 +258,20 @@ test('agent-run events route distinguishes missing and empty provider transcript
 test('invoke route validates inputs, delegates dispatch, audits, and returns async envelope', async () => {
   const project = makeProject('invoke');
   const dispatched: unknown[] = [];
+  const dispatchDeps: unknown[] = [];
   const audits: unknown[] = [];
+  const hostClient = { listRuns: () => [] };
   const app = new Hono();
   registerAgentRunRoutes(app, {
     channelServer: {} as never,
     broadcastTo: () => {},
+    hostClient: hostClient as never,
     now: () => 12345,
     dispatchFreshAgent: ((input: {
       agentName: string;
-    }) => {
+    }, deps: unknown) => {
       dispatched.push(input);
+      dispatchDeps.push(deps);
       return {
         ok: true,
         agentRunId: 'run-invoke' as ULID,
@@ -327,6 +331,7 @@ test('invoke route validates inputs, delegates dispatch, audits, and returns asy
       slug: project.slug,
     },
   ]);
+  assert.equal((dispatchDeps[0] as { hostClient?: unknown }).hostClient, hostClient);
   assert.deepEqual(audits, [
     {
       workItemId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -365,14 +370,18 @@ test('continue route enforces ownership, delegates dispatch, and list-by-dispatc
   });
 
   const continuations: unknown[] = [];
+  const continuationDeps: unknown[] = [];
   const audits: unknown[] = [];
+  const hostClient = { listRuns: () => [] };
   const app = new Hono();
   registerAgentRunRoutes(app, {
     channelServer: {} as never,
     broadcastTo: () => {},
+    hostClient: hostClient as never,
     now: () => 67890,
-    dispatchContinueAgent: ((input: unknown) => {
+    dispatchContinueAgent: ((input: unknown, deps: unknown) => {
       continuations.push(input);
+      continuationDeps.push(deps);
       return {
         ok: true,
         agentRunId: 'run-continue' as ULID,
@@ -426,6 +435,7 @@ test('continue route enforces ownership, delegates dispatch, and list-by-dispatc
       slug: project.slug,
     },
   ]);
+  assert.equal((continuationDeps[0] as { hostClient?: unknown }).hostClient, hostClient);
   assert.equal((audits[0] as { runId: string }).runId, 'run-continue');
 
   res = await app.request(`/api/projects/${project.id}/agent-runs/by-dispatcher`);

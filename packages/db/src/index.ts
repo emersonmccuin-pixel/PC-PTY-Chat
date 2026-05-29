@@ -183,6 +183,7 @@ export type {
 export {
   createPendingAsk,
   getPendingAsk,
+  hasOpenPendingAskForRun,
   listOpenPendingAsksForProject,
   listOpenPendingAsksForSession,
   markPendingAskAnswered,

@@ -203,6 +203,25 @@ importers:
         specifier: ^8.18.0
         version: 8.20.1
 
+  packages/agent-host:
+    dependencies:
+      '@pc/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@pc/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      tsx:
+        specifier: ^4.19.2
+        version: 4.22.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/db:
     dependencies:
       '@pc/domain':
