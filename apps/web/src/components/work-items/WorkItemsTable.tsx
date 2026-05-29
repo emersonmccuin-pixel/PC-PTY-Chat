@@ -63,6 +63,7 @@ export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const showAgentContracts = useWorkItemsView((s) => s.showAgentContracts);
+  const showTopLevelOnly = useWorkItemsView((s) => s.showTopLevelOnly);
   const filters = useWorkItemsView((s) => s.filters);
   const sort = useWorkItemsView((s) => s.sort);
   const setSort = useWorkItemsView((s) => s.setSort);
@@ -72,10 +73,12 @@ export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
     [items],
   );
 
+  // Section 38 — "Parent items only" toggle hides child items (parentId != null).
   const visibleItems = useMemo(() => {
-    const base = showAgentContracts ? items : items.filter((i) => !i.isAgentTask);
+    let base = showAgentContracts ? items : items.filter((i) => !i.isAgentTask);
+    if (showTopLevelOnly) base = base.filter((i) => i.parentId == null);
     return applyFiltersAndSort(base, filters, sort);
-  }, [items, showAgentContracts, filters, sort]);
+  }, [items, showAgentContracts, showTopLevelOnly, filters, sort]);
 
   const parentById = useMemo(() => {
     const m = new Map<string, WorkItem>();
