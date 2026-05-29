@@ -399,10 +399,20 @@ function RunningAgentCard({
 
   return (
     <li>
-      <button
-        type="button"
+      {/* role=button (not <button>) so the inner Cancel <button> isn't an
+          invalid nested-interactive descendant. */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => onOpenTranscript(run.runId)}
-        className="block w-full px-3 py-2 text-left hover:bg-muted/40"
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onOpenTranscript(run.runId);
+          }
+        }}
+        className="block w-full cursor-pointer px-3 py-2 text-left hover:bg-muted/40"
         aria-label={`Open transcript for ${run.agentName}`}
       >
         <div className="flex items-baseline justify-between gap-2">
@@ -429,7 +439,7 @@ function RunningAgentCard({
         {cancelErr && (
           <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
         )}
-      </button>
+      </div>
     </li>
   );
 }
