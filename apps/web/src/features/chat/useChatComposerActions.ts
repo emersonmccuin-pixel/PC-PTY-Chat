@@ -16,6 +16,7 @@ export function useChatComposerActions({
   composerQueueing,
   composerSendLabel,
   isThinking,
+  hasPendingInFlight = false,
   wsStatus,
   recordPendingPrompt,
   markInterrupted,
@@ -27,6 +28,10 @@ export function useChatComposerActions({
   composerQueueing?: boolean;
   composerSendLabel?: string;
   isThinking: boolean;
+  /** True when a sent message is still in flight (optimistic pending not yet
+   *  observed). Set synchronously on send — no WS round-trip lag, unlike
+   *  isThinking — so a rapid burst coalesces from the 2nd message on. */
+  hasPendingInFlight?: boolean;
   wsStatus?: WsStatus;
   recordPendingPrompt: (pending: PendingPromptInput) => void;
   markInterrupted: () => void;
@@ -69,16 +74,17 @@ export function useChatComposerActions({
   const handleSend = useCallback(
     (text: string): boolean => {
       if (inputCapabilities && !inputCapabilities.canSubmitChatInput) return false;
-      // Coalesce while Claude is busy, AND during the post-ready settle window
-      // (batch not yet flushed) so a follow-up still joins instead of sending
-      // separately — adding a chunk also resets the flush timer.
-      if (isThinking || batchChunks.length > 0) {
+      // Coalesce when a turn is in flight — detected immediately via a pending
+      // send (hasPendingInFlight) or the laggy isThinking — AND during the
+      // post-ready settle window (batch not yet flushed) so a follow-up still
+      // joins instead of sending separately. Adding a chunk resets the timer.
+      if (isThinking || hasPendingInFlight || batchChunks.length > 0) {
         addChunk(text);
         return true;
       }
       return doSend(text, createClientMessageId());
     },
-    [inputCapabilities, isThinking, batchChunks.length, addChunk, doSend],
+    [inputCapabilities, isThinking, hasPendingInFlight, batchChunks.length, addChunk, doSend],
   );
 
   const resolvedComposerSendLabel =

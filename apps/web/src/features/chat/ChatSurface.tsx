@@ -122,6 +122,7 @@ export function ChatSurface({
     composerQueueing,
     composerSendLabel,
     isThinking,
+    hasPendingInFlight: visiblePendingPrompts.length > 0,
     wsStatus,
     recordPendingPrompt,
     markInterrupted,
