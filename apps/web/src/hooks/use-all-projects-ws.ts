@@ -2,10 +2,8 @@
 //
 // Opens one WebSocket per project in `projects` when `enabled` is true,
 // excluding `excludeProjectId` (the active project — `useProjectWs` already
-// owns that socket). The server's per-project subscriber map supersedes
-// prior connections (`apps/server/src/index.ts:780`), so we must NOT open a
-// second socket for the active project; doing so would close the one that
-// drives Orchestrator/Kanban.
+// owns that socket). Keeping the active project out also keeps consumers from
+// double-processing the same chat stream as both visible and background.
 //
 // Returns a single merged event list (newest at end, matching useProjectWs)
 // plus an aggregate status: 'open' if every socket is open, 'connecting' if

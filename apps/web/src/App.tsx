@@ -8,6 +8,8 @@ import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
+import { useAllProjectsWs } from '@/hooks/use-all-projects-ws';
+import { useProjectUnread } from '@/hooks/use-project-unread';
 import { useProjectWs } from '@/hooks/use-project-ws';
 import { useRichLinkInvalidator } from '@/hooks/use-rich-link-invalidator';
 import { useStatuslineSync } from '@/hooks/use-statusline-sync';
@@ -103,6 +105,18 @@ export default function App() {
   );
 
   const ws = useProjectWs(activeProject);
+  const backgroundWs = useAllProjectsWs(
+    projects ?? [],
+    activeProject?.id ?? null,
+    (projects?.length ?? 0) > 1,
+  );
+  const unreadProjectIds = useProjectUnread({
+    projects: projects ?? [],
+    projectsLoaded: projects !== null,
+    activeProjectId: activeProject?.id ?? null,
+    activeEvents: ws.events,
+    backgroundEvents: backgroundWs.events,
+  });
   useRichLinkInvalidator(ws.events);
   useStatuslineSync(activeProject?.id ?? null, ws.events);
 
@@ -365,6 +379,7 @@ export default function App() {
           onProjectUpdated={handleProjectUpdated}
           onProjectDeleted={handleProjectDeleted}
           onProjectReorder={handleProjectReorder}
+          unreadProjectIds={unreadProjectIds}
           wsEvents={ws.events}
           wsSend={ws.send}
           wsStatus={ws.status}

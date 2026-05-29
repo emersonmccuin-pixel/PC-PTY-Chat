@@ -21,6 +21,7 @@ interface LeftRailProps {
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
+  unreadProjectIds: ReadonlySet<string>;
 }
 
 export function LeftRail({
@@ -31,6 +32,7 @@ export function LeftRail({
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
+  unreadProjectIds,
 }: LeftRailProps) {
   const mode = useRailMode((s) => s.mode);
   const setMode = useRailMode((s) => s.setMode);
@@ -81,6 +83,7 @@ export function LeftRail({
       onCreateProject={onCreateProject}
       onProjectDeleted={onProjectDeleted}
       onProjectReorder={onProjectReorder}
+      unreadProjectIds={unreadProjectIds}
     />
   );
 }

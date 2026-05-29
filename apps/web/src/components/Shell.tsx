@@ -52,6 +52,7 @@ interface ShellProps {
   onProjectUpdated: (next: Project) => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
+  unreadProjectIds: ReadonlySet<string>;
   wsEvents: WsEnvelope[];
   wsSend: (msg: WsOutbound) => boolean;
   wsStatus: WsStatus;
@@ -68,6 +69,7 @@ export function Shell({
   onProjectUpdated,
   onProjectDeleted,
   onProjectReorder,
+  unreadProjectIds,
   wsEvents,
   wsSend,
   wsStatus,
@@ -111,6 +113,7 @@ export function Shell({
             onCreateProject={onCreateProject}
             onProjectDeleted={onProjectDeleted}
             onProjectReorder={onProjectReorder}
+            unreadProjectIds={unreadProjectIds}
           />
         </Panel>
         <Separator className="w-px bg-border" />

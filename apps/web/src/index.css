@@ -747,6 +747,7 @@ button:disabled {
    rather than a chat speaker. Active = deep gold; inactive = muted surface.
    Hover lights inactive tiles to cream. */
 .pc-project-tile {
+  position: relative;
   width: 32px;
   height: 32px;
   border-radius: 4px;
@@ -783,6 +784,35 @@ button:disabled {
   opacity: 1;
   color: var(--cream);
   border-color: var(--cream-soft);
+}
+.pc-project-tile-unread {
+  opacity: 1;
+  color: var(--cream);
+  border-color: var(--primary);
+  animation: pc-project-unread-pulse 1.8s ease-in-out infinite;
+}
+@keyframes pc-project-unread-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px var(--paper),
+      0 0 0 0 rgba(240, 208, 128, 0.00),
+      inset 0 1px 0 rgba(255, 220, 130, 0.16);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--paper),
+      0 0 0 4px rgba(240, 208, 128, 0.16),
+      0 0 12px rgba(240, 208, 128, 0.26),
+      inset 0 1px 0 rgba(255, 220, 130, 0.26);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-project-tile-unread {
+    animation: none;
+    box-shadow:
+      0 0 0 1px var(--paper),
+      0 0 0 3px rgba(240, 208, 128, 0.18);
+  }
 }
 .pc-project-tile-new {
   border-style: dashed;

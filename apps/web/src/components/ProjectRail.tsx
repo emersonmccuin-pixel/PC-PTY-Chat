@@ -28,6 +28,7 @@ interface ProjectRailProps {
   onCreateProject: () => void;
   onProjectDeleted: (projectId: string) => void;
   onProjectReorder: (orderedIds: string[]) => void;
+  unreadProjectIds: ReadonlySet<string>;
 }
 
 interface MenuPos {
@@ -50,6 +51,7 @@ export function ProjectRail({
   onCreateProject,
   onProjectDeleted,
   onProjectReorder,
+  unreadProjectIds,
 }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
@@ -210,6 +212,7 @@ export function ProjectRail({
         ) : (
           filtered.map((p) => {
             const isActive = p.slug === activeSlug;
+            const hasUnread = !isActive && unreadProjectIds.has(p.id);
             const isDragging = draggingId === p.id;
             const isOver = dragOverId === p.id;
             const showLineBefore = isOver && dragOverPos === 'before';
@@ -236,7 +239,8 @@ export function ProjectRail({
                     e.stopPropagation();
                     setMenu({ project: p, x: e.clientX, y: e.clientY });
                   }}
-                  title={p.folderPath}
+                  title={hasUnread ? `${p.folderPath}\nUnread chat activity` : p.folderPath}
+                  aria-label={hasUnread ? `${p.name} has unread chat activity` : p.name}
                   className={
                     'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted ' +
                     (isActive
@@ -250,7 +254,8 @@ export function ProjectRail({
                     aria-hidden="true"
                     className={
                       'pc-project-tile pc-project-tile-row shrink-0 ' +
-                      (isActive ? 'pc-project-tile-active' : 'pc-project-tile-inactive')
+                      (isActive ? 'pc-project-tile-active' : 'pc-project-tile-inactive') +
+                      (hasUnread ? ' pc-project-tile-unread' : '')
                     }
                   >
                     {initials(p.name)}
