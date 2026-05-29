@@ -17,6 +17,7 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createConnection } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +65,15 @@ function logLine(msg) {
   }
 }
 
+// Dev-stack ports the server binds (locked: API 4040, channel 8788). The
+// channel server has no EADDRINUSE retry, so a respawn that races the dying
+// process's port release (or a lingering orphan that inherited the listening
+// socket) crashes the fresh child with EADDRINUSE. Wait for both to free up
+// before (re)spawning instead.
+const BOUND_PORTS = [4040, 8788];
+const PORT_FREE_TIMEOUT_MS = 12_000;
+const PORT_PROBE_INTERVAL_MS = 300;
+
 let child = null;
 let signalled = false;
 let backoffAttempt = 0;
@@ -74,7 +84,36 @@ function nextDelay() {
   return Math.min(BACKOFF_BASE_MS * 2 ** backoffAttempt, BACKOFF_MAX_MS);
 }
 
-function spawnChild() {
+function portInUse(port) {
+  return new Promise((resolve_) => {
+    const sock = createConnection({ port, host: '127.0.0.1' });
+    const finish = (inUse) => {
+      sock.removeAllListeners();
+      sock.destroy();
+      resolve_(inUse);
+    };
+    sock.once('connect', () => finish(true));
+    sock.once('error', () => finish(false)); // refused = free
+    setTimeout(() => finish(false), 250);
+  });
+}
+
+async function waitForPortsFree() {
+  const deadline = Date.now() + PORT_FREE_TIMEOUT_MS;
+  while (Date.now() < deadline && !signalled) {
+    const busy = (await Promise.all(BOUND_PORTS.map(portInUse))).some(Boolean);
+    if (!busy) return true;
+    await new Promise((r) => setTimeout(r, PORT_PROBE_INTERVAL_MS));
+  }
+  return false; // timed out — spawn anyway; the child's own EADDRINUSE handling decides
+}
+
+async function spawnChild() {
+  if (signalled) return;
+  // Don't bind until the previous process has released 4040/8788.
+  if (!(await waitForPortsFree())) {
+    logLine(`ports ${BOUND_PORTS.join('/')} still busy after ${PORT_FREE_TIMEOUT_MS}ms — spawning anyway`);
+  }
   if (signalled) return;
   startedAt = Date.now();
 
