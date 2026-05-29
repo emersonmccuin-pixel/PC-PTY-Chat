@@ -49,6 +49,8 @@ tests/playwright/readme-*.spec.ts
 *.jsonl
 *.out
 .tmp-*
+.dev-logs/
+report.*.json
 *.tmp
 *.tmp.*
 *.bak

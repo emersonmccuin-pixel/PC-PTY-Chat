@@ -1,3 +1,5 @@
+import './diagnostics.ts'; // FIRST — arm crash capture before anything else loads
+
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { readFile, stat } from 'node:fs/promises';

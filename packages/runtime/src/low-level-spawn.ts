@@ -17,8 +17,8 @@
 
 import pty from 'node-pty';
 import { EventEmitter } from 'node:events';
-import { existsSync, createWriteStream, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
-import { dirname } from 'node:path';
+import { appendFileSync, existsSync, createWriteStream, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { JsonlTailer, type JsonlEvent, type JsonlEventMeta } from './jsonl-tailer.ts';
 import { scrubIdeEnv } from './env-scrub.ts';
 import { stripAnsiPreserveSpacing, collapseAnsiToWhitespace } from './ansi.ts';
@@ -34,6 +34,23 @@ import { requireClaudeBinary } from './claude-resolver.ts';
 // succeeded. 60s is wide enough that the kill-and-fail path never races a
 // late success.
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
+
+// PTY spawn/kill/exit timeline. Append-only; lands beside the server crash
+// artifacts (PC_DIAG_DIR is set by apps/server/src/diagnostics.ts). Lets us
+// correlate a future native crash (0xC0000374 heap corruption) with node-pty
+// spawn/kill churn. No-ops when PC_DIAG_DIR is unset (e.g. unit tests).
+function ptyLog(event: string, detail: Record<string, unknown>): void {
+  const diagDir = process.env.PC_DIAG_DIR;
+  if (!diagDir) return;
+  try {
+    appendFileSync(
+      join(diagDir, 'pty-lifecycle.log'),
+      `[${new Date().toISOString()}] ${event} ${JSON.stringify(detail)}\n`,
+    );
+  } catch {
+    /* best-effort */
+  }
+}
 
 export interface PodDescriptor {
   /** Pod name passed to `--agent <name>`. Must match a materialized
@@ -211,6 +228,11 @@ export class LowLevelSpawn extends EventEmitter {
       cols: this.input.cols ?? 120,
       rows: this.input.rows ?? 30,
     });
+    ptyLog('spawn', {
+      pid: this.child.pid,
+      mode: this.input.mode,
+      pod: this.input.podDefinition.name,
+    });
 
     this.child.onData((data) => this.onChunk(data));
     this.child.onExit(({ exitCode, signal }) =>
@@ -317,6 +339,7 @@ export class LowLevelSpawn extends EventEmitter {
       this.setState('exited');
       return;
     }
+    ptyLog('kill', { pid: this.child.pid, pod: this.input.podDefinition.name });
     try {
       this.child.write('\x03');
       setTimeout(() => {
@@ -399,6 +422,7 @@ export class LowLevelSpawn extends EventEmitter {
   }
 
   private onExit(code: number | null, signal: number | null): void {
+    ptyLog('exit', { code, signal, pod: this.input.podDefinition.name });
     this.setState('exited');
     this.gate.abort('exited-before-ready');
     if (this.readyTimer) {
