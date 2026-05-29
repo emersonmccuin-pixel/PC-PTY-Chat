@@ -1,6 +1,6 @@
 # Out-of-Process Agent Host Design
 
-Status: draft design.
+Status: Phase A adapter seams complete; Phase B host process MVP next.
 
 Owner: Codex.
 
@@ -288,7 +288,7 @@ IPC transport:
 
 ## Failure Semantics
 
-New failure causes should be added before implementation:
+New failure causes added before implementation:
 
 - `host-unavailable`: API could not reach host before starting a run.
 - `host-lost`: DB row was non-terminal but the reattached host does not own it.
@@ -303,10 +303,12 @@ Do not reuse `server-restart` once the host is introduced.
 
 Phase A - contracts and adapter seams:
 
-- Add host protocol types in a new runtime/server-shared module.
-- Replace `ActiveRunRegistry`'s hard dependency on `AgentRun` with `ActiveRunHandle`.
-- Add tests proving cancel, MCP handshake, pause, and answer use the handle contract.
-- Keep production backed by in-process `AgentRun`.
+- Done: added host protocol types in `packages/runtime/src/agent-host-protocol.ts`.
+- Done: replaced `ActiveRunRegistry`'s hard dependency on `AgentRun` with `ActiveRunHandle`.
+- Done: added focused tests proving host-style handles support cancel, MCP handshake, pause, answer, and terminal unregister.
+- Done: kept production backed by in-process `AgentRun` through `activeRunHandleForAgentRun`.
+- Done: extracted boot reconciliation behind a host-aware fake-host seam while preserving legacy behavior when no host exists.
+- Done: added the host-specific failure taxonomy to domain/runtime/web types and server failure descriptions.
 
 Phase B - host process MVP:
 

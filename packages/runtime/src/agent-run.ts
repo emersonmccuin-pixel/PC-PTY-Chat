@@ -48,7 +48,14 @@ export type AgentRunFailureCause =
   | 'send-failed'
   | 'unexpected-exit'
   | 'cancel-while-queued'
-  | 'cancelled';
+  | 'cancelled'
+  | 'mcp-handshake-never'
+  | 'kill-during-spawn'
+  | 'server-restart'
+  | 'host-unavailable'
+  | 'host-lost'
+  | 'host-crashed'
+  | 'host-protocol-error';
 
 export interface AgentRunRecord {
   agentRunId: string;

@@ -881,6 +881,10 @@ function agentFailureCauseToPayload(
     case 'mcp-handshake-never':
     case 'kill-during-spawn':
     case 'server-restart':
+    case 'host-unavailable':
+    case 'host-lost':
+    case 'host-crashed':
+    case 'host-protocol-error':
       return 'spawn-failed';
     case null:
     default:
@@ -915,6 +919,14 @@ function describeFailure(cause: AgentRunFailureCause | null): string | null {
       return 'agent was killed during spawn';
     case 'server-restart':
       return 'server restarted before this run completed';
+    case 'host-unavailable':
+      return 'agent host was unavailable before the run could start';
+    case 'host-lost':
+      return 'agent host no longer owns this non-terminal run';
+    case 'host-crashed':
+      return 'agent host crashed while owning this run';
+    case 'host-protocol-error':
+      return 'agent host returned an invalid protocol response';
     default:
       return cause;
   }

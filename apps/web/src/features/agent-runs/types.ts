@@ -10,12 +10,26 @@ export type AgentRunStatus =
   | 'cancelled';
 
 export type AgentRunFailureCause =
+  | 'spawn-stuck'
   | 'timeout'
   | 'idle-timeout'
+  | 'wall-clock-timeout'
+  | 'ready-timeout'
   | 'spawn-failed'
+  | 'spawn-error'
+  | 'send-failed'
   | 'spawn-exit'
+  | 'unexpected-exit'
+  | 'cancel-while-queued'
   | 'cancelled'
-  | 'unknown-agent';
+  | 'unknown-agent'
+  | 'mcp-handshake-never'
+  | 'kill-during-spawn'
+  | 'server-restart'
+  | 'host-unavailable'
+  | 'host-lost'
+  | 'host-crashed'
+  | 'host-protocol-error';
 
 export type PendingAskKind = 'ask-orchestrator' | 'ask-user' | 'approval';
 export type PendingAskStatus = 'waiting' | 'answered' | 'cancelled';
