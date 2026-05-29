@@ -34,6 +34,11 @@ type RuntimeStateModule = {
     canInterrupt: boolean;
     stateLabel: string;
   };
+  latestTerminalInputFailure: (events: Array<Record<string, unknown>>) => {
+    status: 'invalid-message' | 'no-session' | 'write-failed';
+    error: string;
+    message: string;
+  } | null;
 };
 
 async function loadRuntimeStateModule(): Promise<RuntimeStateModule> {
@@ -91,4 +96,41 @@ test('transient terminal input stays writable while session is spawning', async 
   assert.equal(capabilities.canResizeTerminal, false);
   assert.equal(capabilities.canInterrupt, false);
   assert.equal(capabilities.stateLabel, 'spawning');
+});
+
+test('terminal input ack failures produce user-visible status text', async () => {
+  const { latestTerminalInputFailure } = await loadRuntimeStateModule();
+
+  assert.equal(
+    latestTerminalInputFailure([
+      {
+        projectId: 'project-1',
+        type: 'terminal-input-ack',
+        ok: false,
+        status: 'no-session',
+        error: 'No live PTY is attached',
+      },
+    ])?.message,
+    'No live PTY is attached',
+  );
+
+  assert.equal(
+    latestTerminalInputFailure([
+      {
+        projectId: 'project-1',
+        type: 'terminal-input-ack',
+        ok: false,
+        status: 'write-failed',
+        error: '',
+      },
+    ])?.message,
+    'PTY rejected raw input.',
+  );
+
+  assert.equal(
+    latestTerminalInputFailure([
+      { projectId: 'project-1', type: 'terminal-input-ack', ok: true },
+    ]),
+    null,
+  );
 });

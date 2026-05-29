@@ -10,7 +10,10 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Project } from '@/features/projects/client';
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { runtimeApi, type OrchestratorRuntimeHealth, type OrchestratorRuntimeSnapshot, type OrchestratorSession, type SessionTransitionResponse } from '@/features/runtime/client';
-import { orchestratorInputCapabilities } from '@/features/chat/runtimeState';
+import {
+  latestTerminalInputFailure,
+  orchestratorInputCapabilities,
+} from '@/features/chat/runtimeState';
 import type {
   JsonlEvent,
   WsDiagnostics,
@@ -535,6 +538,10 @@ export function Orchestrator({
     runtimeHealth,
     latestRuntimeState,
   });
+  const terminalInputFailure = useMemo(
+    () => latestTerminalInputFailure(events),
+    [events],
+  );
 
   const headerSlot = (
     <ConversationHeader
@@ -593,7 +600,7 @@ export function Orchestrator({
     </div>
   ) : null;
 
-  const bannerSlot = startupBannerSlot ?? (!isViewingPast && sessionEnded ? (
+  const sessionEndedBannerSlot = !isViewingPast && sessionEnded ? (
     <div className="flex items-center justify-between gap-3 border-t border-border bg-warning/10 px-4 py-2 text-xs text-warning">
       <span>
         This session ended. Resume it, or click{' '}
@@ -613,7 +620,19 @@ export function Orchestrator({
         </button>
       </div>
     </div>
-  ) : null);
+  ) : null;
+
+  const terminalInputFailureSlot = !isViewingPast && terminalInputFailure ? (
+    <div
+      className="flex items-center justify-between gap-3 border-t border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive"
+      data-testid="terminal-input-error-banner"
+      aria-live="polite"
+    >
+      <span>Terminal input failed: {terminalInputFailure.message}</span>
+    </div>
+  ) : null;
+
+  const bannerSlot = startupBannerSlot ?? sessionEndedBannerSlot ?? terminalInputFailureSlot;
 
   const footerSlot = (
     <StatusBar

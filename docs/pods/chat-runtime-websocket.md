@@ -179,7 +179,7 @@ Error and empty states:
 - Missing active session is created lazily on first connect/send path.
 - Invalid `send.text` returns `send-ack` with `invalid-message`.
 - Missing PTY during send can return `send-ack` with `no-session`.
-- Invalid terminal input returns `terminal-input-ack`, but the web UI does not yet surface this explicitly.
+- Invalid terminal input returns `terminal-input-ack`; the web contract types it and the orchestrator renders a terminal input failure banner.
 - Missing transcript returns empty terminal bytes, not failure.
 - Past sessions with no replay render as empty.
 
@@ -230,7 +230,6 @@ Duplicate adapters or protocol translations:
 - `turn-end` is marked vestigial in `packages/runtime/src/pty-session.ts` but remains part of web live-state derivation.
 - `events.jsonl` legacy fallback still exists for old sessions; no safe-delete decision yet.
 - The Phase 0 plan said transient terminal input should wait for ready, but current code intentionally allows raw terminal input while spawning for recovery.
-- Server sends `terminal-input-ack` failures, but the web contract and UI do not have an explicit display path for them.
 - Client heartbeat/reconnect pure helpers exist, but no dedicated web-side test file was found for focus/visibility/online reconnect behavior.
 - Agent transcript dedupe uses a serialized event key rather than a stable cursor or sequence id.
 - No unused runtime files or safe deletes were proven during this initial pass.
@@ -250,7 +249,7 @@ Existing focused tests:
 - `apps/server/test/session-replay.test.ts`: normalized replay loading, high-water, legacy fallback, malformed lines.
 - `apps/server/test/terminal-mode.test.ts`: terminal input validation and transcript tail containment.
 - `apps/server/test/web-pending-prompts.test.ts`: optimistic pending prompt metadata and confirmation.
-- `apps/server/test/web-terminal-capabilities.test.ts`: orchestrator/transient terminal writability during spawning and unavailable-state blocking.
+- `apps/server/test/web-terminal-capabilities.test.ts`: orchestrator/transient terminal writability during spawning, unavailable-state blocking, and terminal input failure status text.
 - `apps/server/test/web-ws-heartbeat.test.ts`: reconnect schedule, heartbeat timeout threshold, client ping shape.
 - `apps/server/test/web-boundaries.test.ts`: chat feature, client, legacy API, and WebSocket contract boundary guards.
 - `apps/server/test/websocket-hub.test.ts`: broadcast fanout, detach behavior, closed-socket skip, global broadcast.
@@ -262,7 +261,6 @@ Missing tests or trace evidence:
 - No browser-level test covers heartbeat timeout, focus/online stale reconnect, and replay restoration together.
 - Browser-level reconnect behavior still lacks a UI smoke for focus/visibility/online recovery.
 - No UI smoke was run for terminal transcript attach plus live raw-event overlap removal.
-- No test was found that asserts `terminal-input-ack` failures are visible to the user.
 - Agent transcript modal still needs active, historical, empty, failed, and missing transcript state coverage.
 
 ## Cleanup Plan
@@ -271,10 +269,10 @@ Do not change runtime behavior until a trace identifies a specific failure.
 
 Small cleanup candidates after trace:
 
-- Done in this slice: moved shared WebSocket envelope contracts out of `use-project-ws.ts` into `apps/web/src/features/runtime/ws-types.ts` and added a boundary guard.
+- Done in this slice: typed `terminal-input-ack` failures and surfaced them through an orchestrator error banner with focused status-text coverage.
+- Done earlier in Phase 5: moved shared WebSocket envelope contracts out of `use-project-ws.ts` into `apps/web/src/features/runtime/ws-types.ts` and added a boundary guard.
 - Done earlier in Phase 5: extracted shared heartbeat/backoff helpers to `apps/web/src/hooks/ws-heartbeat.ts` and added focused tests.
 - Done earlier in Phase 5: extracted orchestrator input capability calculation to `apps/web/src/features/chat/runtimeState.ts` and added spawning-policy tests.
-- Surface `terminal-input-ack` failures in the terminal/chat UI or remove the unused ack if product decides it is not useful.
 - Give agent transcript backfill/live merge stable cursor keys if the agent-runs audit confirms repeated identical events can collide.
 - Decide whether `turn-end` and `events.jsonl` legacy fallback are retained compatibility or safe-delete candidates.
 
@@ -310,6 +308,7 @@ Commands run so far:
 - `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts test/web-ws-heartbeat.test.ts test/web-pending-prompts.test.ts test/runtime-host-websocket-message.test.ts test/terminal-mode.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts test/web-ws-heartbeat.test.ts test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts test/web-ws-heartbeat.test.ts test/runtime-host-websocket-server.test.ts test/runtime-host-websocket-message.test.ts test/runtime-host-websocket-connect.test.ts test/runtime-host-routes.test.ts test/runtime-host-pty-handlers.test.ts test/orchestrator-send-queue-delivery.test.ts test/orchestrator-runtime-snapshot.test.ts test/orchestrator-runtime-health.test.ts test/session-replay.test.ts test/terminal-mode.test.ts test/web-pending-prompts.test.ts test/websocket-hub.test.ts test/web-boundaries.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-terminal-capabilities.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `git diff --check`
@@ -318,8 +317,8 @@ Verification results:
 
 - Focused runtime/WebSocket server tests: 58 passed, 0 failed.
 - Focused runtime/WebSocket plus heartbeat tests: 61 passed, 0 failed.
-- Focused terminal capability slice tests: 21 passed, 0 failed.
-- Focused runtime/WebSocket plus heartbeat, terminal capability, and web boundary tests: 68 passed, 0 failed.
+- Focused terminal capability/status-text slice tests: 4 passed, 0 failed.
+- Focused runtime/WebSocket plus heartbeat, terminal capability/status-text, and web boundary tests: 69 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.

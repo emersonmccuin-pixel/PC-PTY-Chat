@@ -57,6 +57,15 @@ export interface SessionChangedEnvelope extends WsEnvelope {
   session?: unknown;
 }
 
+export type TerminalInputAckStatus = 'invalid-message' | 'no-session' | 'write-failed';
+
+export interface TerminalInputAckEnvelope extends WsEnvelope {
+  type: 'terminal-input-ack';
+  ok: false;
+  status: TerminalInputAckStatus;
+  error: string;
+}
+
 // Chat-event shapes
 // Server emits hook-driven events as `{type:'event', event:{kind,...}}`. The
 // kinds + fields below mirror packages/runtime/src/hook-scripts/event-capture.cjs

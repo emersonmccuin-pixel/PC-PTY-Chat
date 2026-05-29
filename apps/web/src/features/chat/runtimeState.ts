@@ -1,6 +1,12 @@
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import type { OrchestratorRuntimeHealth } from '@/features/runtime/client';
-import type { ChatEvent, JsonlEvent, WsEnvelope, WsStatus } from '@/features/runtime/ws-types';
+import type {
+  ChatEvent,
+  JsonlEvent,
+  TerminalInputAckEnvelope,
+  WsEnvelope,
+  WsStatus,
+} from '@/features/runtime/ws-types';
 
 export const STALL_WARN_MS = 60_000;
 
@@ -86,6 +92,50 @@ export function transientInputCapabilities(
     canInterrupt: active,
     stateLabel: state,
   };
+}
+
+export interface TerminalInputFailure {
+  status: TerminalInputAckEnvelope['status'];
+  error: string;
+  message: string;
+}
+
+export function latestTerminalInputFailure(events: WsEnvelope[]): TerminalInputFailure | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const env = events[i]!;
+    if (env.type !== 'terminal-input-ack') continue;
+    const ok = (env as Partial<TerminalInputAckEnvelope> & { ok?: unknown }).ok;
+    if (ok !== false) return null;
+    const status = (env as Partial<TerminalInputAckEnvelope>).status;
+    const error = (env as Partial<TerminalInputAckEnvelope>).error;
+    if (!isTerminalInputAckStatus(status) || typeof error !== 'string') return null;
+    return {
+      status,
+      error,
+      message: terminalInputFailureMessage(status, error),
+    };
+  }
+  return null;
+}
+
+function isTerminalInputAckStatus(
+  status: unknown,
+): status is TerminalInputAckEnvelope['status'] {
+  return status === 'invalid-message' || status === 'no-session' || status === 'write-failed';
+}
+
+function terminalInputFailureMessage(
+  status: TerminalInputAckEnvelope['status'],
+  error: string,
+): string {
+  const detail = error.trim();
+  if (status === 'no-session') {
+    return detail || 'No live PTY is attached.';
+  }
+  if (status === 'write-failed') {
+    return detail || 'PTY rejected raw input.';
+  }
+  return detail || 'Input was rejected.';
 }
 
 export function terminalModeStorageKey(projectId: string, sessionId: string): string {
