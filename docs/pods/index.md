@@ -22,7 +22,7 @@ Base: `dev` at `44980f1`.
 |---|---|---|---|---|---|
 | Chat/runtime/WebSocket | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/chat-runtime-websocket.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Project lifecycle | `not-started` | unassigned | none | pending | Project create/list/update/delete, worktrees, reveal, scaffold cleanup. |
-| Terminal/PTY | `not-started` | unassigned | none | pending | Raw terminal mode, resize, writability, PTY lifecycle. |
+| Terminal/PTY | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/terminal-pty.md` | Active audit after agent-runs/transcripts. Raw terminal mode, resize, writability, PTY lifecycle. |
 | Transient sessions | `not-started` | unassigned | none | pending | Agent designer, workflow builder, setup wizard shared adapter. |
 | Agents/pods/catalog/MCP | `not-started` | unassigned | none | pending | Pod records, stock pods, MCP tools, catalog, allowlists. |
 | Agent runs/transcripts | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
