@@ -6,7 +6,8 @@
 // lands here unchanged. Layout mirrors the repo's sub-paths:
 //
 //   pcserver/
-//     server.mjs                     bundled API+channel server (in-process host)
+//     server.mjs                     bundled API+channel server
+//     agent-host.mjs                 bundled out-of-process agent host
 //     apps/web/dist/                 web UI (PUBLIC)
 //     templates/                     project scaffold templates
 //     packages/mcp/dist/server.mjs   pc-rig MCP server (self-contained; spawned)
@@ -48,6 +49,8 @@ function readPackageVersion(root) {
 // 1. server bundle
 copy(resolve(TRUNK, 'apps/server/dist/server.mjs'), 'server.mjs');
 copy(resolve(TRUNK, 'apps/server/dist/server.mjs.map'), 'server.mjs.map');
+copy(resolve(TRUNK, 'packages/agent-host/dist/host.mjs'), 'agent-host.mjs');
+copy(resolve(TRUNK, 'packages/agent-host/dist/host.mjs.map'), 'agent-host.mjs.map');
 
 // 2. web UI
 copy(resolve(TRUNK, 'apps/web/dist'), 'apps/web/dist');

@@ -3,12 +3,33 @@ import { createInterface } from 'node:readline';
 import type { AgentHostCommand } from '@pc/runtime';
 
 import { AgentHostService } from './agent-host-service.ts';
+import { startHttpAgentHostServer } from './http-server.ts';
 
 type WireId = string | number;
 
 interface WireRequest {
   id?: WireId;
   command: AgentHostCommand;
+}
+
+const httpLockFile = optionValue('--http-lock-file') ?? process.env.PC_AGENT_HOST_LOCK_FILE;
+if (httpLockFile) {
+  const host = await startHttpAgentHostServer({ lockFilePath: httpLockFile });
+  process.stderr.write(
+    `[agent-host] listening on 127.0.0.1:${host.port} lock=${httpLockFile}\n`,
+  );
+  const close = async () => {
+    await host.close();
+    process.exit(0);
+  };
+  process.once('SIGINT', () => {
+    void close();
+  });
+  process.once('SIGTERM', () => {
+    void close();
+  });
+  await new Promise<void>((resolve) => host.server.once('close', resolve));
+  process.exit(0);
 }
 
 const service = new AgentHostService();
@@ -74,4 +95,11 @@ function parseWireRequest(raw: unknown): WireRequest {
 
 function write(payload: unknown): void {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function optionValue(name: string): string | null {
+  const idx = process.argv.indexOf(name);
+  if (idx < 0) return null;
+  const value = process.argv[idx + 1];
+  return value && !value.startsWith('--') ? value : null;
 }

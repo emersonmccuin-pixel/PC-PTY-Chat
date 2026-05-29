@@ -1,16 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import type { ULID } from '@pc/domain';
 import type {
   AgentHostCommand,
+  AgentHostEndpoint,
   AgentHostEvent,
   AgentHostIdentity,
   AgentHostRunSnapshot,
 } from '@pc/runtime';
+import { agentHostLockFilePath } from '@pc/runtime';
 
-import { JsonLineAgentHostClient } from '../src/services/agent-host-client.ts';
+import {
+  HttpAgentHostClient,
+  JsonLineAgentHostClient,
+  resolveAgentHostClientForBoot,
+} from '../src/services/agent-host-client.ts';
+import type { AgentHostReattachClient } from '../src/services/agent-host-reattach.ts';
 
 interface WireRequest {
   id: string | number;
@@ -174,3 +184,135 @@ test('JsonLineAgentHostClient sends commands, caches snapshots, and emits events
   off();
   client.close();
 });
+
+test('resolveAgentHostClientForBoot discovers a live lock file and uses the connector', async () => {
+  const dataDir = join(tmpdir(), `pc-agent-host-${process.pid}-${Date.now()}`);
+  const lockPath = agentHostLockFilePath(dataDir);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  writeFileSync(
+    lockPath,
+    JSON.stringify({
+      pid: 4321,
+      hostId: 'host-lock-1',
+      port: 43123,
+      startedAt: 1_700_000_000_000,
+      protocolVersion: 1,
+    }),
+  );
+
+  const fakeClient: AgentHostReattachClient = {
+    listRuns: () => [],
+    sendCommand: () => undefined,
+  };
+  let connectedEndpoint: AgentHostEndpoint | null = null;
+
+  const resolved = await resolveAgentHostClientForBoot({
+    dataDir,
+    isPidAlive: (pid) => pid === 4321,
+    connect: (endpoint) => {
+      connectedEndpoint = endpoint;
+      return fakeClient;
+    },
+  });
+
+  assert.equal(resolved, fakeClient);
+  assert.deepEqual(connectedEndpoint, {
+    lockFilePath: lockPath,
+    lock: {
+      pid: 4321,
+      hostId: 'host-lock-1',
+      port: 43123,
+      startedAt: 1_700_000_000_000,
+      protocolVersion: 1,
+    },
+    baseUrl: 'http://127.0.0.1:43123',
+  });
+});
+
+test('resolveAgentHostClientForBoot ignores stale lock files', async () => {
+  const dataDir = join(tmpdir(), `pc-agent-host-stale-${process.pid}-${Date.now()}`);
+  const lockPath = agentHostLockFilePath(dataDir);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  writeFileSync(
+    lockPath,
+    JSON.stringify({
+      pid: 4321,
+      hostId: 'host-lock-1',
+      port: 43123,
+      startedAt: 1_700_000_000_000,
+      protocolVersion: 1,
+    }),
+  );
+
+  let connected = false;
+  const resolved = await resolveAgentHostClientForBoot({
+    dataDir,
+    isPidAlive: () => false,
+    connect: () => {
+      connected = true;
+      throw new Error('should not connect');
+    },
+  });
+
+  assert.equal(resolved, null);
+  assert.equal(connected, false);
+});
+
+test('HttpAgentHostClient sends commands over localhost HTTP and caches snapshots', async () => {
+  const hostIdentity = identity();
+  const run = hostRun('running', { runId: '01KHTTPCLIENT000000000001' as ULID });
+  const calls: Array<{ url: string; command: AgentHostCommand }> = [];
+  const client = new HttpAgentHostClient('http://127.0.0.1:43123', {
+    fetch: async (input: string | URL, init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { command: AgentHostCommand };
+      calls.push({ url: String(input), command: body.command });
+      if (body.command.type === 'hello') {
+        return jsonResponse({
+          ok: true,
+          command: 'hello',
+          identity: hostIdentity,
+          lastSeq: 1,
+        });
+      }
+      if (body.command.type === 'list-runs') {
+        return jsonResponse({
+          ok: true,
+          command: 'list-runs',
+          runs: [run],
+          lastSeq: 2,
+        });
+      }
+      if (body.command.type === 'cancel') {
+        return jsonResponse({
+          ok: true,
+          command: 'cancel',
+          run: { ...run, state: 'cancelled', terminalAt: 1_700_000_000_900 },
+          lastSeq: 3,
+        });
+      }
+      throw new Error(`unexpected command ${body.command.type}`);
+    },
+  });
+
+  assert.deepEqual(await client.hello(1234), hostIdentity);
+  assert.deepEqual(await client.refreshRuns(), [run]);
+  assert.deepEqual(client.listRuns(), [run]);
+  await client.sendCommand({ type: 'cancel', runId: run.runId });
+  assert.equal(client.listRuns()[0]?.state, 'cancelled');
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.command.type]),
+    [
+      ['http://127.0.0.1:43123/command', 'hello'],
+      ['http://127.0.0.1:43123/command', 'list-runs'],
+      ['http://127.0.0.1:43123/command', 'cancel'],
+    ],
+  );
+  client.close();
+});
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}

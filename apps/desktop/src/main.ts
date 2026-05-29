@@ -9,14 +9,22 @@
 //     `pnpm dev` keeps working untouched. This is the iteration mode for the
 //     shell itself.
 //
-//   PACKAGED (app.isPackaged)    — Electron hosts the bundled server in-process
-//     (Electron-ABI natives, rebuilt at package time) and the window loads the
-//     server's own static bundle on 127.0.0.1:PORT. Wired in 1.5; the hook is
-//     stubbed here so the shape is visible.
+//   PACKAGED (app.isPackaged)    — Electron starts the agent host as a sibling
+//     process, hosts the bundled API server in-process, and loads the server's
+//     static bundle on 127.0.0.1:PORT.
 
 import { app, BrowserWindow, Menu, shell } from 'electron';
+import type { ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  packagedAgentHostLockFilePath,
+  removePackagedAgentHostLockFile,
+  requestPackagedAgentHostShutdown,
+  spawnPackagedAgentHostProcess,
+  waitForChildExit,
+  waitForPackagedAgentHostLock,
+} from './agent-host-process';
 
 const DEV = process.env.PC_DESKTOP_DEV === '1';
 const APP_NAME = DEV ? 'Caisson Dev' : 'Caisson';
@@ -32,6 +40,10 @@ const PC_ROOT = join(process.resourcesPath, 'pcserver');
 const DEV_URL = process.env.PC_DESKTOP_URL ?? 'http://127.0.0.1:5173';
 
 let mainWindow: BrowserWindow | null = null;
+let agentHostProcess: ChildProcess | null = null;
+let agentHostLockFile: string | null = null;
+let allowingQuitAfterHostShutdown = false;
+let stoppingAgentHost = false;
 
 app.setName(APP_NAME);
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
@@ -48,11 +60,64 @@ async function startInProcessServer(): Promise<void> {
   process.env.PC_DATA_DIR ??= app.getPath('userData'); // 1.3 — per-user data dir
   process.env.PORT ??= String(PORT);
   process.env.CHANNEL_PORT ??= '8788';
+  await startPackagedAgentHost();
   // Importing the bundle runs the full boot sequence (migrations, seeds, the
   // Hono `serve()` + the :8788 channel listener) inside this process. The
   // bundle has top-level await, so this resolves once the server is listening.
   const serverEntry = join(PC_ROOT, 'server.mjs');
   await import(pathToFileURL(serverEntry).href);
+}
+
+async function startPackagedAgentHost(): Promise<void> {
+  const dataDir = process.env.PC_DATA_DIR ?? app.getPath('userData');
+  const lockFilePath = packagedAgentHostLockFilePath(dataDir);
+  removePackagedAgentHostLockFile(lockFilePath);
+  const startedAt = Date.now();
+  const { child, spec } = spawnPackagedAgentHostProcess({
+    pcRoot: PC_ROOT,
+    dataDir,
+    execPath: process.execPath,
+    env: process.env,
+  });
+  agentHostProcess = child;
+  agentHostLockFile = spec.lockFilePath;
+
+  child.stdout?.on('data', (chunk) => {
+    process.stdout.write(chunk);
+  });
+  child.stderr?.on('data', (chunk) => {
+    process.stderr.write(chunk);
+  });
+  child.once('exit', (code, signal) => {
+    agentHostProcess = null;
+    if (stoppingAgentHost || allowingQuitAfterHostShutdown) return;
+    console.error(
+      `[agent-host] packaged host exited unexpectedly: code=${code ?? 'null'} signal=${signal ?? 'none'}`,
+    );
+  });
+
+  const ready = await waitForPackagedAgentHostLock({
+    lockFilePath: agentHostLockFile,
+    startedAt,
+  });
+  if (!ready) {
+    stoppingAgentHost = true;
+    child.kill();
+    throw new Error('packaged agent host did not publish its lock file before server boot');
+  }
+}
+
+async function stopPackagedAgentHost(): Promise<void> {
+  const child = agentHostProcess;
+  if (!child) return;
+  stoppingAgentHost = true;
+
+  if (agentHostLockFile) {
+    await requestPackagedAgentHostShutdown({ lockFilePath: agentHostLockFile });
+  }
+  if (await waitForChildExit(child, 2_000)) return;
+  child.kill();
+  await waitForChildExit(child, 2_000);
 }
 
 async function createWindow(): Promise<void> {
@@ -133,4 +198,14 @@ void app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', (event) => {
+  if (DEV || allowingQuitAfterHostShutdown || !agentHostProcess) return;
+  event.preventDefault();
+  if (stoppingAgentHost) return;
+  void stopPackagedAgentHost().finally(() => {
+    allowingQuitAfterHostShutdown = true;
+    app.quit();
+  });
 });

@@ -1,6 +1,6 @@
 # Out-of-Process Agent Host Design
 
-Status: Phase C API reattach seams complete; Phase D supervisor integration next.
+Status: Phase D supervisor integration code complete; manual smoke pending explicit restart permission.
 
 Owner: Codex.
 
@@ -327,9 +327,11 @@ Phase C - API reattach:
 
 Phase D - supervisor integration:
 
-- Start host from dev supervisor.
-- Add packaged host boot in Electron.
-- Add shutdown semantics for user quit vs API restart.
+- Done: added lock-file discovery, localhost HTTP command/event transport, and dev-supervisor sibling host wiring.
+- Done: start host from dev supervisor in code path; sentinel API restart remains scoped to the API child.
+- Done: packaged Electron starts the host as a sibling child before importing `server.mjs`.
+- Done: user quit asks the host to exit; API restart/reconnect paths do not own host shutdown.
+- Pending manual smoke: API restart/kill mid-run, only when explicitly allowed.
 
 Phase E - workflow migration:
 

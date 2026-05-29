@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // DEV-ONLY supervisor for apps/server.
 //
-// Spawns `tsx src/index.ts` and respawns the child when it exits with sentinel
-// code 75 (intentional restart requested via POST /api/dev/restart).
+// Spawns the agent host sibling plus `tsx src/index.ts`; respawns only the API
+// child when it exits with sentinel code 75 (intentional restart requested via
+// POST /api/dev/restart).
 // Unexpected exits (non-75) are crashes: auto-recover when the server had been
 // running healthy (uptime >= CRASH_HEALTHY_UPTIME_MS), but do NOT crash-loop on
 // a boot failure — rapid crashes accumulate toward MAX_CRASH_RESTARTS, after
@@ -11,15 +12,20 @@
 // Backoff: rapid sentinel-restarts (server dies in < 5s) accumulate a
 // capped delay so a boot-time crash doesn't spin tightly.
 //
-// Signal forwarding: SIGINT/SIGTERM are forwarded to the child; once the
-// child exits the supervisor exits cleanly (no respawn).
+// Signal forwarding: SIGINT/SIGTERM are forwarded to both children; once both
+// exit the supervisor exits cleanly (no respawn).
 
 import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { createWriteStream, mkdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createConnection } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildAgentHostChildSpec,
+  buildApiChildSpec,
+  resolveAgentHostLockPath,
+} from './dev-supervisor-processes.mjs';
 
 const SENTINEL = 75;
 const MIN_UPTIME_RESET_MS = 5_000;
@@ -73,12 +79,17 @@ function logLine(msg) {
 const BOUND_PORTS = [4040, 8788];
 const PORT_FREE_TIMEOUT_MS = 12_000;
 const PORT_PROBE_INTERVAL_MS = 300;
+const HOST_LOCK_WAIT_MS = 5_000;
+const HOST_LOCK_PROBE_INTERVAL_MS = 100;
 
-let child = null;
+let apiChild = null;
+let hostChild = null;
 let signalled = false;
 let backoffAttempt = 0;
 let crashRestartCount = 0;
+let hostRestartCount = 0;
 let startedAt = 0;
+let hostStartedAt = 0;
 
 function nextDelay() {
   return Math.min(BACKOFF_BASE_MS * 2 ** backoffAttempt, BACKOFF_MAX_MS);
@@ -108,7 +119,89 @@ async function waitForPortsFree() {
   return false; // timed out — spawn anyway; the child's own EADDRINUSE handling decides
 }
 
-async function spawnChild() {
+function pipeChildLogs(child, label) {
+  child.stdout.on('data', (b) => {
+    process.stdout.write(b);
+    try { logStream.write(b); } catch { /* best-effort */ }
+  });
+  child.stderr.on('data', (b) => {
+    process.stderr.write(b);
+    try { logStream.write(b); } catch { /* best-effort */ }
+  });
+  child.on('error', (err) => {
+    logLine(`${label} child error: ${err.message}`);
+  });
+}
+
+function spawnFromSpec(spec) {
+  const child = spawn(spec.command, spec.args, {
+    cwd: spec.cwd,
+    stdio: spec.stdio,
+    env: spec.env,
+    shell: spec.shell,
+  });
+  pipeChildLogs(child, spec.name);
+  return child;
+}
+
+async function waitForAgentHostLock() {
+  const lockPath = resolveAgentHostLockPath(serverDir, process.env);
+  const deadline = Date.now() + HOST_LOCK_WAIT_MS;
+  while (Date.now() < deadline && !signalled) {
+    try {
+      if (statSync(lockPath).mtimeMs >= hostStartedAt) return true;
+    } catch {
+      /* not written yet */
+    }
+    await new Promise((r) => setTimeout(r, HOST_LOCK_PROBE_INTERVAL_MS));
+  }
+  return false;
+}
+
+function maybeExitAfterSignal() {
+  if (!signalled || apiChild || hostChild) return;
+  logStream.end();
+  process.exit(0);
+}
+
+function spawnAgentHostChild() {
+  if (signalled || hostChild) return;
+  hostStartedAt = Date.now();
+  hostChild = spawnFromSpec(
+    buildAgentHostChildSpec({
+      serverDir,
+      tsxCli,
+      execPath: process.execPath,
+      env: process.env,
+    }),
+  );
+
+  hostChild.on('exit', (code, signal) => {
+    hostChild = null;
+    if (signalled) {
+      maybeExitAfterSignal();
+      return;
+    }
+
+    const uptime = Date.now() - hostStartedAt;
+    if (uptime >= CRASH_HEALTHY_UPTIME_MS) hostRestartCount = 0;
+    hostRestartCount++;
+    if (hostRestartCount > MAX_CRASH_RESTARTS) {
+      logLine(
+        `agent host crashed: code=${code ?? 'null'} signal=${signal ?? 'none'} after ${uptime}ms — ${MAX_CRASH_RESTARTS} rapid crashes, giving up (log: ${logPath})`,
+      );
+      logStream.end();
+      process.exit(typeof code === 'number' ? code : 1);
+    }
+    const delay = Math.min(BACKOFF_BASE_MS * 2 ** (hostRestartCount - 1), BACKOFF_MAX_MS);
+    logLine(
+      `agent host crashed: code=${code ?? 'null'} signal=${signal ?? 'none'} after ${uptime}ms — auto-respawning in ${delay}ms (recovery ${hostRestartCount}/${MAX_CRASH_RESTARTS})`,
+    );
+    setTimeout(spawnAgentHostChild, delay);
+  });
+}
+
+async function spawnApiChild() {
   if (signalled) return;
   // Don't bind until the previous process has released 4040/8788.
   if (!(await waitForPortsFree())) {
@@ -120,27 +213,20 @@ async function spawnChild() {
   // `--report-on-fatalerror` covers the pre-boot window before src/diagnostics.ts
   // arms in-process report config. stdout/stderr are piped (not inherited) so we
   // can tee them to the log file while still showing them in the terminal.
-  child = spawn(process.execPath, ['--report-on-fatalerror', tsxCli, 'src/index.ts'], {
-    cwd: serverDir,
-    stdio: ['inherit', 'pipe', 'pipe'],
-    env: process.env,
-    shell: false,
-  });
-  child.stdout.on('data', (b) => {
-    process.stdout.write(b);
-    try { logStream.write(b); } catch { /* best-effort */ }
-  });
-  child.stderr.on('data', (b) => {
-    process.stderr.write(b);
-    try { logStream.write(b); } catch { /* best-effort */ }
-  });
+  apiChild = spawnFromSpec(
+    buildApiChildSpec({
+      serverDir,
+      tsxCli,
+      execPath: process.execPath,
+      env: process.env,
+    }),
+  );
 
-  child.on('exit', (code, signal) => {
-    child = null;
+  apiChild.on('exit', (code, signal) => {
+    apiChild = null;
 
     if (signalled) {
-      // We forwarded SIGINT/SIGTERM; exit cleanly.
-      process.exit(0);
+      maybeExitAfterSignal();
       return;
     }
 
@@ -152,7 +238,7 @@ async function spawnChild() {
       const delay = nextDelay();
       backoffAttempt++;
       logLine(`intentional restart (exit 75) — respawning in ${delay}ms`);
-      setTimeout(spawnChild, delay);
+      setTimeout(spawnApiChild, delay);
     } else {
       // Unexpected (non-75) exit = a crash. A healthy run resets the rapid-crash
       // budget; a crash before the healthy threshold counts toward the cap so a
@@ -171,7 +257,7 @@ async function spawnChild() {
       logLine(
         `child crashed: code=${code ?? 'null'} signal=${signal ?? 'none'} after ${uptime}ms — auto-respawning in ${delay}ms (recovery ${crashRestartCount}/${MAX_CRASH_RESTARTS})`,
       );
-      setTimeout(spawnChild, delay);
+      setTimeout(spawnApiChild, delay);
     }
   });
 }
@@ -179,10 +265,10 @@ async function spawnChild() {
 function forwardSignal(sig) {
   if (signalled) return;
   signalled = true;
-  console.log(`[supervisor] ${sig} — forwarding to child`);
-  if (child) {
-    child.kill(sig);
-  } else {
+  console.log(`[supervisor] ${sig} — forwarding to children`);
+  if (apiChild) apiChild.kill(sig);
+  if (hostChild) hostChild.kill(sig);
+  if (!apiChild && !hostChild) {
     process.exit(0);
   }
 }
@@ -190,4 +276,8 @@ function forwardSignal(sig) {
 process.on('SIGINT', () => forwardSignal('SIGINT'));
 process.on('SIGTERM', () => forwardSignal('SIGTERM'));
 
-spawnChild();
+spawnAgentHostChild();
+if (!(await waitForAgentHostLock())) {
+  logLine(`agent host lock not observed after ${HOST_LOCK_WAIT_MS}ms — starting API anyway`);
+}
+await spawnApiChild();

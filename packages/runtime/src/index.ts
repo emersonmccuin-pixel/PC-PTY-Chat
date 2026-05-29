@@ -143,3 +143,20 @@ export type {
   AgentHostStartRunRequest,
   AgentHostTerminalResult,
 } from './agent-host-protocol.ts';
+
+export {
+  AGENT_HOST_LOCK_DIR,
+  AGENT_HOST_LOCK_FILE,
+  AGENT_HOST_PROTOCOL_VERSION,
+  agentHostLockFilePath,
+  agentHostLockFromIdentity,
+  discoverAgentHostEndpoint,
+  parseAgentHostLockFile,
+  readAgentHostLockFile,
+  removeAgentHostLockFile,
+  writeAgentHostLockFile,
+} from './agent-host-lock-file.ts';
+export type {
+  AgentHostEndpoint,
+  AgentHostLockFile,
+} from './agent-host-lock-file.ts';
