@@ -66,6 +66,9 @@ export interface V2RunSummary {
   status: V2RunStatus;
   worktreePath: string | null;
   lastReason: string | null;
+  /** Monotonic write counter from the DB. Used by the version-aware store to
+   *  discard out-of-order / duplicate WS deltas. */
+  rev: number;
   createdAt: number;
   startedAt: number | null;
   endedAt: number | null;

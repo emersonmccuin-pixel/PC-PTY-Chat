@@ -40,6 +40,10 @@ export interface ResourceListConfig<T> {
    *  per-envelope branch (and the subsequent refetch confirms). Use for
    *  resources whose list endpoint excludes terminal rows. */
   dropOnTerminal: boolean;
+  /** Optional monotonic version extractor. When supplied, an incoming
+   *  record whose version ≤ the stored record's version is silently
+   *  discarded — guards against out-of-order or duplicate WS delivery. */
+  getVersion?: (record: T) => number;
   /** Fetch the project's current full list. Called on mount, on project
    *  switch, and on every terminal-status / unknown-id envelope. */
   list: (projectId: string) => Promise<T[]>;
@@ -113,6 +117,12 @@ export function useResourceList<T>(
       setMap((prev) => {
         const next = new Map(prev);
         for (const u of updates) {
+          // Version-aware discard: if the incoming record's version is ≤ the
+          // stored record's version, it's stale (out-of-order delivery) — skip.
+          if (config.getVersion) {
+            const stored = prev.get(u.id);
+            if (stored && config.getVersion(u.record) <= config.getVersion(stored)) continue;
+          }
           if (!next.has(u.id) && !u.drop) sawUnknown = true;
           if (u.drop) next.delete(u.id);
           else next.set(u.id, u.record);

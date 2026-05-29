@@ -72,6 +72,9 @@ export interface AgentRunRecord {
   failureReason: string | null;
   failureCause: AgentRunFailureCause | null;
   endedAt: number | null;
+  /** Monotonic write counter. Carried in WS deltas so the frontend can discard
+   *  out-of-order / duplicate deliveries. Defaults to 0 on old-server envelopes. */
+  rev?: number;
 }
 
 export type AgentRunTranscriptStatus = 'ready' | 'empty' | 'missing';

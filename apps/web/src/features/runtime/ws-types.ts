@@ -147,6 +147,34 @@ export interface WorkflowRunChangedEnvelope {
   nodeOutputs: Record<string, unknown>;
 }
 
+/** UI Spine step 2 — versioned full-snapshot delta for workflow_runs_v2.
+ *  Replaces the prior partial-ping shape (runId + status + dagState only).
+ *  The `run` object is the full DB row including `rev`; the frontend discards
+ *  any incoming message where `run.rev <= stored.rev` to handle out-of-order
+ *  or duplicate WS delivery. */
+export interface WorkflowV2RunChangedEnvelope extends WsEnvelope {
+  type: 'workflow-v2-run-changed';
+  projectId: string;
+  run: {
+    id: string;
+    workflowId: string;
+    workflowName: string;
+    projectId: string;
+    workItemId: string | null;
+    trigger: string;
+    stageId: string | null;
+    status: string;
+    worktreePath: string | null;
+    lastReason: string | null;
+    rev: number;
+    createdAt: number;
+    startedAt: number | null;
+    endedAt: number | null;
+    lastActivityAt: number | null;
+    [k: string]: unknown;
+  };
+}
+
 // Section 0 phase 0e - supplemental hook events.
 
 export interface NotificationEvent extends ChatEventBase {

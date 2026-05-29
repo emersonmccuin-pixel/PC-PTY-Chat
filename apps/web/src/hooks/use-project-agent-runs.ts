@@ -37,6 +37,7 @@ export function useProjectAgentRuns(
     getId: (r) => r.runId,
     isTerminal: (r) => TERMINAL.has(r.status),
     dropOnTerminal: true,
+    getVersion: (r) => r.rev ?? 0,
     list: (projectId) => agentRunsApi.listAgentRuns(projectId),
   });
   return { runs: records };
