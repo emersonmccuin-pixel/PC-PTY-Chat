@@ -75,6 +75,8 @@ import { seedStockPods } from './services/stock-pod-seed.ts';
 import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
 import type { AgentHostReattachClient } from './services/agent-host-reattach.ts';
 import { reconcileAgentRunsAgainstHost } from './services/agent-host-reattach.ts';
+import { sweepAgentRunLiveness } from './services/agent-run-liveness-sweep.ts';
+import { getActiveRunRegistry } from './services/agent-active-runs.ts';
 import { writeRunStatus } from './services/workflow-run-writer.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -395,6 +397,33 @@ const agentRunReconcileSweep = setInterval(() => {
 }, AGENT_RUN_RECONCILE_SWEEP_MS);
 // Don't let the sweep timer keep the process alive on shutdown.
 if (typeof agentRunReconcileSweep.unref === 'function') agentRunReconcileSweep.unref();
+
+// IN-PROCESS liveness sweep — the safety net for the spawn path production
+// actually uses (no out-of-process host). Runs ONLY when host-mode is off, so
+// exactly one reconciler owns non-terminal rows. Catches (a) runs whose process
+// died without firing the exit handler and (b) runs wedged with no JSONL
+// activity past the idle window (e.g. a resume whose input never landed). Both
+// flip to `failed` with full effects (DB + orchestrator agent-failed + rail) so
+// a phantom "running" row self-clears within a tick instead of at next restart.
+const AGENT_RUN_LIVENESS_SWEEP_MS = 30_000;
+const agentRunLivenessSweep = setInterval(() => {
+  if (agentHostClientForDispatch) return; // host-mode owns reconciliation
+  try {
+    const res = sweepAgentRunLiveness({
+      activeRunRegistry: getActiveRunRegistry(),
+      channelServer,
+      broadcast: broadcastTo,
+    });
+    if (res.failedDead > 0 || res.failedIdle > 0) {
+      console.log(
+        `[agent-runs] liveness sweep: dead=${res.failedDead}, idle=${res.failedIdle}, killed=${res.killed}, checked=${res.checked}`,
+      );
+    }
+  } catch (err) {
+    console.warn('[agent-runs] liveness sweep failed:', (err as Error).message);
+  }
+}, AGENT_RUN_LIVENESS_SWEEP_MS);
+if (typeof agentRunLivenessSweep.unref === 'function') agentRunLivenessSweep.unref();
 
 const app = new Hono();
 
