@@ -258,6 +258,38 @@ test('send, notify-mcp-handshake, and cancel route through the active run', asyn
   assert.equal(terminal.run.terminalResult?.failureCause, 'cancelled');
 });
 
+test('mark-paused transitions the host-owned run before API-side resume', async () => {
+  const stub = new StubSpawn();
+  const service = new AgentHostService({ spawnFactory: () => stub });
+  const request = makeRequest({
+    runId: '01KHOST0000000000000000004' as ULID,
+    ccSessionId: '00000000-0000-0000-0000-000000000004',
+  });
+
+  const started = await service.handleCommand({ type: 'start-run', request });
+  assert.equal(started.ok, true);
+  await tick();
+  stub.fireReady();
+  await tick();
+
+  const paused = await service.handleCommand({
+    type: 'mark-paused',
+    runId: request.runId,
+    askId: 'ask-1',
+  });
+
+  assert.equal(paused.ok, true);
+  if (!paused.ok || paused.command !== 'mark-paused') {
+    throw new Error('bad mark-paused response');
+  }
+  assert.equal(paused.run.state, 'paused');
+
+  const list = await service.handleCommand({ type: 'list-runs' });
+  assert.equal(list.ok, true);
+  if (!list.ok || list.command !== 'list-runs') throw new Error('bad list response');
+  assert.equal(list.runs[0]?.state, 'paused');
+});
+
 test('duplicate run ids and missing runs return protocol errors without throwing', async () => {
   const stub = new StubSpawn();
   const service = new AgentHostService({ spawnFactory: () => stub });

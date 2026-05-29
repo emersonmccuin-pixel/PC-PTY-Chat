@@ -1,6 +1,15 @@
-import type { AgentRunRow, ULID } from '@pc/domain';
-import type { AgentHostRunSnapshot } from '@pc/runtime';
+import { existsSync } from 'node:fs';
+
 import {
+  AGENT_RUN_FAILURE_CAUSES,
+  type AgentRunFailureCause,
+  type AgentRunRow,
+  type ULID,
+} from '@pc/domain';
+import type { AgentHostRunSnapshot } from '@pc/runtime';
+import { jsonlPathFor } from '@pc/runtime';
+import {
+  getProjectById as defaultGetProjectById,
   hasOpenPendingAskForRun as defaultHasOpenPendingAskForRun,
   listNonTerminalAgentRuns as defaultListNonTerminalAgentRuns,
   markAgentRunTerminal as defaultMarkAgentRunTerminal,
@@ -18,6 +27,8 @@ export interface AgentRunBootReconcileDeps {
   legacyReconcile?: (now: number) => number;
   listNonTerminalRuns?: () => AgentRunRow[];
   hasOpenPendingAskForRun?: (runId: ULID) => boolean;
+  resolveJsonlPath?: (row: AgentRunRow) => string | null;
+  jsonlExists?: (path: string) => boolean;
   markTerminal?: typeof defaultMarkAgentRunTerminal;
   updateStatus?: typeof defaultUpdateAgentRunStatus;
 }
@@ -32,7 +43,8 @@ export interface AgentRunBootReconcileResult {
   reconciled: number;
 }
 
-const SERVER_RESTART_REASON = 'server restarted before this run completed';
+const HOST_LOST_REASON = 'agent host no longer owns this non-terminal run';
+const HOST_PROTOCOL_REASON = 'agent host snapshot did not match the database run row';
 
 /**
  * Boot-time agent-run reconciliation.
@@ -65,6 +77,8 @@ export function reconcileAgentRunsOnBoot(
   const hostByRunId = new Map(hostRuns.map((run) => [run.runId, run]));
   const rows = (deps.listNonTerminalRuns ?? defaultListNonTerminalAgentRuns)();
   const hasOpenAsk = deps.hasOpenPendingAskForRun ?? defaultHasOpenPendingAskForRun;
+  const resolveJsonlPath = deps.resolveJsonlPath ?? defaultResolveJsonlPath;
+  const jsonlExists = deps.jsonlExists ?? existsSync;
   const markTerminal = deps.markTerminal ?? defaultMarkAgentRunTerminal;
   const updateStatus = deps.updateStatus ?? defaultUpdateAgentRunStatus;
 
@@ -75,8 +89,42 @@ export function reconcileAgentRunsOnBoot(
   for (const row of rows) {
     const hostRun = hostByRunId.get(row.id);
     if (hostRun) {
+      if (!hostSnapshotMatchesRow(row, hostRun)) {
+        markTerminal({
+          id: row.id,
+          status: 'failed',
+          result: null,
+          failureCause: 'host-protocol-error',
+          failureReason: HOST_PROTOCOL_REASON,
+          completedAt: now,
+        });
+        failed += 1;
+        continue;
+      }
+
+      if (isTerminalState(hostRun.state)) {
+        const terminal = hostRun.terminalResult;
+        const terminalStatus = terminal?.status ?? hostRun.state;
+        markTerminal({
+          id: row.id,
+          status: terminalStatus,
+          result: terminalStatus === 'completed' ? terminal?.result ?? '' : null,
+          failureCause:
+            terminalStatus === 'completed'
+              ? null
+              : coerceFailureCause(terminal?.failureCause) ?? 'host-protocol-error',
+          failureReason:
+            terminalStatus === 'completed'
+              ? null
+              : terminal?.failureReason ?? terminal?.failureCause ?? HOST_PROTOCOL_REASON,
+          completedAt: hostRun.terminalAt ?? now,
+        });
+        updated += 1;
+        continue;
+      }
+
       kept += 1;
-      if (hostRun.state !== row.status) {
+      if (shouldUpdateFromHost(row, hostRun)) {
         updateStatus({
           id: row.id,
           status: hostRun.state,
@@ -90,7 +138,13 @@ export function reconcileAgentRunsOnBoot(
 
     // Paused runs are allowed to have no live PTY: Claude exits cleanly while
     // waiting on a pending ask, then resumes from JSONL when answered.
-    if (row.status === 'paused' && hasOpenAsk(row.id)) {
+    const jsonlPath = row.status === 'paused' ? resolveJsonlPath(row) : null;
+    if (
+      row.status === 'paused' &&
+      hasOpenAsk(row.id) &&
+      jsonlPath !== null &&
+      jsonlExists(jsonlPath)
+    ) {
       kept += 1;
       continue;
     }
@@ -99,8 +153,8 @@ export function reconcileAgentRunsOnBoot(
       id: row.id,
       status: 'failed',
       result: null,
-      failureCause: 'server-restart',
-      failureReason: SERVER_RESTART_REASON,
+      failureCause: 'host-lost',
+      failureReason: HOST_LOST_REASON,
       completedAt: now,
     });
     failed += 1;
@@ -115,4 +169,46 @@ export function reconcileAgentRunsOnBoot(
     updated,
     reconciled: failed + updated,
   };
+}
+
+function defaultResolveJsonlPath(row: AgentRunRow): string | null {
+  const project = defaultGetProjectById(row.projectId);
+  return project ? jsonlPathFor(project.folderPath, row.ccSessionId) : null;
+}
+
+function hostSnapshotMatchesRow(
+  row: AgentRunRow,
+  hostRun: AgentHostRunSnapshot,
+): boolean {
+  return (
+    hostRun.runId === row.id &&
+    hostRun.projectId === row.projectId &&
+    hostRun.dispatcherSessionId === row.dispatcherSessionId &&
+    hostRun.ccSessionId === row.ccSessionId &&
+    hostRun.podName === row.podName
+  );
+}
+
+function shouldUpdateFromHost(
+  row: AgentRunRow,
+  hostRun: AgentHostRunSnapshot,
+): boolean {
+  return (
+    row.status !== hostRun.state ||
+    (hostRun.spawnedAt !== null && row.spawnedAt !== hostRun.spawnedAt) ||
+    (hostRun.readyAt !== null && row.readyAt !== hostRun.readyAt)
+  );
+}
+
+function isTerminalState(
+  state: AgentHostRunSnapshot['state'],
+): state is 'completed' | 'failed' | 'cancelled' {
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function coerceFailureCause(value: string | null | undefined): AgentRunFailureCause | null {
+  if (!value) return null;
+  return (AGENT_RUN_FAILURE_CAUSES as readonly string[]).includes(value)
+    ? (value as AgentRunFailureCause)
+    : null;
 }

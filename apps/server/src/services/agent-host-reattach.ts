@@ -1,0 +1,354 @@
+import { existsSync } from 'node:fs';
+
+import {
+  AGENT_RUN_FAILURE_CAUSES,
+  type AgentRunFailureCause,
+  type AgentRunRow,
+  type ULID,
+} from '@pc/domain';
+import {
+  getAgentRunRow as defaultGetAgentRunRow,
+  getProjectById as defaultGetProjectById,
+  listNonTerminalAgentRuns as defaultListNonTerminalAgentRuns,
+  markAgentRunTerminal as defaultMarkAgentRunTerminal,
+  updateAgentRunStatus as defaultUpdateAgentRunStatus,
+} from '@pc/db';
+import {
+  AgentRunJsonlTailer,
+  jsonlPathFor,
+  type AgentHostEvent,
+  type AgentHostRunSnapshot,
+} from '@pc/runtime';
+
+import {
+  getActiveRunRegistry,
+  HostBackedActiveRunHandle,
+  type ActiveRunRegistry,
+  type AgentHostCommandSender,
+} from './agent-active-runs.ts';
+import {
+  reconcileAgentRunsOnBoot,
+  type AgentRunBootReconcileResult,
+} from './agent-run-boot-reconcile.ts';
+
+type NonTerminalAgentState = Extract<
+  AgentHostRunSnapshot['state'],
+  'queued' | 'spawning' | 'running' | 'paused'
+>;
+
+export interface AgentHostReattachClient extends AgentHostCommandSender {
+  listRuns(): readonly AgentHostRunSnapshot[];
+  onEvent?(listener: (event: AgentHostEvent) => void): (() => void) | void;
+}
+
+export interface AgentHostReattachDeps {
+  hostClient: AgentHostReattachClient;
+  activeRunRegistry?: ActiveRunRegistry;
+  now?: () => number;
+  listNonTerminalRuns?: () => AgentRunRow[];
+  getAgentRun?: (id: ULID) => AgentRunRow | null;
+  hasOpenPendingAskForRun?: (runId: ULID) => boolean;
+  markTerminal?: typeof defaultMarkAgentRunTerminal;
+  updateStatus?: typeof defaultUpdateAgentRunStatus;
+  resolveJsonlPath?: (row: AgentRunRow) => string | null;
+  jsonlExists?: (path: string) => boolean;
+  broadcast?: (projectId: ULID, msg: unknown) => void;
+  onHostCommandError?: (error: Error) => void;
+}
+
+export interface AgentHostReattachResult {
+  reconcile: AgentRunBootReconcileResult;
+  registered: number;
+  backfilledEvents: number;
+  terminalReplayed: number;
+}
+
+export function reattachAgentRunsOnBoot(
+  deps: AgentHostReattachDeps,
+): AgentHostReattachResult {
+  const rows = (deps.listNonTerminalRuns ?? defaultListNonTerminalAgentRuns)();
+  const hostRuns = deps.hostClient.listRuns();
+  const hostByRunId = new Map(hostRuns.map((run) => [run.runId, run]));
+
+  const reconcile = reconcileAgentRunsOnBoot({
+    now: deps.now,
+    hostClient: { listRuns: () => hostRuns },
+    listNonTerminalRuns: () => rows,
+    hasOpenPendingAskForRun: deps.hasOpenPendingAskForRun,
+    markTerminal: deps.markTerminal,
+    updateStatus: deps.updateStatus,
+    resolveJsonlPath: deps.resolveJsonlPath,
+    jsonlExists: deps.jsonlExists,
+  });
+
+  const registry = deps.activeRunRegistry ?? getActiveRunRegistry();
+  const handles = new Map<string, HostBackedActiveRunHandle>();
+  let registered = 0;
+  let backfilledEvents = 0;
+  let terminalReplayed = 0;
+
+  for (const row of rows) {
+    const hostRun = hostByRunId.get(row.id);
+    if (!hostRun || !hostSnapshotMatchesRow(row, hostRun)) continue;
+
+    if (isTerminalState(hostRun.state)) {
+      terminalReplayed += applyHostTerminalSnapshot(hostRun, deps);
+      continue;
+    }
+    if (!isNonTerminalState(hostRun.state)) continue;
+
+    const handle = new HostBackedActiveRunHandle(hostRun, deps.hostClient, {
+      now: deps.now,
+      onCommandError: deps.onHostCommandError
+        ? (error) => deps.onHostCommandError?.(error)
+        : undefined,
+    });
+    registry.register({
+      run: handle,
+      projectId: row.projectId,
+      dispatcherSessionId: row.dispatcherSessionId,
+      ccSessionId: row.ccSessionId,
+      podName: row.podName,
+      parentWorkItemId: row.parentWorkItemId,
+      podRevisionAtDispatch: row.podRevisionAtDispatch,
+      now: deps.now?.(),
+    });
+    handles.set(row.id, handle);
+    registered += 1;
+    backfilledEvents += backfillAgentRunJsonl(row, hostRun, deps);
+  }
+
+  deps.hostClient.onEvent?.((event) => {
+    applyAgentHostEvent(event, {
+      ...deps,
+      activeRunRegistry: registry,
+    });
+    if (event.type === 'run-state' || event.type === 'run-terminal') {
+      const handle = handles.get(event.run.runId);
+      handle?.applySnapshot(event.run);
+    }
+  });
+
+  return {
+    reconcile,
+    registered,
+    backfilledEvents,
+    terminalReplayed,
+  };
+}
+
+export interface ApplyAgentHostEventResult {
+  statusUpdated: number;
+  terminalApplied: number;
+  jsonlBroadcast: number;
+}
+
+export function applyAgentHostEvent(
+  event: AgentHostEvent,
+  deps: Omit<AgentHostReattachDeps, 'hostClient'>,
+): ApplyAgentHostEventResult {
+  switch (event.type) {
+    case 'run-state': {
+      const row = (deps.getAgentRun ?? defaultGetAgentRunRow)(event.run.runId);
+      if (!row || isDbTerminal(row.status) || isTerminalState(event.run.state)) {
+        return emptyResult();
+      }
+      if (shouldUpdateFromHost(row, event.run)) {
+        (deps.updateStatus ?? defaultUpdateAgentRunStatus)({
+          id: row.id,
+          status: event.run.state,
+          ...(event.run.spawnedAt !== null ? { spawnedAt: event.run.spawnedAt } : {}),
+          ...(event.run.readyAt !== null ? { readyAt: event.run.readyAt } : {}),
+        });
+        deps.broadcast?.(row.projectId, {
+          type: 'agent-run-changed',
+          record: agentRunRecordFor(row, event.run),
+        });
+        return { statusUpdated: 1, terminalApplied: 0, jsonlBroadcast: 0 };
+      }
+      return emptyResult();
+    }
+    case 'run-jsonl': {
+      const row = (deps.getAgentRun ?? defaultGetAgentRunRow)(event.runId);
+      if (!row) return emptyResult();
+      deps.broadcast?.(row.projectId, {
+        type: 'agent-jsonl-event',
+        runId: row.id,
+        event: event.event,
+      });
+      return { statusUpdated: 0, terminalApplied: 0, jsonlBroadcast: 1 };
+    }
+    case 'run-terminal': {
+      const applied = applyHostTerminalSnapshot(event.run, deps);
+      return { statusUpdated: 0, terminalApplied: applied, jsonlBroadcast: 0 };
+    }
+    default:
+      return emptyResult();
+  }
+}
+
+export function applyHostTerminalSnapshot(
+  snapshot: AgentHostRunSnapshot,
+  deps: Omit<AgentHostReattachDeps, 'hostClient'>,
+): number {
+  if (!isTerminalState(snapshot.state)) return 0;
+
+  const row = (deps.getAgentRun ?? defaultGetAgentRunRow)(snapshot.runId);
+  if (!row || isDbTerminal(row.status)) return 0;
+
+  const terminal = snapshot.terminalResult;
+  const status = terminal?.status ?? snapshot.state;
+  const failureCause =
+    status === 'completed'
+      ? null
+      : coerceFailureCause(terminal?.failureCause) ?? 'host-protocol-error';
+  const failureReason =
+    status === 'completed'
+      ? null
+      : terminal?.failureReason ?? terminal?.failureCause ?? 'agent host reported terminal run';
+
+  (deps.markTerminal ?? defaultMarkAgentRunTerminal)({
+    id: snapshot.runId,
+    status,
+    result: status === 'completed' ? terminal?.result ?? '' : null,
+    failureCause,
+    failureReason,
+    completedAt: snapshot.terminalAt ?? (deps.now ?? Date.now)(),
+  });
+  deps.activeRunRegistry?.unregister(snapshot.runId);
+  deps.broadcast?.(row.projectId, {
+    type: 'agent-run-changed',
+    record: agentRunRecordFor(row, snapshot),
+  });
+  return 1;
+}
+
+function backfillAgentRunJsonl(
+  row: AgentRunRow,
+  snapshot: AgentHostRunSnapshot,
+  deps: AgentHostReattachDeps,
+): number {
+  if (!deps.broadcast) return 0;
+  const jsonlPath = snapshot.jsonlPath ?? resolveJsonlPath(row, deps);
+  if (!jsonlPath || !(deps.jsonlExists ?? existsSync)(jsonlPath)) return 0;
+
+  let count = 0;
+  const tailer = new AgentRunJsonlTailer({
+    filePath: jsonlPath,
+    pollIntervalMs: 60_000,
+  });
+  tailer.on('event', (event) => {
+    count += 1;
+    deps.broadcast?.(row.projectId, {
+      type: 'agent-jsonl-event',
+      runId: row.id,
+      event,
+    });
+  });
+  tailer.drainAvailable();
+  tailer.stop();
+  tailer.removeAllListeners();
+  return count;
+}
+
+function resolveJsonlPath(
+  row: AgentRunRow,
+  deps: Pick<AgentHostReattachDeps, 'resolveJsonlPath'>,
+): string | null {
+  if (deps.resolveJsonlPath) return deps.resolveJsonlPath(row);
+  const project = defaultGetProjectById(row.projectId);
+  return project ? jsonlPathFor(project.folderPath, row.ccSessionId) : null;
+}
+
+function agentRunRecordFor(row: AgentRunRow, snapshot: AgentHostRunSnapshot): {
+  runId: ULID;
+  sessionId: string;
+  agentName: string;
+  model: string;
+  projectId: ULID;
+  parentWorkItemId: ULID | null;
+  dispatcherSessionId: string;
+  wait: false;
+  worktreeDir: string;
+  startedAt: number;
+  status: AgentHostRunSnapshot['state'];
+  result: string;
+  failureReason: string | null;
+  failureCause: AgentRunFailureCause | null;
+  endedAt: number | null;
+} {
+  return {
+    runId: row.id,
+    sessionId: row.ccSessionId,
+    agentName: row.podName,
+    model: 'opus',
+    projectId: row.projectId,
+    parentWorkItemId: row.parentWorkItemId,
+    dispatcherSessionId: row.dispatcherSessionId,
+    wait: false,
+    worktreeDir: snapshot.worktreeDir,
+    startedAt: row.queuedAt,
+    status: snapshot.state,
+    result:
+      snapshot.terminalResult?.status === 'completed'
+        ? snapshot.terminalResult.result ?? ''
+        : row.result ?? '',
+    failureReason: snapshot.terminalResult?.failureReason ?? row.failureReason,
+    failureCause:
+      snapshot.terminalResult?.status === 'completed'
+        ? null
+        : coerceFailureCause(snapshot.terminalResult?.failureCause) ?? row.failureCause,
+    endedAt: snapshot.terminalAt ?? row.completedAt,
+  };
+}
+
+function hostSnapshotMatchesRow(
+  row: AgentRunRow,
+  hostRun: AgentHostRunSnapshot,
+): boolean {
+  return (
+    hostRun.runId === row.id &&
+    hostRun.projectId === row.projectId &&
+    hostRun.dispatcherSessionId === row.dispatcherSessionId &&
+    hostRun.ccSessionId === row.ccSessionId &&
+    hostRun.podName === row.podName
+  );
+}
+
+function shouldUpdateFromHost(
+  row: AgentRunRow,
+  hostRun: AgentHostRunSnapshot,
+): boolean {
+  return (
+    row.status !== hostRun.state ||
+    (hostRun.spawnedAt !== null && row.spawnedAt !== hostRun.spawnedAt) ||
+    (hostRun.readyAt !== null && row.readyAt !== hostRun.readyAt)
+  );
+}
+
+function isNonTerminalState(
+  state: AgentHostRunSnapshot['state'],
+): state is NonTerminalAgentState {
+  return state === 'queued' || state === 'spawning' || state === 'running' || state === 'paused';
+}
+
+function isTerminalState(
+  state: AgentHostRunSnapshot['state'],
+): state is 'completed' | 'failed' | 'cancelled' {
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function isDbTerminal(status: AgentRunRow['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function coerceFailureCause(value: string | null | undefined): AgentRunFailureCause | null {
+  if (!value) return null;
+  return (AGENT_RUN_FAILURE_CAUSES as readonly string[]).includes(value)
+    ? (value as AgentRunFailureCause)
+    : null;
+}
+
+function emptyResult(): ApplyAgentHostEventResult {
+  return { statusUpdated: 0, terminalApplied: 0, jsonlBroadcast: 0 };
+}

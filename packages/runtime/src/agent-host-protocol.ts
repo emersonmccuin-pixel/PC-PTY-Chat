@@ -72,6 +72,7 @@ export type AgentHostCommand =
   | { type: 'start-run'; request: AgentHostStartRunRequest }
   | { type: 'resume-run'; request: AgentHostResumeRunRequest }
   | { type: 'send'; runId: ULID; text: string }
+  | { type: 'mark-paused'; runId: ULID; askId: string }
   | { type: 'answer-pending'; runId: ULID; text: string }
   | { type: 'cancel'; runId: ULID; reason?: string }
   | { type: 'notify-mcp-handshake'; ccSessionId: string }
@@ -100,7 +101,13 @@ export type AgentHostCommandResponse =
     }
   | {
       ok: true;
-      command: 'start-run' | 'resume-run' | 'send' | 'answer-pending' | 'cancel';
+      command:
+        | 'start-run'
+        | 'resume-run'
+        | 'send'
+        | 'mark-paused'
+        | 'answer-pending'
+        | 'cancel';
       run: AgentHostRunSnapshot;
       lastSeq: number;
     }

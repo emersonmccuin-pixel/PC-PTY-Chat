@@ -109,7 +109,7 @@ test('reconcileAgentRunsOnBoot keeps host-matched rows and applies newer host st
   assert.deepEqual(failures, []);
 });
 
-test('reconcileAgentRunsOnBoot fails missing running rows with legacy server-restart cause', () => {
+test('reconcileAgentRunsOnBoot fails host-missing running rows with host-lost cause', () => {
   const failures: unknown[] = [];
 
   const result = reconcileAgentRunsOnBoot({
@@ -128,14 +128,14 @@ test('reconcileAgentRunsOnBoot fails missing running rows with legacy server-res
       id: 'run-missing',
       status: 'failed',
       result: null,
-      failureCause: 'server-restart',
-      failureReason: 'server restarted before this run completed',
+      failureCause: 'host-lost',
+      failureReason: 'agent host no longer owns this non-terminal run',
       completedAt: 1_700_000_002_000,
     },
   ]);
 });
 
-test('reconcileAgentRunsOnBoot preserves paused rows only while an open ask exists', () => {
+test('reconcileAgentRunsOnBoot preserves host-missing paused rows only with open ask and JSONL', () => {
   const failures: unknown[] = [];
 
   const result = reconcileAgentRunsOnBoot({
@@ -143,24 +143,74 @@ test('reconcileAgentRunsOnBoot preserves paused rows only while an open ask exis
     hostClient: { listRuns: () => [] },
     listNonTerminalRuns: () => [
       row('paused-with-ask', 'paused'),
+      row('paused-with-ask-no-jsonl', 'paused'),
       row('paused-without-ask', 'paused'),
     ],
-    hasOpenPendingAskForRun: (runId) => runId === 'paused-with-ask',
+    hasOpenPendingAskForRun: (runId) =>
+      runId === 'paused-with-ask' || runId === 'paused-with-ask-no-jsonl',
+    resolveJsonlPath: (r) => `jsonl:${r.id}`,
+    jsonlExists: (path) => path === 'jsonl:paused-with-ask',
     updateStatus: () => { throw new Error('unexpected update'); },
     markTerminal: (input) => { failures.push(input); },
   });
 
   assert.equal(result.kept, 1);
-  assert.equal(result.failed, 1);
-  assert.equal(result.reconciled, 1);
+  assert.equal(result.failed, 2);
+  assert.equal(result.reconciled, 2);
   assert.deepEqual(failures, [
+    {
+      id: 'paused-with-ask-no-jsonl',
+      status: 'failed',
+      result: null,
+      failureCause: 'host-lost',
+      failureReason: 'agent host no longer owns this non-terminal run',
+      completedAt: 1_700_000_003_000,
+    },
     {
       id: 'paused-without-ask',
       status: 'failed',
       result: null,
-      failureCause: 'server-restart',
-      failureReason: 'server restarted before this run completed',
+      failureCause: 'host-lost',
+      failureReason: 'agent host no longer owns this non-terminal run',
       completedAt: 1_700_000_003_000,
+    },
+  ]);
+});
+
+test('reconcileAgentRunsOnBoot applies terminal host snapshots to non-terminal DB rows', () => {
+  const terminals: unknown[] = [];
+
+  const result = reconcileAgentRunsOnBoot({
+    now: () => 1_700_000_004_000,
+    hostClient: {
+      listRuns: () => [
+        hostRun('run-terminal', 'completed', {
+          terminalAt: 1_700_000_003_500,
+          terminalResult: {
+            status: 'completed',
+            result: 'done',
+            failureCause: null,
+            failureReason: null,
+          },
+        }),
+      ],
+    },
+    listNonTerminalRuns: () => [row('run-terminal', 'running')],
+    hasOpenPendingAskForRun: () => false,
+    updateStatus: () => { throw new Error('unexpected update'); },
+    markTerminal: (input) => { terminals.push(input); },
+  });
+
+  assert.equal(result.updated, 1);
+  assert.equal(result.reconciled, 1);
+  assert.deepEqual(terminals, [
+    {
+      id: 'run-terminal',
+      status: 'completed',
+      result: 'done',
+      failureCause: null,
+      failureReason: null,
+      completedAt: 1_700_000_003_500,
     },
   ]);
 });

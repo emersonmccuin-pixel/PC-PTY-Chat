@@ -128,6 +128,8 @@ export class AgentHostService extends EventEmitter {
         return this.startRun('resume-run', command.request);
       case 'send':
         return this.send(command.runId, command.text);
+      case 'mark-paused':
+        return this.markPaused(command.runId, command.askId);
       case 'answer-pending':
         return this.answerPending(command.runId, command.text);
       case 'cancel':
@@ -211,6 +213,22 @@ export class AgentHostService extends EventEmitter {
     return {
       ok: true,
       command: 'send',
+      run: this.snapshot(entry),
+      lastSeq: this.seq,
+    };
+  }
+
+  private markPaused(runId: string, askId: string): AgentHostCommandResponse {
+    const entry = this.runs.get(runId);
+    if (!entry) {
+      return this.error('mark-paused', 'not-found', `run ${runId} not found`);
+    }
+
+    entry.run._markPaused(askId);
+    entry.updatedAt = this.now();
+    return {
+      ok: true,
+      command: 'mark-paused',
       run: this.snapshot(entry),
       lastSeq: this.seq,
     };
