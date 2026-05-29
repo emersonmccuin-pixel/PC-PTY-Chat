@@ -72,7 +72,7 @@ import { cleanupLegacyProjectRuntimeFiles } from './services/legacy-runtime-clea
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
-import { reconcileAgentRunsOnBoot } from './services/agent-run-boot-reconcile.ts';
+import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up. In a packaged
@@ -326,20 +326,33 @@ channelServer.start();
   }
 }
 
-// Boot-time agent-run reconciliation. Until an out-of-process host is wired,
-// this preserves the legacy idempotent orphan sweep: any non-terminal row
-// outlived a prior server lifetime and gets flipped to failed/server-restart
-// so the Activity Panel does not show stale running cards.
+// Boot-time agent-run reconciliation. Phase C can reattach through an
+// already-connected host client; until Phase D supplies that client, this
+// preserves the legacy idempotent orphan sweep.
 {
   try {
-    const result = reconcileAgentRunsOnBoot();
-    if (result.reconciled > 0) {
+    const result = await reattachAgentRunsDuringServerBoot({
+      broadcast: broadcastTo,
+    });
+    if (result.mode === 'host') {
+      const reattach = result.reattach;
+      const changed =
+        reattach.reconcile.reconciled +
+        reattach.registered +
+        reattach.backfilledEvents +
+        reattach.terminalReplayed;
+      if (changed > 0) {
+        console.log(
+          `[agent-runs] host boot reattach: registered=${reattach.registered}, backfilled=${reattach.backfilledEvents}, terminal=${reattach.terminalReplayed}, reconciled=${reattach.reconcile.reconciled}`,
+        );
+      }
+    } else if (result.reconcile.reconciled > 0) {
       console.log(
-        `[agent-runs] reconciled ${result.reconciled} agent run row(s) on boot (${result.mode})`,
+        `[agent-runs] reconciled ${result.reconcile.reconciled} agent run row(s) on boot (${result.reconcile.mode})`,
       );
     }
   } catch (err) {
-    console.error('[agent-runs] orphan reconciliation failed:', (err as Error).message);
+    console.error('[agent-runs] boot reattach failed:', (err as Error).message);
   }
 }
 
