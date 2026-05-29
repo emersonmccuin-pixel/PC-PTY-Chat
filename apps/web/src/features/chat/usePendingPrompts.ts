@@ -49,6 +49,17 @@ export function confirmedPendingIds(
         }
       }
     }
+    // id-keyed reconcile (Stage 1 stamp): the canonical jsonl-user envelope
+    // carries its originating clientMessageId, so the placeholder is replaced
+    // by its real row precisely — no fuzzy text. Additive; the text fallback
+    // below stays until Stage 6 for non-queue sends and pre-stamp sessions.
+    if (
+      env.type === 'jsonl' &&
+      typeof env.clientMessageId === 'string' &&
+      pendingIds.has(env.clientMessageId)
+    ) {
+      confirmed.add(env.clientMessageId);
+    }
     const text = canonicalUserTextFromEnvelope(env);
     if (text === null) continue;
     const match = pendingPrompts.find((pending) => {
