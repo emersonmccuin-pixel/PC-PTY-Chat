@@ -1,6 +1,6 @@
 # Out-of-Process Agent Host Design
 
-Status: Phase C API reattach seams complete; Phase D supervisor integration next.
+Status: Phase D supervisor integration in progress.
 
 Owner: Codex.
 
@@ -327,7 +327,8 @@ Phase C - API reattach:
 
 Phase D - supervisor integration:
 
-- Start host from dev supervisor.
+- In progress: added lock-file discovery, localhost HTTP command/event transport, and dev-supervisor sibling host wiring.
+- Done: start host from dev supervisor in code path; sentinel API restart remains scoped to the API child.
 - Add packaged host boot in Electron.
 - Add shutdown semantics for user quit vs API restart.
 

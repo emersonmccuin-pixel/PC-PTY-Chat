@@ -5,10 +5,15 @@ import type { Readable, Writable } from 'node:stream';
 import type {
   AgentHostCommand,
   AgentHostCommandResponse,
+  AgentHostEndpoint,
   AgentHostEvent,
   AgentHostIdentity,
   AgentHostRunSnapshot,
 } from '@pc/runtime';
+import {
+  discoverAgentHostEndpoint,
+} from '@pc/runtime';
+import { getDataDir } from '@pc/utils';
 
 import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 
@@ -25,6 +30,23 @@ export interface JsonLineAgentHostClientOptions {
   requestTimeoutMs?: number;
   idPrefix?: string;
   onProtocolError?: (error: Error) => void;
+}
+
+export interface HttpAgentHostClientOptions {
+  requestTimeoutMs?: number;
+  onProtocolError?: (error: Error) => void;
+  fetch?: FetchLike;
+}
+
+export interface ResolveAgentHostClientForBootOptions
+  extends Pick<HttpAgentHostClientOptions, 'requestTimeoutMs' | 'onProtocolError' | 'fetch'> {
+  dataDir?: string;
+  isPidAlive?: (pid: number) => boolean;
+  discoverEndpoint?: () => AgentHostEndpoint | null;
+  connect?: (
+    endpoint: AgentHostEndpoint,
+  ) => AgentHostReattachClient | Promise<AgentHostReattachClient>;
+  onConnectionError?: (error: Error, endpoint: AgentHostEndpoint) => void;
 }
 
 interface PendingRequest {
@@ -49,6 +71,8 @@ interface WireEvent {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
+type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
+
 export class JsonLineAgentHostClient
   extends EventEmitter
   implements AgentHostReattachClient
@@ -60,6 +84,7 @@ export class JsonLineAgentHostClient
   private readonly pending = new Map<string, PendingRequest>();
   private readonly runs = new Map<string, AgentHostRunSnapshot>();
   private nextId = 0;
+  private lastSeq = 0;
   private closed = false;
 
   constructor(
@@ -233,6 +258,7 @@ export class JsonLineAgentHostClient
   }
 
   private applyResponse(response: AgentHostCommandResponse): void {
+    this.lastSeq = Math.max(this.lastSeq, response.lastSeq);
     if (!response.ok) return;
     if (response.command === 'list-runs') {
       this.setRuns(response.runs);
@@ -244,6 +270,7 @@ export class JsonLineAgentHostClient
   }
 
   private applyEvent(event: AgentHostEvent): void {
+    this.lastSeq = Math.max(this.lastSeq, event.seq);
     if (event.type === 'run-state' || event.type === 'run-terminal') {
       this.runs.set(event.run.runId, event.run);
     }
@@ -272,6 +299,203 @@ export class JsonLineAgentHostClient
   }
 }
 
+export class HttpAgentHostClient
+  extends EventEmitter
+  implements AgentHostReattachClient
+{
+  private readonly baseUrl: string;
+  private readonly requestTimeoutMs: number;
+  private readonly onProtocolError?: (error: Error) => void;
+  private readonly fetchImpl: FetchLike;
+  private readonly runs = new Map<string, AgentHostRunSnapshot>();
+  private eventAbort: AbortController | null = null;
+  private lastSeq = 0;
+  private closed = false;
+
+  constructor(
+    endpoint: AgentHostEndpoint | string,
+    options: HttpAgentHostClientOptions = {},
+  ) {
+    super();
+    this.baseUrl = normalizeBaseUrl(
+      typeof endpoint === 'string' ? endpoint : endpoint.baseUrl,
+    );
+    this.requestTimeoutMs =
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.onProtocolError = options.onProtocolError;
+    this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  async hello(apiPid = process.pid): Promise<AgentHostIdentity> {
+    const response = await this.sendCommand({
+      type: 'hello',
+      apiPid,
+      protocolVersion: 1,
+    });
+    if (!response.ok || response.command !== 'hello') {
+      throw new Error(commandErrorMessage(response, 'hello'));
+    }
+    return response.identity;
+  }
+
+  async refreshRuns(): Promise<readonly AgentHostRunSnapshot[]> {
+    const response = await this.sendCommand({ type: 'list-runs' });
+    if (!response.ok || response.command !== 'list-runs') {
+      throw new Error(commandErrorMessage(response, 'list-runs'));
+    }
+    this.setRuns(response.runs);
+    return this.listRuns();
+  }
+
+  listRuns(): readonly AgentHostRunSnapshot[] {
+    return Array.from(this.runs.values());
+  }
+
+  async sendCommand(command: AgentHostCommand): Promise<AgentHostCommandResponse> {
+    if (this.closed) {
+      throw new Error('agent host client is closed');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.url('/command'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw fetchCommandError(command.type, err, this.requestTimeoutMs);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const body = await parseJsonResponse(response);
+    if (!isAgentHostCommandResponse(body)) {
+      throw new Error(`agent host command ${command.type} returned malformed response`);
+    }
+    if (body.command !== command.type) {
+      throw new Error(
+        `agent host response command mismatch: expected ${command.type}, got ${body.command}`,
+      );
+    }
+
+    this.applyResponse(body);
+    return body;
+  }
+
+  onEvent(listener: (event: AgentHostEvent) => void): () => void {
+    this.on('event', listener);
+    return () => this.off('event', listener);
+  }
+
+  startEventStream(): void {
+    if (this.closed || this.eventAbort) return;
+    const controller = new AbortController();
+    this.eventAbort = controller;
+    void this.readEventStream(controller.signal);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.eventAbort?.abort();
+    this.eventAbort = null;
+    this.removeAllListeners();
+  }
+
+  private async readEventStream(signal: AbortSignal): Promise<void> {
+    try {
+      const response = await this.fetchImpl(
+        this.url(`/events?after=${encodeURIComponent(String(this.lastSeq))}`),
+        { signal },
+      );
+      if (!response.ok || !response.body) {
+        throw new Error(`agent host event stream failed with HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        buffer = this.drainEventBuffer(buffer);
+      }
+      buffer += decoder.decode();
+      this.drainEventBuffer(buffer);
+    } catch (err) {
+      if (!this.closed && !signal.aborted) this.reportProtocolError(toError(err));
+    } finally {
+      if (this.eventAbort?.signal === signal) this.eventAbort = null;
+    }
+  }
+
+  private drainEventBuffer(buffer: string): string {
+    for (;;) {
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return buffer;
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) this.handleEventLine(line);
+    }
+  }
+
+  private handleEventLine(line: string): void {
+    let wire: unknown;
+    try {
+      wire = JSON.parse(line);
+    } catch (err) {
+      this.reportProtocolError(toError(err));
+      return;
+    }
+
+    if (!isWireEvent(wire) || !isAgentHostEvent(wire.event)) {
+      this.reportProtocolError(new Error('agent host emitted malformed event'));
+      return;
+    }
+    this.applyEvent(wire.event);
+    this.emit('event', wire.event);
+  }
+
+  private applyResponse(response: AgentHostCommandResponse): void {
+    this.lastSeq = Math.max(this.lastSeq, response.lastSeq);
+    if (!response.ok) return;
+    if (response.command === 'list-runs') {
+      this.setRuns(response.runs);
+      return;
+    }
+    if ('run' in response) {
+      this.runs.set(response.run.runId, response.run);
+    }
+  }
+
+  private applyEvent(event: AgentHostEvent): void {
+    this.lastSeq = Math.max(this.lastSeq, event.seq);
+    if (event.type === 'run-state' || event.type === 'run-terminal') {
+      this.runs.set(event.run.runId, event.run);
+    }
+  }
+
+  private setRuns(runs: readonly AgentHostRunSnapshot[]): void {
+    this.runs.clear();
+    for (const run of runs) {
+      this.runs.set(run.runId, run);
+    }
+  }
+
+  private reportProtocolError(error: Error): void {
+    this.onProtocolError?.(error);
+    this.emit('protocol-error', error);
+  }
+
+  private url(path: string): string {
+    return new URL(path, this.baseUrl).href;
+  }
+}
+
 export async function connectJsonLineAgentHostClientForBoot(
   transport: JsonLineAgentHostTransport,
   options: JsonLineAgentHostClientOptions = {},
@@ -282,13 +506,76 @@ export async function connectJsonLineAgentHostClientForBoot(
   return client;
 }
 
-export function resolveAgentHostClientForBoot():
+export async function connectHttpAgentHostClientForBoot(
+  endpoint: AgentHostEndpoint,
+  options: HttpAgentHostClientOptions = {},
+): Promise<HttpAgentHostClient> {
+  const client = new HttpAgentHostClient(endpoint, options);
+  await client.hello();
+  await client.refreshRuns();
+  client.startEventStream();
+  return client;
+}
+
+export function resolveAgentHostClientForBoot(
+  options: ResolveAgentHostClientForBootOptions = {},
+):
   | AgentHostReattachClient
   | Promise<AgentHostReattachClient | null>
   | null {
-  // Phase D will create or discover the host process and pass its transport
-  // here. Until then, production boot remains on the legacy in-process path.
-  return null;
+  const endpoint =
+    options.discoverEndpoint !== undefined
+      ? options.discoverEndpoint()
+      : discoverAgentHostEndpoint({
+          dataDir: options.dataDir ?? getDataDir(),
+          ...(options.isPidAlive ? { isPidAlive: options.isPidAlive } : {}),
+        });
+  if (!endpoint) return null;
+
+  const connect =
+    options.connect ??
+    ((hostEndpoint: AgentHostEndpoint) =>
+      connectHttpAgentHostClientForBoot(hostEndpoint, {
+        requestTimeoutMs: options.requestTimeoutMs,
+        onProtocolError: options.onProtocolError,
+        fetch: options.fetch,
+      }));
+
+  return Promise.resolve(connect(endpoint)).catch((err) => {
+    options.onConnectionError?.(toError(err), endpoint);
+    return null;
+  });
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
+}
+
+async function parseJsonResponse(response: Response): Promise<unknown> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new Error(
+      `agent host returned non-JSON HTTP ${response.status}: ${toError(err).message}`,
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`agent host returned HTTP ${response.status}`);
+  }
+  return body;
+}
+
+function fetchCommandError(
+  command: AgentHostCommand['type'],
+  err: unknown,
+  timeoutMs: number,
+): Error {
+  const error = toError(err);
+  if (error.name === 'AbortError') {
+    return new Error(`agent host command ${command} timed out after ${timeoutMs}ms`);
+  }
+  return error;
 }
 
 function isWireEvent(value: unknown): value is WireEvent {

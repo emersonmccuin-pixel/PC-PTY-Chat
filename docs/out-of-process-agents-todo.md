@@ -1,6 +1,6 @@
 # TODO — Out-of-process agent host (durable crash isolation)
 
-Status: Phase C API-side reattach seams complete; Phase D supervisor integration next. Owner: Codex. Logged 2026-05-28.
+Status: Phase D supervisor integration in progress. Owner: Codex. Logged 2026-05-28.
 
 Design: `docs/out-of-process-agent-host-design.md`.
 
@@ -54,4 +54,5 @@ Key pieces now drafted in the design:
 
 - Done: Phase B JSON-lines host process MVP.
 - Done: Phase C API host client seam, boot reattach, host-backed active handles, dispatch routing, terminal side effects, and fake-host tests.
-- Next: Phase D starts/supervises the host in dev and packaged Electron, then wires real host discovery into `resolveAgentHostClientForBoot()`.
+- Done in Phase D: lock-file schema, localhost HTTP host discovery, API HTTP host client, and dev-supervisor sibling host wiring with fake process/discovery tests.
+- Next: Phase D packaged Electron host boot and shutdown semantics, then manual smoke only when server/app restarts are explicitly allowed.
