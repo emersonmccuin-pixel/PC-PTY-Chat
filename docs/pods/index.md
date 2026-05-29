@@ -29,7 +29,7 @@ Base: `dev` at `44980f1`.
 | Work items/stages/fields | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/work-items-stages-fields.md` | Source audit and cleanup slice recorded. Browser smoke not run; status helper/type drift only. |
 | Workflows/builder/visualizer | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/workflows-builder-visualizer.md` | Source audit and cleanup slice recorded. Browser smoke not run; type-only fire response contract drift. |
 | Files/project context/settings | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/files-project-context-settings.md` | Source audit and cleanup slice recorded. Browser smoke not run; settings/auth type drift only. |
-| Desktop/dev controls | `not-started` | unassigned | none | pending | Electron shell, dev status, reload/restart controls, dogfood assumptions. |
+| Desktop/dev controls | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/desktop-dev-controls.md` | Electron shell, dev status, reload/restart controls, dogfood assumptions. |
 
 ## Parallel Safety
 
