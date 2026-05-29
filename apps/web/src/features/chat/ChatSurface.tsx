@@ -9,6 +9,7 @@ import { Composer } from '@/features/chat/ChatComposer';
 import type { ChatSurfaceProps } from '@/features/chat/ChatSurfaceProps';
 import { ChatTimeline } from '@/features/chat/ChatTimeline';
 import { TerminalModeToggle, TerminalPane } from '@/features/chat/TerminalPane';
+import { SendBatchTray } from '@/features/chat/SendBatchTray';
 import { ThinkingIndicator } from '@/features/chat/ThinkingIndicator';
 import { useChatComposerActions } from '@/features/chat/useChatComposerActions';
 import { useChatInputControls } from '@/features/chat/useChatInputControls';
@@ -110,6 +111,9 @@ export function ChatSurface({
     handleSend,
     handleInterrupt,
     resolvedComposerSendLabel,
+    batchChunks,
+    cancelLastChunk,
+    cancelBatch,
   } = useChatComposerActions({
     events,
     inputCapabilities,
@@ -160,6 +164,13 @@ export function ChatSurface({
         renderItem={renderTimelineItem}
       />
       {bannerSlot}
+      {!composerHidden && !terminalActive && (
+        <SendBatchTray
+          chunks={batchChunks}
+          onCancelLast={cancelLastChunk}
+          onCancelAll={cancelBatch}
+        />
+      )}
       {!composerHidden && !terminalActive && (
         <Composer
           historyKey={composerHistoryKey}
