@@ -24,7 +24,7 @@ Base: `dev` at `44980f1`.
 | Project lifecycle | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/project-lifecycle.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
 | Terminal/PTY | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/terminal-pty.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
 | Transient sessions | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/transient-sessions.md` | Source audit and cleanup slice recorded. Browser smoke blocked by unavailable Browser backend. |
-| Agents/pods/catalog/MCP | `not-started` | unassigned | none | pending | Pod records, stock pods, MCP tools, catalog, allowlists. |
+| Agents/pods/catalog/MCP | `auditing` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agents-pods-catalog-mcp.md` | Pod records, stock pods, MCP tools, catalog, allowlists. |
 | Agent runs/transcripts | `complete` | Codex | `PC-PTY-Chat-phase5` / `codex/phase-5-hardening` | `docs/pods/agent-runs-transcripts.md` | Source audit and cleanup slices recorded. Browser smoke blocked by unavailable Browser backend. |
 | Work items/stages/fields | `not-started` | unassigned | none | pending | Work item CRUD, Kanban, initiatives, stages, field schemas, attachments. |
 | Workflows/builder/visualizer | `not-started` | unassigned | none | pending | Workflow rows, v2 compatibility, builder chat, graph UI, review. |
