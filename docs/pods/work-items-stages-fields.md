@@ -1,6 +1,6 @@
 # Work Items Stages Fields Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -199,8 +199,8 @@ Do not change workflow-trigger, agent-verification, stage delete/reassign, or ar
 
 Small cleanup candidates:
 
-- Align web work-item status contracts with the server/domain status set and extract shared status presentation helpers.
-- Add focused web/helper tests for all status labels/options/glyph coverage.
+- Done: aligned web work-item status contracts with the server/domain status set and extracted shared status presentation helpers.
+- Done: added focused web/helper tests for all status labels/options/glyph coverage.
 - Keep initiative API cleanup as documentation-only unless the product decision is to remove or implement that surface.
 - Defer route/project-resolution helper extraction until after status contract drift is fixed.
 
@@ -226,11 +226,17 @@ Commands run so far:
 - `rg --files` and `rg -n` for work item, stage, field schema, attachment, initiative, approval, Kanban, and agent contract surfaces.
 - `Get-Content` for work-item routes, services, repos, domain contracts, MCP tools, web client/types, Kanban/Table/Detail/Toolbar surfaces, and focused tests.
 - `pnpm --filter @pc/server exec tsx --test test/work-item-routes.test.ts test/work-item-pagination.test.ts test/work-item-ref-resolver.test.ts test/agent-work-item.test.ts test/ephemeral-work-item-sweep.test.ts test/stage-flags-backfill.test.ts test/agent-verification-review.test.ts test/agent-verification.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-work-item-status.test.ts test/work-item-routes.test.ts test/work-item-pagination.test.ts test/work-item-ref-resolver.test.ts test/agent-work-item.test.ts test/ephemeral-work-item-sweep.test.ts test/stage-flags-backfill.test.ts test/agent-verification-review.test.ts test/agent-verification.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
 - Focused work-items/stages/fields audit tests: 78 passed, 0 failed.
+- Focused work-items/stages/fields cleanup tests: 79 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
 - Diff whitespace check: passed.
 
 Manual workflow checks run:
@@ -240,5 +246,5 @@ Manual workflow checks run:
 Open risks:
 
 - Work Items UI behavior remains source-audited only.
-- Web/server status drift can hide or mislabel `awaiting-verification` and `cancelled` rows.
+- Browser-level status rendering remains unverified in this session.
 - Initiative APIs are client-only in this repo until a server/domain implementation lands or the client surface is removed.

@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import { workItemsApi, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
+import { workItemsApi, type WorkItem, type WorkItemType } from '@/features/work-items/client';
+import { WORK_ITEM_STATUS_DOT_CLASS, WORK_ITEM_STATUS_LABEL } from '@/features/work-items/status';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useWorkItemsView } from '@/store/work-items-view';
 import { WorkItemDetailModal } from './WorkItemDetailModal';
@@ -23,24 +24,6 @@ interface Props {
    *  instead of the legacy WorkItemDetailModal. */
   onOpenInspector?: (workItem: WorkItem) => void;
 }
-
-const STATUS_LABEL: Record<WorkItemStatus, string> = {
-  pending: 'Open',
-  'in-progress': 'In progress',
-  blocked: 'Blocked',
-  complete: 'Done',
-  failed: 'Failed',
-  archived: 'Archived',
-};
-
-const STATUS_DOT: Record<WorkItemStatus, string> = {
-  pending: 'bg-[var(--fg-dim)]',
-  'in-progress': 'bg-warning',
-  blocked: 'bg-destructive',
-  complete: 'bg-success',
-  failed: 'bg-destructive',
-  archived: 'bg-[var(--fg-dim)]',
-};
 
 const TYPE_CHIP: Record<
   WorkItemType,
@@ -192,10 +175,10 @@ export function WorkItemsTable({ project, events, onOpenInspector }: Props) {
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center gap-2">
                       <span
-                        className={`inline-block h-[7px] w-[7px] ${STATUS_DOT[wi.status]}`}
+                        className={`inline-block h-[7px] w-[7px] ${WORK_ITEM_STATUS_DOT_CLASS[wi.status]}`}
                       />
                       <span className="text-foreground">
-                        {STATUS_LABEL[wi.status]}
+                        {WORK_ITEM_STATUS_LABEL[wi.status]}
                       </span>
                     </span>
                   </td>

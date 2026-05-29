@@ -14,6 +14,12 @@ import remarkGfm from 'remark-gfm';
 
 import type { Project, Stage } from '@/features/projects/client';
 import { WorkItemConflictError, workItemsApi, type Attachment, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
+import {
+  WORK_ITEM_STATUS_GLYPH,
+  WORK_ITEM_STATUS_GROUP_ORDER,
+  WORK_ITEM_STATUS_LABEL,
+  labelWorkItemStatus,
+} from '@/features/work-items/status';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAttachmentLightbox } from '@/store/attachment-lightbox';
@@ -236,33 +242,6 @@ function ComingSoonPane(_props: { tab: InspectorTab }) {
 // ──────────────────────────────────────────────────────────────────────
 // Children tab (37.9)
 
-const STATUS_GROUP_ORDER: WorkItemStatus[] = [
-  'in-progress',
-  'blocked',
-  'failed',
-  'pending',
-  'complete',
-  'archived',
-];
-
-const STATUS_GROUP_LABEL: Record<WorkItemStatus, string> = {
-  'in-progress': 'In progress',
-  blocked: 'Blocked',
-  failed: 'Failed',
-  pending: 'Open',
-  complete: 'Done',
-  archived: 'Archived',
-};
-
-const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: string }>> = {
-  'in-progress': { glyph: '⟳', className: 'text-warning' },
-  blocked: { glyph: '⚠', className: 'text-destructive' },
-  failed: { glyph: '⚠', className: 'text-destructive' },
-  complete: { glyph: '✓', className: 'text-success' },
-  pending: { glyph: '▢', className: 'text-[var(--fg-dim)]' },
-  archived: { glyph: '▢', className: 'text-[var(--fg-dim)]' },
-};
-
 const TYPE_CHIP: Record<
   WorkItemType,
   { label: string; icon: string; className: string }
@@ -324,7 +303,7 @@ function ChildrenTab({
 
   const grouped = useMemo(() => {
     const byStatus = new Map<WorkItemStatus, WorkItem[]>();
-    for (const status of STATUS_GROUP_ORDER) byStatus.set(status, []);
+    for (const status of WORK_ITEM_STATUS_GROUP_ORDER) byStatus.set(status, []);
     for (const wi of children) {
       const bucket = byStatus.get(wi.status);
       if (bucket) bucket.push(wi);
@@ -362,7 +341,7 @@ function ChildrenTab({
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {STATUS_GROUP_ORDER.map((status) => {
+          {WORK_ITEM_STATUS_GROUP_ORDER.map((status) => {
             const bucket = grouped.get(status) ?? [];
             if (bucket.length === 0) return null;
             return (
@@ -411,12 +390,12 @@ function ChildGroup({
   return (
     <div>
       <div className="flex items-center justify-between border border-b-0 border-border/30 bg-[var(--surface-2)] px-3 py-1.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-        <span>{STATUS_GROUP_LABEL[status]}</span>
+        <span>{WORK_ITEM_STATUS_LABEL[status]}</span>
         <span className="text-[var(--fg-dim)]">{items.length}</span>
       </div>
       <div className="border border-border/30 bg-card">
         {items.map((wi) => {
-          const glyph = STATUS_GLYPH[wi.status];
+          const glyph = WORK_ITEM_STATUS_GLYPH[wi.status];
           const type = TYPE_CHIP[wi.type];
           return (
             <button
@@ -567,6 +546,8 @@ function derivePhaseLabel(stage: Stage | null, wi: WorkItem): string {
   if (wi.status === 'blocked') return 'Blocked';
   if (wi.status === 'failed') return 'Failed';
   if (wi.status === 'complete') return 'Done';
+  if (wi.status === 'awaiting-verification') return labelWorkItemStatus(wi.status);
+  if (wi.status === 'cancelled') return labelWorkItemStatus(wi.status);
   if (wi.status === 'archived') return 'Archived';
   // Otherwise show the stage name (e.g. "In dev", "Spec review", "Discovery").
   if (stage) return stage.name;
