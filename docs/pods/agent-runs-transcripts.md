@@ -133,13 +133,11 @@ Cross-pod calls that should stay explicit:
 Duplicate adapters or protocol translations:
 
 - Agent run row fields are shimmed into web `AgentRunRecord` in route responses.
-- `AgentTranscriptModal` has a local `AgentJsonlEnvelope` type instead of importing a shared agent-run event contract.
-- Transcript backfill and live events both use `JsonlEvent`, but only the modal owns the merge/dedupe policy.
+- `apps/web/src/features/agent-runs/transcript.ts` owns the web-side agent JSONL envelope and transcript merge helper.
+- Transcript backfill and live events both use `JsonlEvent`; the feature helper owns the merge/dedupe policy.
 
 ## Dead Code And Drift
 
-- `AgentTranscriptModal` dedupes events by serialized row/event payload, so repeated identical JSONL events can collapse.
-- Transcript modal rows use array index keys after dedupe, so stable identity is not preserved for repeated or reordered rows.
 - Missing provider JSONL returns an empty successful transcript response; the UI cannot distinguish missing history from a legitimately empty transcript.
 - `model: 'opus'` is hard-coded in the active run list shim.
 - The older `/api/subagent-transcript` bridge still exists for chat bubble transcript paths and is separate from agent-run transcript backfill.
@@ -149,6 +147,7 @@ Duplicate adapters or protocol translations:
 Existing focused tests:
 
 - `apps/server/test/agent-run-routes.test.ts`: active list, cancel, event backfill, invoke, continue, list-by-dispatcher, pending ask answer/cancel status mapping.
+- `apps/server/test/web-agent-transcript.test.ts`: transcript backfill/live merge preserves repeated identical events and dedupes stable row ids.
 - `apps/server/test/agent-invoke-route.test.ts`: dispatch factory route integration.
 - `apps/server/test/agent-pause-resume.test.ts`: pending ask pause/resume state transitions.
 - `apps/server/test/agent-verification-review.test.ts`: review/verification continuation surfaces.
@@ -157,10 +156,8 @@ Existing focused tests:
 
 Missing tests or trace evidence:
 
-- No focused web test covers transcript modal backfill/live merge dedupe.
 - No test proves active, historical, empty, failed, and missing transcript UI states.
 - No browser smoke was run for opening an active or historical transcript modal.
-- No test covers repeated identical JSONL events surviving transcript merge.
 - No boundary test asserts agent-run WebSocket envelope contracts live outside the modal.
 
 ## Cleanup Plan
@@ -169,13 +166,13 @@ Do not change dispatch/runtime behavior before a trace identifies a failure.
 
 Small cleanup candidates:
 
-- Extract transcript merge/dedupe into a pure helper with stable keys and cover repeated identical events.
-- Move `AgentJsonlEnvelope` into a feature contract module if more than the modal consumes it.
+- Done in this slice: extracted transcript merge/dedupe into `apps/web/src/features/agent-runs/transcript.ts` with stable keys and repeated-identical-event coverage.
 - Add missing-provider transcript status only if product wants a distinct UI state.
 - Decide whether the legacy `/api/subagent-transcript` bridge remains under chat-bridges or should link to this pod as a retained compatibility path.
 
 Verification commands to use before any cleanup patch:
 
+- `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
@@ -186,17 +183,26 @@ Verification commands to use before any cleanup patch:
 Kickoff status:
 
 - This pod audit file exists and maps ownership, workflows, dependencies, drift, tests, and cleanup candidates.
-- Runtime behavior has not been changed.
+- Runtime dispatch behavior has not been changed.
 - No app, dev server, dogfood app, Vite server, channel server, or restart endpoint has been touched.
 
 Commands run so far:
 
 - `rg -n` for agent-run, transcript, pending ask, and agent WebSocket surfaces.
 - `Get-Content` for `AgentTranscriptModal`, agent-run routes, and agent-run route tests.
+- `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
+- `git diff --check`
 
 Verification results:
 
-- Not run yet for this pod.
+- Focused transcript merge tests: 2 passed, 0 failed.
+- Agent-run route plus transcript merge tests: 7 passed, 0 failed.
+- Server typecheck: passed.
+- Web typecheck: passed.
+- Diff whitespace check: passed.
 
 Manual workflow checks run:
 
