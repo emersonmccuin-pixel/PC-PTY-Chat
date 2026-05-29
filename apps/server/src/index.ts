@@ -15,7 +15,6 @@ import {
   getProjectById,
   listProjects,
   newId,
-  reconcileOrphanedRunningRuns,
   runMigrations,
   setOrchestratorSessionJsonlCursor,
   setOrchestratorSessionJsonlPath,
@@ -73,6 +72,7 @@ import { cleanupLegacyProjectRuntimeFiles } from './services/legacy-runtime-clea
 import { resetStockPodToDefault } from './services/stock-pod-reset.ts';
 import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-drift.ts';
 import { seedStockPods } from './services/stock-pod-seed.ts';
+import { reconcileAgentRunsOnBoot } from './services/agent-run-boot-reconcile.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up. In a packaged
@@ -326,17 +326,16 @@ channelServer.start();
   }
 }
 
-// Boot-time orphan sweep on agent_runs. Dispatch + broadcast wiring lives in
-// `agent-run-factory` per-spawn (the `broadcast` dep is injected at route
-// time). Orphan sweep stays as a boot-time idempotent UPDATE — any
-// non-terminal row outlives a prior server lifetime and gets flipped to
-// `failed` so the Activity Panel doesn't show stale running cards.
+// Boot-time agent-run reconciliation. Until an out-of-process host is wired,
+// this preserves the legacy idempotent orphan sweep: any non-terminal row
+// outlived a prior server lifetime and gets flipped to failed/server-restart
+// so the Activity Panel does not show stale running cards.
 {
   try {
-    const reconciled = reconcileOrphanedRunningRuns(Date.now());
-    if (reconciled > 0) {
+    const result = reconcileAgentRunsOnBoot();
+    if (result.reconciled > 0) {
       console.log(
-        `[agent-runs] reconciled ${reconciled} orphaned running row(s) from prior server lifetime`,
+        `[agent-runs] reconciled ${result.reconciled} agent run row(s) on boot (${result.mode})`,
       );
     }
   } catch (err) {

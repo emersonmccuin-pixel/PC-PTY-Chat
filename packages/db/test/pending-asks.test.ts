@@ -16,6 +16,7 @@ const {
   createProject,
   createPendingAsk,
   getPendingAsk,
+  hasOpenPendingAskForRun,
   insertAgentRunRow,
   listOpenPendingAsksForProject,
   listOpenPendingAsksForSession,
@@ -168,6 +169,7 @@ test('markPendingAskCancelled flips open → cancelled; cancelling an answered r
     now: 1_700_000_001_000,
   });
   assert.equal(markPendingAskCancelled(askId2, 1_700_000_005_000), false);
+  assert.equal(hasOpenPendingAskForRun(runId), false);
 });
 
 test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => {
@@ -243,4 +245,6 @@ test('listOpenPendingAsksV2 filters by project / session + oldest-first', () => 
     bySession.map((r) => r.id),
     [oldId, newerId],
   );
+  assert.equal(hasOpenPendingAskForRun(runId), true);
+  assert.equal(hasOpenPendingAskForRun(otherRunId), true);
 });

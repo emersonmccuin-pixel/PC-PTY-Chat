@@ -173,6 +173,16 @@ export function listActiveAgentRunsForProject(projectId: ULID): AgentRunRow[] {
     .all();
 }
 
+/** Boot/reconcile feeder. Lists every non-terminal row across projects. */
+export function listNonTerminalAgentRuns(): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
+    .orderBy(desc(agentRuns.queuedAt))
+    .all();
+}
+
 /** Concurrent-continuation guard. Returns a non-terminal continuation row
  *  if one exists for `priorRunId`. `pc_continue_agent` rejects with 409
  *  when this comes back non-null. */

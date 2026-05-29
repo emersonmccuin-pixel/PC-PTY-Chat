@@ -17,6 +17,7 @@ const {
   findActiveContinuation,
   getAgentRunRow,
   insertAgentRunRow,
+  listNonTerminalAgentRuns,
   listAgentRunsForSession,
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,
@@ -426,6 +427,13 @@ test('reconcileOrphanedRunningRuns flips non-terminal rows to failed/server-rest
     failureReason: 'crash',
     completedAt: 1_700_000_001_000,
   });
+
+  const nonTerminalIds = new Set(listNonTerminalAgentRuns().map((row) => row.id));
+  for (const id of [queued, spawning, running, paused]) {
+    assert.equal(nonTerminalIds.has(id), true);
+  }
+  assert.equal(nonTerminalIds.has(completed), false);
+  assert.equal(nonTerminalIds.has(alreadyFailed), false);
 
   const affected = reconcileOrphanedRunningRuns(1_700_000_900_000);
   // Shared DB across the test file may contain non-terminal rows from

@@ -183,6 +183,7 @@ export type {
 export {
   createPendingAsk,
   getPendingAsk,
+  hasOpenPendingAskForRun,
   listOpenPendingAsksForProject,
   listOpenPendingAsksForSession,
   markPendingAskAnswered,
@@ -207,6 +208,7 @@ export {
   insertAgentRunRow,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
+  listNonTerminalAgentRuns,
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,
   updateAgentRunStatus,
