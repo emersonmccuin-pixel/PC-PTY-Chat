@@ -220,6 +220,16 @@ export function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
           taskId: ev.taskId,
         },
       };
+    case 'jsonl-sidechain': {
+      // Sub-agent turn row. Parse the raw entry into a compact step; the
+      // grouping layer coalesces consecutive ones into one collapsed block.
+      const step = parseSidechainStep(ev.raw);
+      return {
+        projectId: env.projectId,
+        type: 'event',
+        event: { kind: 'sidechain', role: step.role, text: step.text },
+      };
+    }
     case 'jsonl-ai-title':
     case 'jsonl-last-prompt':
     case 'jsonl-file-history':
@@ -227,9 +237,55 @@ export function normalizeJsonlEnvelope(env: WsEnvelope): WsEnvelope | null {
     case 'jsonl-turn-duration':
     case 'jsonl-post-turn-summary':
     case 'jsonl-stream-event':
-    case 'jsonl-sidechain':
       return null;
     default:
       return null;
   }
+}
+
+/** Parse one raw `jsonl-sidechain` row (a Claude transcript line) into a
+ *  compact { role, text } step for the collapsed sub-agent block. */
+function parseSidechainStep(raw: unknown): {
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+} {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  const msg = (row.message ?? {}) as Record<string, unknown>;
+  const content = msg.content;
+  const baseRole: 'user' | 'assistant' = row.type === 'assistant' ? 'assistant' : 'user';
+
+  if (typeof content === 'string') {
+    return { role: baseRole, text: content || '(no text)' };
+  }
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    let sawToolResult = false;
+    for (const p of content as Array<Record<string, unknown>>) {
+      if (!p || typeof p !== 'object') continue;
+      if (p.type === 'text' && typeof p.text === 'string') parts.push(p.text);
+      else if (p.type === 'tool_use') {
+        parts.push(`🔧 ${typeof p.name === 'string' ? p.name : 'tool'}`);
+      } else if (p.type === 'tool_result') {
+        sawToolResult = true;
+        parts.push(`↳ ${extractToolResultText(p.content)}`);
+      }
+    }
+    const role: 'user' | 'assistant' | 'tool' =
+      baseRole === 'assistant' ? 'assistant' : sawToolResult ? 'tool' : 'user';
+    return { role, text: parts.join('\n').trim() || '(no text)' };
+  }
+  return { role: baseRole, text: '(no content)' };
+}
+
+function extractToolResultText(content: unknown): string {
+  let text: string;
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = (content as Array<Record<string, unknown>>)
+      .map((p) => (p && p.type === 'text' && typeof p.text === 'string' ? p.text : ''))
+      .join('')
+      .trim();
+  } else text = '';
+  if (!text) return 'tool result';
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }

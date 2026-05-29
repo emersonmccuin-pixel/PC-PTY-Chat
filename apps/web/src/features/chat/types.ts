@@ -57,12 +57,24 @@ export interface AgentDispatchGroupItem {
   events: AgentEventEntry[];
 }
 
+export interface SidechainStep {
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+}
+
+export interface SidechainGroupItem {
+  kind: 'sidechain-group';
+  key: string;
+  steps: SidechainStep[];
+}
+
 export type RenderItem =
   | ToolGroupItem
   | EnvItem
   | EditItem
   | WorkflowRunGroupItem
-  | AgentDispatchGroupItem;
+  | AgentDispatchGroupItem
+  | SidechainGroupItem;
 
 export interface StableEnvelope {
   origIdx: number;

@@ -1,5 +1,6 @@
 import type {
   ChatEvent,
+  SidechainStepEvent,
   ToolEndEvent,
   ToolStartEvent,
   UserEvent,
@@ -10,6 +11,7 @@ import { parseUserText } from '@/lib/parse-chat-text';
 import type {
   AgentDispatchGroupItem,
   RenderItem,
+  SidechainStep,
   StableEnvelope,
   ToolCall,
   WorkflowRunGroupItem,
@@ -33,11 +35,26 @@ const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 export function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
   const items: RenderItem[] = [];
   let buffer: ToolCall[] = [];
+  let sidechain: SidechainStep[] = [];
+  let sidechainKey: string | null = null;
 
   const flush = () => {
     if (buffer.length > 0) {
       items.push({ kind: 'tool-group', key: `tg-${buffer[0]!.stableId}`, calls: buffer });
       buffer = [];
+    }
+  };
+
+  // Consecutive sub-agent (sidechain) steps coalesce into one collapsed group.
+  const flushSidechain = () => {
+    if (sidechain.length > 0) {
+      items.push({
+        kind: 'sidechain-group',
+        key: sidechainKey ?? `scg-${items.length}`,
+        steps: sidechain,
+      });
+      sidechain = [];
+      sidechainKey = null;
     }
   };
 
@@ -47,21 +64,34 @@ export function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
     const stableId = entry.origIdx;
     const stableKey = entry.key ?? `${stableId}`;
     if (env.type === 'ask') {
+      flushSidechain();
       flush();
       items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
     if (env.type !== 'event') {
+      flushSidechain();
       flush();
       items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
     const ev = (env as WsEnvelope & { event: ChatEvent }).event;
     if (!ev || typeof ev !== 'object' || !('kind' in ev)) {
+      flushSidechain();
       flush();
       items.push({ kind: 'env', key: `env-${stableKey}`, env });
       continue;
     }
+    if (ev.kind === 'sidechain') {
+      // Close any open tool group, then accumulate this sub-agent step.
+      flush();
+      if (sidechain.length === 0) sidechainKey = `scg-${stableId}`;
+      const se = ev as SidechainStepEvent;
+      sidechain.push({ role: se.role, text: se.text });
+      continue;
+    }
+    // Any non-sidechain event ends the current sub-agent run.
+    flushSidechain();
     if (
       (ev.kind === 'tool-start' || ev.kind === 'tool-end') &&
       SUPPRESSED_TOOLS.has((ev as ToolStartEvent | ToolEndEvent).tool)
@@ -268,6 +298,7 @@ export function synthesizeRenderItems(entries: StableEnvelope[]): RenderItem[] {
     flush();
     items.push({ kind: 'env', key: `env-${stableKey}`, env });
   }
+  flushSidechain();
   flush();
   return items;
 }

@@ -15,7 +15,7 @@ import {
   CollapsibleEventGroup,
   type EventGroupStatusTone,
 } from '@/features/chat/ToolBubbles';
-import type { AgentEventEntry, WorkflowEventEntry } from '@/features/chat/types';
+import type { AgentEventEntry, SidechainStep, WorkflowEventEntry } from '@/features/chat/types';
 
 const FAILURE_CAUSE_LABEL: Record<SubagentFailureEvent['cause'], string> = {
   'agent-self-failed': 'Agent reported failure',
@@ -195,6 +195,35 @@ export function AgentDispatchGroupBubble({
           </div>
           <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
             {ev.body}
+          </pre>
+        </div>
+      ))}
+    </CollapsibleEventGroup>
+  );
+}
+
+const SIDECHAIN_ROLE_LABEL: Record<SidechainStep['role'], string> = {
+  user: 'prompt',
+  assistant: 'agent',
+  tool: 'tool',
+};
+
+export function SidechainGroupBubble({ steps }: { steps: SidechainStep[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <CollapsibleEventGroup
+      label="Sub-agent"
+      count={`${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`}
+      open={open}
+      onToggle={() => setOpen((v) => !v)}
+    >
+      {steps.map((s, i) => (
+        <div key={i} className="border-l border-border pl-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            {SIDECHAIN_ROLE_LABEL[s.role]}
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            {s.text}
           </pre>
         </div>
       ))}

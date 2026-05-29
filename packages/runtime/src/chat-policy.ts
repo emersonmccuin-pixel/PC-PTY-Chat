@@ -101,8 +101,12 @@ export function rowPolicy(ev: JsonlEvent): RowPolicy {
     case 'jsonl-last-prompt':
     case 'jsonl-file-history':
     case 'jsonl-bridge-session':
-    case 'jsonl-sidechain':
       return { visibility: 'hidden', lane: 'internal' };
+
+    case 'jsonl-sidechain':
+      // Sub-agent turns: shown in chat but collapsed by default (grouped into a
+      // single expandable block). Reaches the user; never hidden.
+      return { visibility: 'collapsed', lane: 'internal' };
 
     case 'jsonl-turn-duration':
     case 'jsonl-post-turn-summary':

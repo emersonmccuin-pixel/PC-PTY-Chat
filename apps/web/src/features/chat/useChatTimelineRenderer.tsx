@@ -3,6 +3,7 @@ import { useCallback, useState, type ReactNode } from 'react';
 import { AskCard } from '@/components/AskCard';
 import {
   AgentDispatchGroupBubble,
+  SidechainGroupBubble,
   WorkflowRunGroupBubble,
 } from '@/features/chat/AgentWorkflowBubbles';
 import {
@@ -91,6 +92,13 @@ export function useChatTimelineRenderer({
               agentName={item.agentName}
               events={item.events}
             />
+          </ChatTurnCard>
+        );
+      }
+      if (item.kind === 'sidechain-group') {
+        return (
+          <ChatTurnCard key={item.key} kind="pm" variant="child">
+            <SidechainGroupBubble steps={item.steps} />
           </ChatTurnCard>
         );
       }

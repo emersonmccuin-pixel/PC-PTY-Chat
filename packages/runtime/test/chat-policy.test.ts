@@ -155,8 +155,9 @@ function suppressedToday(ev: JsonlEvent): boolean {
     case 'jsonl-turn-duration':
     case 'jsonl-post-turn-summary':
     case 'jsonl-stream-event':
-    case 'jsonl-sidechain':
       return true;
+    // jsonl-sidechain was historically hidden; it is now `collapsed` (shown
+    // grouped + expandable), so it is intentionally NOT in the hidden baseline.
     default:
       return false;
   }

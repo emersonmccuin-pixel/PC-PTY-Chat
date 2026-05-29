@@ -88,6 +88,14 @@ export interface AssistantEvent extends ChatEventBase {
   transcriptPath?: string | null;
 }
 
+/** One row of a sub-agent (sidechain) turn, parsed from a `jsonl-sidechain`
+ *  row's raw entry. Rendered collapsed-by-default as a grouped block. */
+export interface SidechainStepEvent extends ChatEventBase {
+  kind: 'sidechain';
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+}
+
 export interface ToolStartEvent extends ChatEventBase {
   kind: 'tool-start';
   tool: string;
@@ -336,6 +344,7 @@ export interface ToolProgressEvent extends ChatEventBase {
 export type ChatEvent =
   | UserEvent
   | AssistantEvent
+  | SidechainStepEvent
   | ToolStartEvent
   | ToolEndEvent
   | TodosEvent
