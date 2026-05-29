@@ -3,8 +3,19 @@
 Living "where are we / what's next." The durable course doc — update it at each session close.
 Last updated: 2026-05-29.
 
+## ⏭ Next session — discuss first
+Open threads to triage at the top of the next session (detail in "Open threads" below):
+1. **Verify unread-project indicators** — feature landed (`52b606fa`) + crash-guard added (`f52c70a8`); not yet eyeballed in the browser after the fix. Quick Ctrl+R + confirm dots behave, then it's done.
+2. **Packaged agent-host: crash-isolation vs. survival** (open #2) — release-gating decision.
+3. **Workflow isolation bug** `pc-pty-chat-82` (open #3) — agents sometimes commit to `dev` not their worktree; correctness hazard. Has a canary repro plan.
+4. **WS binder → store/slice refactor** (open #4) — in progress in a parallel session; check status before touching `wsEvents[]` consumers.
+5. **Chat follow-ups** (open #5) — Stage 2b inline cards, then Stage 6 legacy-renderer deletion after A/B soak.
+6. **node-pty `AttachConsole failed`** (open #6) — recurring native crash; mitigation tied to #2.
+
+Housekeeping: `dev` is unpushed (now @ `1fa589c9`); integration worktrees still need pruning (see Cleanup).
+
 ## Current state
-- `dev` @ `2a43e525` (local; NOT yet pushed to `origin`). Running stack is pre-Phase-D code — Phase D applies on next `pnpm dev` restart.
+- `dev` @ `1fa589c9` (local; NOT yet pushed to `origin`). Phase D + schema-intact guard + unread indicators landed; applies on next `pnpm dev` restart.
 - Backup tags: `backup/dev-pre-host-merge`, `backup/dev-pre-perf-oom`, `backup/dev-pre-phaseD-merge`.
 
 ## Landed (2026-05-29)
