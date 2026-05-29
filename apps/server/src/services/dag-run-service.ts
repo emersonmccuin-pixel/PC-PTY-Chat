@@ -12,6 +12,7 @@ import { promisify } from 'node:util';
 import type { AgentRunFailureCause, ExpectedOutput, Project, ULID, WorkflowV2 } from '@pc/domain';
 import { substituteRefs, type RefResolver, type ReviewDecision, type RunStatus } from '@pc/workflows';
 import {
+  getAgentRunRow,
   getWorkItem,
   insertAgentRunRow,
   markAgentRunTerminal,
@@ -24,6 +25,7 @@ import {
 } from '@pc/db';
 import { spawnSubagent, type SubagentSpawnHandle, type SubagentSpawnRequest } from '@pc/runtime';
 import { DagExecutor, type DagExecutorDeps, type DagNodeContext, type NodeOutcome } from './dag-executor.ts';
+import { announceRunCreated, writeDagAndStatus } from './workflow-run-writer.ts';
 import { createAgentWorkItem } from './agent-work-item.ts';
 import { runVerificationOnTerminal } from './agent-verification.ts';
 import { preparePodSpawn } from './pod-spawn.ts';
@@ -252,10 +254,12 @@ export function makeExecutorDeps(
     setAssignedAgentRunId(childWi.id as ULID, agentRunId);
 
     // Helper to broadcast agent-run-changed in the Activity Panel shape.
+    // Reads rev from DB after each write to carry a correct version stamp.
     const broadcastRun = (
       status: 'queued' | 'running' | 'completed' | 'failed',
       extra: { result?: string; failureReason?: string | null; failureCause?: AgentRunFailureCause | null; endedAt?: number } = {}
     ): void => {
+      const currentRev = getAgentRunRow(agentRunId)?.rev ?? 0;
       opts.broadcast({
         type: 'agent-run-changed',
         record: {
@@ -274,6 +278,7 @@ export function makeExecutorDeps(
           failureReason: extra.failureReason ?? null,
           failureCause: extra.failureCause ?? null,
           endedAt: extra.endedAt ?? null,
+          rev: currentRev,
         },
       });
     };
@@ -436,18 +441,16 @@ export function makeExecutorDeps(
     status: RunStatus,
     o?: { lastReason?: string }
   ): void => {
-    workflowRunsV2Repo.setDagState(run.id, state);
-    workflowRunsV2Repo.setStatus(run.id, toRunStatus(status), {
-      ...(o?.lastReason !== undefined ? { lastReason: o.lastReason } : {}),
-    });
-    opts.broadcast({
-      type: 'workflow-v2-run-changed',
-      projectId: opts.projectId,
-      runId: run.id,
-      workItemId: run.workItemId,
-      status: toRunStatus(status),
-      dagState: state,
-    });
+    // Write-door: both DB writes go through the writer which reads back the
+    // full row (including updated `rev`) before broadcasting the snapshot.
+    writeDagAndStatus(
+      run.id,
+      state,
+      toRunStatus(status),
+      { ...(o?.lastReason !== undefined ? { lastReason: o.lastReason } : {}) },
+      opts.projectId,
+      opts.broadcast,
+    );
   };
 
   return {
@@ -543,6 +546,10 @@ export async function fireDagWorkflow(
     status: 'running',
   });
   workflowRunsV2Repo.markStarted(run.id);
+  // Announce creation so the right rail shows the new run immediately.
+  // Re-read after markStarted so the snapshot carries the started rev.
+  const startedRow = workflowRunsV2Repo.getRun(run.id);
+  if (startedRow) announceRunCreated(startedRow, opts.projectId, opts.broadcast);
 
   const deps = makeExecutorDeps(
     { id: run.id, workItemId: rootWiId, worktreePath },

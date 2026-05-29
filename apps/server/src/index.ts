@@ -74,6 +74,7 @@ import { detectStockPodDrift, listCanonicalStockPodNames } from './services/pod-
 import { seedStockPods } from './services/stock-pod-seed.ts';
 import { reattachAgentRunsDuringServerBoot } from './services/agent-run-server-boot.ts';
 import type { AgentHostReattachClient } from './services/agent-host-reattach.ts';
+import { writeRunStatus } from './services/workflow-run-writer.ts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // apps/server/src/index.ts → trunk root is three levels up. In a packaged
@@ -555,14 +556,15 @@ registerWorkflowRoutes(app, {
         r.workflowId === slug &&
         (r.status === 'pending' || r.status === 'running' || r.status === 'paused')
       ) {
-        workflowRunsV2Repo.setStatus(r.id, 'cancelled', {
-          lastReason: 'workflow soft-deleted',
-        });
-        broadcastTo(projectId, {
-          type: 'workflow-v2-run-changed',
-          runId: r.id,
-          status: 'cancelled',
-        });
+        // Write-door: writeRunStatus increments rev + reads back full row
+        // + broadcasts a versioned full-snapshot delta.
+        writeRunStatus(
+          r.id,
+          'cancelled',
+          { lastReason: 'workflow soft-deleted' },
+          projectId,
+          (ev) => broadcastTo(projectId, ev),
+        );
       }
     }
   },
