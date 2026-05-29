@@ -213,18 +213,24 @@ export function makeExecutorDeps(
         error: `pod "${node.agent}" not found in registry`,
       };
     }
+    // Project-scope enforcement: workflow nodes must use project-scoped pods.
+    // Global pods are not resolvable in workflow dispatch — they must first be
+    // cloned into the project via POST /api/agents/pods/:id/clone-to-project.
+    if (podPrep.podScope === 'global') {
+      podPrep.cleanup();
+      return {
+        state: 'failed',
+        error: `pod "${node.agent}" is global-scope — clone it into project ${opts.projectId} before using it in a workflow node`,
+      };
+    }
 
-    // Issue #1(c) — thread worktree + run tokens into the initial prompt so
-    // the agent knows its boundaries. The [worktree:] token is informational
-    // (the real guard is path-guard.cjs enforce() activated by PC_WORKFLOW_RUN_ID).
+    // Issue #1(c) — keep initialInput SHORT and single-line. A long/multi-line
+    // prompt breaks the spawn echo-ack handshake (send-protocol.ts) → echo-timeout
+    // (regression observed on canary-2). Worktree isolation is enforced by
+    // path-guard.cjs via PC_WORKFLOW_RUN_ID / PC_WORKFLOW_WORKTREE (set below),
+    // NOT by tokens in this string.
     const initialInput =
-      `[workflowRunId: ${run.id}] [nodeId: ${node.id}] [worktree: ${worktreeDir}]\n\n` +
-      `Your assignment is work item ${childWi.id}. Call pc_get_work_item({ id: "${childWi.id}" }) ` +
-      `to read its body, acceptance criteria, and attachments, then begin. When finished, update the ` +
-      `work item with your report.\n\n` +
-      `IMPORTANT: You are running inside a workflow worktree. You MUST stay within ` +
-      `${worktreeDir}. Do NOT cd to the main repo or use absolute paths outside this ` +
-      `directory. All git commands (add, commit, push) must run within this worktree.`;
+      `Your assignment is work item ${childWi.id}. Call pc_get_work_item({ id: "${childWi.id}" }) to read its body and acceptance criteria, then begin. Work only inside your worktree — all file edits and git commands must run here. When finished, update the work item with your report.`;
 
     // Issue #2 — insert agent_runs row so the Running Agents rail can see this agent.
     const agentRunId = newId() as ULID;
