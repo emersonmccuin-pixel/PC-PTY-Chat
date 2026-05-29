@@ -14,6 +14,9 @@ export function registerDevControlRoutes(app: Hono, deps: DevControlDeps): void 
   // CANARY pipeline test — safe to revert
   app.get('/api/dev/canary', (c) => c.json({ ok: true, marker: 'canary-1' }));
 
+  // CANARY-4 pipeline test — safe to revert
+  app.get('/api/dev/canary4', (c) => c.json({ ok: true, marker: 'canary-4' }));
+
   /** GET /api/dev/status — active-agent count + whether a restart is safe. */
   app.get('/api/dev/status', (c) => {
     const activeAgents = getActiveRunRegistry().list().length;

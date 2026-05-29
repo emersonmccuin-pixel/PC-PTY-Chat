@@ -96,6 +96,8 @@ export function DevControls() {
         </span>
         {/* CANARY pipeline test — safe to revert */}
         <span className="font-mono text-[10px] text-warning">CANARY-1</span>
+        {/* CANARY-4 pipeline test — safe to revert */}
+        {import.meta.env.DEV && <span className="font-mono text-[10px] text-warning">CANARY-4</span>}
         <span className="select-none text-border">·</span>
         {status !== null && status.activeAgents > 0 && (
           <span className="text-warning">
