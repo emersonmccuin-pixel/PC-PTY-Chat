@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import type { WsStatus } from '@/hooks/use-project-ws';
+import type { WsStatus } from '@/features/runtime/ws-types';
 import { STALL_WARN_MS } from '@/features/chat/runtimeState';
 
 export function formatElapsed(ms: number): string {

@@ -8,8 +8,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
+import {
+  adaptTransientEvents,
+  belongsToTransientSession,
+  isTransientSessionState,
+  mergeTransientSessionState,
+  type TransientSessionState,
+} from '@/features/transient-sessions/events';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 interface SetupWizardModalProps {
   projectId: string;
@@ -17,72 +24,7 @@ interface SetupWizardModalProps {
   onClose: () => void;
 }
 
-type SessionState = 'spawning' | 'ready' | 'thinking' | 'exited';
-
-function isSessionState(value: unknown): value is SessionState {
-  return (
-    value === 'spawning' ||
-    value === 'ready' ||
-    value === 'thinking' ||
-    value === 'exited'
-  );
-}
-
-function mergeSessionState(prev: SessionState, next: SessionState): SessionState {
-  if (prev !== 'spawning' && next === 'spawning') return prev;
-  return next;
-}
-
-interface AdapterResult {
-  envelopes: WsEnvelope[];
-  state: SessionState;
-}
-
-function adaptSetupWizardEvents(
-  events: WsEnvelope[],
-  projectId: string,
-  sessionId: string | null,
-  fallbackState: SessionState,
-): AdapterResult {
-  const out: WsEnvelope[] = [];
-  let state = fallbackState;
-  for (const env of events) {
-    if (env.type === 'setup-wizard-state') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const s = (env as { state?: string }).state;
-      if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
-        state = s;
-      }
-      if (s === 'ready' || s === 'thinking') {
-        out.push({ projectId, type: 'state', state: s });
-      }
-      continue;
-    }
-    if (env.type === 'setup-wizard-jsonl') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const ev = (env as { event?: JsonlEvent }).event;
-      if (ev) out.push({ projectId, type: 'jsonl', sessionId, event: ev });
-      continue;
-    }
-    if (env.type === 'setup-wizard-raw') {
-      const rawSessionId = (env as { sessionId?: unknown }).sessionId;
-      if (sessionId && rawSessionId === sessionId) {
-        out.push({ ...env, projectId, type: 'raw', sessionId });
-      }
-      continue;
-    }
-    if (env.type === 'setup-wizard-exit') {
-      if (!belongsToSession(env, sessionId)) continue;
-      state = 'exited';
-    }
-  }
-  return { envelopes: out, state };
-}
-
-function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
-  if (!sessionId) return true;
-  return (env as { sessionId?: unknown }).sessionId === sessionId;
-}
+type SessionState = TransientSessionState;
 
 export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModalProps) {
   const [state, setState] = useState<SessionState>('spawning');
@@ -105,8 +47,8 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
         if (cancelled) return;
         setSessionId(r.sessionId);
         const nextState = r.state;
-        if (isSessionState(nextState)) {
-          setState((prev) => mergeSessionState(prev, nextState));
+        if (isTransientSessionState(nextState)) {
+          setState((prev) => mergeTransientSessionState(prev, nextState));
         }
       })
       .catch((e: unknown) => {
@@ -128,13 +70,13 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
       const env = events[i];
       if (!env) continue;
       if (env.type === 'setup-wizard-state') {
-        if (!belongsToSession(env, sessionId)) continue;
+        if (!belongsToTransientSession(env, sessionId)) continue;
         const s = (env as { state?: string }).state;
-        if (isSessionState(s)) {
+        if (isTransientSessionState(s)) {
           setState(s);
         }
       } else if (env.type === 'setup-wizard-exit') {
-        if (!belongsToSession(env, sessionId)) continue;
+        if (!belongsToTransientSession(env, sessionId)) continue;
         setState('exited');
       } else if (env.type === 'project-claude-md-changed') {
         closeRef.current();
@@ -144,7 +86,15 @@ export function SetupWizardModal({ projectId, events, onClose }: SetupWizardModa
   }, [events, sessionId]);
 
   const adapted = useMemo(
-    () => adaptSetupWizardEvents(events, projectId, sessionId, state),
+    () =>
+      adaptTransientEvents({
+        events,
+        projectId,
+        sessionId,
+        initialState: state,
+        prefix: 'setup-wizard',
+        includeSessionIdOnJsonl: true,
+      }),
     [events, projectId, sessionId, state],
   );
 

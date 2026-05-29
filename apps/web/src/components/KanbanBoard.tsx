@@ -23,7 +23,8 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 
 import type { Project, ProjectSettings, Stage } from '@/features/projects/client';
 import { settingsApi } from '@/features/settings/client';
-import { WorkItemConflictError, workItemsApi, type WorkItem, type WorkItemStatus } from '@/features/work-items/client';
+import { WorkItemConflictError, workItemsApi, type WorkItem } from '@/features/work-items/client';
+import { WORK_ITEM_STATUS_GLYPH } from '@/features/work-items/status';
 
 // Section 27 — local mirror of the server-side resolver in @pc/domain.
 // Keeps the web bundle independent of the workspace package.
@@ -36,7 +37,7 @@ function resolveCancelledHidden(
   if (v === 'force-hidden') return true;
   return globalHide;
 }
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
 import { applyFilters } from './work-items/filter-sort';
@@ -47,14 +48,6 @@ interface KanbanBoardProps {
   project: Project;
   events: WsEnvelope[];
 }
-
-// Glyph-only status surface. Pending + complete read from the column itself
-// (kanban column = status); only the two exception states need attention.
-const STATUS_GLYPH: Partial<Record<WorkItemStatus, { glyph: string; className: string }>> = {
-  'in-progress': { glyph: '⟳', className: 'text-warning' },
-  blocked: { glyph: '⚠', className: 'text-destructive' },
-  failed: { glyph: '⚠', className: 'text-destructive' },
-};
 
 // Built-in work-item type chip. `task` is the default and stays muted; bug /
 // feature / spike get color-tinted pills so dogfood bug cards visually pop.
@@ -556,7 +549,8 @@ function CardSurface({
 
 function CardContent({ item, childCount }: { item: WorkItem; childCount: number }) {
   const status = item.status ?? 'pending';
-  const glyph = STATUS_GLYPH[status];
+  const glyph =
+    status === 'pending' || status === 'complete' ? null : WORK_ITEM_STATUS_GLYPH[status];
   const typeChip = TYPE_CHIP[item.type ?? 'task'];
   return (
     <div className="flex flex-col gap-0.5">

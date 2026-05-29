@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+
 import type { Hono } from 'hono';
 import type {
   AgentRunStatus,
@@ -82,6 +84,14 @@ function loadAgentRunEvents(jsonlPath: string): AgentRunJsonlEvent[] {
   return events;
 }
 
+function transcriptStatusFor(
+  jsonlPath: string,
+  events: AgentRunJsonlEvent[],
+): 'ready' | 'empty' | 'missing' {
+  if (!existsSync(jsonlPath)) return 'missing';
+  return events.length === 0 ? 'empty' : 'ready';
+}
+
 export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void {
   const services = {
     getActiveRunRegistry: deps.getActiveRunRegistry ?? defaultGetActiveRunRegistry,
@@ -145,6 +155,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       runId: row.id,
       status: row.status,
       jsonlPath,
+      transcriptStatus: transcriptStatusFor(jsonlPath, events),
       events,
     });
   });

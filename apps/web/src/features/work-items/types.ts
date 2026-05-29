@@ -3,9 +3,11 @@ import type { ULID } from '@/features/projects/types';
 export type WorkItemStatus =
   | 'pending'
   | 'in-progress'
+  | 'awaiting-verification'
   | 'blocked'
   | 'complete'
   | 'failed'
+  | 'cancelled'
   | 'archived';
 
 export type InitiativeStatus = 'active' | 'someday' | 'done' | 'archived';

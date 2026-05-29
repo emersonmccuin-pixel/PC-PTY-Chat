@@ -1,6 +1,7 @@
 import { getJson, postJson, postJsonMethod } from '@/api/http';
 import type {
   GlobalSettings,
+  OnboardingAuthState,
   OnboardingLoginState,
   PreflightReport,
 } from './types';
@@ -30,7 +31,7 @@ export const settingsApi = {
     postJson<{ ok: true; login: OnboardingLoginState }>('/api/onboarding/auth/login', {}),
 
   getOnboardingAuthState: () =>
-    getJson<{ ok: true; login: OnboardingLoginState; authed: boolean }>(
+    getJson<{ ok: true } & OnboardingAuthState>(
       '/api/onboarding/auth/state',
     ),
 

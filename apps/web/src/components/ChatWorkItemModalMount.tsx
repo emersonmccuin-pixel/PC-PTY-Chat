@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { workItemsApi, type WorkItem } from '@/features/work-items/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useChatWorkItemModal } from '@/store/chat-work-item-modal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
 

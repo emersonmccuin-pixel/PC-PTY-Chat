@@ -5,17 +5,29 @@ export interface ActivityPanelSettings {
   showAllProjects: boolean;
 }
 
+export interface AgentDispatchSettings {
+  ackTimeoutMs: number;
+  maxConcurrent: number;
+}
+
+export interface JsonlSettings {
+  retentionDays: number | 'never';
+}
+
 export type OrchestratorSurfacePreference = 'chat' | 'terminal';
 
 export interface GlobalSettings {
   dataDir: string;
   telemetryOptIn: boolean;
+  claudeExe: string | null;
   claudeConfigDir: string | null;
   defaultOrchestratorSurface: OrchestratorSurfacePreference;
   projectsFolder: string;
   activityPanel: ActivityPanelSettings;
   bugLogTargetProjectId: ULID | null;
   fontScale: number;
+  agentDispatch: AgentDispatchSettings;
+  jsonl: JsonlSettings;
   hideCancelledStage: boolean;
   onboardingCompletedAt: string | null;
 }
@@ -40,9 +52,14 @@ export interface DependencyProbe {
   note?: string;
 }
 
+export interface AuthProbe {
+  status: 'unknown' | 'authed' | 'login-required';
+  note: string;
+}
+
 export interface PreflightReport {
   claude: ClaudePreflight;
-  auth: { status: 'unknown' | 'authed' | 'login-required'; note: string };
+  auth: AuthProbe;
   git: DependencyProbe;
   soft: DependencyProbe[];
   ok: boolean;
@@ -54,4 +71,10 @@ export interface OnboardingLoginState {
   exited: boolean;
   exitCode: number | null;
   tail: string;
+}
+
+export interface OnboardingAuthState {
+  login: OnboardingLoginState;
+  authed: boolean;
+  auth: AuthProbe;
 }

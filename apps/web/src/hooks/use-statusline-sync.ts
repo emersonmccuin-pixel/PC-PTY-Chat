@@ -5,7 +5,7 @@
 import { useEffect, useRef } from 'react';
 
 import { runtimeApi } from '@/features/runtime/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useOrchestratorTelemetry } from '@/store/orchestrator-telemetry';
 import { type StatuslineSnapshot, useStatuslineStore } from '@/store/statusline';
 

@@ -103,6 +103,12 @@ export interface V2RunEvent {
   occurredAt: number;
 }
 
+export interface WorkflowFireResult {
+  ok: true;
+  runId: string;
+  rootWorkItemId: string;
+}
+
 export type V2WorkflowDef = V2WorkflowDefSummary & { [key: string]: unknown };
 
 export type WorkflowScope = 'global' | 'project';

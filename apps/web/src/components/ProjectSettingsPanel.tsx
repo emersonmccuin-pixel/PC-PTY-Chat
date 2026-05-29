@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { projectsApi, type Project } from '@/features/projects/client';
 import { projectContextApi } from '@/features/project-context/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
 import { SetupWizardModal } from './SetupWizardModal';
 import { FieldSchemasEditor } from './project-settings/FieldSchemasEditor';

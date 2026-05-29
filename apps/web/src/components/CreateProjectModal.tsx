@@ -6,8 +6,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { projectsApi, type CreateProjectMode, type Project } from '@/features/projects/client';
 import { filesApi, type FolderProbe } from '@/features/files/client';
+import { projectsApi, type Project } from '@/features/projects/client';
+import { createProjectModeFromProbe } from '@/features/projects/createMode';
 import { FolderBrowserModal } from './FolderBrowserModal';
 
 interface CreateProjectModalProps {
@@ -71,7 +72,9 @@ export function CreateProjectModal({
     probe(p);
   }
 
-  const mode = derivedMode(probeState);
+  const mode = probeState.status === 'ready'
+    ? createProjectModeFromProbe(probeState.probe)
+    : null;
   const canCreate =
     !busy && name.trim().length > 0 && mode !== null;
 
@@ -248,15 +251,4 @@ function ProbePreview({ state }: { state: ProbeState }) {
       scaffold.
     </div>
   );
-}
-
-function derivedMode(state: ProbeState): CreateProjectMode | null {
-  if (state.status !== 'ready') return null;
-  const p = state.probe;
-  if (!p.exists || !p.isDirectory) return null;
-  if (p.isGitRepo) {
-    if (p.hasPcScaffold) return null;
-    return 'attach-to-git';
-  }
-  return p.hasFiles ? 'init-in-place' : 'init-empty';
 }

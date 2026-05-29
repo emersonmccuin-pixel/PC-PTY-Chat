@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import type { RuntimeInputCapabilities } from '@/features/chat/runtimeState';
-import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsStatus } from '@/features/runtime/ws-types';
 
 export interface ChatSurfaceProps {
   /** Per-project WS-shaped envelope stream (event / jsonl / ask / state / turn-end / etc).

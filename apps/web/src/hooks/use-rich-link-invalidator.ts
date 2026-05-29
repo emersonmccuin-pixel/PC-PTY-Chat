@@ -7,7 +7,7 @@
 
 import { useEffect, useRef } from 'react';
 
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import {
   invalidateByAttachmentId,
   invalidateByWorkItemId,

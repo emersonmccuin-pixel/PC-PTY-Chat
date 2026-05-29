@@ -17,10 +17,16 @@ import { useMemo } from 'react';
 import type { Project } from '@/features/projects/client';
 import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import {
+  adaptTransientEvents,
+  isTransientSessionState,
+  isWarmupOkUserText,
+  type TransientSessionState,
+} from '@/features/transient-sessions/events';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
-export type AgentDesignerState = 'spawning' | 'ready' | 'thinking' | 'exited';
+export type AgentDesignerState = TransientSessionState;
 
 interface AgentDesignerChatProps {
   project: Project;
@@ -29,92 +35,8 @@ interface AgentDesignerChatProps {
   initialState?: AgentDesignerState;
 }
 
-/** Warmup-turn user prompt from agent-run-manager. Filtered from the chat. */
-function isWarmupUserText(text: string): boolean {
-  const trimmed = text.trim().toLowerCase();
-  return (
-    trimmed === 'reply with only the word ok.' ||
-    trimmed === 'reply with only the word ok' ||
-    trimmed.startsWith('reply with only the word ok')
-  );
-}
-
-interface AdapterResult {
-  envelopes: WsEnvelope[];
-  state: AgentDesignerState;
-}
-
-/** Translate agent-designer-* envelopes into the per-project shapes
- *  ChatSurface understands. Also collapses the lifecycle into a single
- *  AgentDesignerState used for composer-disabled + header label. */
-function adaptAgentDesignerEvents(
-  events: WsEnvelope[],
-  projectId: string,
-  sessionId: string | null,
-  initialState: AgentDesignerState,
-): AdapterResult {
-  const out: WsEnvelope[] = [];
-  let state = initialState;
-  let skipNextAssistant = false;
-  for (const env of events) {
-    if (env.type === 'agent-designer-state') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const s = (env as { state?: string }).state;
-      if (s === 'spawning' || s === 'ready' || s === 'thinking' || s === 'exited') {
-        state = s;
-      }
-      if (s === 'ready' || s === 'thinking') {
-        out.push({ projectId, type: 'state', state: s });
-      }
-      continue;
-    }
-    if (env.type === 'agent-designer-jsonl') {
-      if (!belongsToSession(env, sessionId)) continue;
-      const ev = (env as { event?: JsonlEvent }).event;
-      if (!ev) continue;
-      // Filter the warmup turn pair (synthetic prompt from Section 20.C).
-      if (ev.kind === 'jsonl-user' && ev.text && isWarmupUserText(ev.text)) {
-        skipNextAssistant = true;
-        continue;
-      }
-      if (ev.kind === 'jsonl-turn-end' && skipNextAssistant) {
-        skipNextAssistant = false;
-        continue;
-      }
-      out.push({ projectId, type: 'jsonl', event: ev });
-      continue;
-    }
-    if (env.type === 'agent-designer-exit') {
-      if (!belongsToSession(env, sessionId)) continue;
-      state = 'exited';
-      // No envelope translation — composerDisabled handles user-facing state.
-      continue;
-    }
-    if (env.type === 'agent-designer-raw') {
-      const rawSessionId = (env as { sessionId?: unknown }).sessionId;
-      if (sessionId && rawSessionId === sessionId) {
-        out.push({ ...env, projectId, type: 'raw', sessionId });
-      }
-      continue;
-    }
-    // Anything else (orchestrator events on the same WS) doesn't belong on
-    // the agent-designer surface.
-  }
-  return { envelopes: out, state };
-}
-
-function belongsToSession(env: WsEnvelope, sessionId: string | null): boolean {
-  if (!sessionId) return true;
-  return (env as { sessionId?: unknown }).sessionId === sessionId;
-}
-
 export function isAgentDesignerState(value: unknown): value is AgentDesignerState {
-  return (
-    value === 'spawning' ||
-    value === 'ready' ||
-    value === 'thinking' ||
-    value === 'exited'
-  );
+  return isTransientSessionState(value);
 }
 
 export function AgentDesignerChat({
@@ -124,7 +46,16 @@ export function AgentDesignerChat({
   initialState = 'spawning',
 }: AgentDesignerChatProps) {
   const { envelopes, state } = useMemo(
-    () => adaptAgentDesignerEvents(events, project.id, sessionId, initialState),
+    () =>
+      adaptTransientEvents({
+        events,
+        projectId: project.id,
+        sessionId,
+        initialState,
+        prefix: 'agent-designer',
+        hiddenUserText: (text) =>
+          isWarmupOkUserText(text) ? 'drop-with-next-turn-end' : false,
+      }),
     [events, project.id, sessionId, initialState],
   );
 

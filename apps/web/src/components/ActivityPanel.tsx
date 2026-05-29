@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Project } from '@/features/projects/client';
 import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
 import type { V2RunStatus, V2RunSummary } from '@/features/workflows/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';

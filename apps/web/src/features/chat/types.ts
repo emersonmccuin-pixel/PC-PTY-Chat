@@ -1,4 +1,4 @@
-import type { UserEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { UserEvent, WsEnvelope } from '@/features/runtime/ws-types';
 
 export interface ToolCall {
   toolUseId: string | null;

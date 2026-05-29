@@ -7,7 +7,7 @@ import type {
   SendQueueSnapshotEnvelope,
   UserEvent,
   WsEnvelope,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 
 import type { PendingPrompt, PendingPromptStatus, PendingUserEvent } from './types';
 

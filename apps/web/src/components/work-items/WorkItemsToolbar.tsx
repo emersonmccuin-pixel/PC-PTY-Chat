@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { WORK_ITEM_TYPES, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
+import { WORK_ITEM_STATUS_FILTER_OPTIONS } from '@/features/work-items/status';
 import {
   hasActiveFilters,
   useWorkItemsView,
@@ -19,15 +20,6 @@ import {
   type SortDir,
   type UpdatedWindow,
 } from '@/store/work-items-view';
-
-const STATUS_OPTIONS: { value: WorkItemStatus; label: string }[] = [
-  { value: 'pending', label: 'Open' },
-  { value: 'in-progress', label: 'In progress' },
-  { value: 'blocked', label: 'Blocked' },
-  { value: 'complete', label: 'Done' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'archived', label: 'Archived' },
-];
 
 const UPDATED_OPTIONS: { value: UpdatedWindow; label: string }[] = [
   { value: 'all', label: 'Any time' },
@@ -95,12 +87,12 @@ export function WorkItemsToolbar({ rightSlot, hide, hiddenAgentCount = 0 }: Work
           activeCount={filters.statuses.length}
           activeLabel={
             filters.statuses.length === 1
-              ? STATUS_OPTIONS.find((o) => o.value === filters.statuses[0])?.label ?? null
+              ? WORK_ITEM_STATUS_FILTER_OPTIONS.find((o) => o.value === filters.statuses[0])?.label ?? null
               : null
           }
         >
           <CheckList
-            options={STATUS_OPTIONS}
+            options={WORK_ITEM_STATUS_FILTER_OPTIONS}
             selected={filters.statuses}
             onChange={(statuses) =>
               setFilters({ statuses: statuses as WorkItemStatus[] })

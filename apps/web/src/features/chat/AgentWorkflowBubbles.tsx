@@ -9,7 +9,7 @@ import type {
   TaskEndEvent,
   TaskStartEvent,
   TodosEvent,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import {
   CollapsibleEventGroup,

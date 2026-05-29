@@ -81,3 +81,148 @@ test('web source imports feature clients directly instead of the legacy API barr
 
   assert.deepEqual(offenders, [], 'web source should not import @/api/client directly');
 });
+
+test('web websocket protocol types live outside the project ws hook', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+
+  assert.ok(
+    relativeFiles.has('apps/web/src/features/runtime/ws-types.ts'),
+    'ws-types contract module should live under features/runtime',
+  );
+
+  const hookImportPattern =
+    /from\s+['"](?:@\/hooks\/use-project-ws|\.{1,2}\/[^'"]*use-project-ws)['"]/;
+  const allowedHookImporters = new Set(['apps/web/src/App.tsx']);
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === 'apps/web/src/hooks/use-project-ws.ts') continue;
+    if (allowedHookImporters.has(rel)) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (hookImportPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'web code should import WS protocol types from @/features/runtime/ws-types instead of the hook',
+  );
+});
+
+test('agent run websocket envelope contracts live outside transcript components', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/agent-runs/transcript.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'agent run transcript contract module should live under features/agent-runs',
+  );
+
+  const offenders: string[] = [];
+  const contractPattern =
+    /\b(?:interface|type)\s+AgentJsonlEnvelope\b|\bfunction\s+isAgentJsonlEnvelope\b/;
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (contractPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'agent-jsonl-event contracts should stay in @/features/agent-runs/transcript',
+  );
+});
+
+test('terminal transcript helpers live outside the xterm component', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/chat/terminalTranscript.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'terminal transcript helpers should live under features/chat',
+  );
+
+  const helperPattern =
+    /\bfunction\s+(?:terminalRawFromEnvelope|maxTerminalSeq|removeOverlappingPrefix)\b|\bconst\s+OVERLAP_SCAN_BYTES\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'terminal transcript parsing and overlap helpers should stay in @/features/chat/terminalTranscript',
+  );
+});
+
+test('create-project mode derivation lives outside the modal component', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/projects/createMode.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'create-project mode derivation should live under features/projects',
+  );
+
+  const helperPattern = /\bfunction\s+derivedMode\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'create-project mode derivation should stay in @/features/projects/createMode',
+  );
+});
+
+test('transient session event adapters live outside modal components', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/transient-sessions/events.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'transient session event adapters should live under features/transient-sessions',
+  );
+
+  const helperPattern =
+    /\bfunction\s+(?:adaptAgentDesignerEvents|adaptWorkflowBuilderEvents|adaptSetupWizardEvents|belongsToSession|mergeSessionState|isSessionState)\b/;
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (helperPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'transient session event adaptation should stay in @/features/transient-sessions/events',
+  );
+});

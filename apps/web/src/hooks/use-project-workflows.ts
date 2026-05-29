@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project, ULID } from '@/features/projects/client';
 import { workflowsApi, type WorkflowRow } from '@/features/workflows/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 interface WorkflowChangedEnvelope extends WsEnvelope {
   type: 'workflow-changed';

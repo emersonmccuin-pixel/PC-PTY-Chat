@@ -6,6 +6,7 @@ import type {
   V2RunSummary,
   V2WorkflowDef,
   V2WorkflowDefSummary,
+  WorkflowFireResult,
   WorkflowRow,
   WorkflowScope,
 } from './types';
@@ -127,7 +128,7 @@ export const workflowsApi = {
       projectId?: ULID;
     },
   ) =>
-    postJson<{ ok: true; runId: string; workItemId?: string }>(
+    postJson<WorkflowFireResult>(
       `/api/workflows/${encodeURIComponent(id)}/fire`,
       input ?? {},
     ),

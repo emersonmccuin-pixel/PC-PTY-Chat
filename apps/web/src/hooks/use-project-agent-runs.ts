@@ -9,7 +9,7 @@
 
 import type { Project } from '@/features/projects/client';
 import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useResourceList } from '@/hooks/use-resource-list';
 
 interface AgentRunChangedEnvelope extends WsEnvelope {

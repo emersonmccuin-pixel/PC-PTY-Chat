@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { Project, ULID } from '@/features/projects/client';
 import { agentsApi, resolveModelLabel, type Pod, type PodBundle } from '@/features/agents/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useProjectPods } from '@/hooks/use-project-pods';
 import { formatToolLabel } from '@/lib/tool-labels';
 import { Markdown } from './Markdown';

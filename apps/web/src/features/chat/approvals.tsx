@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import type { ApprovalRequiredEvent } from '@/hooks/use-project-ws';
+import type { ApprovalRequiredEvent } from '@/features/runtime/ws-types';
 
 export async function respondToApproval(
   projectId: string,

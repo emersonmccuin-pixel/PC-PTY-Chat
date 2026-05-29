@@ -2,7 +2,7 @@
 // when /remote-control is active. Click opens the remote URL in a new tab.
 
 import { useRemoteControl } from '@/hooks/use-remote-control';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 interface Props {
   events: WsEnvelope[];

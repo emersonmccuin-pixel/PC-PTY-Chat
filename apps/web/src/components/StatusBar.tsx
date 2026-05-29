@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { settingsApi } from '@/features/settings/client';
 import type { OrchestratorRuntimeHealth, OrchestratorRuntimeSnapshot, OrchestratorRuntimeWaitPoint } from '@/features/runtime/client';
-import type { WsDiagnostics, WsStatus } from '@/hooks/use-project-ws';
+import type { WsDiagnostics, WsStatus } from '@/features/runtime/ws-types';
 import { useMcpPanel } from '@/store/mcp-panel';
 
 // Re-export so other call sites still importing { UsageTotals } from this
