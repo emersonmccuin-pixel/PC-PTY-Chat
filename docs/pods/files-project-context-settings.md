@@ -1,6 +1,6 @@
 # Files Project Context Settings Pod Audit
 
-Status: auditing.
+Status: complete.
 
 Owner: Codex.
 
@@ -142,8 +142,8 @@ Cross-pod calls that should stay explicit:
 
 ## Dead Code And Drift
 
-- Web `GlobalSettings` omits server/domain fields `claudeExe`, `agentDispatch`, and `jsonl`, even though `/api/settings` returns and accepts them.
-- Web `getOnboardingAuthState` types omit the `auth` object returned by the server.
+- Resolved during cleanup: web `GlobalSettings` now includes server/domain fields `claudeExe`, `agentDispatch`, and `jsonl`.
+- Resolved during cleanup: web `getOnboardingAuthState` now types the `auth` object returned by the server.
 - File, project-context, and settings contracts are duplicated in web rather than imported from domain/server-safe packages; this keeps bundles isolated but creates drift risk.
 - `files-tree.ts` only loads the project-root `.gitignore`; nested `.gitignore` files are not applied.
 - HTML preview is source-audited as sandboxed iframe content, but no browser smoke was run.
@@ -168,20 +168,25 @@ Missing tests or trace evidence:
 - No focused web test pins settings client types against domain/server settings keys.
 - No browser smoke verified Files tab tree/preview, Memory drawer save, App Settings save, folder picker, custom commands tray, or onboarding wizard in this session.
 - No test covers nested `.gitignore` behavior.
-- No test pins `getOnboardingAuthState` web type to the server `auth` envelope.
+- `getOnboardingAuthState` web type is aligned with the server `auth` envelope and covered by web typecheck, but no runtime contract test pins it.
 
-## Cleanup Plan
+## Cleanup Completed
 
 Do not change installer/auth side effects, settings persistence semantics, memory scope pathing, project file containment, or preview rendering without a failing trace.
 
-Small cleanup candidates:
+Completed cleanup:
 
-- Align web `GlobalSettings` with server/domain fields `claudeExe`, `agentDispatch`, and `jsonl`.
-- Align web onboarding auth-state response type with the server `auth` envelope.
-- Consider a focused contract test for web settings type coverage if it can stay dependency-light.
-- Defer nested `.gitignore` behavior until product intent is clear.
+- Added web `AgentDispatchSettings` and `JsonlSettings` contracts.
+- Added missing web `GlobalSettings.claudeExe`, `GlobalSettings.agentDispatch`, and `GlobalSettings.jsonl` fields.
+- Added web `AuthProbe` and `OnboardingAuthState` contracts.
+- Updated `settingsApi.getOnboardingAuthState` to type the returned `auth` envelope.
 
-Verification commands to use before any cleanup patch:
+Deferred:
+
+- Focused web/server contract test for settings type coverage if a dependency-light pattern emerges.
+- Nested `.gitignore` behavior until product intent is clear.
+
+Verification commands used for this pod:
 
 - `pnpm --filter @pc/server exec tsx --test test/file-routes.test.ts test/fs-browse.test.ts test/project-context-routes.test.ts test/settings-onboarding-routes.test.ts test/data-dir-contract.test.ts test/path-containment.test.ts`
 - `pnpm --filter @pc/domain exec tsx --test test/settings.test.ts`
@@ -195,7 +200,7 @@ Verification commands to use before any cleanup patch:
 Kickoff status:
 
 - This pod audit file exists and maps ownership, workflows, dependencies, drift, tests, and cleanup candidates.
-- Runtime behavior has not been changed.
+- Runtime behavior has not been changed; cleanup was web type-contract only.
 - No app, dev server, dogfood app, Vite server, channel server, or restart endpoint has been touched.
 
 Commands run so far:
@@ -206,13 +211,20 @@ Commands run so far:
 - `pnpm --filter @pc/server exec tsx --test test/file-routes.test.ts test/fs-browse.test.ts test/project-context-routes.test.ts test/settings-onboarding-routes.test.ts test/data-dir-contract.test.ts test/path-containment.test.ts`
 - `pnpm --filter @pc/domain exec tsx --test test/settings.test.ts`
 - `pnpm --filter @pc/runtime exec tsx --test test/claude-resolver.test.ts`
+- `pnpm --filter @pc/server typecheck`
+- `pnpm --filter @pc/web typecheck`
 - `git diff --check`
 
 Verification results:
 
-- PASS: server file/context/settings audit tests, 23 tests.
-- PASS: domain settings tests, 11 tests.
-- PASS: runtime Claude resolver tests, 9 tests.
+- PASS: server file/context/settings audit tests, 23 tests, before cleanup.
+- PASS: domain settings tests, 11 tests, before cleanup.
+- PASS: runtime Claude resolver tests, 9 tests, before cleanup.
+- PASS: server file/context/settings audit tests, 23 tests, after cleanup.
+- PASS: domain settings tests, 11 tests, after cleanup.
+- PASS: runtime Claude resolver tests, 9 tests, after cleanup.
+- PASS: server typecheck after cleanup.
+- PASS: web typecheck after cleanup.
 - PASS: `git diff --check`.
 
 Manual workflow checks run:
@@ -222,5 +234,4 @@ Manual workflow checks run:
 Open risks:
 
 - Files, settings, memory, and onboarding UI behavior remains source-audited only.
-- Settings web/server contract drift can hide returned settings fields from TypeScript.
 - Installer/auth flows are high side-effect surfaces and remain route-test-only here.
