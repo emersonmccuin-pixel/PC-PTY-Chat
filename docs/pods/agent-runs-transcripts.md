@@ -147,6 +147,7 @@ Existing focused tests:
 
 - `apps/server/test/agent-run-routes.test.ts`: active list, cancel, event backfill, missing/empty transcript status, invoke, continue, list-by-dispatcher, pending ask answer/cancel status mapping.
 - `apps/server/test/web-agent-transcript.test.ts`: transcript backfill/live merge preserves repeated identical events, dedupes stable row ids, and maps empty/missing transcript copy.
+- `apps/server/test/web-boundaries.test.ts`: includes an agent-run transcript boundary guard so `agent-jsonl-event` envelope contracts stay in the feature module instead of modal components.
 - `apps/server/test/agent-invoke-route.test.ts`: dispatch factory route integration.
 - `apps/server/test/agent-pause-resume.test.ts`: pending ask pause/resume state transitions.
 - `apps/server/test/agent-verification-review.test.ts`: review/verification continuation surfaces.
@@ -157,7 +158,6 @@ Missing tests or trace evidence:
 
 - No browser/UI-level test proves active, historical, failed, empty, and missing transcript modal states.
 - No browser smoke was run for opening an active or historical transcript modal.
-- No boundary test asserts agent-run WebSocket envelope contracts live outside the modal.
 
 ## Cleanup Plan
 
@@ -167,11 +167,13 @@ Small cleanup candidates:
 
 - Done in this slice: extracted transcript merge/dedupe into `apps/web/src/features/agent-runs/transcript.ts` with stable keys and repeated-identical-event coverage.
 - Done in this slice: added explicit `ready | empty | missing` transcript backfill status and modal empty-state copy coverage.
+- Done in this slice: added a boundary guard for agent-run WebSocket transcript contracts.
 - Decide whether the legacy `/api/subagent-transcript` bridge remains under chat-bridges or should link to this pod as a retained compatibility path.
 
 Verification commands to use before any cleanup patch:
 
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/agent-run-routes.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
@@ -191,6 +193,7 @@ Commands run so far:
 - `Get-Content` for `AgentTranscriptModal`, agent-run routes, and agent-run route tests.
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts`
 - `pnpm --filter @pc/server exec tsx --test test/web-agent-transcript.test.ts test/agent-run-routes.test.ts`
+- `pnpm --filter @pc/server exec tsx --test test/web-boundaries.test.ts`
 - `pnpm --filter @pc/server typecheck`
 - `pnpm --filter @pc/web typecheck`
 - `git diff --check`
@@ -199,6 +202,7 @@ Verification results:
 
 - Focused transcript merge/status tests: 3 passed, 0 failed.
 - Agent-run route plus transcript merge/status tests: 9 passed, 0 failed.
+- Web boundary tests: 5 passed, 0 failed.
 - Server typecheck: passed.
 - Web typecheck: passed.
 - Diff whitespace check: passed.

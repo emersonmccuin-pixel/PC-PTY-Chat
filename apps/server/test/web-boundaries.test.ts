@@ -111,3 +111,32 @@ test('web websocket protocol types live outside the project ws hook', async () =
     'web code should import WS protocol types from @/features/runtime/ws-types instead of the hook',
   );
 });
+
+test('agent run websocket envelope contracts live outside transcript components', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+  const contractFile = 'apps/web/src/features/agent-runs/transcript.ts';
+
+  assert.ok(
+    relativeFiles.has(contractFile),
+    'agent run transcript contract module should live under features/agent-runs',
+  );
+
+  const offenders: string[] = [];
+  const contractPattern =
+    /\b(?:interface|type)\s+AgentJsonlEnvelope\b|\bfunction\s+isAgentJsonlEnvelope\b/;
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === contractFile) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (contractPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'agent-jsonl-event contracts should stay in @/features/agent-runs/transcript',
+  );
+});
