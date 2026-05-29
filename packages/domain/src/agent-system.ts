@@ -100,6 +100,13 @@ export interface AgentRunRow {
   queuedAt: number;
   spawnedAt: number | null;
   readyAt: number | null;
+  /** OS pid of the spawned claude.exe (in-process path). Persisted at spawn so
+   *  the liveness sweep can probe process existence and hard-kill can target the
+   *  real process. NULL before spawn / host-mode runs. */
+  pid: number | null;
+  /** Epoch-ms of the last observed JSONL activity. Drives the idle-timeout
+   *  branch of the liveness sweep. NULL until the first event lands. */
+  lastActivityAt: number | null;
   completedAt: number | null;
   /** Monotonic write counter. Incremented by every status transition so WS
    *  deltas can carry a version the frontend uses to discard stale delivery. */

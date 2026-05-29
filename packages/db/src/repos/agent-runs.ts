@@ -65,6 +65,8 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     queuedAt: input.queuedAt,
     spawnedAt: null,
     readyAt: null,
+    pid: null,
+    lastActivityAt: null,
     completedAt: null,
     rev: 0,
   };
@@ -97,6 +99,20 @@ export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): void {
     patch.podRevisionAtResume = input.podRevisionAtResume;
   }
   getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
+}
+
+/** Persist the spawned OS pid for an in-process run. Called once right after
+ *  the PTY child spawns. Does NOT bump rev — pid is liveness bookkeeping, not a
+ *  status transition the frontend needs to version. */
+export function updateAgentRunPid(id: ULID, pid: number | null): void {
+  getDb().update(agentRuns).set({ pid }).where(eq(agentRuns.id, id)).run();
+}
+
+/** Stamp last-observed JSONL activity. Called by the tailer on each event so
+ *  the liveness sweep can distinguish a working run from a wedged one. No rev
+ *  bump (high-frequency, not a status change). */
+export function touchAgentRunActivity(id: ULID, at: number): void {
+  getDb().update(agentRuns).set({ lastActivityAt: at }).where(eq(agentRuns.id, id)).run();
 }
 
 export interface MarkAgentRunTerminalInput {

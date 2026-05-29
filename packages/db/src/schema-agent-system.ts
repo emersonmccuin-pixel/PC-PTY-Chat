@@ -68,6 +68,14 @@ export const agentRuns = sqliteTable(
     queuedAt: integer('queued_at').notNull(),
     spawnedAt: integer('spawned_at'),
     readyAt: integer('ready_at'),
+    /** OS process id of the spawned claude.exe (in-process path). Persisted at
+     *  spawn so the liveness sweep can probe `process.kill(pid, 0)` and hard-kill
+     *  can target the real process even after the in-memory handle is lost.
+     *  NULL before spawn / for host-mode runs. */
+    pid: integer('pid'),
+    /** Epoch-ms of the last observed JSONL activity for this run. Updated by the
+     *  tailer; the liveness sweep flags an alive-but-idle run as wedged. */
+    lastActivityAt: integer('last_activity_at'),
     completedAt: integer('completed_at'),
     /** Monotonic write counter — incremented on every status transition.
      *  WS deltas carry this so the frontend can discard stale deliveries. */
