@@ -1,7 +1,7 @@
-export { getDb, closeDb } from './connection.ts';
+export { getDb, getRawDb, closeDb } from './connection.ts';
 export type { DB } from './connection.ts';
 export { newId } from './id.ts';
-export { runMigrations } from './migrate.ts';
+export { runMigrations, assertSchemaIntact } from './migrate.ts';
 
 export {
   createProject,

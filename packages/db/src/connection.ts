@@ -22,6 +22,13 @@ export function getDb(): DB {
   return _db;
 }
 
+/** Underlying better-sqlite3 handle (for PRAGMA / introspection). Ensures the
+ *  connection is initialized first. */
+export function getRawDb(): Database.Database {
+  getDb();
+  return _sqlite!;
+}
+
 /** Test/teardown only. Production keeps the connection for its lifetime. */
 export function closeDb(): void {
   _sqlite?.close();
