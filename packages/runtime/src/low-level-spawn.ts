@@ -129,6 +129,11 @@ export interface LowLevelSpawnInput {
   /** PTY dimensions. Defaults match production (120x30). */
   cols?: number;
   rows?: number;
+  /** Skip the internal JSONL tailer. Set by the out-of-process agent host,
+   *  where the API server tails the canonical JSONL from disk itself — so the
+   *  host's own tailer would be a redundant second fs watch on the same file.
+   *  (Default false — in-process callers keep the tailer.) */
+  suppressJsonlTailer?: boolean;
 }
 
 export type SpawnState = 'spawning' | 'ready' | 'running' | 'exited';
@@ -245,8 +250,11 @@ export class LowLevelSpawn extends EventEmitter {
 
     // Defer tailer attach so callers' listeners are wired before historical
     // events fire (Section 15 lesson — replicated for safety even though the
-    // JSONL file rarely exists this early on a fresh dispatch).
-    setImmediate(() => this.attachJsonlTailer());
+    // JSONL file rarely exists this early on a fresh dispatch). Skipped when the
+    // caller (the out-of-process host) tails the canonical JSONL elsewhere.
+    if (!this.input.suppressJsonlTailer) {
+      setImmediate(() => this.attachJsonlTailer());
+    }
   }
 
   /** Called by the HTTP route at /api/internal/mcp-handshake when the
@@ -360,6 +368,12 @@ export class LowLevelSpawn extends EventEmitter {
 
   getJsonlPath(): string | null {
     return this.resolvedJsonlPath;
+  }
+
+  /** PTY child pid, or null before start() / after a failed spawn. Used by the
+   *  out-of-process host's roster + reattach bookkeeping. */
+  getPid(): number | null {
+    return this.child?.pid ?? null;
   }
 
   /** Test-only / wrapper-only — exposes the raw buffer for diagnostics.

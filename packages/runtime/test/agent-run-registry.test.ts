@@ -160,3 +160,32 @@ test('abort-on-queued ticket is idempotent', async () => {
   assert.equal(t2.state, 'aborted');
   assert.equal(r.getQueueLength(), 0);
 });
+
+test('reattach() admits past the cap without queueing', async () => {
+  const r = new AgentRunRegistry({ maxConcurrent: 1 });
+  const t1 = r.admit();
+  await t1.granted;
+  assert.equal(r.getActiveCount(), 1);
+
+  // A normal admit now queues (cap reached).
+  const queued = r.admit();
+  queued.granted.catch(() => {});
+  assert.equal(r.getQueueLength(), 1);
+
+  // reattach bypasses the cap + FIFO — admitted immediately, over cap.
+  const re = r.reattach();
+  assert.equal(re.state, 'admitted');
+  assert.equal(r.getActiveCount(), 2);
+  assert.equal(r.getQueueLength(), 1, 'reattach must not consume the queued waiter');
+
+  // Releasing the reattached slot drops back to cap; t1 still holds the only
+  // slot, so the waiter stays queued.
+  re.release();
+  assert.equal(r.getActiveCount(), 1);
+  assert.equal(queued.state, 'queued');
+
+  // Releasing the original admit drains the queued waiter.
+  t1.release();
+  await queued.granted;
+  assert.equal(queued.state, 'admitted');
+});

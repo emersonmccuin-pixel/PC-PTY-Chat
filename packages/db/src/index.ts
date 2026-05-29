@@ -207,6 +207,7 @@ export {
   insertAgentRunRow,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
+  listNonTerminalAgentRuns,
   markAgentRunTerminal,
   reconcileOrphanedRunningRuns,
   updateAgentRunStatus,

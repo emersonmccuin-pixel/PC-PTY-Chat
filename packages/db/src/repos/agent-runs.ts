@@ -190,6 +190,19 @@ export function findActiveContinuation(priorRunId: ULID): AgentRunRow | null {
   return row ?? null;
 }
 
+/** All non-terminal rows across every project. Boot-time reattach reads this
+ *  to decide, per row, whether the host still has the PTY (reattach) or it's
+ *  genuinely gone (fail). Replaces the blanket UPDATE when the agent host is
+ *  enabled. Newest first. */
+export function listNonTerminalAgentRuns(): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']))
+    .orderBy(desc(agentRuns.queuedAt))
+    .all();
+}
+
 /** Boot-time reconciliation sweep. Any row stuck in a non-terminal status
  *  when the server starts means the prior process died mid-flight. Flip
  *  them to `failed / server-restart` so subsequent queries don't treat

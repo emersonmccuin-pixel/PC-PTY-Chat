@@ -128,3 +128,19 @@ export type {
   AgentRunJsonlEventKind,
   JsonlTailerOptionsForAgentRun,
 } from './agent-run-jsonl-tailer.ts';
+
+// ── Out-of-process agent host (durable crash isolation) ───────────────────
+
+export { AgentHost } from './host/agent-host.ts';
+export type { AgentHostDeps, HostSpawn, HostSpawnFactory } from './host/agent-host.ts';
+export { RemoteSpawn } from './host/remote-spawn.ts';
+export type { RemoteSpawnHost } from './host/remote-spawn.ts';
+export { HostClient } from './host/host-client.ts';
+export { encodeMsg, decodeMsg } from './host/protocol.ts';
+export type {
+  HostToServerMsg,
+  MessageChannel,
+  RosterEntry,
+  SerializableSpawnInput,
+  ServerToHostMsg,
+} from './host/protocol.ts';

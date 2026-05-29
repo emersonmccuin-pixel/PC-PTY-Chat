@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev-supervisor.mjs",
     "start": "tsx src/index.ts",
+    "agent-host": "tsx src/agent-host/host-main.ts",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"test/*.test.ts\" \"test/v2/*.test.ts\""
