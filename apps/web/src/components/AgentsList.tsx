@@ -5,7 +5,7 @@
 // edits (prompt body, settings, secrets, history); the "Edit" button in the
 // right pane opens it.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project, ULID } from '@/features/projects/client';
 import { agentsApi, resolveModelLabel, type Pod, type PodBundle } from '@/features/agents/client';
@@ -394,14 +394,25 @@ function DetailPane({
   }, [pod.id]);
 
   // Refetch bundle when a WS envelope says this pod changed (typically a
-  // nested mutation — knowledge add/edit/delete from elsewhere).
+  // nested mutation — knowledge add/edit/delete from elsewhere). Scan every
+  // new envelope since the last processed index — not just the last one — so
+  // a pod-changed buried in a batched flush isn't missed (UI spine).
+  const bundleLastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last || last.type !== 'pod-changed') return;
-    const e = last as { podId?: string; pod?: { id: string } };
-    const changedId = e.podId ?? e.pod?.id;
-    if (changedId === pod.id) void loadBundle();
+    if (events.length < bundleLastIdx.current) bundleLastIdx.current = 0;
+    const start = bundleLastIdx.current;
+    bundleLastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (!env || env.type !== 'pod-changed') continue;
+      const e = env as { podId?: string; pod?: { id: string } };
+      const changedId = e.podId ?? e.pod?.id;
+      if (changedId === pod.id) {
+        void loadBundle();
+        break;
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 

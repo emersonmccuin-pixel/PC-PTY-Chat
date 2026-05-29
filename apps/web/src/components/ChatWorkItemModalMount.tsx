@@ -5,7 +5,7 @@
 // Distinct from KanbanBoard's local modal; both can technically be open at
 // once but the user has to actively click in both places to trigger it.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { workItemsApi, type WorkItem } from '@/features/work-items/client';
@@ -46,11 +46,23 @@ export function ChatWorkItemModalMount({ project, events }: ChatWorkItemModalMou
     };
   }, [workItemId, project.id]);
 
-  // Live refresh on work-item-changed envelopes while modal is open.
+  // Live refresh on work-item-changed envelopes while modal is open. Scan
+  // every new envelope since the last processed index — not just the last
+  // one — so a change buried in a batched flush isn't missed (UI spine).
+  const lastIdxRef = useRef(0);
   useEffect(() => {
-    if (!workItemId || events.length === 0) return;
-    const last = events[events.length - 1];
-    if (last?.type !== 'work-item-changed') return;
+    if (events.length < lastIdxRef.current) lastIdxRef.current = 0;
+    const start = lastIdxRef.current;
+    lastIdxRef.current = events.length;
+    if (!workItemId || start >= events.length) return;
+    let changed = false;
+    for (let i = start; i < events.length; i++) {
+      if (events[i]?.type === 'work-item-changed') {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) return;
     workItemsApi.workItems(project.id)
       .then(setItems)
       .catch(() => {});

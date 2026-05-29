@@ -7,7 +7,7 @@
 // is presentational + handles inline editing of the body via the existing
 // PATCH /work-items/:id endpoint.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
@@ -289,11 +289,21 @@ function ChildrenTab({
     refetch();
   }, [refetch]);
 
-  // Live refresh on server-broadcast changes.
+  // Live refresh on server-broadcast changes. Scan every new envelope since
+  // the last processed index — not just the last one — so a change buried in
+  // a batched flush isn't missed (UI spine).
+  const wiLastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (last?.type === 'work-item-changed') refetch();
+    if (events.length < wiLastIdx.current) wiLastIdx.current = 0;
+    const start = wiLastIdx.current;
+    wiLastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      if (events[i]?.type === 'work-item-changed') {
+        refetch();
+        break;
+      }
+    }
   }, [events, refetch]);
 
   const children = useMemo(
@@ -619,15 +629,22 @@ function ActivityTab({
     };
   }, [project.id, workItem.id]);
 
+  const attLastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (last?.type === 'attachment-changed' && last.workItemId === workItem.id) {
-      workItemsApi.listAttachments(project.id, workItem.id)
-        .then(setAttachments)
-        .catch(() => {
-          /* leave the existing list */
-        });
+    if (events.length < attLastIdx.current) attLastIdx.current = 0;
+    const start = attLastIdx.current;
+    attLastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (env?.type === 'attachment-changed' && env.workItemId === workItem.id) {
+        workItemsApi.listAttachments(project.id, workItem.id)
+          .then(setAttachments)
+          .catch(() => {
+            /* leave the existing list */
+          });
+        break;
+      }
     }
   }, [events, project.id, workItem.id]);
 
@@ -887,11 +904,18 @@ function DocumentsTab({
     refetch();
   }, [refetch]);
 
+  const att2LastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (last?.type === 'attachment-changed' && last.workItemId === workItem.id) {
-      refetch();
+    if (events.length < att2LastIdx.current) att2LastIdx.current = 0;
+    const start = att2LastIdx.current;
+    att2LastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (env?.type === 'attachment-changed' && env.workItemId === workItem.id) {
+        refetch();
+        break;
+      }
     }
   }, [events, workItem.id, refetch]);
 

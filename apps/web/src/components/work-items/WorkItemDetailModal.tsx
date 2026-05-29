@@ -5,7 +5,7 @@
 // prop updates: silent re-sync when not dirty, "remote changed" banner when the
 // user has unsaved edits and the prop's version has advanced.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -127,12 +127,21 @@ export function WorkItemDetailModal({
     };
   }, [project.id]);
 
+  // Scan every new envelope since the last processed index — not just the
+  // last one — so a schema change buried in a batched flush isn't missed.
+  // Walk newest-first within the new range so the latest snapshot wins.
+  const schemaLastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'field-schemas-changed' && Array.isArray(last.items)) {
-      setFieldSchemas(last.items as FieldSchema[]);
+    if (events.length < schemaLastIdx.current) schemaLastIdx.current = 0;
+    const start = schemaLastIdx.current;
+    schemaLastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = events.length - 1; i >= start; i--) {
+      const env = events[i];
+      if (env?.type === 'field-schemas-changed' && Array.isArray(env.items)) {
+        setFieldSchemas(env.items as FieldSchema[]);
+        break;
+      }
     }
   }, [events]);
 
@@ -841,12 +850,18 @@ function AttachmentsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, workItemId]);
 
+  const attachLastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'attachment-changed' && last.workItemId === workItemId) {
-      refetch();
+    if (events.length < attachLastIdx.current) attachLastIdx.current = 0;
+    const start = attachLastIdx.current;
+    attachLastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (env?.type === 'attachment-changed' && env.workItemId === workItemId) {
+        refetch();
+        break;
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, workItemId]);
@@ -1015,12 +1030,18 @@ function ActivityTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, workItem.id]);
 
+  const attach2LastIdx = useRef(0);
   useEffect(() => {
-    if (events.length === 0) return;
-    const last = events[events.length - 1];
-    if (!last) return;
-    if (last.type === 'attachment-changed' && last.workItemId === workItem.id) {
-      refetchAttachments();
+    if (events.length < attach2LastIdx.current) attach2LastIdx.current = 0;
+    const start = attach2LastIdx.current;
+    attach2LastIdx.current = events.length;
+    if (start >= events.length) return;
+    for (let i = start; i < events.length; i++) {
+      const env = events[i];
+      if (env?.type === 'attachment-changed' && env.workItemId === workItem.id) {
+        refetchAttachments();
+        break;
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, workItem.id]);
