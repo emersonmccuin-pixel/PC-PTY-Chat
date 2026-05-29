@@ -5,7 +5,7 @@ import {
 
 import { TerminalModePanel } from '@/components/TerminalModePanel';
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 export function TerminalPane({
   eligible,

@@ -17,7 +17,7 @@ import { useMemo } from 'react';
 import type { Project } from '@/features/projects/client';
 import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
 
 export type AgentDesignerState = 'spawning' | 'ready' | 'thinking' | 'exited';

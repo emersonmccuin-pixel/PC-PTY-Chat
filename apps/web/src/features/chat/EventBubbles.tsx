@@ -16,7 +16,7 @@ import type {
   TaskStartEvent,
   TodosEvent,
   UserEvent,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 import { parseUserText, type UserPart } from '@/lib/parse-chat-text';
 import {
   FailureBubble,

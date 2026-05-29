@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 export interface ResourceListConfig<T> {
   /** WS envelope kind that carries snapshots for this resource. */

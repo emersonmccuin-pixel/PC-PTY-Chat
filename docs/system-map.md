@@ -53,7 +53,7 @@ Feature route groups:
 Feature clients:
 
 - `features/projects` owns project contracts/client.
-- `features/runtime` owns orchestrator session, replay, runtime snapshot, send queue, terminal transcript client types.
+- `features/runtime` owns orchestrator session, replay, runtime snapshot, send queue, terminal transcript client types, and web-side project WebSocket contracts.
 - `features/transient-sessions` owns modal session HTTP client.
 - `features/agent-runs` owns run list/cancel/invoke/continue/pending ask/transcript clients.
 - `features/agents` owns pod/agent client contracts.
@@ -71,6 +71,7 @@ Top-level adapters and views:
 - `hooks/use-all-projects-ws.ts` owns non-active project WebSocket subscriptions.
 - `hooks/ws-heartbeat.ts` owns shared reconnect backoff, heartbeat timeout, and client ping helpers.
 - `hooks/chat-session-reducer.ts` owns replay/dedupe/session ordering and materialized chat events.
+- `features/runtime/ws-types.ts` owns web-side project WebSocket envelope, event, outbound message, status, and diagnostics contracts.
 - `components/Orchestrator.tsx` coordinates runtime client, project WebSocket, chat surface, sessions, and status.
 - `components/TransientAgentConversation.tsx`, `AgentDesignerChat.tsx`, `WorkflowBuilderChat.tsx`, and `SetupWizardModal.tsx` adapt transient modal sessions into chat.
 - `components/ActivityPanel.tsx` and `AgentTranscriptModal.tsx` own agent run listing and transcript display.
@@ -85,6 +86,7 @@ Primary UI socket:
 - Connect snapshot: `features/runtime-host/websocket-connect.ts`.
 - Message handler: `features/runtime-host/websocket-message.ts`.
 - Client hook: `apps/web/src/hooks/use-project-ws.ts`.
+- Client contract: `apps/web/src/features/runtime/ws-types.ts`.
 - All-project sibling hook: `apps/web/src/hooks/use-all-projects-ws.ts`.
 
 Inbound client messages:

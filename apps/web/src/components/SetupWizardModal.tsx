@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { transientInputCapabilities } from '@/features/chat/runtimeState';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
 import { TransientAgentConversation } from '@/components/TransientAgentConversation';
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 
 interface SetupWizardModalProps {
   projectId: string;

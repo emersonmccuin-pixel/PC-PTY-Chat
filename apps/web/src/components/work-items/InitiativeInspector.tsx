@@ -14,7 +14,7 @@ import remarkGfm from 'remark-gfm';
 
 import type { Project, Stage } from '@/features/projects/client';
 import { WorkItemConflictError, workItemsApi, type Attachment, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useAttachmentLightbox } from '@/store/attachment-lightbox';
 import { useChatComposerPrefill } from '@/store/chat-composer-prefill';

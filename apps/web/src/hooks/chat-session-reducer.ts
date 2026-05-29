@@ -6,7 +6,7 @@ import type {
   SessionChangedEnvelope,
   SessionReplayEnvelope,
   WsEnvelope,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 
 // Keep the long-lived chat comfort window from the legacy raw buffer while
 // the reducer owns ordering/deduplication by session sequence.

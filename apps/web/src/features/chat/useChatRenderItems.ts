@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { injectTodoSnapshots, normalizeJsonlEnvelope } from '@/features/chat/normalizeJsonlEnvelope';
 import { synthesizeRenderItems } from '@/features/chat/toolGrouping';
 import { pendingPromptEnvelope } from '@/features/chat/usePendingPrompts';

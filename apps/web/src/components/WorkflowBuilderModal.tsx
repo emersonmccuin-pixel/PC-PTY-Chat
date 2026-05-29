@@ -29,7 +29,7 @@ import { WorkflowV2 } from '@pc/domain';
 
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
-import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsOutbound } from '@/features/runtime/ws-types';
 import { WorkflowBuilderChat, type WorkflowBuilderState } from './WorkflowBuilderChat';
 import { WorkflowGraphV2 } from './WorkflowGraphV2';
 

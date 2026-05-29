@@ -23,7 +23,7 @@ import type {
   TaskEndEvent,
   TaskStartEvent,
   WsEnvelope,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 
 import type { PendingPromptStatus, RenderItem } from './types';
 import { isPendingUserEvent } from './usePendingPrompts';

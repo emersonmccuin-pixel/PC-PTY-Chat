@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { runtimeApi } from '@/features/runtime/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 export interface GlobalUsageBucket {
   bucket: string;

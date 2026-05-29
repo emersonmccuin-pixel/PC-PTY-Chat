@@ -36,7 +36,7 @@ function resolveCancelledHidden(
   if (v === 'force-hidden') return true;
   return globalHide;
 }
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { CreateWorkItemModal } from './work-items/CreateWorkItemModal';
 import { WorkItemDetailModal } from './work-items/WorkItemDetailModal';
 import { applyFilters } from './work-items/filter-sort';

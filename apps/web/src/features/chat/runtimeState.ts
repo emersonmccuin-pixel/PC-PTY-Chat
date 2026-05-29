@@ -1,6 +1,6 @@
 import type { OrchestratorSurfacePreference } from '@/features/settings/client';
 import type { OrchestratorRuntimeHealth } from '@/features/runtime/client';
-import type { ChatEvent, JsonlEvent, WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
+import type { ChatEvent, JsonlEvent, WsEnvelope, WsStatus } from '@/features/runtime/ws-types';
 
 export const STALL_WARN_MS = 60_000;
 

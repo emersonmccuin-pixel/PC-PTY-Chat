@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { runtimeApi, type OrchestratorSession, type SessionTransitionResponse } from '@/features/runtime/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useViewingSession } from '@/store/viewing-session';
 
 interface SessionsRailProps {

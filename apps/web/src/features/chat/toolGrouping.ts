@@ -4,7 +4,7 @@ import type {
   ToolStartEvent,
   UserEvent,
   WsEnvelope,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 import { parseUserText } from '@/lib/parse-chat-text';
 
 import type {

@@ -20,7 +20,7 @@ import type {
   WsEnvelope,
   WsOutbound,
   WsStatus,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';

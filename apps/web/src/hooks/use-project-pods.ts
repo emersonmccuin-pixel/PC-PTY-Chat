@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project, ULID } from '@/features/projects/client';
 import { agentsApi, type Pod } from '@/features/agents/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 interface PodChangedEnvelope extends WsEnvelope {
   type: 'pod-changed';

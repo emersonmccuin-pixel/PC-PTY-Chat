@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 
 import type { RuntimeInputCapabilities } from '@/features/chat/runtimeState';
-import type { WsStatus } from '@/hooks/use-project-ws';
+import type { WsStatus } from '@/features/runtime/ws-types';
 
 export function useChatInputControls({
   inputCapabilities,

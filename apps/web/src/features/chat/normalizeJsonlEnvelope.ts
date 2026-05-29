@@ -4,7 +4,7 @@ import type {
   TodoItem,
   TodosEvent,
   WsEnvelope,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 
 /** Derive todos snapshots from JSONL tool-calls. */
 export function injectTodoSnapshots(events: WsEnvelope[]): WsEnvelope[] {

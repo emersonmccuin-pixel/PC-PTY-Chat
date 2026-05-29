@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { workItemsApi, type WorkItem, type WorkItemStatus, type WorkItemType } from '@/features/work-items/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useWorkItemsView } from '@/store/work-items-view';
 import { WorkItemDetailModal } from './WorkItemDetailModal';
 import { WorkItemsToolbar } from './WorkItemsToolbar';

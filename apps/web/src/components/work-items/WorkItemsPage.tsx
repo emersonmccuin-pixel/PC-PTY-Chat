@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import type { WorkItem } from '@/features/work-items/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useWorkItemsView, type WorkItemsSubTab } from '@/store/work-items-view';
 import { KanbanBoard } from '../KanbanBoard';
 import { DashboardPlaceholder } from './DashboardPlaceholder';

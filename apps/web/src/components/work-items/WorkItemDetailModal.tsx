@@ -13,7 +13,7 @@ import remarkGfm from 'remark-gfm';
 
 import type { Project } from '@/features/projects/client';
 import { WORK_ITEM_TYPES, WorkItemConflictError, WorkItemFieldValidationError, workItemsApi, type Attachment, type FieldSchema, type WorkItem, type WorkItemPatch, type WorkItemType } from '@/features/work-items/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { TypedFieldEditor } from './TypedFieldEditor';
 
 type TabId = 'overview' | 'children' | 'attachments' | 'activity';

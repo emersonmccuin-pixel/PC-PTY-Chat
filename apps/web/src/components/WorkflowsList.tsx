@@ -19,7 +19,7 @@ import type { WorkflowV2 } from '@pc/domain';
 
 import type { Project, ULID } from '@/features/projects/client';
 import { workflowsApi, type V2RunDetail, type V2RunStatus, type V2RunSummary, type WorkflowRow } from '@/features/workflows/client';
-import type { WsEnvelope, WsOutbound } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsOutbound } from '@/features/runtime/ws-types';
 import { useProjectWorkflows } from '@/hooks/use-project-workflows';
 import { useProjectWorkflowV2Runs } from '@/hooks/use-project-workflow-v2-runs';
 import { useWorkflowsListNav } from '@/store/workflows-list-nav';

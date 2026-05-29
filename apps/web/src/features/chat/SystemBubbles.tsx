@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import type { SystemEvent } from '@/hooks/use-project-ws';
+import type { SystemEvent } from '@/features/runtime/ws-types';
 
 export function CompactBoundaryRule({
   event,

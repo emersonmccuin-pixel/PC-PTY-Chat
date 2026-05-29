@@ -81,3 +81,33 @@ test('web source imports feature clients directly instead of the legacy API barr
 
   assert.deepEqual(offenders, [], 'web source should not import @/api/client directly');
 });
+
+test('web websocket protocol types live outside the project ws hook', async () => {
+  const files = await listFiles(webSrc);
+  const relativeFiles = new Set(files.map(repoRelative));
+
+  assert.ok(
+    relativeFiles.has('apps/web/src/features/runtime/ws-types.ts'),
+    'ws-types contract module should live under features/runtime',
+  );
+
+  const hookImportPattern =
+    /from\s+['"](?:@\/hooks\/use-project-ws|\.{1,2}\/[^'"]*use-project-ws)['"]/;
+  const allowedHookImporters = new Set(['apps/web/src/App.tsx']);
+  const offenders: string[] = [];
+
+  for (const file of files.filter((candidate) => /\.(ts|tsx)$/.test(candidate))) {
+    const rel = repoRelative(file);
+    if (rel === 'apps/web/src/hooks/use-project-ws.ts') continue;
+    if (allowedHookImporters.has(rel)) continue;
+
+    const source = await readFile(file, 'utf8');
+    if (hookImportPattern.test(source)) offenders.push(rel);
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'web code should import WS protocol types from @/features/runtime/ws-types instead of the hook',
+  );
+});

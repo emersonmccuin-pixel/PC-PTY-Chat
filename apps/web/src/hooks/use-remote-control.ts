@@ -14,7 +14,7 @@
 
 import { useMemo } from 'react';
 
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 
 export interface RemoteControlState {
   active: boolean;

@@ -5,7 +5,7 @@ import {
   createClientMessageId,
   type PendingPromptInput,
 } from '@/features/chat/usePendingPrompts';
-import type { WsEnvelope, WsStatus } from '@/hooks/use-project-ws';
+import type { WsEnvelope, WsStatus } from '@/features/runtime/ws-types';
 
 export function useChatComposerActions({
   events,

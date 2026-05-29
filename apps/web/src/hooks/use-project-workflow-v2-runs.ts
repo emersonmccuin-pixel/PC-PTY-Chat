@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { workflowsApi, type V2RunStatus, type V2RunSummary } from '@/features/workflows/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 const TERMINAL = new Set<V2RunStatus>(['completed', 'failed', 'cancelled']);
 

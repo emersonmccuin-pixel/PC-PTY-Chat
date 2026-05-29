@@ -29,7 +29,7 @@ import {
 import type {
   WsEnvelope,
   WsStatus,
-} from './use-project-ws';
+} from '@/features/runtime/ws-types';
 
 const MAX_BUFFERED = 500;
 

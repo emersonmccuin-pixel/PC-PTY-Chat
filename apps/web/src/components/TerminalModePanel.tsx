@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 
 import { runtimeApi } from '@/features/runtime/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
 const OVERLAP_SCAN_BYTES = 64 * 1024;

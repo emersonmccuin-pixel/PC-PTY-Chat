@@ -16,7 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
-import type { JsonlEvent, WsEnvelope } from '@/hooks/use-project-ws';
+import type { JsonlEvent, WsEnvelope } from '@/features/runtime/ws-types';
 
 interface AgentTranscriptModalProps {
   run: AgentRunRecord;

@@ -6,7 +6,7 @@
 
 import type { Project } from '@/features/projects/client';
 import type { SessionTransitionResponse } from '@/features/runtime/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useRailMode } from '@/store/rail-mode';
 import { FilesRail } from './FilesRail';

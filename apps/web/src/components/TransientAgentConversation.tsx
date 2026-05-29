@@ -7,7 +7,7 @@ import {
   ConversationHeader,
   ConversationHeaderButton,
 } from '@/components/ConversationHeader';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 
 interface TransientAgentConversationProps {
   projectId: string;

@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Project } from '@/features/projects/client';
 import { transientSessionsApi } from '@/features/transient-sessions/client';
 import { agentsApi, type CreatePodInput, type Pod } from '@/features/agents/client';
-import type { WsEnvelope } from '@/hooks/use-project-ws';
+import type { WsEnvelope } from '@/features/runtime/ws-types';
 import {
   AgentDesignerChat,
   isAgentDesignerState,

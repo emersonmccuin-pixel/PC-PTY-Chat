@@ -17,7 +17,7 @@ import type {
   WsEnvelope,
   WsOutbound,
   WsStatus,
-} from '@/hooks/use-project-ws';
+} from '@/features/runtime/ws-types';
 import { useOrchestratorTelemetry, type UsageTotals } from '@/store/orchestrator-telemetry';
 import { useViewingSession } from '@/store/viewing-session';
 import { ChatSurface } from '@/features/chat/ChatSurface';
