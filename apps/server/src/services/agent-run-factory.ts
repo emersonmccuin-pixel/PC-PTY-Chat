@@ -51,7 +51,15 @@ import type {
   ExpectedOutput,
   ULID,
 } from '@pc/domain';
-import { AgentRun, AgentRunRegistry } from '@pc/runtime';
+import {
+  AgentRun,
+  AgentRunRegistry,
+  type AgentHostCommandResponse,
+  type AgentHostEvent,
+  type AgentHostResumeRunRequest,
+  type AgentHostRunSnapshot,
+  type AgentHostStartRunRequest,
+} from '@pc/runtime';
 import type { AgentRunRecord } from '@pc/runtime';
 
 import {
@@ -66,8 +74,14 @@ import type { ChannelServer } from './channel-server.ts';
 import {
   activeRunHandleForAgentRun,
   getActiveRunRegistry,
+  HostBackedActiveRunHandle,
   type ActiveRunRegistry,
 } from './agent-active-runs.ts';
+import {
+  applyAgentHostEvent,
+  applyHostTerminalSnapshot,
+  type AgentHostReattachClient,
+} from './agent-host-reattach.ts';
 import { enqueueAndPush } from './agent-delivery.ts';
 import { continueAgent, type ContinueAgentResult } from './pause-resume.ts';
 import {
@@ -158,6 +172,9 @@ export interface DispatchAgentDeps {
   verificationDeps?: VerificationDeps;
   /** Test seam: AgentRun factory. Production = `new AgentRun(...)`. */
   agentRunFactory?: typeof defaultAgentRunFactory;
+  /** Phase C host-mode seam. When supplied, dispatches are sent to the
+   *  out-of-process host; when omitted, production stays in-process. */
+  hostClient?: AgentHostReattachClient;
   /** Session 10 / Phase D — WS broadcast hook. Carries:
    *   - `{ type: 'agent-run-changed', record }` on state transition + terminal
    *     (Activity Panel adapter shim — v1-shape `AgentRunRecord`).
@@ -198,6 +215,11 @@ export type DispatchAgentFailure =
     }
   | {
       ok: false;
+      cause: 'host-unavailable' | 'host-protocol-error';
+      error: string;
+    }
+  | {
+      ok: false;
       cause: ContinueAgentResult extends { ok: false; cause: infer C } ? C : never;
       error: string;
     };
@@ -209,10 +231,10 @@ export type DispatchAgentResult = DispatchAgentSuccess | DispatchAgentFailure;
 /** Validate, materialise, persist, construct, register, start. Returns a
  *  cause-tagged failure if any pre-spawn step fails; only the post-start
  *  failures funnel through the agent_runs_v2 row's terminal state. */
-export function dispatchFreshAgent(
+export async function dispatchFreshAgent(
   input: DispatchFreshAgentInput,
   deps: DispatchAgentDeps,
-): DispatchAgentResult {
+): Promise<DispatchAgentResult> {
   const now = (deps.now ?? Date.now)();
 
   // Fail fast on unknown agent — pre-row-insert so the orchestrator can
@@ -337,11 +359,12 @@ export function dispatchFreshAgent(
     setAssignedAgentRunId(workItem.workItemId, agentRunId);
   }
 
-  const run = constructAndStart({
+  const started = await startDispatchedRun({
     input: { ...input, parentWorkItemId: parentWorkItemForRow },
     podName: input.agentName,
     agentRunId,
     ccSessionId,
+    scratchDir,
     podPrep,
     podRevisionAtDispatch,
     mode: 'fresh',
@@ -350,13 +373,14 @@ export function dispatchFreshAgent(
     workItemId: workItem?.workItemId ?? null,
     deps,
   });
+  if (!started.ok) return started;
 
   return {
     ok: true,
     agentRunId,
     ccSessionId,
     podName: input.agentName,
-    initialState: run.getState() === 'spawning' ? 'spawning' : 'queued',
+    initialState: started.initialState,
     startedAt: now,
   };
 }
@@ -366,10 +390,10 @@ export function dispatchFreshAgent(
 /** Plan + construct + register a continuation. The plan step (Session 8's
  *  `continueAgent`) handles all the guards — parent terminal, JSONL on
  *  disk, no concurrent continuation, project exists. */
-export function dispatchContinueAgent(
+export async function dispatchContinueAgent(
   input: DispatchContinueAgentInput,
   deps: DispatchAgentDeps,
-): DispatchAgentResult {
+): Promise<DispatchAgentResult> {
   const now = (deps.now ?? Date.now)();
 
   const plan = continueAgent(
@@ -474,7 +498,7 @@ export function dispatchContinueAgent(
     setAssignedAgentRunId(continueWorkItemId, plan.plan.agentRunId);
   }
 
-  const run = constructAndStart({
+  const started = await startDispatchedRun({
     input: {
       projectId: input.projectId,
       worktreeDir: input.worktreeDir,
@@ -488,6 +512,7 @@ export function dispatchContinueAgent(
     podName: plan.plan.podName,
     agentRunId: plan.plan.agentRunId,
     ccSessionId: plan.plan.ccSessionId,
+    scratchDir,
     podPrep,
     podRevisionAtDispatch: plan.plan.podRevisionAtDispatch,
     mode: 'resume',
@@ -496,13 +521,14 @@ export function dispatchContinueAgent(
     workItemId: continueWorkItemId,
     deps,
   });
+  if (!started.ok) return started;
 
   return {
     ok: true,
     agentRunId: plan.plan.agentRunId,
     ccSessionId: plan.plan.ccSessionId,
     podName: plan.plan.podName,
-    initialState: run.getState() === 'spawning' ? 'spawning' : 'queued',
+    initialState: started.initialState,
     startedAt: now,
   };
 }
@@ -514,6 +540,7 @@ interface ConstructAndStartArgs {
   podName: string;
   agentRunId: ULID;
   ccSessionId: string;
+  scratchDir: string;
   podPrep: PodSpawnPrep;
   podRevisionAtDispatch: string | null;
   mode: 'fresh' | 'resume';
@@ -527,16 +554,167 @@ interface ConstructAndStartArgs {
   deps: DispatchAgentDeps;
 }
 
-function constructAndStart(args: ConstructAndStartArgs): AgentRun {
-  const reg = args.deps.runRegistry ?? getRunRegistry();
-  const activeReg = args.deps.activeRunRegistry ?? getActiveRunRegistry();
-  const factory = args.deps.agentRunFactory ?? defaultAgentRunFactory;
+type StartDispatchedRunResult =
+  | { ok: true; initialState: 'queued' | 'spawning' }
+  | {
+      ok: false;
+      cause: 'host-unavailable' | 'host-protocol-error';
+      error: string;
+    };
 
-  // Env contract: dispatched agents get the agent-run env vars + the project
-  // gate + the dispatcher session-id forwarded for routing pause emits back.
-  // Parallel-build invariant: PC_AGENT_SESSION_ID still = ccSessionId (v1
-  // contract preserved) so v1 tools called from the spawned agent also work.
-  // Phase D rip target: design § 11.1 wants PC_AGENT_SESSION_ID = agent_run_id.
+async function startDispatchedRun(
+  args: ConstructAndStartArgs,
+): Promise<StartDispatchedRunResult> {
+  if (args.deps.hostClient) {
+    return startHostBackedRun(args, args.deps.hostClient);
+  }
+
+  const run = constructAndStart(args);
+  return {
+    ok: true,
+    initialState: run.getState() === 'spawning' ? 'spawning' : 'queued',
+  };
+}
+
+async function startHostBackedRun(
+  args: ConstructAndStartArgs,
+  hostClient: AgentHostReattachClient,
+): Promise<StartDispatchedRunResult> {
+  const activeReg = args.deps.activeRunRegistry ?? getActiveRunRegistry();
+  const commandType = args.mode === 'fresh' ? 'start-run' : 'resume-run';
+  const command =
+    args.mode === 'fresh'
+      ? { type: 'start-run' as const, request: buildHostStartRunRequest(args) }
+      : { type: 'resume-run' as const, request: buildHostResumeRunRequest(args) };
+  let handle: HostBackedActiveRunHandle | null = null;
+  let unsubscribe: (() => void) | void;
+  const fail = (
+    cause: 'host-unavailable' | 'host-protocol-error',
+    error: string,
+  ): StartDispatchedRunResult => {
+    unsubscribe?.();
+    return failHostStart(args, cause, error);
+  };
+
+  unsubscribe = hostClient.onEvent?.((event) => {
+    if (!hostEventBelongsToRun(event, args.agentRunId)) return;
+    applyAgentHostEvent(event, {
+      activeRunRegistry: activeReg,
+      broadcast: broadcastForFactory(args),
+    });
+    if (handle && (event.type === 'run-state' || event.type === 'run-terminal')) {
+      handle.applySnapshot(event.run);
+    }
+    if (event.type === 'run-terminal') {
+      args.podPrep.cleanup();
+      unsubscribe?.();
+    }
+  });
+
+  let response: AgentHostCommandResponse | void;
+  try {
+    response = await hostClient.sendCommand(command);
+  } catch (err) {
+    return fail(
+      'host-unavailable',
+      `agent host command ${commandType} failed: ${(err as Error).message}`,
+    );
+  }
+
+  if (!response) {
+    return fail(
+      'host-protocol-error',
+      `agent host command ${commandType} returned no response`,
+    );
+  }
+  if (!response.ok) {
+    const cause =
+      response.code === 'protocol-error' ? 'host-protocol-error' : 'host-unavailable';
+    return fail(cause, `agent host command ${commandType} failed: ${response.error}`);
+  }
+  if (response.command !== commandType || !('run' in response)) {
+    return fail(
+      'host-protocol-error',
+      `agent host command ${commandType} returned ${response.command}`,
+    );
+  }
+
+  const snapshot = response.run;
+  if (!hostSnapshotMatchesDispatch(args, snapshot)) {
+    return fail(
+      'host-protocol-error',
+      'agent host start response did not match the dispatched run',
+    );
+  }
+
+  handle = new HostBackedActiveRunHandle(snapshot, hostClient, {
+    onCommandError: (error, command) => {
+      console.warn(
+        `[agent-run-factory] host command ${command.type} failed for run ${args.agentRunId}: ${error.message}`,
+      );
+    },
+  });
+  activeReg.register({
+    run: handle,
+    projectId: args.input.projectId,
+    dispatcherSessionId: args.input.dispatcherSessionId,
+    ccSessionId: args.ccSessionId,
+    podName: args.podName,
+    parentWorkItemId: args.input.parentWorkItemId ?? null,
+    podRevisionAtDispatch: args.podRevisionAtDispatch,
+  });
+
+  if (isTerminalHostState(snapshot.state)) {
+    applyHostTerminalSnapshot(snapshot, {
+      activeRunRegistry: activeReg,
+      broadcast: broadcastForFactory(args),
+    });
+  } else {
+    updateAgentRunStatus({
+      id: args.agentRunId,
+      status: snapshot.state,
+      ...(snapshot.spawnedAt !== null ? { spawnedAt: snapshot.spawnedAt } : {}),
+      ...(snapshot.readyAt !== null ? { readyAt: snapshot.readyAt } : {}),
+    });
+    broadcastHostRunChanged(args, snapshot);
+  }
+
+  return {
+    ok: true,
+    initialState: snapshot.state === 'queued' ? 'queued' : 'spawning',
+  };
+}
+
+function buildHostStartRunRequest(args: ConstructAndStartArgs): AgentHostStartRunRequest {
+  return {
+    runId: args.agentRunId,
+    projectId: args.input.projectId,
+    dispatcherSessionId: args.input.dispatcherSessionId,
+    ccSessionId: args.ccSessionId,
+    podDefinition: {
+      name: args.podPrep.agentCliName,
+      logicalName: args.podName,
+    },
+    worktreePath: args.input.worktreeDir,
+    env: buildAgentEnv(args),
+    initialInput: args.initialInput,
+    mcpConfigPath: args.podPrep.mcpConfigPath,
+    settingsPath: args.podPrep.settingsPath,
+    settingSources: args.podPrep.settingSources,
+    pluginDirs: [args.podPrep.pluginDir],
+    transcriptPath: transcriptPathFor(args),
+  };
+}
+
+function buildHostResumeRunRequest(args: ConstructAndStartArgs): AgentHostResumeRunRequest {
+  return {
+    ...buildHostStartRunRequest(args),
+    mode: 'resume',
+    continues: args.continuesParent as ULID,
+  };
+}
+
+function buildAgentEnv(args: ConstructAndStartArgs): Record<string, string> {
   const baseEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...args.podPrep.extraEnv,
@@ -551,12 +729,144 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     baseEnv.PC_AGENT_PARENT_WORK_ITEM_ID = args.input.parentWorkItemId;
   }
   if (args.workItemId) {
-    // Section 26.4 — assignment env var. The materialised .md already names
-    // the work item, but MCP tools running inside the agent (attachments,
-    // body updates, etc.) read this env var to know which contract they're
-    // operating against without re-parsing the prompt.
     baseEnv.PC_AGENT_WORK_ITEM_ID = args.workItemId;
   }
+  return baseEnv;
+}
+
+function transcriptPathFor(args: ConstructAndStartArgs): string {
+  return resolve(args.scratchDir, 'transcript.log');
+}
+
+function failHostStart(
+  args: ConstructAndStartArgs,
+  cause: 'host-unavailable' | 'host-protocol-error',
+  error: string,
+): StartDispatchedRunResult {
+  const completedAt = (args.deps.now ?? Date.now)();
+  markAgentRunTerminal({
+    id: args.agentRunId,
+    status: 'failed',
+    result: null,
+    failureCause: cause,
+    failureReason: error,
+    completedAt,
+  });
+  args.podPrep.cleanup();
+  broadcastAgentRunChanged(args, 'failed', {
+    failureCause: cause,
+    endedAt: completedAt,
+  });
+  return { ok: false, cause, error };
+}
+
+function broadcastForFactory(
+  args: ConstructAndStartArgs,
+): ((projectId: ULID, msg: unknown) => void) | undefined {
+  if (!args.deps.broadcast) return undefined;
+  return (projectId, msg) => {
+    if (projectId !== args.input.projectId) return;
+    args.deps.broadcast?.(msg as { type: string; [key: string]: unknown });
+  };
+}
+
+function broadcastHostRunChanged(
+  args: ConstructAndStartArgs,
+  snapshot: AgentHostRunSnapshot,
+): void {
+  broadcastAgentRunChanged(args, snapshot.state, {
+    result:
+      snapshot.terminalResult?.status === 'completed'
+        ? snapshot.terminalResult.result ?? ''
+        : '',
+    failureCause:
+      snapshot.terminalResult?.status === 'completed'
+        ? null
+        : (snapshot.terminalResult?.failureCause as AgentRunFailureCause | null | undefined) ??
+          null,
+    endedAt: snapshot.terminalAt,
+  });
+}
+
+function broadcastAgentRunChanged(
+  args: ConstructAndStartArgs,
+  status: AgentHostRunSnapshot['state'],
+  extra: {
+    result?: string;
+    failureCause?: AgentRunFailureCause | null;
+    endedAt?: number | null;
+  } = {},
+): void {
+  if (!args.deps.broadcast) return;
+  const record = {
+    runId: args.agentRunId,
+    sessionId: args.ccSessionId,
+    agentName: args.podName,
+    model: 'opus',
+    projectId: args.input.projectId,
+    parentWorkItemId: args.input.parentWorkItemId ?? null,
+    dispatcherSessionId: args.input.dispatcherSessionId,
+    wait: false,
+    worktreeDir: args.input.worktreeDir,
+    startedAt: (args.deps.now ?? Date.now)(),
+    status,
+    result: extra.result ?? '',
+    failureReason: extra.failureCause
+      ? describeFailure(extra.failureCause) ?? null
+      : null,
+    failureCause: extra.failureCause ?? null,
+    endedAt: extra.endedAt ?? null,
+  };
+  try {
+    args.deps.broadcast({ type: 'agent-run-changed', record });
+  } catch {
+    /* best-effort */
+  }
+}
+
+function hostEventBelongsToRun(
+  event: AgentHostEvent,
+  runId: ULID,
+): boolean {
+  if (event.type === 'run-state' || event.type === 'run-terminal') {
+    return event.run.runId === runId;
+  }
+  if (event.type === 'run-jsonl' || event.type === 'run-chunk' || event.type === 'run-error') {
+    return event.runId === runId;
+  }
+  return false;
+}
+
+function hostSnapshotMatchesDispatch(
+  args: ConstructAndStartArgs,
+  snapshot: AgentHostRunSnapshot,
+): boolean {
+  return (
+    snapshot.runId === args.agentRunId &&
+    snapshot.projectId === args.input.projectId &&
+    snapshot.dispatcherSessionId === args.input.dispatcherSessionId &&
+    snapshot.ccSessionId === args.ccSessionId &&
+    snapshot.podName === args.podName
+  );
+}
+
+function isTerminalHostState(
+  state: AgentHostRunSnapshot['state'],
+): state is 'completed' | 'failed' | 'cancelled' {
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function constructAndStart(args: ConstructAndStartArgs): AgentRun {
+  const reg = args.deps.runRegistry ?? getRunRegistry();
+  const activeReg = args.deps.activeRunRegistry ?? getActiveRunRegistry();
+  const factory = args.deps.agentRunFactory ?? defaultAgentRunFactory;
+
+  // Env contract: dispatched agents get the agent-run env vars + the project
+  // gate + the dispatcher session-id forwarded for routing pause emits back.
+  // Parallel-build invariant: PC_AGENT_SESSION_ID still = ccSessionId (v1
+  // contract preserved) so v1 tools called from the spawned agent also work.
+  // Phase D rip target: design § 11.1 wants PC_AGENT_SESSION_ID = agent_run_id.
+  const baseEnv = buildAgentEnv(args);
 
   const run = factory({
     agentRunId: args.agentRunId,
@@ -573,12 +883,7 @@ function constructAndStart(args: ConstructAndStartArgs): AgentRun {
     pluginDirs: [args.podPrep.pluginDir],
     // Forensic transcript per spawn — sits next to the materialised pod files
     // in the per-run scratch dir.
-    transcriptPath: resolve(
-      args.deps.scratchDirFor
-        ? args.deps.scratchDirFor(args.input.projectId, args.agentRunId)
-        : defaultScratchDirFor(args.input.projectId, args.agentRunId),
-      'transcript.log',
-    ),
+    transcriptPath: transcriptPathFor(args),
     registry: reg,
   });
 

@@ -359,7 +359,7 @@ export function registerWorkItemRoutes(app: Hono, deps: WorkItemRoutesDeps): voi
       );
     }
     try {
-      const result = rejectAgentWorkItem(
+      const result = await rejectAgentWorkItem(
         {
           workItemId: wiId,
           feedback: typeof body.feedback === 'string' ? body.feedback : '',

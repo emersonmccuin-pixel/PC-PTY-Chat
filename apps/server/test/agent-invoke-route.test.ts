@@ -76,8 +76,8 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('dispatchFreshAgent — unknown agent name returns cause=unknown-agent before any side effects', () => {
-  const result = dispatchFreshAgent(
+test('dispatchFreshAgent — unknown agent name returns cause=unknown-agent before any side effects', async () => {
+  const result = await dispatchFreshAgent(
     {
       projectId,
       worktreeDir: projectFolder,
@@ -96,9 +96,9 @@ test('dispatchFreshAgent — unknown agent name returns cause=unknown-agent befo
   assert.match(result.error, /no agent named "does-not-exist"/);
 });
 
-test('dispatchContinueAgent — unknown parent run id returns cause=run-not-found', () => {
+test('dispatchContinueAgent — unknown parent run id returns cause=run-not-found', async () => {
   const fakeRunId = newId() as ULID;
-  const result = dispatchContinueAgent(
+  const result = await dispatchContinueAgent(
     {
       projectId,
       worktreeDir: projectFolder,

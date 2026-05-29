@@ -182,7 +182,7 @@ test('approve: unknown id → throws wi-not-found', () => {
  *  result by default; tests can override via `dispatch.result = ...` before
  *  calling rejectAgentWorkItem. */
 function mkDispatchStub(): {
-  fn: (input: DispatchContinueAgentInput, deps: unknown) => DispatchAgentResult;
+  fn: (input: DispatchContinueAgentInput, deps: unknown) => Promise<DispatchAgentResult>;
   calls: DispatchContinueAgentInput[];
   result: DispatchAgentResult;
 } {
@@ -199,7 +199,7 @@ function mkDispatchStub(): {
     } as DispatchAgentResult,
   };
   return {
-    fn: (input) => {
+    fn: async (input) => {
       state.calls.push(input);
       return state.result;
     },
@@ -215,14 +215,14 @@ function mkDispatchStub(): {
   } as ReturnType<typeof mkDispatchStub>;
 }
 
-test('reject: tier-2 awaiting-verification → in-progress + failed, feedback persists', () => {
+test('reject: tier-2 awaiting-verification → in-progress + failed, feedback persists', async () => {
   const p = mkProject('reject-happy');
   const wi = mkPendingContract({
     project: p,
     withAssignedRunId: 'run-producer' as ULID,
   });
   const dispatch = mkDispatchStub();
-  const result = rejectAgentWorkItem(
+  const result = await rejectAgentWorkItem(
     {
       workItemId: wi.id,
       feedback: 'the summary section is missing — add it',
@@ -248,7 +248,7 @@ test('reject: tier-2 awaiting-verification → in-progress + failed, feedback pe
   assert.match(passed.input, /Reviewer rejected/);
 });
 
-test('reject: long feedback truncates in history note', () => {
+test('reject: long feedback truncates in history note', async () => {
   const p = mkProject('reject-long-feedback');
   const wi = mkPendingContract({
     project: p,
@@ -256,7 +256,7 @@ test('reject: long feedback truncates in history note', () => {
   });
   const longFeedback = 'x'.repeat(300);
   const dispatch = mkDispatchStub();
-  const result = rejectAgentWorkItem(
+  const result = await rejectAgentWorkItem(
     {
       workItemId: wi.id,
       feedback: longFeedback,
@@ -274,11 +274,11 @@ test('reject: long feedback truncates in history note', () => {
   assert.ok((lastHistory.note?.length ?? 0) < 290);
 });
 
-test('reject: empty feedback → throws feedback-required', () => {
+test('reject: empty feedback → throws feedback-required', async () => {
   const p = mkProject('reject-empty-feedback');
   const wi = mkPendingContract({ project: p, withAssignedRunId: 'run-x' as ULID });
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       rejectAgentWorkItem(
         {
           workItemId: wi.id,
@@ -292,11 +292,11 @@ test('reject: empty feedback → throws feedback-required', () => {
   );
 });
 
-test('reject: WI without assigned_agent_run_id → throws no-assigned-run', () => {
+test('reject: WI without assigned_agent_run_id → throws no-assigned-run', async () => {
   const p = mkProject('reject-no-assigned-run');
   const wi = mkPendingContract({ project: p, withAssignedRunId: null });
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       rejectAgentWorkItem(
         {
           workItemId: wi.id,
@@ -310,7 +310,7 @@ test('reject: WI without assigned_agent_run_id → throws no-assigned-run', () =
   );
 });
 
-test('reject: not awaiting verification → throws not-awaiting-verification', () => {
+test('reject: not awaiting verification → throws not-awaiting-verification', async () => {
   const p = mkProject('reject-not-awaiting');
   const wi = createWorkItem({
     projectId: p.id as ULID,
@@ -320,8 +320,8 @@ test('reject: not awaiting verification → throws not-awaiting-verification', (
     verificationTier: 'auto',
   });
   setAssignedAgentRunId(wi.id, 'run-x' as ULID);
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       rejectAgentWorkItem(
         {
           workItemId: wi.id,
@@ -336,7 +336,7 @@ test('reject: not awaiting verification → throws not-awaiting-verification', (
   );
 });
 
-test('reject: continuation failure surfaces in result without throwing', () => {
+test('reject: continuation failure surfaces in result without throwing', async () => {
   const p = mkProject('reject-cont-fail');
   const wi = mkPendingContract({
     project: p,
@@ -348,7 +348,7 @@ test('reject: continuation failure surfaces in result without throwing', () => {
     cause: 'session-expired',
     error: 'JSONL retention expired',
   } as DispatchAgentResult;
-  const result = rejectAgentWorkItem(
+  const result = await rejectAgentWorkItem(
     {
       workItemId: wi.id,
       feedback: 'try again',

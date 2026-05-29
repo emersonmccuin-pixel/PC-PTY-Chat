@@ -220,7 +220,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       return c.json({ ok: false, error: depthCheck.error, cause: depthCheck.cause }, 400);
     }
 
-    const result = services.dispatchFreshAgent(
+    const result = await services.dispatchFreshAgent(
       {
         projectId,
         worktreeDir: project.folderPath,
@@ -321,7 +321,7 @@ export function registerAgentRunRoutes(app: Hono, deps: AgentRunRouteDeps): void
       );
     }
 
-    const result = services.dispatchContinueAgent(
+    const result = await services.dispatchContinueAgent(
       {
         projectId,
         worktreeDir: project.folderPath,
