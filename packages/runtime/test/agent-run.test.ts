@@ -611,3 +611,66 @@ test('reattach: admits past a full cap (registry.reattach)', async () => {
   assert.equal(re.getState(), 'running');
   assert.equal(registry.getActiveCount(), 2);
 });
+
+test('resume that produces no first turn fails fast (first-output watchdog)', async () => {
+  const { run, stub } = makeRun({
+    mode: 'resume',
+    firstTurnMs: 30,
+    idleMs: 100_000, // large so the idle timer can't preempt the watchdog
+    initialInput: 'continue please',
+  });
+  const terminalP = awaitTerminal(run);
+
+  run.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  assert.equal(run.getState(), 'running');
+  assert.deepEqual(stub.sent, ['continue please']); // continuation was delivered
+
+  // No agent activity — the watchdog should fire well before the 5min idle.
+  await tick(60);
+  const t = await terminalP;
+  assert.equal(t.status, 'failed');
+  assert.equal(t.cause, 'idle-timeout');
+  assert.equal(stub.killed, true);
+});
+
+test('resume first-output watchdog disarms on a text-less tool_use turn', async () => {
+  const { run, stub } = makeRun({
+    mode: 'resume',
+    firstTurnMs: 30,
+    idleMs: 100_000,
+    initialInput: 'continue please',
+  });
+
+  run.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  assert.equal(run.getState(), 'running');
+
+  // A tool_use (no text, not a turn-end) is real progress — must disarm.
+  stub.fireAssistantToolUse();
+  await tick(60); // past firstTurnMs — watchdog must NOT fire
+  assert.equal(run.getState(), 'running');
+
+  // Then it finishes normally.
+  const terminalP = awaitTerminal(run);
+  stub.fireAssistantTurnEnd('done');
+  const t = await terminalP;
+  assert.equal(t.status, 'completed');
+});
+
+test('fresh dispatch does NOT arm the first-output watchdog', async () => {
+  // A fresh run with a short firstTurnMs but no activity should NOT fail via
+  // the watchdog (it's resume-only); it would only fail via the idle timer.
+  const { run, stub } = makeRun({ firstTurnMs: 20, idleMs: 100_000 });
+  run.start();
+  await tick();
+  stub.fireReady();
+  await tick();
+  assert.equal(run.getState(), 'running');
+  await tick(50); // past firstTurnMs — fresh run must still be running
+  assert.equal(run.getState(), 'running');
+});

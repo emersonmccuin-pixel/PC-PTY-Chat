@@ -133,6 +133,12 @@ export interface AgentRunInput {
   spawnStuckMs?: number;
   /** Reset on every JSONL event. Default 300_000 (5min). */
   idleMs?: number;
+  /** Resume-only first-output watchdog. After a resume sends its continuation
+   *  input, the agent must produce a real turn (assistant text / turn-end)
+   *  within this window or the run fails fast — a resume that reaches `running`
+   *  but never produces output (continuation didn't land) otherwise burns the
+   *  full idle window. Default 90_000 (90s). */
+  firstTurnMs?: number;
   /** Hard ceiling per dispatch; persists through paused. Default 7_200_000 (2h). */
   wallClockMs?: number;
   /** Passed through to LowLevelSpawn. Default 60_000. */
@@ -156,6 +162,7 @@ export interface AgentRunDeps {
 const DEFAULTS = {
   spawnStuckMs: 120_000,
   idleMs: 300_000,
+  firstTurnMs: 90_000,
   wallClockMs: 7_200_000,
   handshakeTimeoutMs: 60_000,
   readyTimeoutMs: 60_000,
@@ -189,6 +196,7 @@ export class AgentRun extends EventEmitter {
   private timers: {
     spawnStuck?: NodeJS.Timeout;
     idle?: NodeJS.Timeout;
+    firstTurn?: NodeJS.Timeout;
     wallClock?: NodeJS.Timeout;
     cancelGrace?: NodeJS.Timeout;
   } = {};
@@ -206,6 +214,7 @@ export class AgentRun extends EventEmitter {
     this.timeouts = {
       spawnStuckMs: input.spawnStuckMs ?? DEFAULTS.spawnStuckMs,
       idleMs: input.idleMs ?? DEFAULTS.idleMs,
+      firstTurnMs: input.firstTurnMs ?? DEFAULTS.firstTurnMs,
       wallClockMs: input.wallClockMs ?? DEFAULTS.wallClockMs,
       handshakeTimeoutMs:
         input.handshakeTimeoutMs ?? DEFAULTS.handshakeTimeoutMs,
@@ -431,6 +440,12 @@ export class AgentRun extends EventEmitter {
       }
     }
 
+    // Resume first-output watchdog: a resume that reaches `running` but never
+    // produces a real turn (the continuation input didn't land) would otherwise
+    // sit idle for the full 5min idle window. Fail fast instead. Cleared by the
+    // first assistant-text / turn-end event in onJsonlEvent.
+    if (mode === 'resume') this.armFirstTurnWatchdog();
+
     // From here, lifecycle is event-driven via onJsonlEvent / onSpawnExit /
     // cancel / _markPaused.
   }
@@ -503,6 +518,14 @@ export class AgentRun extends EventEmitter {
     // Capture last assistant text for the completed-state result field.
     const text = extractAssistantText(ev);
     if (text !== null) this.lastAssistantText = text;
+    // Genuine agent activity (a turn-end, tool call/result, stream, or any
+    // assistant row) means the resume "took" — disarm the first-output
+    // watchdog. Harness/metadata kinds (system, session-state, last-prompt,
+    // agent-setting, …) are NOT activity, so a dead resume that emits only
+    // those still trips the watchdog.
+    if (this.timers.firstTurn && isAgentProgress(ev)) {
+      this.clearFirstTurn();
+    }
     // Turn-end signal (the OR rule per design §7.1).
     if (isTurnEnd(ev) && this.state === 'running') {
       // Normal completion path. ALSO the late-success path during cancel-
@@ -613,6 +636,30 @@ export class AgentRun extends EventEmitter {
     }
   }
 
+  /** Resume-only: expect a real turn within firstTurnMs of going `running`, or
+   *  fail fast (the continuation input didn't land / the resume didn't take). */
+  private armFirstTurnWatchdog(): void {
+    this.clearFirstTurn();
+    this.timers.firstTurn = setTimeout(() => {
+      if (this.state === 'running') {
+        this.toTerminal('failed', 'idle-timeout', 'resume produced no turn within the first-output window');
+        if (this.spawn) {
+          try {
+            this.spawn.kill();
+          } catch {
+            /* already dead */
+          }
+        }
+      }
+    }, this.timeouts.firstTurnMs);
+  }
+  private clearFirstTurn(): void {
+    if (this.timers.firstTurn) {
+      clearTimeout(this.timers.firstTurn);
+      this.timers.firstTurn = undefined;
+    }
+  }
+
   private armWallClock(): void {
     if (this.timers.wallClock) return; // arm once; persists through paused
     this.timers.wallClock = setTimeout(() => {
@@ -660,6 +707,7 @@ export class AgentRun extends EventEmitter {
   private clearAllTimers(): void {
     this.clearSpawnStuck();
     this.clearIdleTimer();
+    this.clearFirstTurn();
     this.clearWallClock();
     this.clearCancelGrace();
   }
@@ -670,6 +718,28 @@ export class AgentRun extends EventEmitter {
 function stringify(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** True when the event signals the agent is actually responding (vs harness /
+ *  metadata noise). Used to disarm the resume first-output watchdog. Covers the
+ *  typed tailer activity kinds AND the raw-row assistant shape (so a resume
+ *  whose first act is a text-less tool_use still counts as progress). */
+function isAgentProgress(ev: JsonlEvent): boolean {
+  const kind = (ev as { kind?: unknown }).kind;
+  if (
+    kind === 'jsonl-turn-end' ||
+    kind === 'jsonl-tool-call' ||
+    kind === 'jsonl-tool-result' ||
+    kind === 'jsonl-stream-event'
+  ) {
+    return true;
+  }
+  if (extractAssistantText(ev) !== null) return true;
+  const row = (ev as { row?: unknown }).row ?? (ev as { entry?: unknown }).entry;
+  if (row && typeof row === 'object' && (row as { type?: unknown }).type === 'assistant') {
+    return true;
+  }
+  return false;
 }
 
 /** Extract the assistant's text from a JSONL event. Handles both the v1
