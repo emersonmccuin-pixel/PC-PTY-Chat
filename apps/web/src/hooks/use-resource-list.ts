@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
+import { useWsEpoch } from '@/store/ws-epoch';
 
 export interface ResourceListConfig<T> {
   /** WS envelope kind that carries snapshots for this resource. */
@@ -60,8 +61,13 @@ export function useResourceList<T>(
    *  envelopes per render — O(new events), not O(total events). Resets on
    *  project switch and on any apparent buffer reset (length shrank). */
   const lastProcessedIdx = useRef<number>(0);
+  // Bumped whenever the focused project socket (re)connects. Keying the fetch
+  // effect off this reconciles the list to server truth on every reconnect —
+  // the hub has no catch-up, so anything created while the socket was down is
+  // otherwise missed until a manual refresh.
+  const wsEpoch = useWsEpoch((s) => (project ? (s.byProject[project.id] ?? 0) : 0));
 
-  // Initial fetch + project switch.
+  // Initial fetch + project switch + WS (re)connect.
   useEffect(() => {
     if (!project) {
       setMap(new Map());
@@ -73,13 +79,13 @@ export function useResourceList<T>(
       if (cancelled) return;
       setMap(new Map(list.map((r) => [config.getId(r), r])));
     });
-    // New project = fresh scan window for new envelopes.
+    // Fresh list = fresh scan window for new envelopes.
     lastProcessedIdx.current = events.length;
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id]);
+  }, [project?.id, wsEpoch]);
 
   // Scan all NEW envelopes (since last processed index) for matching kind.
   // Apply each matching snapshot in order; if any was terminal OR

@@ -45,10 +45,17 @@ export class ProjectWebSocketHub<ProjectId extends string = string> {
     const data = JSON.stringify(tagged);
     let sent = 0;
     for (const socket of set) {
-      if (socket.readyState !== socket.OPEN) continue;
+      // Prune dead subscribers as we go: a closed/closing socket left in the
+      // set otherwise lingers until the keepalive sweep, silently absorbing a
+      // project's broadcasts. Drop it now so the count reflects real delivery.
+      if (socket.readyState !== socket.OPEN) {
+        set.delete(socket);
+        continue;
+      }
       socket.send(data);
       sent++;
     }
+    if (set.size === 0) this.subscribers.delete(projectId);
     return sent;
   }
 

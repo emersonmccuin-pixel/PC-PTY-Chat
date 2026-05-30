@@ -39,6 +39,7 @@ import {
   replayEventsFromEnvelope,
   replayEventsFromItems,
 } from '@/hooks/chat-session-reducer';
+import { useWsEpoch } from '@/store/ws-epoch';
 
 interface UseProjectWsResult {
   events: WsEnvelope[];
@@ -194,6 +195,11 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
         }));
         delay = RECONNECT_SCHEDULE_MS[0];
         startHeartbeat();
+        // Reconcile-on-(re)connect: the hub has no catch-up, so anything created
+        // while this socket was down/half-open (server restart, blip) was never
+        // delivered. Bump the epoch so resource-list hooks refetch the truth —
+        // this is what removes the "manual refresh to see new agents/workflows".
+        if (project) useWsEpoch.getState().bump(project.id);
       });
 
       ws.addEventListener('close', () => {

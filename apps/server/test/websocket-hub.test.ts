@@ -48,7 +48,7 @@ test('detaching one subscriber does not detach the surviving project client', ()
   assert.equal(hub.count('p1'), 1);
 });
 
-test('closed sockets are skipped without removing other subscribers', () => {
+test('broadcast prunes closed sockets but still delivers to survivors', () => {
   const hub = new ProjectWebSocketHub<string>();
   const a = new FakeSocket();
   const b = new FakeSocket();
@@ -61,7 +61,9 @@ test('closed sockets are skipped without removing other subscribers', () => {
   assert.equal(sent, 1);
   assert.equal(a.sent.length, 0);
   assert.equal(b.sent.length, 1);
-  assert.equal(hub.count('p1'), 2);
+  // The closed socket is pruned on broadcast so it can't keep absorbing the
+  // project's events; the live subscriber remains.
+  assert.equal(hub.count('p1'), 1);
 });
 
 test('explicit projectId in object payload wins for compatibility', () => {
