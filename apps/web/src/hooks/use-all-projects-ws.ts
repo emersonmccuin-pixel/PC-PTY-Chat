@@ -17,7 +17,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import { shouldAcceptProjectWsEnvelope } from '@/features/projects/live-events';
+import {
+  projectWsTargetIds,
+  projectWsTargetIdsFromKey,
+  projectWsTargetKeyFromIds,
+  shouldAcceptProjectWsEnvelope,
+} from '@/features/projects/live-events';
 import {
   createHeartbeatPing,
   heartbeatTimedOut,
@@ -50,22 +55,20 @@ export function useAllProjectsWs(
   const [statuses, setStatuses] = useState<Record<string, WsStatus>>({});
   const connectionsRef = useRef<Map<string, ConnectionHandle>>(new Map());
 
-  // Stable key — re-open sockets only when the eligible project ID set
-  // changes, not on every Project[] identity flip.
-  const targetIds = useMemo(() => {
-    if (!enabled) return [];
-    return projects
-      .map((p) => p.id)
-      .filter((id) => id !== excludeProjectId)
-      .sort();
-  }, [projects, excludeProjectId, enabled]);
-  const targetKey = targetIds.join(',');
+  // Stable key: re-open sockets only when the eligible project ID set changes,
+  // not when a project.changed refetch returns new Project object identities.
+  const targetIds = useMemo(
+    () => projectWsTargetIds(projects, excludeProjectId, enabled),
+    [projects, excludeProjectId, enabled],
+  );
+  const targetKey = projectWsTargetKeyFromIds(targetIds);
 
   useEffect(() => {
+    const effectTargetIds = projectWsTargetIdsFromKey(targetKey);
     setEvents([]);
     setStatuses({});
 
-    if (targetIds.length === 0) {
+    if (effectTargetIds.length === 0) {
       for (const handle of connectionsRef.current.values()) handle.close();
       connectionsRef.current.clear();
       return;
@@ -74,7 +77,7 @@ export function useAllProjectsWs(
     const connections = new Map<string, ConnectionHandle>();
     connectionsRef.current = connections;
 
-    for (const projectId of targetIds) {
+    for (const projectId of effectTargetIds) {
       connections.set(
         projectId,
         openWithBackoff(projectId, (next) =>
@@ -92,7 +95,7 @@ export function useAllProjectsWs(
       for (const handle of connections.values()) handle.close();
       connections.clear();
     };
-  }, [targetKey, targetIds]);
+  }, [targetKey]);
 
   const status = aggregateStatus(targetIds, statuses, enabled);
 

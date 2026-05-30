@@ -22,4 +22,24 @@ export function containsProjectChangedRefetchEvent(
   return false;
 }
 
+export function projectWsTargetIds(
+  projects: readonly { id: string }[],
+  excludeProjectId: string | null,
+  enabled: boolean,
+): string[] {
+  if (!enabled) return [];
+  return projects
+    .map((p) => p.id)
+    .filter((id) => id !== excludeProjectId)
+    .sort();
+}
+
+export function projectWsTargetKeyFromIds(targetIds: readonly string[]): string {
+  return targetIds.join(',');
+}
+
+export function projectWsTargetIdsFromKey(targetKey: string): string[] {
+  return targetKey ? targetKey.split(',') : [];
+}
+
 export { isProjectChangedRefetchEnvelope };

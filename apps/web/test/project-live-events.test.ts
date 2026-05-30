@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   containsProjectChangedRefetchEvent,
+  projectWsTargetIds,
+  projectWsTargetKeyFromIds,
   shouldAcceptProjectWsEnvelope,
 } from '../src/features/projects/live-events.ts';
 
@@ -49,4 +51,24 @@ test('project.changed event scanner only considers new events after a start inde
   assert.equal(containsProjectChangedRefetchEvent(events, 0), true);
   assert.equal(containsProjectChangedRefetchEvent(events, 1), true);
   assert.equal(containsProjectChangedRefetchEvent(events, 3), false);
+});
+
+test('all-project websocket target key is stable across metadata-only project refetches', () => {
+  const before = [
+    { id: 'p2', name: 'Two' },
+    { id: 'p1', name: 'One' },
+    { id: 'active', name: 'Active' },
+  ];
+  const after = [
+    { id: 'active', name: 'Active renamed' },
+    { id: 'p1', name: 'One renamed' },
+    { id: 'p2', name: 'Two renamed' },
+  ];
+
+  const beforeKey = projectWsTargetKeyFromIds(projectWsTargetIds(before, 'active', true));
+  const afterKey = projectWsTargetKeyFromIds(projectWsTargetIds(after, 'active', true));
+
+  assert.equal(beforeKey, 'p1,p2');
+  assert.equal(afterKey, beforeKey);
+  assert.equal(projectWsTargetKeyFromIds(projectWsTargetIds(after, 'active', false)), '');
 });
