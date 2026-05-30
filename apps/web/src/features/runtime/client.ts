@@ -39,6 +39,14 @@ export const runtimeApi = {
       {},
     ),
 
+  /** Close the live chat back to the launcher: ends the active session + kills
+   *  the PTY server-side. Broadcasts session-changed { session: null }. */
+  closeSession: (projectId: ULID) =>
+    postJson<{ ok: true; transition: 'close-session'; closed: boolean }>(
+      `/api/projects/${projectId}/sessions/close`,
+      {},
+    ),
+
   cancelQueuedOrchestratorSend: (projectId: ULID, sendId: ULID) =>
     postJson<{ ok: true; item: OrchestratorSendQueueItem }>(
       `/api/projects/${projectId}/send-queue/${sendId}/cancel`,

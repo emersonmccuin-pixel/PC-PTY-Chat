@@ -28,7 +28,9 @@ import {
   ConversationHeader,
   ConversationHeaderButton,
 } from '@/components/ConversationHeader';
+import { OrchestratorLauncher } from '@/components/OrchestratorLauncher';
 import { StatusBar } from '@/components/StatusBar';
+import type { ULID } from '@/features/projects/types';
 
 interface OrchestratorProps {
   project: Project;
@@ -426,10 +428,18 @@ export function Orchestrator({
   const [resuming, setResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [startingNewSession, setStartingNewSession] = useState(false);
+  // The chat is "open" only after the user explicitly starts or resumes one.
+  // Resets on project switch / remount, so every boot lands on the launcher —
+  // nothing auto-spawns. A live PTY survives WS reconnects because this state
+  // persists across them (only a full remount clears it).
+  const [chatOpen, setChatOpen] = useState(false);
+  const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null);
 
   useEffect(() => {
     setStartingNewSession(false);
     setResumeError(null);
+    setChatOpen(false);
+    setResumingHistoryId(null);
   }, [project.id]);
 
   async function onResume() {
@@ -442,6 +452,7 @@ export function Orchestrator({
       setSession(transition.session);
       setPastEvents([]);
       setViewing(project.slug, null);
+      setChatOpen(true);
     } catch (err) {
       setResumeError((err as Error).message);
     } finally {
@@ -449,9 +460,12 @@ export function Orchestrator({
     }
   }
 
-  async function onNewSession() {
+  async function onNewSession(opts?: { skipConfirm?: boolean }) {
     if (startingNewSession) return;
-    if (!confirm('Start a new chat session? Current chat history will be cleared.')) return;
+    if (!opts?.skipConfirm &&
+        !confirm('Start a new chat session? Current chat history will be cleared.')) {
+      return;
+    }
     setStartingNewSession(true);
     try {
       const transition = await runtimeApi.startNewSession(project.id);
@@ -459,6 +473,7 @@ export function Orchestrator({
       setSession(transition.session);
       setPastEvents([]);
       setViewing(project.slug, null);
+      setChatOpen(true);
       try {
         setRuntimeSnapshot(await runtimeApi.getOrchestratorRuntime(project.id));
       } catch (err) {
@@ -469,6 +484,36 @@ export function Orchestrator({
     } finally {
       setStartingNewSession(false);
     }
+  }
+
+  /** Resume a specific past session from the launcher history cutout. */
+  async function onResumeFromHistory(sessionId: ULID) {
+    if (resumingHistoryId) return;
+    setResumingHistoryId(sessionId);
+    try {
+      const transition = await runtimeApi.resumeSession(project.id, sessionId);
+      applySessionTransition(transition);
+      setSession(transition.session);
+      setPastEvents([]);
+      setViewing(project.slug, null);
+      setChatOpen(true);
+    } catch (err) {
+      alert(`Couldn't resume: ${(err as Error).message}`);
+    } finally {
+      setResumingHistoryId(null);
+    }
+  }
+
+  /** Close the live chat back to the launcher: ends the session + kills the PTY
+   *  server-side, then drops this view to the Start-Chat screen. */
+  async function onCloseChat() {
+    try {
+      await runtimeApi.closeSession(project.id);
+    } catch (err) {
+      console.error('[pc] closeSession', err);
+    }
+    setSession(null);
+    setChatOpen(false);
   }
 
   const runtimeHealth =
@@ -566,13 +611,21 @@ export function Orchestrator({
             ← Return to live
           </ConversationHeaderButton>
         ) : (
-          <ConversationHeaderButton
-            onClick={onNewSession}
-            disabled={startingNewSession}
-            title="End the current chat session and start a fresh one"
-          >
-            {startingNewSession ? 'Starting...' : '+ New session'}
-          </ConversationHeaderButton>
+          <>
+            <ConversationHeaderButton
+              onClick={onCloseChat}
+              title="Close this chat and return to the launcher (ends the session; resumable from history)"
+            >
+              Close Chat
+            </ConversationHeaderButton>
+            <ConversationHeaderButton
+              onClick={() => onNewSession()}
+              disabled={startingNewSession}
+              title="End the current chat session and start a fresh one"
+            >
+              {startingNewSession ? 'Starting...' : '+ New session'}
+            </ConversationHeaderButton>
+          </>
         )
       }
     />
@@ -658,6 +711,27 @@ export function Orchestrator({
   ) : (
     'No chat events yet. Send a message below to wake the orchestrator.'
   );
+
+  // Launcher: no chat open in this view (boot/refresh or after Close Chat) and
+  // not viewing a past session read-only. Nothing has spawned; the user picks
+  // Start Chat (fresh) or resumes from history here.
+  if (!isViewingPast && !chatOpen) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="min-h-0 flex-1">
+          <OrchestratorLauncher
+            projectId={project.id}
+            projectName={project.name}
+            starting={startingNewSession}
+            resumingId={resumingHistoryId}
+            onStartChat={() => onNewSession({ skipConfirm: true })}
+            onResumeSession={onResumeFromHistory}
+          />
+        </div>
+        {footerSlot}
+      </div>
+    );
+  }
 
   return (
     <ChatSurface
