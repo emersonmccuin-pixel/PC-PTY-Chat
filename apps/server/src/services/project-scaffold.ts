@@ -2,8 +2,9 @@
 // with per-project tokens substituted. P8's create-project flow calls into
 // this after `git init` to produce the durable PC scaffold:
 //
-//   <folder>/.project-companion/workflows/*.yaml (plain copy)
-//   <folder>/README.md                          (rendered)
+//   <folder>/.project-companion/setup-wizard-prompt.md (rendered)
+//   <folder>/.project-companion/workflows/*.yaml       (plain copy)
+//   <folder>/README.md                                (rendered)
 //
 // The orchestrator's identity used to land here as
 // `.project-companion/orchestrator-prompt.md` (rendered + appended at spawn
@@ -19,7 +20,7 @@
 // pass through so a malformed template is visible on inspection rather than
 // silently emptied.
 
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 export interface ProjectScaffoldDeps {
@@ -51,13 +52,19 @@ export class ProjectScaffold {
 
   /** Full scaffold pass: workflow seeds + README. */
   writeAll(target: ProjectScaffoldTarget): void {
-    this.writeWorkflowSeeds(target);
+    this.writeProjectCompanionFiles(target);
     this.writeReadme(target);
   }
 
   /** Like writeAll but skips README.md — used by attach-to-git so the user's
    *  existing project README isn't clobbered. */
   writeWithoutReadme(target: ProjectScaffoldTarget): void {
+    this.writeProjectCompanionFiles(target);
+  }
+
+  /** Project-visible PC files that should be part of the scaffold commit. */
+  writeProjectCompanionFiles(target: ProjectScaffoldTarget): void {
+    this.writeSetupWizardPrompt(target);
     this.writeWorkflowSeeds(target);
   }
 
@@ -65,11 +72,23 @@ export class ProjectScaffold {
   writeWorkflowSeeds(target: ProjectScaffoldTarget): void {
     const srcDir = resolve(this.deps.templatesDir, '.project-companion', 'workflows');
     const destDir = resolve(target.folderPath, '.project-companion', 'workflows');
+    if (!existsSync(srcDir)) return;
     mkdirSync(destDir, { recursive: true });
     for (const f of readdirSync(srcDir)) {
       if (!f.endsWith('.yaml')) continue;
       copyFileSync(resolve(srcDir, f), resolve(destDir, f));
     }
+  }
+
+  /** Render the setup wizard identity into the project-visible scaffold. */
+  writeSetupWizardPrompt(target: ProjectScaffoldTarget): void {
+    const src = resolve(this.deps.templatesDir, '.project-companion', 'setup-wizard-prompt.md');
+    if (!existsSync(src)) return;
+    this.writeFromTemplate(
+      src,
+      resolve(target.folderPath, '.project-companion', 'setup-wizard-prompt.md'),
+      this.buildTokens(target),
+    );
   }
 
   /** Render `<folder>/README.md` from template. */

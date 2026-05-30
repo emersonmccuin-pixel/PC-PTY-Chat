@@ -100,7 +100,8 @@ export class ProjectCreate {
     }
 
     if (input.mode === 'attach-to-git') {
-      if (existsSync(resolve(folderPath, '.project-companion'))) {
+      const pcDir = resolve(folderPath, '.project-companion');
+      if (existsSync(pcDir) && directoryContainsFiles(pcDir)) {
         throw new Error(
           `${folderPath}/.project-companion already exists — remove it first to re-adopt this repo`,
         );
@@ -183,4 +184,12 @@ function slugify(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function directoryContainsFiles(dir: string): boolean {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isFile()) return true;
+    if (entry.isDirectory() && directoryContainsFiles(resolve(dir, entry.name))) return true;
+  }
+  return false;
 }
