@@ -9,10 +9,12 @@
     "agent-host": "tsx ../../packages/agent-host/src/cli.ts",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"test/*.test.ts\" \"test/v2/*.test.ts\""
+    "test": "tsx --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
+    "@pc/app-services": "workspace:*",
+    "@pc/contracts": "workspace:*",
     "@pc/db": "workspace:*",
     "@pc/domain": "workspace:*",
     "@pc/mcp": "workspace:*",

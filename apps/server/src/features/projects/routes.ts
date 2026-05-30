@@ -3,33 +3,34 @@ import { existsSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { Hono } from 'hono';
-import type { Project, ULID } from '@pc/domain';
-import {
-  getProjectById,
-  listProjects,
-  reorderProjects,
-  softDeleteProject,
-  updateProjectMeta,
-} from '@pc/db';
-
+import type { Project, ULID as DomainULID } from '@pc/domain';
+import { getProjectById, listProjects } from '@pc/db';
 import type {
-  CreateProjectFlowInput,
-  CreateProjectMode,
-} from '../../services/project-create.ts';
+  ProjectChangedRefetchEnvelope,
+  ProjectDto,
+} from '@pc/contracts';
+import {
+  parseCreateProjectRequest,
+  parseReorderProjectsRequest,
+  parseUpdateProjectRequest,
+} from '@pc/contracts';
+import { ProjectService } from '@pc/app-services';
+import type { CreateProjectFlowInput } from '../../services/project-create.ts';
 
 export interface ProjectRoutesRuntime {
-  project: { id: ULID };
+  project: { id: DomainULID };
 }
 
 export interface ProjectRoutesDeps {
   createProject(input: CreateProjectFlowInput): Promise<Project>;
-  refreshProject(project: Project): void;
-  removeProject(projectId: ULID): void;
+  refreshProject(project: ProjectDto): void;
+  removeProject(projectId: DomainULID): void;
   resolveProject(projectId: string): ProjectRoutesRuntime | null;
   revealProjectFolder?(folderPath: string): void;
+  publishProjectChanged?(event: ProjectChangedRefetchEnvelope): void;
 }
 
-function findProjectIncludingDeleted(projectId: ULID): Project | undefined {
+function findProjectIncludingDeleted(projectId: DomainULID): Project | undefined {
   return getProjectById(projectId) ?? listProjects({ includeDeleted: true }).find((p) => p.id === projectId);
 }
 
@@ -46,49 +47,38 @@ function defaultRevealProjectFolder(folderPath: string): void {
 }
 
 export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void {
+  const service = new ProjectService();
+
   app.get('/api/projects', (c) => {
     const includeDeleted = c.req.query('include_deleted') === '1';
-    return c.json({ projects: listProjects({ includeDeleted }) });
+    return c.json(service.listProjects({ includeDeleted }));
   });
 
   app.patch('/api/projects/reorder', async (c) => {
-    const body = await c.req.json<{ orderedIds?: unknown }>();
-    if (!Array.isArray(body.orderedIds) || !body.orderedIds.every((v) => typeof v === 'string')) {
-      return c.json({ ok: false, error: 'orderedIds must be an array of strings' }, 400);
+    const parsed = parseReorderProjectsRequest(await c.req.json<unknown>());
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400);
     }
     try {
-      reorderProjects(body.orderedIds as ULID[]);
-      return c.json({ ok: true, projects: listProjects() });
+      const result = service.reorderProjects(parsed.value);
+      if (!result.ok) return c.json({ ok: false, error: result.error }, 500);
+      deps.publishProjectChanged?.(result.event);
+      return c.json({ ok: true, projects: result.projects });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 500);
     }
   });
 
   app.post('/api/projects', async (c) => {
-    const body = await c.req.json<{
-      name?: string;
-      folder_path?: string;
-      mode?: CreateProjectMode;
-      git_remote?: string | null;
-    }>();
-    const name = typeof body.name === 'string' ? body.name.trim() : '';
-    const folderPath = typeof body.folder_path === 'string' ? body.folder_path.trim() : '';
-    const mode = body.mode;
-    if (
-      !name ||
-      !folderPath ||
-      (mode !== 'init-empty' && mode !== 'init-in-place' && mode !== 'attach-to-git')
-    ) {
-      return c.json({ ok: false, error: 'name, folder_path, and mode required' }, 400);
+    const parsed = parseCreateProjectRequest(await c.req.json<unknown>());
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400);
     }
     try {
-      const project = await deps.createProject({
-        name,
-        folderPath,
-        mode,
-        gitRemote: body.git_remote ?? null,
-      });
-      return c.json({ ok: true, project }, 201);
+      const result = await service.createProject(parsed.value, deps.createProject);
+      if (!result.ok) return c.json({ ok: false, error: result.error }, 500);
+      deps.publishProjectChanged?.(result.event);
+      return c.json({ ok: true, project: result.project }, 201);
     } catch (err) {
       const msg = (err as Error).message;
       const is400 =
@@ -98,37 +88,33 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
   });
 
   app.patch('/api/projects/:projectId', async (c) => {
-    const id = c.req.param('projectId') as ULID;
-    const body = await c.req.json<{ name?: string; git_remote?: string | null }>();
-    const patch: { name?: string; gitRemote?: string | null } = {};
-    if (typeof body.name === 'string') {
-      const name = body.name.trim();
-      if (!name) return c.json({ ok: false, error: 'name cannot be empty' }, 400);
-      patch.name = name;
-    }
-    if (body.git_remote !== undefined) {
-      patch.gitRemote = body.git_remote === null ? null : String(body.git_remote).trim() || null;
+    const id = c.req.param('projectId') as DomainULID;
+    const parsed = parseUpdateProjectRequest(await c.req.json<unknown>());
+    if (!parsed.ok) {
+      return c.json({ ok: false, error: parsed.error }, 400);
     }
     try {
-      const updated = updateProjectMeta(id, patch);
-      if (!updated) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-      deps.refreshProject(updated);
-      return c.json({ ok: true, project: updated });
+      const result = service.updateProjectMeta(id, parsed.value);
+      if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
+      deps.refreshProject(result.project);
+      deps.publishProjectChanged?.(result.event);
+      return c.json({ ok: true, project: result.project });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 500);
     }
   });
 
   app.delete('/api/projects/:projectId', (c) => {
-    const id = c.req.param('projectId') as ULID;
-    const deleted = softDeleteProject(id);
-    if (!deleted) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+    const id = c.req.param('projectId') as DomainULID;
+    const result = service.softDeleteProject(id);
+    if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
     deps.removeProject(id);
-    return c.json({ ok: true, project: deleted });
+    deps.publishProjectChanged?.(result.event);
+    return c.json({ ok: true, project: result.project });
   });
 
   app.delete('/api/projects/:projectId/files', (c) => {
-    const id = c.req.param('projectId') as ULID;
+    const id = c.req.param('projectId') as DomainULID;
     const project = findProjectIncludingDeleted(id);
     if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
 
@@ -160,7 +146,7 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
   });
 
   app.post('/api/projects/:projectId/reveal', (c) => {
-    const id = c.req.param('projectId') as ULID;
+    const id = c.req.param('projectId') as DomainULID;
     const project = findProjectIncludingDeleted(id);
     if (!project) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
     const folder = project.folderPath;
@@ -178,12 +164,14 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
 }
 
 export function registerProjectDetailRoute(app: Hono, deps: Pick<ProjectRoutesDeps, 'resolveProject'>): void {
+  const service = new ProjectService();
+
   app.get('/api/projects/:projectId', (c) => {
     const id = c.req.param('projectId');
     const runtime = deps.resolveProject(id);
     if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
-    const project = getProjectById(runtime.project.id);
-    if (!project) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
-    return c.json(project);
+    const result = service.getProject(runtime.project.id);
+    if (!result.ok) return c.json({ ok: false, error: `project disappeared: ${id}` }, 404);
+    return c.json(result.project);
   });
 }

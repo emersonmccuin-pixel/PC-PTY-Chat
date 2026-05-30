@@ -1,36 +1,48 @@
 import { getJson, postJson, postJsonMethod } from '@/api/http';
-import type { CreateProjectMode, Project, ULID } from './types';
+import {
+  projectRoutes,
+  type CreateProjectRequest,
+  type CreateProjectResponse,
+  type DeleteProjectResponse,
+  type ListProjectsResponse,
+  type ProjectDto,
+  type ReorderProjectsResponse,
+  type ULID,
+  type UpdateProjectRequest,
+  type UpdateProjectResponse,
+} from '@pc/contracts';
 
 export * from './types';
 
 export const projectsApi = {
   listProjects: () =>
-    getJson<{ projects: Project[] }>('/api/projects').then((r) => r.projects),
+    getJson<ListProjectsResponse>(projectRoutes.list).then((r) => r.projects),
 
-  createProject: (input: {
-    name: string;
-    folder_path: string;
-    mode: CreateProjectMode;
-    git_remote?: string | null;
-  }) =>
-    postJson<{ ok: true; project: Project }>('/api/projects', input).then(
-      (r) => r.project,
+  createProject: (input: CreateProjectRequest) =>
+    postJson<CreateProjectResponse>(projectRoutes.create, input).then(
+      (r) => {
+        if (!r.ok) throw new Error(r.error);
+        return r.project;
+      },
     ),
 
-  project: (projectId: ULID) => getJson<Project>(`/api/projects/${projectId}`),
+  project: (projectId: ULID) => getJson<ProjectDto>(projectRoutes.detail(projectId)),
 
-  updateProject: (projectId: ULID, patch: { name?: string; git_remote?: string | null }) =>
-    postJsonMethod<{ ok: true; project: Project }>(
-      `/api/projects/${projectId}`,
+  updateProject: (projectId: ULID, patch: UpdateProjectRequest) =>
+    postJsonMethod<UpdateProjectResponse>(
+      projectRoutes.detail(projectId),
       patch,
       'PATCH',
-    ).then((r) => r.project),
+    ).then((r) => {
+      if (!r.ok) throw new Error(r.error);
+      return r.project;
+    }),
 
   softDeleteProject: async (projectId: ULID): Promise<void> => {
-    const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
-    const data = (await res.json()) as { ok?: boolean; error?: string };
+    const res = await fetch(projectRoutes.detail(projectId), { method: 'DELETE' });
+    const data = (await res.json()) as DeleteProjectResponse;
     if (!res.ok || data.ok === false) {
-      throw new Error(data.error ?? `delete → ${res.status}`);
+      throw new Error(data.ok === false ? data.error : `delete → ${res.status}`);
     }
   },
 
@@ -52,9 +64,12 @@ export const projectsApi = {
   },
 
   reorderProjects: (orderedIds: ULID[]) =>
-    postJsonMethod<{ ok: true; projects: Project[] }>(
-      '/api/projects/reorder',
+    postJsonMethod<ReorderProjectsResponse>(
+      projectRoutes.reorder,
       { orderedIds },
       'PATCH',
-    ).then((r) => r.projects),
+    ).then((r) => {
+      if (!r.ok) throw new Error(r.error);
+      return r.projects;
+    }),
 };

@@ -7,6 +7,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type {
+  Project,
   ULID,
 } from '@pc/domain';
 import {
@@ -587,9 +588,10 @@ registerFileRoutes(app, {
 
 registerProjectRoutes(app, {
   createProject: (input) => projectCreate.create(input),
-  refreshProject: (project) => projectRegistry.refresh(project),
+  refreshProject: (project) => projectRegistry.refresh(project as unknown as Project),
   removeProject: (projectId) => projectRegistry.remove(projectId),
   resolveProject,
+  publishProjectChanged: (event) => broadcastAll(event),
 });
 
 // Section 17d.1 — Pod (DB-resident agent) routes. Pods are global-scope in

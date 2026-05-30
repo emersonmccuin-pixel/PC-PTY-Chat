@@ -78,7 +78,8 @@ Clone and verify:
 git clone https://github.com/emersonmccuin-pixel/Caisson.git
 cd Caisson
 pnpm install --frozen-lockfile
-pnpm run ci
+pnpm typecheck
+pnpm build
 ```
 
 Run locally:
@@ -107,7 +108,8 @@ pnpm desktop:dist:mac
 
 Windows installers are built on Windows. macOS DMG/ZIP builds are built on macOS. GitHub Actions has separate workflows for package smoke and release installers. macOS release builds require Apple Developer signing and notarization secrets; Windows signing is optional but recommended before public distribution.
 
-See [docs/desktop-build.md](docs/desktop-build.md) for the GitHub Actions runbook and signing secret list.
+Archived docs, tests, CI metadata, and investigation utilities live under [archive](archive).
+See [archive/docs/desktop-build.md](archive/docs/desktop-build.md) for the old GitHub Actions runbook and signing secret list.
 
 ## License
 

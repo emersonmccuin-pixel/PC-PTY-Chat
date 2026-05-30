@@ -8,6 +8,7 @@ import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
+import { containsProjectChangedRefetchEvent } from '@/features/projects/live-events';
 import { useAllProjectsWs } from '@/hooks/use-all-projects-ws';
 import { useProjectUnread } from '@/hooks/use-project-unread';
 import { useProjectWs } from '@/hooks/use-project-ws';
@@ -36,6 +37,7 @@ export default function App() {
   const [brandMenuOpen, setBrandMenuOpen] = useState(false);
   const brandMenuRef = useRef<HTMLDivElement | null>(null);
   const brandButtonRef = useRef<HTMLButtonElement | null>(null);
+  const projectChangedScanRef = useRef({ active: 0, background: 0 });
 
   // Section 10 Phase 2 — first-run onboarding gate. `?onboarding=force` opens
   // it with real preflight; `?onboarding=sim` opens it on a faked blank machine
@@ -119,6 +121,21 @@ export default function App() {
   });
   useRichLinkInvalidator(ws.events);
   useStatuslineSync(activeProject?.id ?? null, ws.events);
+
+  useEffect(() => {
+    const scan = projectChangedScanRef.current;
+    const activeStart = ws.events.length < scan.active ? 0 : scan.active;
+    const backgroundStart = backgroundWs.events.length < scan.background ? 0 : scan.background;
+    const shouldRefetch =
+      containsProjectChangedRefetchEvent(ws.events, activeStart) ||
+      containsProjectChangedRefetchEvent(backgroundWs.events, backgroundStart);
+    projectChangedScanRef.current = {
+      active: ws.events.length,
+      background: backgroundWs.events.length,
+    };
+    if (!shouldRefetch) return;
+    void projectsApi.listProjects().then(setProjects).catch(() => {});
+  }, [ws.events, backgroundWs.events]);
 
   const persistActivityPanelSetting = useCallback(
     (patch: { open?: boolean }) => {

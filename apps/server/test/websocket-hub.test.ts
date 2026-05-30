@@ -61,8 +61,6 @@ test('broadcast prunes closed sockets but still delivers to survivors', () => {
   assert.equal(sent, 1);
   assert.equal(a.sent.length, 0);
   assert.equal(b.sent.length, 1);
-  // The closed socket is pruned on broadcast so it can't keep absorbing the
-  // project's events; the live subscriber remains.
   assert.equal(hub.count('p1'), 1);
 });
 

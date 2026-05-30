@@ -59,22 +59,25 @@ The real implementation target is the current repo, not a blank rewrite in a new
 
 Every new planning, implementation-planning, or build-slice session should start here:
 
-1. Read `AGENTS.md`.
-2. Read `refactor plan/refactor-session-tracker.md` to identify the manual session row.
-3. Read `refactor plan/target-architecture.md`.
-4. Read `refactor plan/holistic-architecture-synthesis.md`.
-5. Read this tracker.
-6. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
-7. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
-8. Inspect current code only for the scope being planned or implemented.
-9. Update this tracker and `refactor plan/refactor-session-tracker.md` before ending the session.
+1. Run `git status --short`.
+2. If the worktree is dirty, stop and resolve the dirty state before starting new planning or implementation work unless the user explicitly asked to review, commit, stash, or clean it.
+3. Read `AGENTS.md`.
+4. Read `refactor plan/refactor-session-tracker.md` to identify the manual session row.
+5. Read `refactor plan/target-architecture.md`.
+6. Read `refactor plan/holistic-architecture-synthesis.md`.
+7. Read this tracker.
+8. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
+9. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
+10. Inspect current code only for the scope being planned or implemented.
+11. Update this tracker and `refactor plan/refactor-session-tracker.md` before ending the session.
+12. Commit completed work or explicitly stash deferred work, then confirm `git status --short` is clean.
 
 Current next action:
 
-- Manual Session 9 is ready when the user explicitly asks to build.
-- Session 9 must start by restoring the minimal test harness and P0 tests listed in `refactor plan/build-slices/001-foundation-vertical-slice.md`.
-- Session 9 must implement only slice 001: project list/project metadata contracts, route/service parity, non-durable `project.changed` refetch, web typing/refetch integration, and focused tests.
-- Do not treat manual Session 9 as roadmap Phase 9. Roadmap Phase 9 is the later Channel delivery cutover and is not the next build target.
+- Manual Session 9 is complete.
+- The next unchecked manual row is Session 10 in `refactor plan/refactor-session-tracker.md`.
+- Session 10 should review the Session 9 diff, test results, tracker updates, and open gaps before selecting or planning any next build slice.
+- Do not treat manual Session 10 as roadmap Phase 10. Roadmap phases remain separate from manual workflow session numbers.
 
 ### Process Flow
 
@@ -100,7 +103,7 @@ These specs should be concise and practical, not new long-form audits. Each shou
 | 5 | Runtime transcript and conversation store spec | planned | `refactor plan/foundation specs/runtime-transcript-and-conversation-store.md` | Shared contracts direction, chat handoff | Transcript repository strategy, file compatibility, SQLite mirror decision, replay cursor, send queue service boundary, and tests are defined. |
 | 6 | Work items/stages/fields/attachments handoff | planned | `refactor plan/refactor plan docs/work-items-stages-fields-attachments.md` | Existing subsystem docs | Work-item contracts and stage/field/attachment dependencies for agents/workflows/MCP/live events are documented. |
 | 7 | Phase 0 test characterization plan | planned | `refactor plan/phase-0-test-characterization-plan.md` | Foundation specs | Restore/recreate test inventory, current behavior characterization, known-bug tests, and CI/local commands are documented. |
-| 8 | First build-slice plan | planned | `refactor plan/build-slices/001-foundation-vertical-slice.md` | Roadmap and Phase 0 plan | Created; picks project list/project metadata as the smallest contract-first vertical slice, with shared contracts, a narrow project service seam, route parity, a non-durable `project.changed` refetch event, web refetch handling, rollback notes, and slice-specific tests. |
+| 8 | First build-slice plan | implemented | `refactor plan/build-slices/001-foundation-vertical-slice.md` | Roadmap and Phase 0 plan | Implemented in manual Session 9. Scope remained limited to project list/project metadata shared contracts, a narrow project service seam, route parity, non-durable `project.changed` refetch, web contract/refetch integration, and focused tests. |
 
 ### Build-Readiness Gates
 
@@ -182,7 +185,7 @@ Use this table for the post-synthesis planning workflow.
 | Runtime transcript and conversation store spec | planned | `refactor plan/foundation specs/runtime-transcript-and-conversation-store.md` | Chat/runtime/DB/web | Shared contracts direction, chat handoff | Created; chooses file-backed `TranscriptRepository` before storage migration, keeps `jsonl-events.jsonl` plus legacy `events.jsonl` compatibility, defines session-local transcript `seq` replay separately from live outbox cursor, keeps SQLite transcript storage mirror-only until parity tests pass, and defines `ConversationSendService`/`enqueueRuntimeTurn` as the mailbox-facing send boundary. |
 | Work items/stages/fields/attachments handoff | planned | `refactor plan/refactor plan docs/work-items-stages-fields-attachments.md` | Work items/server/web/db/domain/MCP | Workflows, agents, MCP, live events | Created; captures current write paths, contract drift, stage/field risks, attachment provenance/lifecycle gaps, MCP compatibility issues, and live-event dependencies. |
 | Phase 0 test characterization plan | planned | `refactor plan/phase-0-test-characterization-plan.md` | Test strategy/all priority subsystems | Foundation specs | Created; defines harness restoration, current coverage gap, P0/P1/P2 tests to restore or recreate, known-gap policy, local/CI commands, and slice-specific gates before behavior refactors. |
-| First foundation build-slice plan | planned | `refactor plan/build-slices/001-foundation-vertical-slice.md` | First implementation slice | Roadmap, Phase 0 plan | Created; implementation remains gated on explicit user confirmation. Slice scope is project list/project metadata contracts, route/service parity, compatibility `project.changed` refetch, web client/hook typing, and minimal restored tests. |
+| First foundation build-slice plan | implemented | `refactor plan/build-slices/001-foundation-vertical-slice.md` | First implementation slice | Roadmap, Phase 0 plan | Implemented in manual Session 9 after explicit user confirmation. Added `@pc/contracts`, `@pc/app-services`, route/service parity, compatibility `project.changed` refetch, web client/hook typing, and minimal restored tests. No `live_outbox`, DB migrations, runtime/agents/workflows/MCP/mailbox/transcript changes, or dev-server restarts. Verification passed: `pnpm --filter @pc/contracts test`, `pnpm --filter @pc/contracts typecheck`, `pnpm --filter @pc/app-services typecheck`, `pnpm --filter @pc/server test`, `pnpm --filter @pc/server typecheck`, `pnpm --filter @pc/web test`, `pnpm --filter @pc/web typecheck`, and `pnpm typecheck`. Manual two-client browser verification remains for Session 10 review. |
 
 ## Change Log
 
@@ -212,3 +215,5 @@ Use this table for the post-synthesis planning workflow.
 | 2026-05-30 | Created Phase 0 test characterization plan at `refactor plan/phase-0-test-characterization-plan.md`; marked the artifact `planned`; documented the missing active test harness, 155 deleted tracked tests as restore candidates, P0/P1/P2 characterization coverage by subsystem, known-gap policy, local/CI commands, and slice-specific test gates. |
 | 2026-05-30 | Created first foundation build-slice plan at `refactor plan/build-slices/001-foundation-vertical-slice.md`; marked the artifact `planned`; selected project list/project metadata as the smallest contract-first slice and limited implementation scope to shared contracts, a narrow project service seam, route parity, a non-durable `project.changed` refetch event, web contract/refetch integration, and focused tests. |
 | 2026-05-30 | Prepared manual Session 9 by syncing `refactor-session-tracker.md` through Session 8, clarifying that Session 9 is the first build slice rather than roadmap Phase 9, updating startup workflow when no planning artifact is in progress, and standardizing the first project live/refetch event name to `project.changed`. |
+| 2026-05-30 | Completed manual Session 9 / build slice 001. Restored minimal focused tests, added project shared contracts and app-service seam, adapted project routes to preserve wire compatibility and publish a non-durable `project.changed` refetch hint, updated the web project client/types and WS filtering/refetch handling, and verified with scoped tests/typechecks plus full `pnpm typecheck`. |
+| 2026-05-30 | Added clean-worktree requirement for future sessions: start by checking `git status --short`, resolve dirty state before new work, commit completed work or explicitly stash deferred work before handoff, and end with a clean status. |

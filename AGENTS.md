@@ -84,15 +84,24 @@ The implementation target is this current repo, not a blank rewrite in a new dir
 
 At the start of every new planning, implementation-planning, or build-slice session:
 
-1. Read this `AGENTS.md`.
-2. Read `refactor plan/refactor-session-tracker.md` and identify the next unchecked manual session row.
-3. Read `refactor plan/target-architecture.md`.
-4. Read `refactor plan/holistic-architecture-synthesis.md`.
-5. Read `refactor plan/refactor-tracker.md`.
-6. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
-7. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
-8. Read relevant subsystem docs as context.
-9. Inspect current code for the exact scope being planned or implemented.
+1. Run `git status --short`.
+2. If the worktree is dirty, stop and resolve the dirty state before starting new planning or implementation work. The only exception is when the user explicitly asks to review, commit, stash, or clean the dirty state.
+3. Read this `AGENTS.md`.
+4. Read `refactor plan/refactor-session-tracker.md` and identify the next unchecked manual session row.
+5. Read `refactor plan/target-architecture.md`.
+6. Read `refactor plan/holistic-architecture-synthesis.md`.
+7. Read `refactor plan/refactor-tracker.md`.
+8. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
+9. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
+10. Read relevant subsystem docs as context.
+11. Inspect current code for the exact scope being planned or implemented.
+
+At the end of every session:
+
+1. Update `refactor plan/refactor-tracker.md` and `refactor plan/refactor-session-tracker.md` as needed.
+2. Run the relevant verification commands for the touched scope or document why they were not run.
+3. Commit completed work before stopping, or stash explicitly deferred work with a clear stash message.
+4. Confirm `git status --short` is clean.
 
 Before writing a subsystem doc:
 
@@ -147,6 +156,8 @@ contract
 
 ## Hard Rules
 
+- Do not start new refactor planning or implementation from a dirty worktree.
+- Do not leave completed work uncommitted at handoff.
 - Do not restart servers or the app.
 - Do not kill Node, Vite, Electron, Caisson, or dev processes.
 - Do not call restart endpoints.

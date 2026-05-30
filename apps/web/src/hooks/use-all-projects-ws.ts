@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
+import { shouldAcceptProjectWsEnvelope } from '@/features/projects/live-events';
 import {
   createHeartbeatPing,
   heartbeatTimedOut,
@@ -189,7 +190,7 @@ function openWithBackoff(
       } catch {
         return;
       }
-      if (!env || env.projectId !== projectId) return;
+      if (!shouldAcceptProjectWsEnvelope(env, projectId)) return;
       if (env.type === 'server-pong') return;
       if (env.type === 'event') {
         const inner = (env.event as { ts?: unknown } | undefined) ?? {};

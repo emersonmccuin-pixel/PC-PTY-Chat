@@ -1,16 +1,12 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Hono } from 'hono';
 import type { Project, ULID } from '@pc/domain';
+import type { ProjectChangedRefetchEnvelope } from '@pc/contracts';
 import type { CreateProjectFlowInput } from '../src/services/project-create.ts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-project-routes-'));
@@ -56,6 +52,7 @@ function makeHarness() {
   const refreshed: Project[] = [];
   const removed: ULID[] = [];
   const revealed: string[] = [];
+  const published: ProjectChangedRefetchEnvelope[] = [];
   const app = new Hono();
 
   registerProjectRoutes(app, {
@@ -63,13 +60,14 @@ function makeHarness() {
       createdInputs.push(input);
       return makeProject(input.name);
     },
-    refreshProject: (project) => refreshed.push(project),
+    refreshProject: (project) => refreshed.push(project as Project),
     removeProject: (projectId) => removed.push(projectId),
     resolveProject: (projectId) => {
       const project = getProjectById(projectId as ULID);
       return project ? { project: { id: project.id } } : null;
     },
     revealProjectFolder: (folderPath) => revealed.push(folderPath),
+    publishProjectChanged: (event) => published.push(event),
   });
   registerProjectDetailRoute(app, {
     resolveProject: (projectId) => {
@@ -78,15 +76,15 @@ function makeHarness() {
     },
   });
 
-  return { app, createdInputs, refreshed, removed, revealed };
+  return { app, createdInputs, refreshed, removed, revealed, published };
 }
 
 async function json<T>(res: Response): Promise<T> {
   return await res.json() as T;
 }
 
-test('project create route validates input and delegates with the existing envelope', async () => {
-  const { app, createdInputs } = makeHarness();
+test('project create route validates input, delegates, and publishes project.changed', async () => {
+  const { app, createdInputs, published } = makeHarness();
 
   let res = await app.request('/api/projects', {
     method: 'POST',
@@ -98,6 +96,7 @@ test('project create route validates input and delegates with the existing envel
     ok: false,
     error: 'name, folder_path, and mode required',
   });
+  assert.equal(published.length, 0);
 
   res = await app.request('/api/projects', {
     method: 'POST',
@@ -122,16 +121,24 @@ test('project create route validates input and delegates with the existing envel
       gitRemote: 'https://example.invalid/repo.git',
     },
   ]);
+  assert.equal(published.length, 1);
+  assert.equal(published[0]!.type, 'project.changed');
+  assert.equal(published[0]!.scope, 'global');
+  assert.equal(published[0]!.projectId, null);
+  assert.equal(published[0]!.reason, 'created');
+  assert.equal(published[0]!.projectIdChanged, body.project.id);
 });
 
-test('project list, patch, detail, and soft-delete routes preserve registry side effects', async () => {
-  const { app, refreshed, removed } = makeHarness();
+test('project list, patch, detail, soft-delete, and reorder preserve route parity', async () => {
+  const { app, refreshed, removed, published } = makeHarness();
   const project = makeProject('crud');
+  const other = makeProject('other');
 
   let res = await app.request('/api/projects');
   let body = await json<{ projects: Project[] }>(res);
   assert.equal(res.status, 200);
   assert.equal(body.projects.some((p) => p.id === project.id), true);
+  assert.equal(published.length, 0);
 
   res = await app.request(`/api/projects/${project.id}`, {
     method: 'PATCH',
@@ -149,6 +156,19 @@ test('project list, patch, detail, and soft-delete routes preserve registry side
   assert.equal(res.status, 200);
   assert.equal((await json<Project>(res)).name, 'Renamed');
 
+  const remainingIds = body.projects
+    .map((p) => p.id)
+    .filter((id) => id !== project.id && id !== other.id);
+  res = await app.request('/api/projects/reorder', {
+    method: 'PATCH',
+    body: JSON.stringify({ orderedIds: [other.id, project.id, ...remainingIds] }),
+    headers: { 'content-type': 'application/json' },
+  });
+  const reorderBody = await json<{ ok: boolean; projects: Project[] }>(res);
+  assert.equal(res.status, 200);
+  assert.equal(reorderBody.ok, true);
+  assert.deepEqual(reorderBody.projects.slice(0, 2).map((p) => p.id), [other.id, project.id]);
+
   res = await app.request(`/api/projects/${project.id}`, { method: 'DELETE' });
   const deleteBody = await json<{ ok: boolean; project: Project }>(res);
   assert.equal(res.status, 200);
@@ -162,15 +182,50 @@ test('project list, patch, detail, and soft-delete routes preserve registry side
   res = await app.request('/api/projects?include_deleted=1');
   body = await json(res);
   assert.equal(body.projects.some((p) => p.id === project.id), true);
+
+  assert.deepEqual(published.map((event) => event.reason), [
+    'metadata-updated',
+    'reordered',
+    'soft-deleted',
+  ]);
 });
 
-test('project filesystem cleanup resolves soft-deleted rows and preserves unmarked claude dirs', async () => {
-  const { app, removed } = makeHarness();
+test('project routes preserve validation and unknown-project failure shapes', async () => {
+  const { app, published } = makeHarness();
+
+  let res = await app.request('/api/projects/reorder', {
+    method: 'PATCH',
+    body: JSON.stringify({ orderedIds: ['ok', 123] }),
+    headers: { 'content-type': 'application/json' },
+  });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await json(res), {
+    ok: false,
+    error: 'orderedIds must be an array of strings',
+  });
+
+  res = await app.request('/api/projects/missing', {
+    method: 'PATCH',
+    body: JSON.stringify({ name: 'Missing' }),
+    headers: { 'content-type': 'application/json' },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await json(res), { ok: false, error: 'unknown project: missing' });
+
+  res = await app.request('/api/projects/missing');
+  assert.equal(res.status, 404);
+  assert.deepEqual(await json(res), { ok: false, error: 'unknown project: missing' });
+  assert.equal(published.length, 0);
+});
+
+test('project filesystem cleanup and reveal do not publish project.changed', async () => {
+  const { app, removed, revealed, published } = makeHarness();
   const project = makeProject('files');
   mkdirSync(join(project.folderPath, '.project-companion'), { recursive: true });
   mkdirSync(join(project.folderPath, '.claude'), { recursive: true });
 
   await app.request(`/api/projects/${project.id}`, { method: 'DELETE' });
+  assert.equal(published.length, 1);
   const res = await app.request(`/api/projects/${project.id}/files`, { method: 'DELETE' });
   const body = await json<{
     ok: boolean;
@@ -192,21 +247,18 @@ test('project filesystem cleanup resolves soft-deleted rows and preserves unmark
   assert.equal(existsSync(join(project.folderPath, '.project-companion')), false);
   assert.equal(existsSync(join(project.folderPath, '.claude')), true);
   assert.equal(removed.filter((id) => id === project.id).length, 2);
-});
 
-test('project reveal route validates the folder and delegates opener behavior', async () => {
-  const { app, revealed } = makeHarness();
-  const project = makeProject('reveal');
+  const revealProject = makeProject('reveal');
+  let revealRes = await app.request(`/api/projects/${revealProject.id}/reveal`, { method: 'POST' });
+  assert.equal(revealRes.status, 200);
+  assert.deepEqual(await json(revealRes), { ok: true });
+  assert.deepEqual(revealed, [revealProject.folderPath]);
 
-  let res = await app.request(`/api/projects/${project.id}/reveal`, { method: 'POST' });
-  assert.equal(res.status, 200);
-  assert.deepEqual(await json(res), { ok: true });
-  assert.deepEqual(revealed, [project.folderPath]);
-
-  rmSync(project.folderPath, { recursive: true, force: true });
-  res = await app.request(`/api/projects/${project.id}/reveal`, { method: 'POST' });
-  const body = await json<{ ok: boolean; error: string }>(res);
-  assert.equal(res.status, 404);
-  assert.equal(body.ok, false);
-  assert.equal(body.error, `folder does not exist on disk: ${project.folderPath}`);
+  rmSync(revealProject.folderPath, { recursive: true, force: true });
+  revealRes = await app.request(`/api/projects/${revealProject.id}/reveal`, { method: 'POST' });
+  const revealBody = await json<{ ok: boolean; error: string }>(revealRes);
+  assert.equal(revealRes.status, 404);
+  assert.equal(revealBody.ok, false);
+  assert.equal(revealBody.error, `folder does not exist on disk: ${revealProject.folderPath}`);
+  assert.equal(published.length, 1);
 });

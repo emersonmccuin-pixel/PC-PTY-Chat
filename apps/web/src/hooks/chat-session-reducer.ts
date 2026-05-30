@@ -1,4 +1,5 @@
 import type { SessionReplayItem, SessionTransitionResponse } from '@/features/runtime/client';
+import { isProjectChangedRefetchEnvelope } from '@/features/projects/live-events';
 import type {
   RuntimeStateEnvelope,
   SendAckEnvelope,
@@ -124,7 +125,13 @@ function applyEnvelope(
   state: ChatSessionReducerState,
   env: WsEnvelope,
 ): ChatSessionReducerState {
-  if (state.projectId && env.projectId !== state.projectId) return state;
+  if (
+    state.projectId &&
+    env.projectId !== state.projectId &&
+    !isProjectChangedRefetchEnvelope(env)
+  ) {
+    return state;
+  }
 
   switch (env.type) {
     case 'session-changed':

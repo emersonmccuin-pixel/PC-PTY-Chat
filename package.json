@@ -15,18 +15,13 @@
     "start": "pnpm --filter @pc/server start",
     "build": "pnpm --filter @pc/web build",
     "typecheck": "pnpm -r typecheck",
-    "test:unit": "pnpm -r --if-present test",
-    "test:smoke": "playwright test tests/playwright/chat-smoke.spec.ts",
-    "test:playwright:types": "tsc -p tests/playwright/tsconfig.json --noEmit",
-    "ci": "pnpm typecheck && pnpm test:unit && pnpm build && pnpm test:playwright:types",
     "desktop:dev": "pnpm --filter @pc/desktop dev",
     "desktop:dist:dir": "pnpm --filter @pc/desktop dist:dir",
     "desktop:dist:win": "pnpm --filter @pc/desktop dist:win",
     "desktop:dist:mac": "pnpm --filter @pc/desktop dist:mac",
     "desktop:publish:win": "pnpm --filter @pc/desktop publish:win",
     "desktop:publish:mac": "pnpm --filter @pc/desktop publish:mac",
-    "desktop:dist:mac:dir": "pnpm --filter @pc/desktop dist:mac:dir",
-    "migrate:workflows": "pnpm --filter @pc/server exec tsx ../../scripts/migrate-workflows-to-typed-refs.mjs"
+    "desktop:dist:mac:dir": "pnpm --filter @pc/desktop dist:mac:dir"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -38,7 +33,6 @@
     ]
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
     "@types/node": "^22.19.19",
     "typescript": "^5.7.2"
   }

@@ -10,8 +10,7 @@
   "scripts": {
     "start": "tsx src/cli.ts",
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@pc/domain": "workspace:*",

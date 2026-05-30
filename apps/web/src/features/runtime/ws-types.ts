@@ -1,7 +1,7 @@
 import type { OrchestratorRuntimeSnapshot, SessionReplayItem, SessionTransitionKind } from './types';
 
 export interface WsEnvelope {
-  projectId: string;
+  projectId: string | null;
   type: string;
   [k: string]: unknown;
 }
@@ -46,6 +46,7 @@ export interface RuntimeStateEnvelope extends WsEnvelope, OrchestratorRuntimeSna
 
 export interface SessionReplayEnvelope extends WsEnvelope {
   type: 'session-replay';
+  projectId: string;
   sessionId: string;
   highWaterSeq?: number;
   events: SessionReplayItem[];

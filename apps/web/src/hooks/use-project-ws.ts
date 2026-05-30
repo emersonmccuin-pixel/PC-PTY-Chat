@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
+import { shouldAcceptProjectWsEnvelope } from '@/features/projects/live-events';
 import type { SessionTransitionKind, SessionTransitionResponse } from '@/features/runtime/client';
 import type {
   SessionChangedEnvelope,
@@ -219,7 +220,7 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
         } catch {
           return;
         }
-        if (!env || env.projectId !== project!.id) return;
+        if (!shouldAcceptProjectWsEnvelope(env, project!.id)) return;
         setDiagnostics((prev) => ({
           ...prev,
           lastInboundAt,
