@@ -77,6 +77,24 @@ export interface AgentRunRecord {
   rev?: number;
 }
 
+/** Liveness snapshot returned by the inspect route. Mirrors the server's
+ *  AgentRunInspection. */
+export interface AgentRunInspection {
+  runId: string;
+  status: string;
+  pid: number | null;
+  processAlive: boolean | null;
+  lastActivityAt: number | null;
+  idleMs: number | null;
+  queuedAt: number;
+  spawnedAt: number | null;
+  readyAt: number | null;
+  failureCause: string | null;
+  failureReason: string | null;
+  lastAction: { kind: string; at: number | null; text: string | null } | null;
+  jsonlPath: string | null;
+}
+
 export type AgentRunTranscriptStatus = 'ready' | 'empty' | 'missing';
 
 export interface AgentRunEventsResponse {

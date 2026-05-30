@@ -2,29 +2,12 @@ import { getJson, postJson } from '@/api/http';
 import type { ULID } from '@/features/projects/types';
 import type {
   AgentRunEventsResponse,
+  AgentRunInspection,
   AgentRunRecord,
   PendingAsk,
 } from './types';
 
 export * from './types';
-
-/** Liveness snapshot returned by the inspect route. Mirrors the server's
- *  AgentRunInspection. */
-export interface AgentRunInspection {
-  runId: string;
-  status: string;
-  pid: number | null;
-  processAlive: boolean | null;
-  lastActivityAt: number | null;
-  idleMs: number | null;
-  queuedAt: number;
-  spawnedAt: number | null;
-  readyAt: number | null;
-  failureCause: string | null;
-  failureReason: string | null;
-  lastAction: { kind: string; at: number | null; text: string | null } | null;
-  jsonlPath: string | null;
-}
 
 export const agentRunsApi = {
   listAgentRuns: (projectId: ULID) =>
