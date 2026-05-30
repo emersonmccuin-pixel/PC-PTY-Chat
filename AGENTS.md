@@ -12,6 +12,7 @@ Do not implement refactors unless the user explicitly asks.
 - Reusable prompt: `refactor plan/subsystem-architecture-handoff-prompt.md`
 - Tracker: `refactor plan/refactor-tracker.md`
 - Manual session tracker: `refactor plan/refactor-session-tracker.md`
+- Definitive session pathway: `refactor plan/definitive-session-pathway.md`
 - Subsystem docs folder: `refactor plan/refactor plan docs/`
 - Holistic synthesis output: `refactor plan/holistic-architecture-synthesis.md`
 - Implementation roadmap output: `refactor plan/implementation-roadmap.md`
@@ -67,9 +68,11 @@ The tracker is the control plane for this workflow. Update `refactor plan/refact
 Current status:
 
 - Steps 1-5 above are complete and marked `planned`.
-- The next unchecked manual row is Session 9 in `refactor plan/refactor-session-tracker.md`.
-- Session 9 is the first build-slice implementation for `refactor plan/build-slices/001-foundation-vertical-slice.md`, not roadmap Phase 9.
-- Session 9 must start test-first: restore the minimal test harness and P0 tests required by the slice before changing behavior.
+- Manual Session 9 and slice 001 implementation are complete.
+- The next unchecked manual row is Session 10 in `refactor plan/refactor-session-tracker.md`.
+- The required long-term order is controlled by `refactor plan/definitive-session-pathway.md`.
+- Session 10 must close slice 001 verification before any slice 002 planning starts.
+- Slice 002 is fixed as `refactor plan/build-slices/002-project-live-outbox.md`; do not swap it for agents, workflows, mailbox, chat, or runtime work.
 
 ## Refactor Target Decision
 
@@ -88,13 +91,14 @@ At the start of every new planning, implementation-planning, or build-slice sess
 2. If the worktree is dirty, stop and resolve the dirty state before starting new planning or implementation work. The only exception is when the user explicitly asks to review, commit, stash, or clean the dirty state.
 3. Read this `AGENTS.md`.
 4. Read `refactor plan/refactor-session-tracker.md` and identify the next unchecked manual session row.
-5. Read `refactor plan/target-architecture.md`.
-6. Read `refactor plan/holistic-architecture-synthesis.md`.
-7. Read `refactor plan/refactor-tracker.md`.
-8. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
-9. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
-10. Read relevant subsystem docs as context.
-11. Inspect current code for the exact scope being planned or implemented.
+5. Read `refactor plan/definitive-session-pathway.md`.
+6. Read `refactor plan/target-architecture.md`.
+7. Read `refactor plan/holistic-architecture-synthesis.md`.
+8. Read `refactor plan/refactor-tracker.md`.
+9. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
+10. Read the build-slice plan named by the active session when one exists.
+11. Read relevant subsystem docs as context.
+12. Inspect current code for the exact scope being planned or implemented.
 
 At the end of every session:
 
@@ -141,6 +145,8 @@ Do not start implementation refactors until the relevant slice has:
 - test plan, including characterization tests where behavior is risky;
 - a tracker update marking the artifact or subsystem `planned`;
 - user confirmation that implementation should begin.
+
+The slice order is not discretionary. Follow `refactor plan/definitive-session-pathway.md`. If a verification gate fails, fix and reverify the same slice before advancing.
 
 Every planned build slice should follow this cartridge shape:
 

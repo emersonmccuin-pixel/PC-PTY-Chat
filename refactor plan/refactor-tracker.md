@@ -63,23 +63,27 @@ Every new planning, implementation-planning, or build-slice session should start
 2. If the worktree is dirty, stop and resolve the dirty state before starting new planning or implementation work unless the user explicitly asked to review, commit, stash, or clean it.
 3. Read `AGENTS.md`.
 4. Read `refactor plan/refactor-session-tracker.md` to identify the manual session row.
-5. Read `refactor plan/target-architecture.md`.
-6. Read `refactor plan/holistic-architecture-synthesis.md`.
-7. Read this tracker.
-8. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
-9. For manual Session 9, read `refactor plan/build-slices/001-foundation-vertical-slice.md` and treat it as the first build-slice implementation, not roadmap Phase 9.
-10. Inspect current code only for the scope being planned or implemented.
-11. Update this tracker and `refactor plan/refactor-session-tracker.md` before ending the session.
-12. Commit completed work or explicitly stash deferred work, then confirm `git status --short` is clean.
+5. Read `refactor plan/definitive-session-pathway.md`.
+6. Read `refactor plan/target-architecture.md`.
+7. Read `refactor plan/holistic-architecture-synthesis.md`.
+8. Read this tracker.
+9. If a planning artifact is marked `in progress` or `not started`, read that artifact; otherwise read the artifact named by the next unchecked session row.
+10. Read the build-slice plan named by the active session when one exists.
+11. Inspect current code only for the scope being planned or implemented.
+12. Update this tracker and `refactor plan/refactor-session-tracker.md` before ending the session.
+13. Commit completed work or explicitly stash deferred work, then confirm `git status --short` is clean.
 
 Current next action:
 
 - Manual Session 9 is complete.
 - The next unchecked manual row is Session 10 in `refactor plan/refactor-session-tracker.md`.
-- Session 10 should review the Session 9 diff, test results, tracker updates, and remaining manual verification before selecting or planning any next build slice.
+- The required session order is defined in `refactor plan/definitive-session-pathway.md`.
+- Session 10 must close slice 001 verification before any slice 002 planning starts.
+- If Session 10 verification fails, the next session remains a slice-001 fix-and-reverify session. Do not advance.
+- After Session 10 passes, Session 11 must plan `refactor plan/build-slices/002-project-live-outbox.md`.
+- Slice 002 is fixed as durable `live_outbox` for `project.changed` only. Do not swap it for agents, workflows, mailbox, chat, or runtime work.
 - Session 9 follow-up two-client verification found and fixed one slice bug: background project websocket sockets were being torn down on metadata-only project refetches, creating a short blind spot for back-to-back `project.changed` events. Reversible project rename/restore now propagates between two browser clients without refresh.
 - Session 9 follow-up create verification found and fixed the attach-to-git scaffold bug: with no seed workflow YAMLs, create wrote only an empty `.project-companion/workflows/` directory, so `git commit -m Add Caisson scaffold` had nothing to commit. Scaffold creation now renders `setup-wizard-prompt.md` into `.project-companion/` and tolerates empty partial `.project-companion/` directories left by the failed attempt.
-- Remaining manual check: retry create/delete browser verification on the running dev stack after it picks up the server code change; no dev-server restart was performed.
 - Do not treat manual Session 10 as roadmap Phase 10. Roadmap phases remain separate from manual workflow session numbers.
 
 ### Process Flow
@@ -174,6 +178,7 @@ contract
 |---|---|---|---|---|
 | `refactor plan/holistic-architecture-synthesis.md` | synthesized | `refactor plan/target-architecture.md`, the six priority subsystem plans, `refactor plan/refactor-tracker.md`, targeted current-code checks | `refactor plan/holistic-architecture-synthesis.md` | Reconciles subsystem flow, conflicts, migration sequencing, and newly exposed supporting subsystems. |
 | `refactor plan/refactor-session-tracker.md` | active | Manual prompt sequence and completion notes | `refactor plan/refactor-session-tracker.md` | Use this to track session-by-session progress through the planning-to-build workflow. |
+| `refactor plan/definitive-session-pathway.md` | active | Roadmap phases, foundation specs, completed slice 001 evidence, required no-guessing session order | `refactor plan/definitive-session-pathway.md` | Controls required slice order and plan/build/verify session sequence from Session 10 through compatibility cleanup. |
 
 ## Planning Artifact Tracker
 
@@ -188,7 +193,8 @@ Use this table for the post-synthesis planning workflow.
 | Runtime transcript and conversation store spec | planned | `refactor plan/foundation specs/runtime-transcript-and-conversation-store.md` | Chat/runtime/DB/web | Shared contracts direction, chat handoff | Created; chooses file-backed `TranscriptRepository` before storage migration, keeps `jsonl-events.jsonl` plus legacy `events.jsonl` compatibility, defines session-local transcript `seq` replay separately from live outbox cursor, keeps SQLite transcript storage mirror-only until parity tests pass, and defines `ConversationSendService`/`enqueueRuntimeTurn` as the mailbox-facing send boundary. |
 | Work items/stages/fields/attachments handoff | planned | `refactor plan/refactor plan docs/work-items-stages-fields-attachments.md` | Work items/server/web/db/domain/MCP | Workflows, agents, MCP, live events | Created; captures current write paths, contract drift, stage/field risks, attachment provenance/lifecycle gaps, MCP compatibility issues, and live-event dependencies. |
 | Phase 0 test characterization plan | planned | `refactor plan/phase-0-test-characterization-plan.md` | Test strategy/all priority subsystems | Foundation specs | Created; defines harness restoration, current coverage gap, P0/P1/P2 tests to restore or recreate, known-gap policy, local/CI commands, and slice-specific gates before behavior refactors. |
-| First foundation build-slice plan | implemented | `refactor plan/build-slices/001-foundation-vertical-slice.md` | First implementation slice | Roadmap, Phase 0 plan | Implemented in manual Session 9 after explicit user confirmation. Added `@pc/contracts`, `@pc/app-services`, route/service parity, compatibility `project.changed` refetch, web client/hook typing, and minimal restored tests. No `live_outbox`, DB migrations, runtime/agents/workflows/MCP/mailbox/transcript changes, or dev-server restarts. Verification passed: `pnpm --filter @pc/contracts test`, `pnpm --filter @pc/contracts typecheck`, `pnpm --filter @pc/app-services typecheck`, `pnpm --filter @pc/server test`, `pnpm --filter @pc/server typecheck`, `pnpm --filter @pc/web test`, `pnpm --filter @pc/web typecheck`, and `pnpm typecheck`. Follow-up two-client browser verification found and fixed a background websocket reconnect blind spot; reversible project rename/restore now passes without refresh. Create/delete verification remains blocked by a current create-route `git init -b main` failure in the running dev environment. |
+| First foundation build-slice plan | implemented | `refactor plan/build-slices/001-foundation-vertical-slice.md` | First implementation slice | Roadmap, Phase 0 plan | Implemented in manual Session 9 after explicit user confirmation. Added `@pc/contracts`, `@pc/app-services`, route/service parity, compatibility `project.changed` refetch, web client/hook typing, and minimal restored tests. No `live_outbox`, DB migrations, runtime/agents/workflows/MCP/mailbox/transcript changes, or dev-server restarts. Verification passed: `pnpm --filter @pc/contracts test`, `pnpm --filter @pc/contracts typecheck`, `pnpm --filter @pc/app-services typecheck`, `pnpm --filter @pc/server test`, `pnpm --filter @pc/server typecheck`, `pnpm --filter @pc/web test`, `pnpm --filter @pc/web typecheck`, and `pnpm typecheck`. Follow-up two-client browser verification found and fixed a background websocket reconnect blind spot; reversible project rename/restore now passes without refresh. Final create/archive two-client verification is the Session 10 closeout gate. |
+| Definitive session pathway | active | `refactor plan/definitive-session-pathway.md` | Refactor execution control | Roadmap, foundation specs, slice 001 implementation | Created to remove discretionary next-step choices. It fixes the required order as: close slice 001, plan/build/verify slice 002 project live outbox, then work items, workflows, agents, conversation send/replay, mailbox, Channel cutover, runtime split, MCP typed client, and compatibility cleanup. |
 
 ## Change Log
 
@@ -221,4 +227,5 @@ Use this table for the post-synthesis planning workflow.
 | 2026-05-30 | Completed manual Session 9 / build slice 001. Restored minimal focused tests, added project shared contracts and app-service seam, adapted project routes to preserve wire compatibility and publish a non-durable `project.changed` refetch hint, updated the web project client/types and WS filtering/refetch handling, and verified with scoped tests/typechecks plus full `pnpm typecheck`. |
 | 2026-05-30 | Fixed follow-up project create blocker from Session 9 verification: attach-to-git scaffold now writes a tracked `.project-companion/setup-wizard-prompt.md` file before the scaffold commit and accepts empty partial `.project-companion/` directories from the previous failed attempt. Added `apps/server/test/project-create.test.ts`; verified with targeted project-create test, `@pc/server` test, and `@pc/server` typecheck. |
 | 2026-05-30 | Added clean-worktree requirement for future sessions: start by checking `git status --short`, resolve dirty state before new work, commit completed work or explicitly stash deferred work before handoff, and end with a clean status. |
-| 2026-05-30 | Ran follow-up two-client live-event verification. Fixed background project websocket target stability so metadata-only refetches no longer reconnect sockets and miss back-to-back `project.changed` events. Reversible project rename/restore now propagates across two clients without refresh; create/delete verification is still blocked by a create-route `git init -b main` failure before event emission. |
+| 2026-05-30 | Ran follow-up two-client live-event verification. Fixed background project websocket target stability so metadata-only refetches no longer reconnect sockets and miss back-to-back `project.changed` events. Reversible project rename/restore now propagates across two clients without refresh; final create/archive two-client verification is the Session 10 closeout gate. |
+| 2026-05-30 | Added `refactor plan/definitive-session-pathway.md` and expanded the session tracker through slice 011 so future sessions follow a fixed plan/build/verify pathway instead of choosing ad hoc next steps. |
