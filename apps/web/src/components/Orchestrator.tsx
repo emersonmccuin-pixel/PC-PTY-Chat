@@ -23,6 +23,7 @@ import type {
 } from '@/features/runtime/ws-types';
 import { useOrchestratorTelemetry, type UsageTotals } from '@/store/orchestrator-telemetry';
 import { useViewingSession } from '@/store/viewing-session';
+import { useChatOpen } from '@/store/chat-open';
 import { ChatSurface } from '@/features/chat/ChatSurface';
 import {
   ConversationHeader,
@@ -429,16 +430,18 @@ export function Orchestrator({
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [startingNewSession, setStartingNewSession] = useState(false);
   // The chat is "open" only after the user explicitly starts or resumes one.
-  // Resets on project switch / remount, so every boot lands on the launcher —
-  // nothing auto-spawns. A live PTY survives WS reconnects because this state
-  // persists across them (only a full remount clears it).
-  const [chatOpen, setChatOpen] = useState(false);
+  // Lives in a per-project store (sessionStorage) so it survives tab navigation
+  // and renderer reloads within the app session — switching to work-items/etc.
+  // unmounts this component, and local state would snap back to the launcher.
+  // Clears on app (window) close → fresh launch lands on the launcher.
+  const chatOpen = useChatOpen((s) => s.bySlug[project.slug] ?? false);
+  const setChatOpenForSlug = useChatOpen((s) => s.setOpen);
+  const setChatOpen = (open: boolean) => setChatOpenForSlug(project.slug, open);
   const [resumingHistoryId, setResumingHistoryId] = useState<string | null>(null);
 
   useEffect(() => {
     setStartingNewSession(false);
     setResumeError(null);
-    setChatOpen(false);
     setResumingHistoryId(null);
   }, [project.id]);
 

@@ -59,9 +59,9 @@ export function OrchestratorLauncher({
   const busy = starting || resumingId !== null;
 
   return (
-    <div className="flex h-full min-h-0 items-stretch justify-center gap-6 overflow-hidden p-6">
-      {/* Start panel */}
-      <div className="flex max-w-sm flex-1 flex-col items-center justify-center gap-4 text-center">
+    <div className="flex h-full min-h-0 items-stretch gap-6 overflow-hidden p-6">
+      {/* Start panel — fills the left, CTA centered */}
+      <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
         <div>
           <h2 className="text-lg font-semibold text-foreground">{projectName}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -77,8 +77,8 @@ export function OrchestratorLauncher({
         </button>
       </div>
 
-      {/* History cutout */}
-      <div className="flex w-80 flex-col rounded-lg border border-border bg-card/40">
+      {/* History cutout — wide, hugging the right edge */}
+      <div className="flex w-[34rem] max-w-[60%] flex-col rounded-lg border border-border bg-card/40">
         <div className="border-b border-border px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Previous sessions
         </div>
