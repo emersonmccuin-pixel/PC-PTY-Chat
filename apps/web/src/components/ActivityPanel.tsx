@@ -12,7 +12,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import { agentRunsApi, type AgentRunRecord } from '@/features/agent-runs/client';
+import {
+  agentRunsApi,
+  type AgentRunRecord,
+  type AgentRunInspection,
+} from '@/features/agent-runs/client';
 import type { V2RunStatus, V2RunSummary } from '@/features/workflows/client';
 import type { WsEnvelope } from '@/features/runtime/ws-types';
 import { useProjectAgentRuns } from '@/hooks/use-project-agent-runs';
@@ -373,6 +377,12 @@ function RunningAgentCard({
 }) {
   const [cancelling, setCancelling] = useState(false);
   const [cancelErr, setCancelErr] = useState<string | null>(null);
+  const [killing, setKilling] = useState(false);
+  const [killErr, setKillErr] = useState<string | null>(null);
+  const [showInspect, setShowInspect] = useState(false);
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectErr, setInspectErr] = useState<string | null>(null);
+  const [inspection, setInspection] = useState<AgentRunInspection | null>(null);
 
   const elapsed = formatElapsed(nowMs - run.startedAt);
   const statusLabel =
@@ -397,10 +407,47 @@ function RunningAgentCard({
     // envelope drops the row from the map, unmounting this card.
   }
 
+  async function loadInspection() {
+    setInspecting(true);
+    setInspectErr(null);
+    try {
+      setInspection(await agentRunsApi.inspectAgentRun(projectId, run.runId));
+    } catch (err) {
+      setInspectErr((err as Error).message);
+    } finally {
+      setInspecting(false);
+    }
+  }
+
+  function handleToggleInspect(e: React.MouseEvent) {
+    e.stopPropagation();
+    const next = !showInspect;
+    setShowInspect(next);
+    if (next) void loadInspection();
+  }
+
+  async function handleKill(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (killing) return;
+    setKilling(true);
+    setKillErr(null);
+    try {
+      const res = await agentRunsApi.killAgentRun(projectId, run.runId);
+      if (!res.ok) {
+        setKillErr(res.error ?? 'kill failed');
+        setKilling(false);
+      }
+    } catch (err) {
+      setKillErr((err as Error).message);
+      setKilling(false);
+    }
+    // On success the terminal `agent-run-changed` envelope unmounts this card.
+  }
+
   return (
     <li>
-      {/* role=button (not <button>) so the inner Cancel <button> isn't an
-          invalid nested-interactive descendant. */}
+      {/* role=button (not <button>) so the inner action <button>s aren't
+          invalid nested-interactive descendants. */}
       <div
         role="button"
         tabIndex={0}
@@ -427,17 +474,81 @@ function RunningAgentCard({
           <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
             {statusLabel}
           </div>
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={cancelling}
-            className="shrink-0 border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
-          >
-            {cancelling ? '…' : 'Cancel'}
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={handleToggleInspect}
+              aria-expanded={showInspect}
+              className="border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-muted"
+            >
+              {showInspect ? 'Hide' : 'Inspect'}
+            </button>
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="border border-border bg-card px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:bg-destructive/20 hover:text-destructive disabled:opacity-50"
+            >
+              {cancelling ? '…' : 'Cancel'}
+            </button>
+          </div>
         </div>
         {cancelErr && (
           <div className="mt-1 text-[10px] text-destructive">cancel failed: {cancelErr}</div>
+        )}
+
+        {showInspect && (
+          <div
+            className="mt-1.5 border-t border-border pt-1.5 text-[10px] text-muted-foreground"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {inspecting && <div>inspecting…</div>}
+            {inspectErr && <div className="text-destructive">inspect failed: {inspectErr}</div>}
+            {inspection && (
+              <div className="flex flex-col gap-0.5">
+                <div className="flex justify-between gap-2">
+                  <span>process</span>
+                  <span className="font-mono">
+                    {inspection.pid === null
+                      ? 'no pid'
+                      : inspection.processAlive
+                        ? `pid ${inspection.pid} · alive`
+                        : `pid ${inspection.pid} · DEAD`}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>idle</span>
+                  <span className="font-mono">
+                    {inspection.idleMs === null ? '—' : formatElapsed(inspection.idleMs)}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>last action</span>
+                  <span className="truncate font-mono">{inspection.lastAction?.kind ?? '—'}</span>
+                </div>
+              </div>
+            )}
+            <div className="mt-1.5 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadInspection()}
+                disabled={inspecting}
+                className="border border-border bg-card px-1.5 py-0.5 uppercase tracking-wider hover:bg-muted disabled:opacity-50"
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={handleKill}
+                disabled={killing}
+                className="border border-destructive/60 bg-card px-1.5 py-0.5 uppercase tracking-wider text-destructive hover:bg-destructive/20 disabled:opacity-50"
+                title="Force-kill the OS process and finalize the run (works on a wedged/phantom run)"
+              >
+                {killing ? '…' : 'Force-kill'}
+              </button>
+            </div>
+            {killErr && <div className="mt-1 text-destructive">kill failed: {killErr}</div>}
+          </div>
         )}
       </div>
     </li>

@@ -8,6 +8,24 @@ import type {
 
 export * from './types';
 
+/** Liveness snapshot returned by the inspect route. Mirrors the server's
+ *  AgentRunInspection. */
+export interface AgentRunInspection {
+  runId: string;
+  status: string;
+  pid: number | null;
+  processAlive: boolean | null;
+  lastActivityAt: number | null;
+  idleMs: number | null;
+  queuedAt: number;
+  spawnedAt: number | null;
+  readyAt: number | null;
+  failureCause: string | null;
+  failureReason: string | null;
+  lastAction: { kind: string; at: number | null; text: string | null } | null;
+  jsonlPath: string | null;
+}
+
 export const agentRunsApi = {
   listAgentRuns: (projectId: ULID) =>
     getJson<{ ok: true; runs: AgentRunRecord[] }>(
@@ -19,6 +37,22 @@ export const agentRunsApi = {
       `/api/projects/${projectId}/agent-runs/${runId}/cancel`,
       {},
     ),
+
+  inspectAgentRun: (projectId: ULID, runId: string) =>
+    getJson<{ ok: true; inspection: AgentRunInspection }>(
+      `/api/projects/${projectId}/agent-runs/${runId}/inspect`,
+    ).then((r) => r.inspection),
+
+  // Force-kill: kills the real OS process (by persisted pid) AND finalizes the
+  // row to cancelled. Works on a phantom run that /cancel can't touch.
+  killAgentRun: (projectId: ULID, runId: string) =>
+    postJson<{
+      ok: boolean;
+      status?: string;
+      alreadyTerminal?: boolean;
+      processKilled?: boolean;
+      error?: string;
+    }>(`/api/projects/${projectId}/agent-runs/${runId}/kill`, {}),
 
   getAgentRunEvents: (projectId: ULID, runId: string) =>
     getJson<AgentRunEventsResponse>(
