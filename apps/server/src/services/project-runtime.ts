@@ -675,6 +675,23 @@ export class ProjectRuntime {
   }
 
   /**
+   * Close the live chat back to the launcher: end the active session row
+   * (status → 'ended') and kill the PtySession, WITHOUT minting a replacement.
+   * Unlike startNewSession(), this leaves the project with no active session,
+   * so the UI falls back to the Start-Chat launcher. The ended session's JSONL
+   * is preserved on disk and stays resumable from the history list. Idempotent:
+   * a no-op (returns false) when there's no active session to close.
+   */
+  closeSession(): boolean {
+    const active = getActiveOrchestratorSession(this.project.id);
+    try { this.pty?.kill(); } catch { /* best-effort */ }
+    this.pty = null;
+    if (!active) return false;
+    endOrchestratorSession(active.id, 'user_ended');
+    return true;
+  }
+
+  /**
    * Section 17d.10 — restart-on-pod-edit for the orchestrator. CC memoizes the
    * agent definition per-process, so mid-session pod edits don't propagate
    * until the claude.exe child is killed + respawned. After the kill, the

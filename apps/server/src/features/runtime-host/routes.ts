@@ -42,6 +42,7 @@ export interface RuntimeHostRuntime extends TerminalTranscriptRuntime {
   orchestratorRuntimeSnapshot: RuntimeSnapshotRuntime['orchestratorRuntimeSnapshot'];
   startNewSession(): OrchestratorSession;
   resumeSession(targetId: ULID): OrchestratorSession;
+  closeSession(): boolean;
   killOrchestratorForSmoke(): boolean;
   ptySession(): RuntimeHostPtySession | null;
   hasLiveTransientSession(sessionId: string): boolean;
@@ -236,6 +237,24 @@ export function registerRuntimeHostRoutes(app: Hono, deps: RuntimeHostRoutesDeps
       replay: replay.events,
       highWaterSeq: replay.highWaterSeq,
     });
+  });
+
+  /** Close the live chat back to the launcher: end the active session + kill
+   *  the PTY, mint nothing. Broadcasts session-changed with `session: null` so
+   *  every connected client drops to the Start-Chat screen. Idempotent — a
+   *  no-op success when there's no active session. */
+  app.post('/api/projects/:projectId/sessions/close', (c) => {
+    const id = c.req.param('projectId') as ULID;
+    const runtime = deps.resolveProject(id);
+    if (!runtime) return c.json({ ok: false, error: `unknown project: ${id}` }, 404);
+    const previous = getActiveOrchestratorSession(id);
+    const closed = runtime.closeSession();
+    if (previous) {
+      cancelOpenOrchestratorSendsForSession(previous.id, 'session closed');
+      deps.broadcastSendQueueSnapshot(id, previous.id);
+    }
+    deps.broadcastTo(id, { type: 'session-changed', transition: 'close-session', session: null });
+    return c.json({ ok: true, transition: 'close-session', closed });
   });
 
   app.post('/api/projects/:projectId/send-queue/:sendId/cancel', (c) => {

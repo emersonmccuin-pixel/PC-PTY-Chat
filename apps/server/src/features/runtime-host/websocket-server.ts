@@ -89,7 +89,6 @@ export function handleRuntimeHostWsConnection<
     resolvePendingAsk,
     resolveProject,
     runtimeSnapshotPayload,
-    startOrchestratorPtyInBackground,
     subscribe,
     ws,
   } = deps;
@@ -117,7 +116,6 @@ export function handleRuntimeHostWsConnection<
     send: (envelope) => ws.send(JSON.stringify(envelope)),
     attachPtyHandlers,
     runtimeSnapshotPayload,
-    startOrchestratorPtyInBackground,
   });
 
   const handleWsMessage = deps.handleWsMessage ?? handleRuntimeHostWsMessage;

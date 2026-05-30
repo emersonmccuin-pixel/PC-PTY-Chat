@@ -6,7 +6,6 @@ import { loadRuntimeSessionReplay, sessionReplayPayload } from './routes.ts';
 
 export interface RuntimeHostConnectRuntime<TPty extends { getState(): string }> {
   activeSession(): OrchestratorSession | null;
-  ensureActiveSession(): OrchestratorSession;
   ptySession(): TPty | null;
   sessionDataPath(sessionId: string): string;
 }
@@ -17,25 +16,22 @@ export interface RuntimeHostConnectInput<
 > {
   projectId: ULID;
   runtime: TRuntime;
-  /** True only for the focused chat socket (`?intent=chat`). Activity/unread
-   *  sockets (the all-projects fan-out) connect WITHOUT chat intent: they must
-   *  NOT mint a session row or spawn claude.exe. That fan-out spawning one
-   *  orchestrator per project on boot was the connect storm. */
+  /** True for the focused chat socket (`?intent=chat`): if a live PTY already
+   *  exists (reconnect to an in-progress chat), re-attach to it. It NEVER
+   *  starts one — spawning is explicit now (Start Chat / Resume / send), which
+   *  is what lets a project boot to the launcher instead of auto-spawning an
+   *  orchestrator per WS connect. Activity sockets pass false and get only the
+   *  read-only snapshot. */
   chatIntent: boolean;
   send(envelope: Record<string, unknown>): void;
   attachPtyHandlers(projectId: ULID, runtime: TRuntime, session: TPty): void;
   runtimeSnapshotPayload(projectId: ULID, runtime: TRuntime): PublicRuntimeSnapshot;
-  startOrchestratorPtyInBackground(projectId: ULID, runtime: TRuntime): void;
 }
 
 /** Send the deterministic reconnect/refresh checkpoint for a project WS.
- *  The durable session row and replay surfaces are sent synchronously before
- *  any background PTY start so the client can reconcile local state first.
- *
- *  Only a chat-intent socket mints a session, attaches PTY handlers, and starts
- *  claude.exe. Activity/unread sockets get the read-only snapshot (active row if
- *  one already exists, else null) and rely on the hub subscription for events —
- *  no spawn, no session-row churn. */
+ *  Connecting NEVER mints a session or spawns claude.exe — it reports the
+ *  active session if one already exists (else null → client shows the
+ *  launcher), and a focused chat socket re-attaches to a still-live PTY. */
 export function sendRuntimeHostConnectSnapshot<
   TPty extends { getState(): string },
   TRuntime extends RuntimeHostConnectRuntime<TPty>,
@@ -47,9 +43,8 @@ export function sendRuntimeHostConnectSnapshot<
     runtime,
     runtimeSnapshotPayload,
     send,
-    startOrchestratorPtyInBackground,
   } = input;
-  const session = chatIntent ? runtime.ensureActiveSession() : runtime.activeSession();
+  const session = runtime.activeSession();
 
   send({ projectId, type: 'session-changed', session });
 
@@ -67,10 +62,6 @@ export function sendRuntimeHostConnectSnapshot<
     const replay = loadRuntimeSessionReplay(runtime, session.id);
     send({ projectId, ...sessionReplayPayload(replay) });
     send({ projectId, ...sendQueueSnapshotPayload(session.id) });
-  }
-
-  if (chatIntent) {
-    startOrchestratorPtyInBackground(projectId, runtime);
   }
 
   return session;

@@ -103,6 +103,12 @@ function makeHarness(options: { slugPrefix?: string } = {}) {
       if (!resumed) throw new Error(`unknown session: ${targetId}`);
       return resumed;
     },
+    closeSession: () => {
+      const active = getActiveOrchestratorSession(project.id);
+      if (!active) return false;
+      endOrchestratorSession(active.id, 'user_ended');
+      return true;
+    },
     killOrchestratorForSmoke: () => true,
     ptySession: () => pty,
     hasLiveTransientSession: () => false,
@@ -218,6 +224,34 @@ test('new session route cancels prior queue, broadcasts replay surfaces, and sta
     ),
     true,
   );
+});
+
+test('close route ends the active session, broadcasts session:null, and starts no runtime', async () => {
+  const { app, broadcasts, project, starts } = makeHarness();
+  const active = makeSession(project.id, 'live');
+
+  const res = await app.request(`/api/projects/${project.id}/sessions/close`, { method: 'POST' });
+  const body = await res.json() as { ok: boolean; transition: string; closed: boolean };
+
+  assert.equal(res.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.transition, 'close-session');
+  assert.equal(body.closed, true);
+  // No active session remains → the UI falls back to the launcher.
+  assert.equal(getActiveOrchestratorSession(project.id), null);
+  // Closing never spawns.
+  assert.equal(starts.length, 0);
+  assert.equal(
+    broadcasts.some(({ msg }) =>
+      typeof msg === 'object' &&
+      msg !== null &&
+      (msg as { type?: string; transition?: string }).type === 'session-changed' &&
+      (msg as { transition?: string }).transition === 'close-session' &&
+      (msg as { session?: unknown }).session === null,
+    ),
+    true,
+  );
+  void active;
 });
 
 test('resume route returns persisted replay high-water and cancels replaced session queue', async () => {

@@ -38,7 +38,7 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('connect snapshot sends session, state, runtime, replay, and queue before background start', () => {
+test('focused connect snapshot sends session, state, runtime, replay, queue and re-attaches a live pty without spawning', () => {
   seq += 1;
   const project = createProject({
     slug: `runtime-host-ws-${Date.now().toString(36)}-${seq}`,
@@ -87,7 +87,6 @@ test('connect snapshot sends session, state, runtime, replay, and queue before b
   };
   const envelopes: Array<Record<string, unknown>> = [];
   const attached: Array<{ projectId: ULID; state: string }> = [];
-  const starts: ULID[] = [];
 
   const returned = sendRuntimeHostConnectSnapshot({
     projectId: project.id,
@@ -125,7 +124,6 @@ test('connect snapshot sends session, state, runtime, replay, and queue before b
       queue: [],
     }),
     chatIntent: true,
-    startOrchestratorPtyInBackground: (projectId) => starts.push(projectId),
   });
 
   assert.ok(returned);
@@ -137,8 +135,9 @@ test('connect snapshot sends session, state, runtime, replay, and queue before b
     'session-replay',
     'send-queue-snapshot',
   ]);
+  // Focused chat re-attaches to the already-live PTY (reconnect) but never
+  // starts one — spawning is explicit now.
   assert.deepEqual(attached, [{ projectId: project.id, state: 'ready' }]);
-  assert.deepEqual(starts, [project.id]);
   assert.equal(envelopes.every((envelope) => envelope.projectId === project.id), true);
   assert.equal((envelopes[3] as { highWaterSeq?: number }).highWaterSeq, 4);
   assert.deepEqual(
@@ -169,7 +168,6 @@ test('activity-intent connect (chatIntent=false) never spawns, attaches, or mint
   };
   const envelopes: Array<Record<string, unknown>> = [];
   const attached: ULID[] = [];
-  const starts: ULID[] = [];
 
   const returned = sendRuntimeHostConnectSnapshot({
     projectId: project.id,
@@ -178,12 +176,10 @@ test('activity-intent connect (chatIntent=false) never spawns, attaches, or mint
     send: (envelope) => envelopes.push(envelope),
     attachPtyHandlers: (projectId) => attached.push(projectId),
     runtimeSnapshotPayload: () => ({ type: 'runtime-state' }) as never,
-    startOrchestratorPtyInBackground: (projectId) => starts.push(projectId),
   });
 
   assert.equal(returned, null, 'no session minted');
   assert.equal(ensureCalled, false, 'ensureActiveSession never called');
-  assert.deepEqual(starts, [], 'no orchestrator spawn');
   assert.deepEqual(attached, [], 'no pty handlers attached');
   // Still emits the read-only snapshot so activity/unread can reconcile.
   assert.deepEqual(envelopes.map((e) => e.type), ['session-changed', 'runtime-state']);
