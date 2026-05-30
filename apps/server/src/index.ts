@@ -226,6 +226,8 @@ const projectScaffold = new ProjectScaffold({
   channelPort: CHANNEL_PORT,
 });
 
+let agentHostClientForDispatch: AgentHostReattachClient | null = null;
+
 // Remove/quarantine legacy PC Claude runtime files from project roots before
 // any Claude process starts. PC now passes session-local `--settings`,
 // `--mcp-config`, and `--plugin-dir`; leaving old root files in place would
@@ -248,6 +250,7 @@ const projectRegistry = new ProjectRegistry({
   trunkPath: ROOT,
   serverPort: PORT,
   channelPort: CHANNEL_PORT,
+  getHostClient: () => agentHostClientForDispatch,
   broadcastFor: (projectId) => (event) => broadcastTo(projectId, event),
 });
 projectRegistry.loadAll();
@@ -330,8 +333,6 @@ channelServer.start();
     console.warn(`[pc] ephemeral-work-item-sweep failed: ${(err as Error).message}`);
   }
 }
-
-let agentHostClientForDispatch: AgentHostReattachClient | null = null;
 
 // Boot-time agent-run reconciliation. Phase C can reattach through an
 // already-connected host client; until Phase D supplies that client, this
@@ -440,6 +441,7 @@ function resolveProject(projectId: string): ProjectRuntime | null {
 registerMcpBridgeRoutes(app, {
   dataDir: DATA,
   resolveProject,
+  getHostClient: () => agentHostClientForDispatch,
 });
 
 registerChatBridgeRoutes(app, {

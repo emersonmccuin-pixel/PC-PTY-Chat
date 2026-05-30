@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import type { ULID } from '@pc/domain';
+import type { AgentHostCommand, AgentHostCommandResponse } from '@pc/runtime';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -16,6 +17,12 @@ export interface McpBridgeActiveRunRegistry {
   ): { run: { notifyMcpHandshake(): void } } | null;
 }
 
+export interface McpBridgeHostClient {
+  sendCommand(
+    command: AgentHostCommand,
+  ): AgentHostCommandResponse | Promise<AgentHostCommandResponse> | void;
+}
+
 export interface McpBridgeRouteDeps {
   dataDir: string;
   resolveProject(projectId: string): McpBridgeRuntime | null;
@@ -23,6 +30,7 @@ export interface McpBridgeRouteDeps {
   readFileText?: (path: string) => string | null;
   getActiveRunRegistry?: () => McpBridgeActiveRunRegistry;
   notifyWorkflowSubagentHandshake?: (ccSessionId: string) => boolean;
+  getHostClient?: () => McpBridgeHostClient | null;
 }
 
 function defaultReadFileText(path: string): string | null {
@@ -37,6 +45,7 @@ export function registerMcpBridgeRoutes(app: Hono, deps: McpBridgeRouteDeps): vo
     getActiveRunRegistry: deps.getActiveRunRegistry ?? defaultGetActiveRunRegistry,
     notifyWorkflowSubagentHandshake:
       deps.notifyWorkflowSubagentHandshake ?? defaultNotifyWorkflowSubagentHandshake,
+    getHostClient: deps.getHostClient ?? (() => null),
   };
 
   // MCP heartbeats are written per-project by `packages/mcp/src/server.ts`
@@ -85,6 +94,20 @@ export function registerMcpBridgeRoutes(app: Hono, deps: McpBridgeRouteDeps): vo
     }
     if (services.notifyWorkflowSubagentHandshake(body.agentSessionId)) {
       return c.json({ ok: true, found: true, transport: 'workflow' });
+    }
+    const hostClient = services.getHostClient();
+    if (hostClient) {
+      try {
+        const response = await hostClient.sendCommand({
+          type: 'notify-mcp-handshake',
+          ccSessionId: body.agentSessionId,
+        });
+        if (response?.ok && response.command === 'notify-mcp-handshake') {
+          return c.json({ ok: true, found: true, transport: 'workflow-host' });
+        }
+      } catch {
+        // Best-effort: local/orchestrator routes below may still own this session.
+      }
     }
     const runtime = deps.resolveProject(body.projectId);
     if (runtime?.notifyOrchestratorMcpHandshake(body.agentSessionId)) {

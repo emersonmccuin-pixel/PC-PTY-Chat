@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentRunFailureCause, ExpectedOutput, Project, ULID, WorkflowV2 } from '@pc/domain';
 import { substituteRefs, type RefResolver, type ReviewDecision, type RunStatus } from '@pc/workflows';
@@ -23,13 +24,22 @@ import {
   updateAgentRunStatus,
   workflowRunsV2Repo,
 } from '@pc/db';
-import { spawnSubagent, type SubagentSpawnHandle, type SubagentSpawnRequest } from '@pc/runtime';
+import {
+  spawnSubagent,
+  type AgentHostCommandResponse,
+  type AgentHostEvent,
+  type AgentHostWorkflowSubagentSnapshot,
+  type SubagentSpawnHandle,
+  type SubagentSpawnRequest,
+  type SubagentSpawnResult,
+} from '@pc/runtime';
 import { DagExecutor, type DagExecutorDeps, type DagNodeContext, type NodeOutcome } from './dag-executor.ts';
 import { announceRunCreated, writeDagAndStatus } from './workflow-run-writer.ts';
 import { createAgentWorkItem } from './agent-work-item.ts';
 import { runVerificationOnTerminal } from './agent-verification.ts';
 import { preparePodSpawn } from './pod-spawn.ts';
 import { registerWorkflowSubagentHandshake } from './workflow-subagent-handshake.ts';
+import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 import type { WorkItemService } from './work-item.ts';
 import type { WorktreeService } from './worktree.ts';
 
@@ -69,6 +79,7 @@ export interface DagRunServiceOptions {
   /** Per-dispatch session-data dir factory (mirrors WorkflowRuntime). */
   sessionDirFor: (pcSessionId: string) => string;
   broadcast: (event: unknown) => void;
+  hostClient?: AgentHostReattachClient | null;
   // ── injectable seams (live defaults) ──
   spawner?: Spawner;
   verify?: Verifier;
@@ -78,6 +89,190 @@ export interface DagRunServiceOptions {
 
 const liveSpawner: Spawner = (req) =>
   spawnSubagent(req, { registerHandshakeListener: registerWorkflowSubagentHandshake });
+
+function hostBackedWorkflowSpawner(hostClient: AgentHostReattachClient): Spawner {
+  return (req) => {
+    let snapshot: AgentHostWorkflowSubagentSnapshot | null = null;
+    let settled = false;
+    let unsubscribe: (() => void) | void;
+    let resolveDone!: (result: SubagentSpawnResult) => void;
+    const done = new Promise<SubagentSpawnResult>((resolveDoneInner) => {
+      resolveDone = resolveDoneInner;
+    });
+
+    const cleanup = (): void => {
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = undefined;
+      }
+    };
+
+    const settle = (result: SubagentSpawnResult): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveDone(result);
+    };
+
+    const fail = (message: string): void => {
+      settle(hostWorkflowFailure(req, snapshot, 'spawn-error', message));
+    };
+
+    const applySnapshot = (next: AgentHostWorkflowSubagentSnapshot): void => {
+      if (!workflowSnapshotMatchesRequest(req, next)) return;
+      snapshot = next;
+      if (next.terminalResult) {
+        settle(next.terminalResult);
+        return;
+      }
+      if (isTerminalWorkflowState(next.state)) {
+        settle(
+          hostWorkflowFailure(
+            req,
+            next,
+            next.state === 'cancelled' ? 'killed' : 'spawn-error',
+            'workflow subagent host terminal event omitted result',
+          ),
+        );
+      }
+    };
+
+    unsubscribe = hostClient.onEvent?.((event: AgentHostEvent) => {
+      if (
+        (event.type === 'workflow-subagent-state' ||
+          event.type === 'workflow-subagent-terminal') &&
+        event.workflowSubagent.pcSessionId === req.pcSessionId
+      ) {
+        applySnapshot(event.workflowSubagent);
+      }
+    });
+
+    Promise.resolve(
+      hostClient.sendCommand({
+        type: 'start-workflow-subagent',
+        request: req,
+      }),
+    )
+      .then((response) => {
+        if (settled) return;
+        applyStartWorkflowSubagentResponse(req, response, applySnapshot, fail);
+      })
+      .catch((err) => {
+        if (!settled) fail(`agent host start-workflow-subagent failed: ${errorMessage(err)}`);
+      });
+
+    return {
+      done,
+      kill: (reason?: string) => {
+        if (settled) return;
+        Promise.resolve(
+          hostClient.sendCommand({
+            type: 'cancel-workflow-subagent',
+            pcSessionId: req.pcSessionId,
+            reason,
+          }),
+        )
+          .then((response) => {
+            if (!response) {
+              settle(hostWorkflowFailure(req, snapshot, 'killed', reason ?? 'cancelled'));
+              return;
+            }
+            if (!response.ok) {
+              settle(
+                hostWorkflowFailure(
+                  req,
+                  snapshot,
+                  'killed',
+                  `agent host cancel-workflow-subagent failed: ${response.error}`,
+                ),
+              );
+              return;
+            }
+            if (response.command === 'cancel-workflow-subagent') {
+              applySnapshot(response.workflowSubagent);
+            }
+          })
+          .catch((err) => {
+            settle(
+              hostWorkflowFailure(
+                req,
+                snapshot,
+                'killed',
+                `agent host cancel-workflow-subagent failed: ${errorMessage(err)}`,
+              ),
+            );
+          });
+      },
+      transcriptPath: () => snapshot?.transcriptPath ?? resolve(req.sessionDataDir, 'transcript.log'),
+      jsonlPath: () => snapshot?.jsonlPath ?? null,
+    };
+  };
+}
+
+function applyStartWorkflowSubagentResponse(
+  req: SubagentSpawnRequest,
+  response: AgentHostCommandResponse | void,
+  applySnapshot: (snapshot: AgentHostWorkflowSubagentSnapshot) => void,
+  fail: (message: string) => void,
+): void {
+  if (!response) {
+    fail('agent host start-workflow-subagent returned no response');
+    return;
+  }
+  if (!response.ok) {
+    fail(`agent host start-workflow-subagent failed: ${response.error}`);
+    return;
+  }
+  if (response.command !== 'start-workflow-subagent') {
+    fail(`agent host returned ${response.command} for start-workflow-subagent`);
+    return;
+  }
+  if (!workflowSnapshotMatchesRequest(req, response.workflowSubagent)) {
+    fail('agent host returned mismatched workflow subagent snapshot');
+    return;
+  }
+  applySnapshot(response.workflowSubagent);
+}
+
+function workflowSnapshotMatchesRequest(
+  req: SubagentSpawnRequest,
+  snapshot: AgentHostWorkflowSubagentSnapshot,
+): boolean {
+  return (
+    snapshot.pcSessionId === req.pcSessionId &&
+    snapshot.agentName === req.agentName &&
+    snapshot.worktreeDir === req.worktreeDir
+  );
+}
+
+function isTerminalWorkflowState(
+  state: AgentHostWorkflowSubagentSnapshot['state'],
+): boolean {
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function hostWorkflowFailure(
+  req: SubagentSpawnRequest,
+  snapshot: AgentHostWorkflowSubagentSnapshot | null,
+  cause: Extract<SubagentSpawnResult, { kind: 'failure' }>['cause'],
+  message: string,
+): SubagentSpawnResult {
+  return {
+    kind: 'failure',
+    cause,
+    message,
+    transcriptPath: snapshot?.transcriptPath ?? resolve(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: snapshot?.jsonlPath ?? null,
+    partialAssistantText:
+      snapshot?.terminalResult?.kind === 'failure'
+        ? snapshot.terminalResult.partialAssistantText
+        : '',
+  };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 const liveExec: CommandExec = async (kind, code, { cwd, timeout }) => {
   const [cmd, args]: [string, string[]] =
@@ -122,7 +317,7 @@ export function makeExecutorDeps(
   workflow: WorkflowV2.Workflow,
   opts: DagRunServiceOptions
 ): DagExecutorDeps {
-  const spawner = opts.spawner ?? liveSpawner;
+  const spawner = opts.spawner ?? (opts.hostClient ? hostBackedWorkflowSpawner(opts.hostClient) : liveSpawner);
   const verify = opts.verify ?? runVerificationOnTerminal;
   const exec = opts.exec ?? liveExec;
   const postChannel =

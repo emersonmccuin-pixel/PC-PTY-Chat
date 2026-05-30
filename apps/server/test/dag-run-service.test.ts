@@ -9,7 +9,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project, Stage, ULID, WorkflowV2 } from '@pc/domain';
+import type {
+  AgentHostCommand,
+  AgentHostCommandResponse,
+  AgentHostEvent,
+  AgentHostWorkflowSubagentSnapshot,
+  SubagentSpawnRequest,
+} from '@pc/runtime';
 import type { Spawner, Verifier, DagRunServiceOptions } from '../src/services/dag-run-service.ts';
+import type { AgentHostReattachClient } from '../src/services/agent-host-reattach.ts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-dag-run-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -101,6 +109,120 @@ const passVerify: Verifier = async (input) => ({
   predicatesEvaluated: 0,
 });
 
+function workflowHostSnapshot(
+  req: SubagentSpawnRequest,
+  patch: Partial<AgentHostWorkflowSubagentSnapshot> = {},
+): AgentHostWorkflowSubagentSnapshot {
+  return {
+    pcSessionId: req.pcSessionId,
+    ccSessionId: `cc-${req.pcSessionId}`,
+    agentName: req.agentName,
+    worktreeDir: req.worktreeDir,
+    state: 'running',
+    transcriptPath: join(req.sessionDataDir, 'transcript.log'),
+    jsonlPath: join(req.sessionDataDir, 'session.jsonl'),
+    startedAt: 1,
+    updatedAt: 1,
+    terminalAt: null,
+    ...patch,
+  };
+}
+
+function createWorkflowHostClient(): {
+  hostClient: AgentHostReattachClient;
+  commands: AgentHostCommand[];
+} {
+  const commands: AgentHostCommand[] = [];
+  const listeners = new Set<(event: AgentHostEvent) => void>();
+  let seq = 0;
+  const emit = (event: AgentHostEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  return {
+    commands,
+    hostClient: {
+      listRuns: () => [],
+      onEvent: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      sendCommand: (command): AgentHostCommandResponse => {
+        commands.push(command);
+        if (command.type === 'start-workflow-subagent') {
+          const running = workflowHostSnapshot(command.request);
+          queueMicrotask(() => {
+            const completed = workflowHostSnapshot(command.request, {
+              state: 'completed',
+              updatedAt: 2,
+              terminalAt: 2,
+              terminalResult: {
+                kind: 'success',
+                lastAssistantText: 'host ok',
+                pcCompletePayload: null,
+                transcriptPath: running.transcriptPath,
+                jsonlPath: running.jsonlPath,
+              },
+            });
+            emit({
+              seq: ++seq,
+              type: 'workflow-subagent-terminal',
+              workflowSubagent: completed,
+            });
+          });
+          return {
+            ok: true,
+            command: 'start-workflow-subagent',
+            workflowSubagent: running,
+            lastSeq: seq,
+          };
+        }
+        if (command.type === 'cancel-workflow-subagent') {
+          const req = commands.find(
+            (entry): entry is Extract<AgentHostCommand, { type: 'start-workflow-subagent' }> =>
+              entry.type === 'start-workflow-subagent' &&
+              entry.request.pcSessionId === command.pcSessionId,
+          )?.request;
+          if (!req) {
+            return {
+              ok: false,
+              command: 'cancel-workflow-subagent',
+              code: 'not-found',
+              error: 'missing',
+              lastSeq: seq,
+            };
+          }
+          const cancelled = workflowHostSnapshot(req, {
+            state: 'cancelled',
+            updatedAt: 2,
+            terminalAt: 2,
+            terminalResult: {
+              kind: 'failure',
+              cause: 'killed',
+              message: command.reason ?? 'cancelled',
+              transcriptPath: join(req.sessionDataDir, 'transcript.log'),
+              jsonlPath: join(req.sessionDataDir, 'session.jsonl'),
+              partialAssistantText: '',
+            },
+          });
+          return {
+            ok: true,
+            command: 'cancel-workflow-subagent',
+            workflowSubagent: cancelled,
+            lastSeq: seq,
+          };
+        }
+        return {
+          ok: false,
+          command: command.type,
+          code: 'unsupported',
+          error: 'unexpected command',
+          lastSeq: seq,
+        };
+      },
+    },
+  };
+}
+
 function agent(id: string, task: string, next?: string[]): WorkflowV2.WorkflowNode {
   return { kind: 'agent', id, agent: 'researcher', task, ...(next ? { next } : {}) } as WorkflowV2.WorkflowNode;
 }
@@ -132,6 +254,29 @@ test('fire creates a workflow-root WI + child WIs + sidecar run; completes', asy
   const types = workflowRunsV2Repo.listEvents(res.runId).map((e) => e.type);
   assert.ok(types.includes('node_started'));
   assert.ok(types.includes('workflow_completed'));
+});
+
+test('agent nodes use the host-backed workflow spawner when a host client is available', async () => {
+  const { hostClient, commands } = createWorkflowHostClient();
+  const opts: DagRunServiceOptions = {
+    ...optsBase,
+    hostClient,
+    verify: passVerify,
+  };
+
+  const res = await fireDagWorkflow(wf([agent('hosted', 'do hosted work')]), { kind: 'manual' }, opts);
+  const status = await res.done;
+
+  assert.equal(status, 'completed');
+  const start = commands.find(
+    (command): command is Extract<AgentHostCommand, { type: 'start-workflow-subagent' }> =>
+      command.type === 'start-workflow-subagent',
+  );
+  assert.ok(start, 'workflow should start through the host client');
+  assert.match(start.request.pcSessionId, /^wf-/);
+  assert.equal(start.request.worktreeDir, tmpDir);
+  assert.equal(start.request.extraEnv?.PC_WORKFLOW_RUN_ID, res.runId);
+  assert.equal(start.request.extraEnv?.PC_AGENT_NAME, 'researcher');
 });
 
 test('$nodeId.output in a downstream task resolves from the upstream child WI', async () => {

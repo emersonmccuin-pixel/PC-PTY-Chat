@@ -11,6 +11,7 @@ import type {
   SendResult,
   SpawnLike,
   SpawnState,
+  SubagentSpawnRequest,
 } from '@pc/runtime';
 
 import { AgentHostService } from '../src/index.ts';
@@ -86,6 +87,14 @@ class StubSpawn extends EventEmitter implements SpawnLike {
       },
     } as unknown as JsonlEvent);
   }
+
+  fireWorkflowAssistantTurnEnd(text = 'done'): void {
+    this.emit('jsonl-event', {
+      kind: 'jsonl-turn-end',
+      text,
+      stopReason: 'end_turn',
+    } satisfies JsonlEvent);
+  }
 }
 
 function makeRequest(
@@ -109,6 +118,19 @@ function makeRequest(
       handshakeTimeoutMs: 1_000,
       readyTimeoutMs: 1_000,
     },
+    ...overrides,
+  };
+}
+
+function makeWorkflowRequest(
+  overrides: Partial<SubagentSpawnRequest> = {},
+): SubagentSpawnRequest {
+  return {
+    agentName: 'researcher',
+    worktreeDir: 'C:\\fake\\workflow-worktree',
+    initialInput: 'workflow task',
+    sessionDataDir: 'C:\\fake\\workflow-session',
+    pcSessionId: 'wf-session-1',
     ...overrides,
   };
 }
@@ -320,4 +342,85 @@ test('duplicate run ids and missing runs return protocol errors without throwing
   const terminalP = nextEvent(service, 'run-terminal');
   stub.fireAssistantTurnEnd();
   await terminalP;
+});
+
+test('workflow subagent command owns spawn lifecycle and handshake', async () => {
+  const stub = new StubSpawn();
+  const service = new AgentHostService({ workflowSpawnFactory: () => stub });
+  const request = makeWorkflowRequest();
+
+  const started = await service.handleCommand({
+    type: 'start-workflow-subagent',
+    request,
+  });
+
+  assert.equal(started.ok, true);
+  if (!started.ok || started.command !== 'start-workflow-subagent') {
+    throw new Error('bad workflow start response');
+  }
+  assert.equal(started.workflowSubagent.pcSessionId, request.pcSessionId);
+  assert.equal(started.workflowSubagent.state, 'running');
+  assert.equal(started.workflowSubagent.transcriptPath, 'C:\\fake\\workflow-session\\transcript.log');
+  assert.equal(started.workflowSubagent.jsonlPath, 'C:\\fake\\claude\\session.jsonl');
+  assert.equal(typeof started.workflowSubagent.ccSessionId, 'string');
+
+  await tick();
+  assert.equal(stub.started, true);
+
+  const ccSessionId = started.workflowSubagent.ccSessionId;
+  if (typeof ccSessionId !== 'string') {
+    throw new Error('expected workflow cc session id');
+  }
+  const handshake = await service.handleCommand({
+    type: 'notify-mcp-handshake',
+    ccSessionId,
+  });
+  assert.equal(handshake.ok, true);
+  assert.equal(stub.handshakes, 1);
+
+  stub.fireReady();
+  await tick();
+  assert.deepEqual(stub.sent, ['workflow task']);
+
+  const terminalP = nextEvent(service, 'workflow-subagent-terminal');
+  stub.fireWorkflowAssistantTurnEnd('workflow done');
+  const terminal = await terminalP;
+
+  assert.equal(terminal.workflowSubagent.pcSessionId, request.pcSessionId);
+  assert.equal(terminal.workflowSubagent.state, 'completed');
+  assert.equal(terminal.workflowSubagent.terminalResult?.kind, 'success');
+  if (terminal.workflowSubagent.terminalResult?.kind !== 'success') {
+    throw new Error('expected workflow success result');
+  }
+  assert.equal(terminal.workflowSubagent.terminalResult.lastAssistantText, 'workflow done');
+});
+
+test('cancel-workflow-subagent kills workflow subagent handle', async () => {
+  const stub = new StubSpawn();
+  const service = new AgentHostService({ workflowSpawnFactory: () => stub });
+  const request = makeWorkflowRequest({ pcSessionId: 'wf-session-cancel' });
+
+  const started = await service.handleCommand({
+    type: 'start-workflow-subagent',
+    request,
+  });
+  assert.equal(started.ok, true);
+  await tick();
+
+  const terminalP = nextEvent(service, 'workflow-subagent-terminal');
+  const cancelled = await service.handleCommand({
+    type: 'cancel-workflow-subagent',
+    pcSessionId: request.pcSessionId,
+    reason: 'test cancel',
+  });
+  assert.equal(cancelled.ok, true);
+  assert.equal(stub.killed, true);
+
+  const terminal = await terminalP;
+  assert.equal(terminal.workflowSubagent.state, 'cancelled');
+  assert.equal(terminal.workflowSubagent.terminalResult?.kind, 'failure');
+  if (terminal.workflowSubagent.terminalResult?.kind !== 'failure') {
+    throw new Error('expected workflow failure result');
+  }
+  assert.equal(terminal.workflowSubagent.terminalResult.cause, 'killed');
 });

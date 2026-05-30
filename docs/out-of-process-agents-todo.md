@@ -56,4 +56,5 @@ Key pieces now drafted in the design:
 - Done: Phase C API host client seam, boot reattach, host-backed active handles, dispatch routing, terminal side effects, and fake-host tests.
 - Done in Phase D: lock-file schema, localhost HTTP host discovery, API HTTP host client, and dev-supervisor sibling host wiring with fake process/discovery tests.
 - Done in Phase D: packaged Electron host boot, packaged host bundle staging, and user-quit host shutdown semantics.
-- Next: manual smoke only when server/app restarts are explicitly allowed; Phase E workflow subagent migration after that.
+- Done in Phase E: workflow DAG agent nodes can dispatch through host-backed workflow subagent commands, and MCP handshakes can forward through the host.
+- Remaining: manual smoke only when server/app restarts are explicitly allowed.

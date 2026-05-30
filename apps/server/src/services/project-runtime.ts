@@ -42,6 +42,7 @@ import {
   applyV2ReviewDecision,
   type DagRunServiceOptions,
 } from './dag-run-service.ts';
+import type { AgentHostReattachClient } from './agent-host-reattach.ts';
 import { WorkItemService } from './work-item.ts';
 import { AttachmentService } from './attachment.ts';
 import { FieldSchemaService } from './field-schema.ts';
@@ -84,6 +85,7 @@ export interface ProjectRuntimeOptions {
    *  inbox-drain hook so it can `createRequire` better-sqlite3 from the
    *  trunk's pnpm-managed `node_modules`. */
   trunkPath: string;
+  getHostClient?: () => AgentHostReattachClient | null;
 }
 
 export class ProjectRuntime {
@@ -274,6 +276,7 @@ export class ProjectRuntime {
       worktrees: this.worktrees(),
       sessionDirFor: (pcSessionId) => this.sessionDataPath(pcSessionId),
       broadcast: this.opts.broadcast,
+      hostClient: this.opts.getHostClient?.() ?? null,
     };
   }
 
