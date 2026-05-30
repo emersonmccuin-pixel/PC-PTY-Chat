@@ -1,16 +1,23 @@
 export { getDb, getRawDb, closeDb } from './connection.ts';
-export type { DB } from './connection.ts';
+export type { DB, DbExecutor, DbTransaction } from './connection.ts';
 export { newId } from './id.ts';
 export { runMigrations, assertSchemaIntact } from './migrate.ts';
 
 export {
   createProject,
+  createProjectInDb,
   getProjectById,
+  getProjectByIdInDb,
   getProjectBySlug,
+  getProjectBySlugInDb,
   listProjects,
+  listProjectsInDb,
   reorderProjects,
+  reorderProjectsInDb,
   softDeleteProject,
+  softDeleteProjectInDb,
   updateProjectMeta,
+  updateProjectMetaInDb,
   updateProjectStages,
 } from './repos/projects.ts';
 export type {
@@ -18,6 +25,21 @@ export type {
   ListProjectsOptions,
   UpdateProjectMetaInput,
 } from './repos/projects.ts';
+
+export {
+  getLiveEventHighWater,
+  insertLiveEvent,
+  listLiveEventsAfter,
+  markLiveEventsPublished,
+  LiveEventCursorError,
+} from './repos/live-outbox.ts';
+export type {
+  InsertLiveEventDraft,
+  ListLiveEventsAfterInput,
+  ListLiveEventsAfterResult,
+  LiveOutboxEvent,
+  LiveOutboxScope,
+} from './repos/live-outbox.ts';
 
 export {
   appendWorkItemHistory,

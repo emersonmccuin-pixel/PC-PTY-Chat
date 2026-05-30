@@ -1,6 +1,8 @@
 import type {
   CreateProjectMode,
   CreateProjectRequest,
+  ProjectChangedLiveEvent,
+  ProjectChangedLivePayload,
   ProjectChangedRefetchEnvelope,
   ProjectDto,
   ProjectMutationReason,
@@ -11,11 +13,22 @@ import type {
 import { buildProjectChangedRefetchEnvelope } from '@pc/contracts';
 import type { Project, ProjectSettings, Stage, ULID as DomainULID } from '@pc/domain';
 import {
+  createProjectInDb,
+  getDb,
   getProjectById as defaultGetProjectById,
+  insertLiveEvent,
   listProjects as defaultListProjects,
+  listProjectsInDb,
   reorderProjects as defaultReorderProjects,
+  reorderProjectsInDb,
   softDeleteProject as defaultSoftDeleteProject,
+  softDeleteProjectInDb,
   updateProjectMeta as defaultUpdateProjectMeta,
+  updateProjectMetaInDb,
+  type CreateProjectInput,
+  type DbExecutor,
+  type InsertLiveEventDraft,
+  type LiveOutboxEvent,
 } from '@pc/db';
 
 export interface ProjectRepositoryPort {
@@ -36,14 +49,24 @@ export interface ProjectCreateFlowInput {
   gitRemote?: string | null;
 }
 
-export type ProjectCreateFlowPort = (input: ProjectCreateFlowInput) => Promise<Project>;
+export interface ProjectChangedPublication {
+  event: ProjectChangedRefetchEnvelope;
+  legacyEvent: ProjectChangedRefetchEnvelope;
+  liveEvent: ProjectChangedLiveEvent;
+}
+
+export interface ProjectCreateFlowResult extends ProjectChangedPublication {
+  project: Project;
+}
+
+export type ProjectCreateFlowPort = (input: ProjectCreateFlowInput) => Promise<ProjectCreateFlowResult>;
 
 export type ProjectServiceResult<T extends object> =
   | ({ ok: true } & T)
   | { ok: false; error: string; code: 'NOT_FOUND' | 'INTERNAL' };
 
 export type ProjectMutationResult<T extends object> = ProjectServiceResult<
-  T & { event: ProjectChangedRefetchEnvelope }
+  T & ProjectChangedPublication
 >;
 
 const defaultRepo: ProjectRepositoryPort = {
@@ -79,11 +102,13 @@ export class ProjectService {
       mode: request.mode,
       gitRemote: request.git_remote ?? null,
     });
-    const project = toProjectDto(created);
+    const project = toProjectDto(created.project);
     return {
       ok: true,
       project,
-      event: projectChanged('created', project),
+      event: created.legacyEvent,
+      legacyEvent: created.legacyEvent,
+      liveEvent: created.liveEvent,
     };
   }
 
@@ -91,40 +116,91 @@ export class ProjectService {
     projectId: ContractULID,
     request: UpdateProjectRequest,
   ): ProjectMutationResult<{ project: ProjectDto }> {
-    const updated = this.repo.updateProjectMeta(projectId, {
-      ...(request.name !== undefined ? { name: request.name } : {}),
-      ...(request.git_remote !== undefined ? { gitRemote: request.git_remote } : {}),
-    });
-    if (!updated) return notFound(projectId);
-    const project = toProjectDto(updated);
-    return {
-      ok: true,
-      project,
-      event: projectChanged('metadata-updated', project),
-    };
+    if (this.repo !== defaultRepo) {
+      const updated = this.repo.updateProjectMeta(projectId, {
+        ...(request.name !== undefined ? { name: request.name } : {}),
+        ...(request.git_remote !== undefined ? { gitRemote: request.git_remote } : {}),
+      });
+      if (!updated) return notFound(projectId);
+      const project = toProjectDto(updated);
+      const publication = projectChanged('metadata-updated', project);
+      return { ok: true, project, ...publication };
+    }
+
+    return updateProjectMetaWithLiveEvent(projectId, request);
   }
 
   reorderProjects(
     request: ReorderProjectsRequest,
   ): ProjectMutationResult<{ projects: ProjectDto[] }> {
-    this.repo.reorderProjects(request.orderedIds);
-    return {
-      ok: true,
-      projects: this.repo.listProjects().map(toProjectDto),
-      event: buildProjectChangedRefetchEnvelope({ reason: 'reordered' }),
-    };
+    if (this.repo !== defaultRepo) {
+      this.repo.reorderProjects(request.orderedIds);
+      const projects = this.repo.listProjects().map(toProjectDto);
+      const publication = projectChanged('reordered');
+      return { ok: true, projects, ...publication };
+    }
+
+    return reorderProjectsWithLiveEvent(request);
   }
 
   softDeleteProject(projectId: ContractULID): ProjectMutationResult<{ project: ProjectDto }> {
-    const deleted = this.repo.softDeleteProject(projectId);
+    if (this.repo !== defaultRepo) {
+      const deleted = this.repo.softDeleteProject(projectId);
+      if (!deleted) return notFound(projectId);
+      const project = toProjectDto(deleted);
+      const publication = projectChanged('soft-deleted', project);
+      return { ok: true, project, ...publication };
+    }
+
+    return softDeleteProjectWithLiveEvent(projectId);
+  }
+}
+
+export function persistCreatedProjectWithLiveEvent(
+  input: CreateProjectInput,
+): ProjectCreateFlowResult {
+  return getDb().transaction((tx) => {
+    const project = createProjectInDb(tx, input);
+    const dto = toProjectDto(project);
+    const publication = projectChanged('created', dto, tx);
+    return { project, ...publication };
+  });
+}
+
+export function updateProjectMetaWithLiveEvent(
+  projectId: ContractULID,
+  request: UpdateProjectRequest,
+): ProjectMutationResult<{ project: ProjectDto }> {
+  return getDb().transaction((tx) => {
+    const updated = updateProjectMetaInDb(tx, projectId as DomainULID, {
+      ...(request.name !== undefined ? { name: request.name } : {}),
+      ...(request.git_remote !== undefined ? { gitRemote: request.git_remote } : {}),
+    });
+    if (!updated) return notFound(projectId);
+    const project = toProjectDto(updated);
+    return { ok: true, project, ...projectChanged('metadata-updated', project, tx) };
+  });
+}
+
+export function reorderProjectsWithLiveEvent(
+  request: ReorderProjectsRequest,
+): ProjectMutationResult<{ projects: ProjectDto[] }> {
+  return getDb().transaction((tx) => {
+    reorderProjectsInDb(tx, request.orderedIds as DomainULID[]);
+    const projects = listProjectsInDb(tx).map(toProjectDto);
+    return { ok: true, projects, ...projectChanged('reordered', undefined, tx) };
+  });
+}
+
+export function softDeleteProjectWithLiveEvent(
+  projectId: ContractULID,
+): ProjectMutationResult<{ project: ProjectDto }> {
+  return getDb().transaction((tx) => {
+    const deleted = softDeleteProjectInDb(tx, projectId as DomainULID);
     if (!deleted) return notFound(projectId);
     const project = toProjectDto(deleted);
-    return {
-      ok: true,
-      project,
-      event: projectChanged('soft-deleted', project),
-    };
-  }
+    return { ok: true, project, ...projectChanged('soft-deleted', project, tx) };
+  });
 }
 
 export function toProjectDto(project: Project): ProjectDto {
@@ -166,13 +242,77 @@ function toProjectSettingsDto(settings: ProjectSettings): ProjectDto['settings']
 
 function projectChanged(
   reason: ProjectMutationReason,
-  project: ProjectDto,
-): ProjectChangedRefetchEnvelope {
-  return buildProjectChangedRefetchEnvelope({
+  project?: ProjectDto,
+  db: DbExecutor | null = null,
+): ProjectChangedPublication {
+  const payload = projectChangedPayload(reason, project);
+  const legacyEvent = buildProjectChangedRefetchEnvelope(payload);
+  const liveEvent = db
+    ? toProjectChangedLiveEvent(insertLiveEvent(db, buildProjectChangedLiveEventDraft(payload)))
+    : buildEphemeralProjectChangedLiveEvent(payload);
+  return {
+    event: legacyEvent,
+    legacyEvent,
+    liveEvent,
+  };
+}
+
+export function projectChangedPayload(
+  reason: ProjectMutationReason,
+  project?: ProjectDto,
+): ProjectChangedLivePayload {
+  return {
     reason,
-    projectIdChanged: project.id,
-    project,
-  });
+    ...(project ? { projectIdChanged: project.id, project } : {}),
+  };
+}
+
+export function buildProjectChangedLiveEventDraft(
+  payload: ProjectChangedLivePayload,
+): InsertLiveEventDraft<ProjectChangedLivePayload> {
+  return {
+    scope: 'global',
+    projectId: null,
+    type: 'project.changed',
+    entity: 'project',
+    entityId: (payload.projectIdChanged as DomainULID | undefined) ?? null,
+    version: null,
+    payload,
+  };
+}
+
+function toProjectChangedLiveEvent(
+  event: LiveOutboxEvent<ProjectChangedLivePayload>,
+): ProjectChangedLiveEvent {
+  return {
+    id: event.id,
+    cursor: event.cursor,
+    scope: 'global',
+    projectId: null,
+    type: 'project.changed',
+    entity: 'project',
+    entityId: event.entityId,
+    version: null,
+    createdAt: event.createdAt,
+    payload: event.payload,
+  };
+}
+
+function buildEphemeralProjectChangedLiveEvent(
+  payload: ProjectChangedLivePayload,
+): ProjectChangedLiveEvent {
+  return {
+    id: `ephemeral-${Date.now()}`,
+    cursor: '0',
+    scope: 'global',
+    projectId: null,
+    type: 'project.changed',
+    entity: 'project',
+    entityId: payload.projectIdChanged ?? null,
+    version: null,
+    createdAt: Date.now(),
+    payload,
+  };
 }
 
 function notFound(projectId: ContractULID): ProjectServiceResult<never> {

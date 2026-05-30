@@ -6,6 +6,8 @@ import { getDataDir } from '@pc/utils';
 import * as schema from './schema.ts';
 
 export type DB = BetterSQLite3Database<typeof schema>;
+export type DbTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
+export type DbExecutor = DB | DbTransaction;
 
 let _db: DB | null = null;
 let _sqlite: Database.Database | null = null;

@@ -6,7 +6,16 @@ import { join } from 'node:path';
 
 import { Hono } from 'hono';
 import type { Project, ULID } from '@pc/domain';
-import type { ProjectChangedRefetchEnvelope } from '@pc/contracts';
+import {
+  buildLiveEventFrame,
+  buildProjectChangedRefetchEnvelope,
+  type ProjectChangedLiveEvent,
+  type ProjectChangedRefetchEnvelope,
+} from '@pc/contracts';
+import {
+  buildProjectChangedLiveEventDraft,
+  toProjectDto,
+} from '@pc/app-services';
 import type { CreateProjectFlowInput } from '../src/services/project-create.ts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-project-routes-'));
@@ -16,12 +25,16 @@ const {
   closeDb,
   createProject: dbCreateProject,
   getProjectById,
+  getDb,
+  insertLiveEvent,
+  listLiveEventsAfter,
   runMigrations,
 } = await import('@pc/db');
 const {
   registerProjectDetailRoute,
   registerProjectRoutes,
 } = await import('../src/features/projects/routes.ts');
+const { ProjectWebSocketHub } = await import('../src/services/websocket-hub.ts');
 
 const stages = [
   { id: 'todo', name: 'Todo', order: 0 },
@@ -52,13 +65,32 @@ function makeHarness() {
   const refreshed: Project[] = [];
   const removed: ULID[] = [];
   const revealed: string[] = [];
-  const published: ProjectChangedRefetchEnvelope[] = [];
+  const published: Array<{
+    legacyEvent: ProjectChangedRefetchEnvelope;
+    liveEvent: ProjectChangedLiveEvent;
+  }> = [];
   const app = new Hono();
 
   registerProjectRoutes(app, {
     createProject: async (input) => {
       createdInputs.push(input);
-      return makeProject(input.name);
+      const project = makeProject(input.name);
+      const dto = toProjectDto(project);
+      const liveEvent = insertLiveEvent(
+        getDb(),
+        buildProjectChangedLiveEventDraft({
+          reason: 'created',
+          projectIdChanged: dto.id,
+          project: dto,
+        }),
+      ) as ProjectChangedLiveEvent;
+      const legacyEvent = buildProjectChangedRefetchEnvelope(liveEvent.payload);
+      return {
+        project,
+        event: legacyEvent,
+        legacyEvent,
+        liveEvent,
+      };
     },
     refreshProject: (project) => refreshed.push(project as Project),
     removeProject: (projectId) => removed.push(projectId),
@@ -67,7 +99,7 @@ function makeHarness() {
       return project ? { project: { id: project.id } } : null;
     },
     revealProjectFolder: (folderPath) => revealed.push(folderPath),
-    publishProjectChanged: (event) => published.push(event),
+    publishProjectChanged: (legacyEvent, liveEvent) => published.push({ legacyEvent, liveEvent }),
   });
   registerProjectDetailRoute(app, {
     resolveProject: (projectId) => {
@@ -77,6 +109,21 @@ function makeHarness() {
   });
 
   return { app, createdInputs, refreshed, removed, revealed, published };
+}
+
+class FakeSocket {
+  readonly OPEN = 1;
+  readonly CLOSED = 3;
+  readyState = this.OPEN;
+  sent: string[] = [];
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = this.CLOSED;
+  }
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -122,11 +169,15 @@ test('project create route validates input, delegates, and publishes project.cha
     },
   ]);
   assert.equal(published.length, 1);
-  assert.equal(published[0]!.type, 'project.changed');
-  assert.equal(published[0]!.scope, 'global');
-  assert.equal(published[0]!.projectId, null);
-  assert.equal(published[0]!.reason, 'created');
-  assert.equal(published[0]!.projectIdChanged, body.project.id);
+  assert.equal(published[0]!.legacyEvent.type, 'project.changed');
+  assert.equal(published[0]!.legacyEvent.scope, 'global');
+  assert.equal(published[0]!.legacyEvent.projectId, null);
+  assert.equal(published[0]!.legacyEvent.reason, 'created');
+  assert.equal(published[0]!.legacyEvent.projectIdChanged, body.project.id);
+  assert.deepEqual(buildLiveEventFrame(published[0]!.liveEvent), {
+    type: 'live-event',
+    event: published[0]!.liveEvent,
+  });
 });
 
 test('project list, patch, detail, soft-delete, and reorder preserve route parity', async () => {
@@ -183,11 +234,15 @@ test('project list, patch, detail, soft-delete, and reorder preserve route parit
   body = await json(res);
   assert.equal(body.projects.some((p) => p.id === project.id), true);
 
-  assert.deepEqual(published.map((event) => event.reason), [
+  assert.deepEqual(published.map((event) => event.legacyEvent.reason), [
     'metadata-updated',
     'reordered',
     'soft-deleted',
   ]);
+  const outbox = listLiveEventsAfter({ after: '0', type: 'project.changed' });
+  for (const event of published) {
+    assert.equal(outbox.events.some((candidate) => candidate.id === event.liveEvent.id), true);
+  }
 });
 
 test('project routes preserve validation and unknown-project failure shapes', async () => {
@@ -261,4 +316,82 @@ test('project filesystem cleanup and reveal do not publish project.changed', asy
   assert.equal(revealBody.ok, false);
   assert.equal(revealBody.error, `folder does not exist on disk: ${revealProject.folderPath}`);
   assert.equal(published.length, 1);
+});
+
+test('project changed dual fanout reaches two clients and replay recovers missed events', async () => {
+  const project = makeProject('fanout');
+  const hub = new ProjectWebSocketHub<string>();
+  const clientA = new FakeSocket();
+  const clientB = new FakeSocket();
+  hub.subscribe('client-a', clientA);
+  hub.subscribe('client-b', clientB);
+  const app = new Hono();
+  const published: ProjectChangedLiveEvent[] = [];
+
+  registerProjectRoutes(app, {
+    createProject: async (input) => {
+      const created = makeProject(input.name);
+      const dto = toProjectDto(created);
+      const liveEvent = insertLiveEvent(
+        getDb(),
+        buildProjectChangedLiveEventDraft({
+          reason: 'created',
+          projectIdChanged: dto.id,
+          project: dto,
+        }),
+      ) as ProjectChangedLiveEvent;
+      const legacyEvent = buildProjectChangedRefetchEnvelope(liveEvent.payload);
+      return {
+        project: created,
+        event: legacyEvent,
+        legacyEvent,
+        liveEvent,
+      };
+    },
+    refreshProject: () => {},
+    removeProject: () => {},
+    resolveProject: (projectId) => {
+      const resolved = getProjectById(projectId as ULID);
+      return resolved ? { project: { id: resolved.id } } : null;
+    },
+    publishProjectChanged: (legacyEvent, liveEvent) => {
+      published.push(liveEvent);
+      hub.broadcastAll(buildLiveEventFrame(liveEvent));
+      hub.broadcastAll(legacyEvent);
+    },
+  });
+
+  const beforeRename = listLiveEventsAfter({}).nextCursor ?? '0';
+  const rename = await app.request(`/api/projects/${project.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name: 'Fanout Renamed' }),
+    headers: { 'content-type': 'application/json' },
+  });
+  assert.equal(rename.status, 200);
+  assert.equal(published.length, 1);
+  assert.equal(clientA.sent.length, 2);
+  assert.equal(clientB.sent.length, 2);
+  assert.equal(JSON.parse(clientA.sent[0]!).type, 'live-event');
+  assert.equal(JSON.parse(clientA.sent[1]!).type, 'project.changed');
+  assert.equal(JSON.parse(clientB.sent[0]!).event.id, published[0]!.id);
+
+  clientB.close();
+  const beforeDelete = published[0]!.cursor;
+  const deleted = await app.request(`/api/projects/${project.id}`, { method: 'DELETE' });
+  assert.equal(deleted.status, 200);
+  assert.equal(published.length, 2);
+  assert.equal(clientB.sent.length, 2);
+
+  assert.equal(
+    listLiveEventsAfter({ after: beforeRename, type: 'project.changed' }).events.some(
+      (event) => event.id === published[0]!.id,
+    ),
+    true,
+  );
+  assert.equal(
+    listLiveEventsAfter({ after: beforeDelete, type: 'project.changed' }).events.some(
+      (event) => event.id === published[1]!.id,
+    ),
+    true,
+  );
 });

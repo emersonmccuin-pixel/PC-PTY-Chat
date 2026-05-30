@@ -15,7 +15,7 @@ process.env.GIT_AUTHOR_EMAIL = 'caisson-test@example.invalid';
 process.env.GIT_COMMITTER_NAME = 'Caisson Test';
 process.env.GIT_COMMITTER_EMAIL = 'caisson-test@example.invalid';
 
-const { closeDb, runMigrations } = await import('@pc/db');
+const { closeDb, listLiveEventsAfter, runMigrations } = await import('@pc/db');
 const { ProjectCreate } = await import('../src/services/project-create.ts');
 const { ProjectScaffold } = await import('../src/services/project-scaffold.ts');
 
@@ -63,10 +63,18 @@ test('attach-to-git writes a tracked Caisson scaffold file before committing', a
     mode: 'attach-to-git',
   });
 
-  assert.equal(registered[0]?.id, created.id);
+  assert.equal(registered[0]?.id, created.project.id);
   assert.equal(
     readFileSync(join(repoDir, '.project-companion', 'setup-wizard-prompt.md'), 'utf-8'),
-    `Project Adopted Repo / adopted-repo / ${created.id}\n`,
+    `Project Adopted Repo / adopted-repo / ${created.project.id}\n`,
+  );
+  assert.equal(created.legacyEvent.reason, 'created');
+  assert.equal(created.liveEvent.type, 'project.changed');
+  assert.equal(
+    listLiveEventsAfter({ after: '0', type: 'project.changed' }).events.some(
+      (event) => event.id === created.liveEvent.id,
+    ),
+    true,
   );
   assert.equal(gitOutput(['log', '-1', '--pretty=%s'], repoDir).trim(), 'Add Caisson scaffold');
   assert.deepEqual(

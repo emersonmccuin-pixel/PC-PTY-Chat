@@ -6,6 +6,7 @@ import type { Hono } from 'hono';
 import type { Project, ULID as DomainULID } from '@pc/domain';
 import { getProjectById, listProjects } from '@pc/db';
 import type {
+  ProjectChangedLiveEvent,
   ProjectChangedRefetchEnvelope,
   ProjectDto,
 } from '@pc/contracts';
@@ -15,6 +16,9 @@ import {
   parseUpdateProjectRequest,
 } from '@pc/contracts';
 import { ProjectService } from '@pc/app-services';
+import type {
+  ProjectCreateFlowResult,
+} from '@pc/app-services';
 import type { CreateProjectFlowInput } from '../../services/project-create.ts';
 
 export interface ProjectRoutesRuntime {
@@ -22,12 +26,15 @@ export interface ProjectRoutesRuntime {
 }
 
 export interface ProjectRoutesDeps {
-  createProject(input: CreateProjectFlowInput): Promise<Project>;
+  createProject(input: CreateProjectFlowInput): Promise<ProjectCreateFlowResult>;
   refreshProject(project: ProjectDto): void;
   removeProject(projectId: DomainULID): void;
   resolveProject(projectId: string): ProjectRoutesRuntime | null;
   revealProjectFolder?(folderPath: string): void;
-  publishProjectChanged?(event: ProjectChangedRefetchEnvelope): void;
+  publishProjectChanged?(
+    legacyEvent: ProjectChangedRefetchEnvelope,
+    liveEvent: ProjectChangedLiveEvent,
+  ): void;
 }
 
 function findProjectIncludingDeleted(projectId: DomainULID): Project | undefined {
@@ -62,7 +69,7 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
     try {
       const result = service.reorderProjects(parsed.value);
       if (!result.ok) return c.json({ ok: false, error: result.error }, 500);
-      deps.publishProjectChanged?.(result.event);
+      deps.publishProjectChanged?.(result.legacyEvent, result.liveEvent);
       return c.json({ ok: true, projects: result.projects });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 500);
@@ -77,7 +84,7 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
     try {
       const result = await service.createProject(parsed.value, deps.createProject);
       if (!result.ok) return c.json({ ok: false, error: result.error }, 500);
-      deps.publishProjectChanged?.(result.event);
+      deps.publishProjectChanged?.(result.legacyEvent, result.liveEvent);
       return c.json({ ok: true, project: result.project }, 201);
     } catch (err) {
       const msg = (err as Error).message;
@@ -97,7 +104,7 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
       const result = service.updateProjectMeta(id, parsed.value);
       if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
       deps.refreshProject(result.project);
-      deps.publishProjectChanged?.(result.event);
+      deps.publishProjectChanged?.(result.legacyEvent, result.liveEvent);
       return c.json({ ok: true, project: result.project });
     } catch (err) {
       return c.json({ ok: false, error: (err as Error).message }, 500);
@@ -109,7 +116,7 @@ export function registerProjectRoutes(app: Hono, deps: ProjectRoutesDeps): void 
     const result = service.softDeleteProject(id);
     if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
     deps.removeProject(id);
-    deps.publishProjectChanged?.(result.event);
+    deps.publishProjectChanged?.(result.legacyEvent, result.liveEvent);
     return c.json({ ok: true, project: result.project });
   });
 

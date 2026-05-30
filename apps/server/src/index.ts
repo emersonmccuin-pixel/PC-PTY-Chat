@@ -10,6 +10,7 @@ import type {
   Project,
   ULID,
 } from '@pc/domain';
+import { buildLiveEventFrame } from '@pc/contracts';
 import {
   getActiveOrchestratorSession,
   insertPostTurnSummary,
@@ -58,6 +59,7 @@ import { registerWorkItemRoutes } from './features/work-items/routes.ts';
 import { registerAgentRunRoutes } from './features/agent-runs/routes.ts';
 import { registerWorktreeRoutes } from './features/project-worktrees/routes.ts';
 import { registerStatuslineRoutes } from './features/statusline/routes.ts';
+import { registerLiveEventRoutes } from './features/live-events/routes.ts';
 import { registerDevControlRoutes } from './features/dev-controls/routes.ts';
 import { registerProjectContextRoutes } from './features/project-context/routes.ts';
 import { registerWorkflowCompatRoutes } from './features/workflow-compat/routes.ts';
@@ -591,8 +593,13 @@ registerProjectRoutes(app, {
   refreshProject: (project) => projectRegistry.refresh(project as unknown as Project),
   removeProject: (projectId) => projectRegistry.remove(projectId),
   resolveProject,
-  publishProjectChanged: (event) => broadcastAll(event),
+  publishProjectChanged: (legacyEvent, liveEvent) => {
+    broadcastAll(buildLiveEventFrame(liveEvent));
+    broadcastAll(legacyEvent);
+  },
 });
+
+registerLiveEventRoutes(app);
 
 // Section 17d.1 — Pod (DB-resident agent) routes. Pods are global-scope in
 // v1; v2 (17c) overlays project rows.

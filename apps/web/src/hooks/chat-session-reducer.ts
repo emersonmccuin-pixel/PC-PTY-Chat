@@ -1,5 +1,8 @@
 import type { SessionReplayItem, SessionTransitionResponse } from '@/features/runtime/client';
-import { isProjectChangedRefetchEnvelope } from '@/features/projects/live-events';
+import {
+  isProjectChangedLiveEventFrame,
+  isProjectChangedRefetchEnvelope,
+} from '@/features/projects/live-events';
 import type {
   RuntimeStateEnvelope,
   SendAckEnvelope,
@@ -128,7 +131,8 @@ function applyEnvelope(
   if (
     state.projectId &&
     env.projectId !== state.projectId &&
-    !isProjectChangedRefetchEnvelope(env)
+    !isProjectChangedRefetchEnvelope(env) &&
+    !isProjectChangedLiveEventFrame(env)
   ) {
     return state;
   }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildProjectChangedRefetchEnvelope,
+  isProjectChangedLivePayload,
   isProjectChangedRefetchEnvelope,
   isProjectDto,
   parseCreateProjectRequest,
@@ -109,4 +110,6 @@ test('project.changed compatibility envelope is a global non-durable refetch hin
   assert.equal(isProjectChangedRefetchEnvelope(envelope), true);
   assert.equal(isProjectChangedRefetchEnvelope({ type: 'project.changed', projectId: 'p1' }), false);
   assert.equal(isProjectChangedRefetchEnvelope({ type: 'pod-changed', scope: 'global' }), false);
+  assert.equal(isProjectChangedLivePayload({ reason: 'metadata-updated' }), true);
+  assert.equal(isProjectChangedLivePayload({ reason: 'metadata-updated', project: {} }), false);
 });

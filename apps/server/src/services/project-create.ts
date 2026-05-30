@@ -35,8 +35,9 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-import type { Project, Stage } from '@pc/domain';
-import { createProject, getProjectBySlug, newId } from '@pc/db';
+import type { Stage } from '@pc/domain';
+import { persistCreatedProjectWithLiveEvent, type ProjectCreateFlowResult } from '@pc/app-services';
+import { getProjectBySlug, newId } from '@pc/db';
 
 import type { ProjectRegistry } from './project-registry.ts';
 import type { ProjectScaffold, ProjectScaffoldTarget } from './project-scaffold.ts';
@@ -73,7 +74,7 @@ export class ProjectCreate {
     private readonly registry: ProjectRegistry,
   ) {}
 
-  async create(input: CreateProjectFlowInput): Promise<Project> {
+  async create(input: CreateProjectFlowInput): Promise<ProjectCreateFlowResult> {
     const name = (input.name ?? '').trim();
     if (!name) throw new Error('name required');
     if (
@@ -153,7 +154,7 @@ export class ProjectCreate {
         : 'Initial commit';
     await exec('git', ['commit', '-m', scaffoldMsg], { cwd: folderPath });
 
-    const project = createProject({
+    const result = persistCreatedProjectWithLiveEvent({
       id,
       slug,
       name,
@@ -161,8 +162,8 @@ export class ProjectCreate {
       folderPath,
       gitRemote: input.gitRemote ?? null,
     });
-    this.registry.register(project);
-    return project;
+    this.registry.register(result.project);
+    return result;
   }
 
   /** `name` → kebab-case slug. Uniqued against the DB by appending `-2`, `-3`, … */

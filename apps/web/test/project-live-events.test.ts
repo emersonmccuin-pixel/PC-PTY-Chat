@@ -3,10 +3,16 @@ import assert from 'node:assert/strict';
 
 import {
   containsProjectChangedRefetchEvent,
+  projectChangedLiveEventFromUnknown,
   projectWsTargetIds,
   projectWsTargetKeyFromIds,
+  scanProjectChangedEvents,
   shouldAcceptProjectWsEnvelope,
 } from '../src/features/projects/live-events.ts';
+import {
+  readStoredProjectChangedCursor,
+  writeStoredProjectChangedCursor,
+} from '../src/features/live/hooks.ts';
 
 test('project websocket filter accepts only matching project events or project.changed globals', () => {
   assert.equal(
@@ -39,6 +45,20 @@ test('project websocket filter accepts only matching project events or project.c
     }, 'p1'),
     false,
   );
+  assert.equal(
+    shouldAcceptProjectWsEnvelope({
+      type: 'live-event',
+      event: projectChangedLiveEvent('evt1', '4'),
+    }, 'p1'),
+    true,
+  );
+  assert.equal(
+    shouldAcceptProjectWsEnvelope({
+      type: 'live-event',
+      event: { ...projectChangedLiveEvent('evt2', '5'), type: 'work-item.changed' },
+    }, 'p1'),
+    false,
+  );
 });
 
 test('project.changed event scanner only considers new events after a start index', () => {
@@ -51,6 +71,25 @@ test('project.changed event scanner only considers new events after a start inde
   assert.equal(containsProjectChangedRefetchEvent(events, 0), true);
   assert.equal(containsProjectChangedRefetchEvent(events, 1), true);
   assert.equal(containsProjectChangedRefetchEvent(events, 3), false);
+});
+
+test('project.changed scanner dedupes canonical live events and tracks latest cursor', () => {
+  const seen = new Set<string>();
+  const events = [
+    { type: 'live-event', event: projectChangedLiveEvent('evt1', '7') },
+    { type: 'live-event', event: projectChangedLiveEvent('evt1', '7') },
+    { type: 'project.changed', scope: 'global', projectId: null, reason: 'soft-deleted' },
+  ];
+
+  assert.deepEqual(scanProjectChangedEvents(events, 0, seen), {
+    shouldRefetch: true,
+    latestCursor: '7',
+  });
+  assert.deepEqual(scanProjectChangedEvents(events, 0, seen), {
+    shouldRefetch: true,
+    latestCursor: '7',
+  });
+  assert.equal(projectChangedLiveEventFromUnknown(events[0])?.id, 'evt1');
 });
 
 test('all-project websocket target key is stable across metadata-only project refetches', () => {
@@ -72,3 +111,37 @@ test('all-project websocket target key is stable across metadata-only project re
   assert.equal(afterKey, beforeKey);
   assert.equal(projectWsTargetKeyFromIds(projectWsTargetIds(after, 'active', false)), '');
 });
+
+test('project live cursor storage is best-effort and keyed narrowly', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+
+  assert.equal(readStoredProjectChangedCursor(storage), null);
+  writeStoredProjectChangedCursor('12', storage);
+  assert.equal(readStoredProjectChangedCursor(storage), '12');
+  writeStoredProjectChangedCursor(null, storage);
+  assert.equal(readStoredProjectChangedCursor(storage), '12');
+});
+
+function projectChangedLiveEvent(id: string, cursor: string) {
+  return {
+    id,
+    cursor,
+    scope: 'global',
+    projectId: null,
+    type: 'project.changed',
+    entity: 'project',
+    entityId: 'p1',
+    version: null,
+    createdAt: 1,
+    payload: {
+      reason: 'metadata-updated',
+      projectIdChanged: 'p1',
+    },
+  };
+}

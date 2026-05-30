@@ -8,7 +8,15 @@ import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { SessionSwitcher } from '@/components/SessionSwitcher';
 import { Shell } from '@/components/Shell';
 import { tabLabel } from '@/components/Tabs';
-import { containsProjectChangedRefetchEvent } from '@/features/projects/live-events';
+import { liveEventsApi } from '@/features/live/client';
+import {
+  readStoredProjectChangedCursor,
+  writeStoredProjectChangedCursor,
+} from '@/features/live/hooks';
+import {
+  projectChangedLiveEventFromUnknown,
+  scanProjectChangedEvents,
+} from '@/features/projects/live-events';
 import { useAllProjectsWs } from '@/hooks/use-all-projects-ws';
 import { useProjectUnread } from '@/hooks/use-project-unread';
 import { useProjectWs } from '@/hooks/use-project-ws';
@@ -38,6 +46,9 @@ export default function App() {
   const brandMenuRef = useRef<HTMLDivElement | null>(null);
   const brandButtonRef = useRef<HTMLButtonElement | null>(null);
   const projectChangedScanRef = useRef({ active: 0, background: 0 });
+  const projectChangedCursorRef = useRef<string | null>(readStoredProjectChangedCursor());
+  const seenProjectChangedLiveIdsRef = useRef<Set<string>>(new Set());
+  const replayInFlightRef = useRef(false);
 
   // Section 10 Phase 2 — first-run onboarding gate. `?onboarding=force` opens
   // it with real preflight; `?onboarding=sim` opens it on a faked blank machine
@@ -122,20 +133,66 @@ export default function App() {
   useRichLinkInvalidator(ws.events);
   useStatuslineSync(activeProject?.id ?? null, ws.events);
 
+  const storeProjectChangedCursor = useCallback((cursor: string | null) => {
+    if (!cursor) return;
+    projectChangedCursorRef.current = maxCursor(projectChangedCursorRef.current, cursor);
+    writeStoredProjectChangedCursor(projectChangedCursorRef.current);
+  }, []);
+
   useEffect(() => {
     const scan = projectChangedScanRef.current;
     const activeStart = ws.events.length < scan.active ? 0 : scan.active;
     const backgroundStart = backgroundWs.events.length < scan.background ? 0 : scan.background;
+    const activeResult = scanProjectChangedEvents(
+      ws.events,
+      activeStart,
+      seenProjectChangedLiveIdsRef.current,
+    );
+    const backgroundResult = scanProjectChangedEvents(
+      backgroundWs.events,
+      backgroundStart,
+      seenProjectChangedLiveIdsRef.current,
+    );
     const shouldRefetch =
-      containsProjectChangedRefetchEvent(ws.events, activeStart) ||
-      containsProjectChangedRefetchEvent(backgroundWs.events, backgroundStart);
+      activeResult.shouldRefetch || backgroundResult.shouldRefetch;
+    storeProjectChangedCursor(maxCursor(activeResult.latestCursor, backgroundResult.latestCursor));
     projectChangedScanRef.current = {
       active: ws.events.length,
       background: backgroundWs.events.length,
     };
     if (!shouldRefetch) return;
     void projectsApi.listProjects().then(setProjects).catch(() => {});
-  }, [ws.events, backgroundWs.events]);
+  }, [ws.events, backgroundWs.events, storeProjectChangedCursor]);
+
+  useEffect(() => {
+    if (projects === null || replayInFlightRef.current) return;
+    replayInFlightRef.current = true;
+    const after = projectChangedCursorRef.current ?? undefined;
+    void liveEventsApi.listEvents({
+        ...(after ? { after } : {}),
+        includeGlobal: true,
+        type: 'project.changed',
+      })
+      .then(async (response) => {
+        storeProjectChangedCursor(response.nextCursor);
+        let shouldRefetch = response.resetRequired === true;
+        for (const candidate of response.events) {
+          const event = projectChangedLiveEventFromUnknown(candidate);
+          if (!event) continue;
+          storeProjectChangedCursor(event.cursor);
+          if (seenProjectChangedLiveIdsRef.current.has(event.id)) continue;
+          seenProjectChangedLiveIdsRef.current.add(event.id);
+          shouldRefetch = true;
+        }
+        if (shouldRefetch) {
+          await projectsApi.listProjects().then(setProjects).catch(() => {});
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        replayInFlightRef.current = false;
+      });
+  }, [projects !== null, ws.status, backgroundWs.status, storeProjectChangedCursor]);
 
   const persistActivityPanelSetting = useCallback(
     (patch: { open?: boolean }) => {
@@ -467,4 +524,10 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function maxCursor(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return Number(b) > Number(a) ? b : a;
 }

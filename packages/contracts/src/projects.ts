@@ -1,3 +1,9 @@
+import {
+  isLiveEvent,
+  isLiveEventFrame,
+  type LiveEvent,
+  type LiveEventFrame,
+} from './live-events.ts';
 import { parseErr, parseOk, type ApiResult, type ParseResult, type ULID } from './shared.ts';
 
 export type { ApiResult, ParseResult, ULID } from './shared.ts';
@@ -80,6 +86,24 @@ export interface ProjectChangedRefetchEnvelope {
   projectIdChanged?: ULID;
   project?: ProjectDto;
 }
+
+export interface ProjectChangedLivePayload {
+  reason: ProjectMutationReason;
+  projectIdChanged?: ULID;
+  project?: ProjectDto;
+}
+
+export type ProjectChangedLiveEvent = LiveEvent<ProjectChangedLivePayload> & {
+  type: 'project.changed';
+  entity: 'project';
+  scope: 'global';
+  projectId: null;
+  version: null;
+};
+
+export type ProjectChangedLiveEventFrame = LiveEventFrame<ProjectChangedLivePayload> & {
+  event: ProjectChangedLiveEvent;
+};
 
 export function parseCreateProjectRequest(input: unknown): ParseResult<CreateProjectRequest> {
   if (!isRecord(input)) return invalidCreateRequest();
@@ -202,6 +226,41 @@ export function isProjectChangedRefetchEnvelope(
   }
   if (value.project !== undefined && !isProjectDto(value.project)) return false;
   return true;
+}
+
+export function isProjectChangedLivePayload(
+  value: unknown,
+): value is ProjectChangedLivePayload {
+  if (!isRecord(value) || !isProjectMutationReason(value.reason)) return false;
+  if (value.projectIdChanged !== undefined && typeof value.projectIdChanged !== 'string') {
+    return false;
+  }
+  if (value.project !== undefined && !isProjectDto(value.project)) return false;
+  return true;
+}
+
+export function isProjectChangedLiveEvent(value: unknown): value is ProjectChangedLiveEvent {
+  return (
+    isLiveEvent(value) &&
+    value.type === 'project.changed' &&
+    value.entity === 'project' &&
+    value.scope === 'global' &&
+    value.projectId === null &&
+    value.version === null &&
+    isProjectChangedLivePayload(value.payload)
+  );
+}
+
+export function isProjectChangedLiveEventFrame(
+  value: unknown,
+): value is ProjectChangedLiveEventFrame {
+  return isLiveEventFrame(value) && isProjectChangedLiveEvent(value.event);
+}
+
+export function toProjectChangedRefetchEnvelope(
+  event: ProjectChangedLiveEvent,
+): ProjectChangedRefetchEnvelope {
+  return buildProjectChangedRefetchEnvelope(event.payload);
 }
 
 function invalidCreateRequest(): ParseResult<never> {

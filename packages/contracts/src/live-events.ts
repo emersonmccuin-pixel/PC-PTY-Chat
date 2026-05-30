@@ -1,0 +1,132 @@
+import { parseErr, parseOk, type ParseResult, type ULID } from './shared.ts';
+
+export type LiveEventScope = 'project' | 'global';
+export type LiveEventEntity = 'project';
+
+export interface LiveEvent<TPayload = unknown> {
+  id: ULID;
+  cursor: string;
+  scope: LiveEventScope;
+  projectId: ULID | null;
+  type: string;
+  entity: LiveEventEntity;
+  entityId: ULID | null;
+  version: number | null;
+  createdAt: number;
+  payload: TPayload;
+}
+
+export interface LiveEventFrame<TPayload = unknown> {
+  type: 'live-event';
+  event: LiveEvent<TPayload>;
+}
+
+export interface ListLiveEventsQuery {
+  after?: string;
+  projectId?: ULID;
+  includeGlobal: boolean;
+  limit: number;
+  type?: 'project.changed';
+}
+
+export interface ListLiveEventsResponse {
+  ok: true;
+  events: LiveEvent[];
+  nextCursor: string | null;
+  resetRequired?: boolean;
+}
+
+export const liveEventRoutes = {
+  list: '/api/live-events',
+} as const;
+
+const DEFAULT_REPLAY_LIMIT = 100;
+const MAX_REPLAY_LIMIT = 500;
+
+export function buildLiveEventFrame<TPayload>(
+  event: LiveEvent<TPayload>,
+): LiveEventFrame<TPayload> {
+  return { type: 'live-event', event };
+}
+
+export function isLiveEvent(value: unknown): value is LiveEvent {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value.id !== 'string' ||
+    !isLiveEventCursor(value.cursor) ||
+    !isLiveEventScope(value.scope) ||
+    typeof value.type !== 'string' ||
+    !isLiveEventEntity(value.entity) ||
+    (value.entityId !== null && typeof value.entityId !== 'string') ||
+    (value.version !== null && typeof value.version !== 'number') ||
+    typeof value.createdAt !== 'number'
+  ) {
+    return false;
+  }
+  if (value.scope === 'global' && value.projectId !== null) return false;
+  if (value.scope === 'project' && typeof value.projectId !== 'string') return false;
+  return 'payload' in value;
+}
+
+export function isLiveEventFrame(value: unknown): value is LiveEventFrame {
+  return isRecord(value) && value.type === 'live-event' && isLiveEvent(value.event);
+}
+
+export function parseListLiveEventsQuery(input: unknown): ParseResult<ListLiveEventsQuery> {
+  const query = isRecord(input) ? input : {};
+  const parsed: ListLiveEventsQuery = {
+    includeGlobal: query.includeGlobal === '1',
+    limit: parseLimit(query.limit),
+  };
+
+  if (query.after !== undefined) {
+    if (typeof query.after !== 'string' || !isLiveEventCursor(query.after)) {
+      return parseErr('after must be a non-negative integer cursor');
+    }
+    parsed.after = query.after;
+  }
+
+  if (query.projectId !== undefined) {
+    if (typeof query.projectId !== 'string' || !query.projectId) {
+      return parseErr('projectId must be a non-empty string');
+    }
+    parsed.projectId = query.projectId;
+  }
+
+  if (query.type !== undefined) {
+    if (query.type !== 'project.changed') {
+      return parseErr('unsupported live event type');
+    }
+    parsed.type = 'project.changed';
+  }
+
+  return parseOk(parsed);
+}
+
+export function isLiveEventCursor(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) return false;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0;
+}
+
+function parseLimit(value: unknown): number {
+  if (value === undefined || value === null || value === '') return DEFAULT_REPLAY_LIMIT;
+  const numeric = typeof value === 'number' ? value : Number(String(value));
+  if (!Number.isFinite(numeric)) return DEFAULT_REPLAY_LIMIT;
+  const integer = Math.trunc(numeric);
+  if (integer < 1) return 1;
+  if (integer > MAX_REPLAY_LIMIT) return MAX_REPLAY_LIMIT;
+  return integer;
+}
+
+function isLiveEventScope(value: unknown): value is LiveEventScope {
+  return value === 'project' || value === 'global';
+}
+
+function isLiveEventEntity(value: unknown): value is LiveEventEntity {
+  return value === 'project';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}

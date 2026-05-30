@@ -75,6 +75,33 @@ export const projects = sqliteTable(
   ],
 );
 
+export const liveOutbox = sqliteTable(
+  'live_outbox',
+  {
+    seq: integer('seq').primaryKey({ autoIncrement: true }),
+    id: text('id').notNull(),
+    scope: text('scope').notNull().$type<'project' | 'global'>(),
+    projectId: text('project_id').$type<ULID | null>(),
+    type: text('type').notNull(),
+    entity: text('entity').notNull().$type<'project'>(),
+    entityId: text('entity_id').$type<ULID | null>(),
+    version: integer('version'),
+    payload: text('payload', { mode: 'json' })
+      .notNull()
+      .$type<Record<string, unknown>>(),
+    createdAt: integer('created_at').notNull(),
+    publishedAt: integer('published_at'),
+  },
+  (t) => [
+    uniqueIndex('live_outbox_id_idx').on(t.id),
+    index('live_outbox_created_idx').on(t.createdAt),
+    index('live_outbox_project_seq_idx').on(t.projectId, t.seq),
+    index('live_outbox_scope_seq_idx').on(t.scope, t.seq),
+    index('live_outbox_type_seq_idx').on(t.type, t.seq),
+    index('live_outbox_entity_idx').on(t.entity, t.entityId, t.seq),
+  ],
+);
+
 export const workItems = sqliteTable(
   'work_items',
   {

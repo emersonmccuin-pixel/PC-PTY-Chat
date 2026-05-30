@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { Project, ProjectSettings, Stage, ULID } from '@pc/domain';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import { getDb } from '../connection.ts';
+import type { DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
 import { projects } from '../schema.ts';
 
@@ -53,9 +54,16 @@ export interface ListProjectsOptions {
 }
 
 export function listProjects(opts: ListProjectsOptions = {}): Project[] {
+  return listProjectsInDb(getDb(), opts);
+}
+
+export function listProjectsInDb(
+  db: DbExecutor,
+  opts: ListProjectsOptions = {},
+): Project[] {
   // Order by `position` asc, breaking ties on `created_at` so two rows that
   // somehow share a position stay in a deterministic order.
-  const q = getDb()
+  const q = db
     .select()
     .from(projects)
     .orderBy(asc(projects.position), asc(projects.createdAt));
@@ -66,7 +74,11 @@ export function listProjects(opts: ListProjectsOptions = {}): Project[] {
 }
 
 export function getProjectById(id: ULID): Project | null {
-  const row = getDb()
+  return getProjectByIdInDb(getDb(), id);
+}
+
+export function getProjectByIdInDb(db: DbExecutor, id: ULID): Project | null {
+  const row = db
     .select()
     .from(projects)
     .where(and(eq(projects.id, id), isNull(projects.deletedAt)))
@@ -75,7 +87,11 @@ export function getProjectById(id: ULID): Project | null {
 }
 
 export function getProjectBySlug(slug: string): Project | null {
-  const row = getDb()
+  return getProjectBySlugInDb(getDb(), slug);
+}
+
+export function getProjectBySlugInDb(db: DbExecutor, slug: string): Project | null {
+  const row = db
     .select()
     .from(projects)
     .where(and(eq(projects.slug, slug), isNull(projects.deletedAt)))
@@ -84,6 +100,10 @@ export function getProjectBySlug(slug: string): Project | null {
 }
 
 export function createProject(input: CreateProjectInput): Project {
+  return createProjectInDb(getDb(), input);
+}
+
+export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Project {
   const now = Date.now();
   const id = input.id ?? newId();
   const gitRemote = input.gitRemote ?? null;
@@ -91,12 +111,12 @@ export function createProject(input: CreateProjectInput): Project {
   // rows still count toward `max(position)` so the position space stays gap-
   // free across the lifetime of a project (cheaper than re-compacting on
   // soft-delete).
-  const maxPos = getDb()
+  const maxPos = db
     .select({ v: sql<number | null>`max(${projects.position})` })
     .from(projects)
     .get() as { v: number | null } | undefined;
   const position = (maxPos?.v ?? -1) + 1;
-  getDb()
+  db
     .insert(projects)
     .values({
       id,
@@ -130,6 +150,13 @@ export function createProject(input: CreateProjectInput): Project {
 export function reorderProjects(orderedIds: ULID[]): void {
   if (orderedIds.length === 0) return;
   const db = getDb();
+  db.transaction((tx) => {
+    reorderProjectsInDb(tx, orderedIds);
+  });
+}
+
+export function reorderProjectsInDb(db: DbExecutor, orderedIds: ULID[]): void {
+  if (orderedIds.length === 0) return;
   // Sanity-clamp against the existing membership so a stale list can't
   // promote a deleted row's position.
   const live = (db
@@ -140,14 +167,11 @@ export function reorderProjects(orderedIds: ULID[]): void {
   const liveSet = new Set(live);
   const finalOrder = orderedIds.filter((id) => liveSet.has(id));
   const now = Date.now();
-  // Single transaction — every row moves or none do.
-  db.transaction((tx) => {
-    finalOrder.forEach((id, idx) => {
-      tx.update(projects)
-        .set({ position: idx, updatedAt: now })
-        .where(eq(projects.id, id))
-        .run();
-    });
+  finalOrder.forEach((id, idx) => {
+    db.update(projects)
+      .set({ position: idx, updatedAt: now })
+      .where(eq(projects.id, id))
+      .run();
   });
 }
 
@@ -174,7 +198,11 @@ export function updateProjectStages(id: ULID, stages: Stage[]): Stage[] {
  *  whether or not it was already deleted. Returns null if no such project.
  *  Filesystem is not touched (per the soft-delete contract). */
 export function softDeleteProject(id: ULID): Project | null {
-  const existing = getDb()
+  return softDeleteProjectInDb(getDb(), id);
+}
+
+export function softDeleteProjectInDb(db: DbExecutor, id: ULID): Project | null {
+  const existing = db
     .select()
     .from(projects)
     .where(eq(projects.id, id))
@@ -182,7 +210,7 @@ export function softDeleteProject(id: ULID): Project | null {
   if (!existing) return null;
   if (existing.deletedAt === null) {
     const now = Date.now();
-    getDb()
+    db
       .update(projects)
       .set({ deletedAt: now, updatedAt: now })
       .where(eq(projects.id, id))
@@ -201,18 +229,26 @@ export interface UpdateProjectMetaInput {
 /** Patch the mutable metadata for a project (name + git remote). Returns
  *  the updated Project, or null if no such project (or soft-deleted). */
 export function updateProjectMeta(id: ULID, input: UpdateProjectMetaInput): Project | null {
+  return updateProjectMetaInDb(getDb(), id, input);
+}
+
+export function updateProjectMetaInDb(
+  db: DbExecutor,
+  id: ULID,
+  input: UpdateProjectMetaInput,
+): Project | null {
   const patch: { name?: string; gitRemote?: string | null; updatedAt: number } = {
     updatedAt: Date.now(),
   };
   if (typeof input.name === 'string') patch.name = input.name;
   if (input.gitRemote !== undefined) patch.gitRemote = input.gitRemote;
   if (patch.name === undefined && patch.gitRemote === undefined) {
-    return getProjectById(id);
+    return getProjectByIdInDb(db, id);
   }
-  getDb()
+  db
     .update(projects)
     .set(patch)
     .where(and(eq(projects.id, id), isNull(projects.deletedAt)))
     .run();
-  return getProjectById(id);
+  return getProjectByIdInDb(db, id);
 }
