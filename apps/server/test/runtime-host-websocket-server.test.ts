@@ -57,6 +57,7 @@ function makeRuntime() {
     writeRaw: () => true,
   };
   return {
+    activeSession: () => session,
     ensureActiveSession: () => session,
     ptySession: () => pty,
     resizeOrchestrator: () => undefined,

@@ -95,6 +95,9 @@ export function handleRuntimeHostWsConnection<
   } = deps;
   const url = new URL(request.url ?? '/ws', 'http://127.0.0.1');
   const projectId = url.searchParams.get('projectId') as ULID | null;
+  // Only the focused chat socket asks to spawn the orchestrator; the
+  // all-projects activity fan-out connects without it (no spawn, no mint).
+  const chatIntent = url.searchParams.get('intent') === 'chat';
   if (!projectId) {
     closeBestEffort(ws, 1008, 'projectId query param required');
     return false;
@@ -110,6 +113,7 @@ export function handleRuntimeHostWsConnection<
   sendConnectSnapshot({
     projectId,
     runtime,
+    chatIntent,
     send: (envelope) => ws.send(JSON.stringify(envelope)),
     attachPtyHandlers,
     runtimeSnapshotPayload,

@@ -124,7 +124,9 @@ function openWithBackoff(
     if (cancelled) return;
     onStatus('connecting');
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(projectId)}`;
+    // No intent=chat → activity/unread fan-out: subscribe for broadcasts only,
+    // never spawn an orchestrator (this fan-out was the boot connect storm).
+    const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(projectId)}&intent=activity`;
     const sock = new WebSocket(url);
     ws = sock;
     let disconnected = false;

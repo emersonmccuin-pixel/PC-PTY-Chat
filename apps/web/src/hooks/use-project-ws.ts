@@ -115,7 +115,9 @@ export function useProjectWs(project: Project | null): UseProjectWsResult {
       if (cancelled) return;
       setStatus('connecting');
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(project!.id)}`;
+      // intent=chat → the server spawns/attaches the orchestrator for this
+      // focused socket. Activity sockets omit it and never spawn.
+      const url = `${proto}://${window.location.host}/ws?projectId=${encodeURIComponent(project!.id)}&intent=chat`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
       let disconnected = false;
